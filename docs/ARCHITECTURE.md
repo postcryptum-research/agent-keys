@@ -162,9 +162,14 @@ Lessons that cost real debugging time:
   through RIP-7212 in `forge test`; a `P256.verifySignature` call costs about
   11k gas including test overhead. The secp256k1-recovery path in
   `src/sign.py` is obsolete.
-- **Phase 1 — on-chain.** P256 validator + policy / session-key module on an
-  audited ERC-7579 / ERC-4337 base (ZeroDev Kernel or Solady), account
-  factory (CREATE2 from public key + salt).
+- **Phase 1 — on-chain.** *1a done (2026-10-20):*
+  `contracts/src/P256Validator.sol`, an ERC-7579 validator on ZeroDev Kernel
+  v3.3. `forge test` runs the full ERC-4337 path — EntryPoint v0.7 →
+  `KernelFactory.createAccount` → Kernel → validator → `execute` — with a
+  P-256 signature, and the committed TPM vector passes the validator.
+  *Next (1b):* `P256Signer` (`ISigner`) so the agent key operates under
+  Kernel permission policies (call allow-list, limits, TTL) instead of as
+  root; a deployment script for Base Sepolia.
 - **Phase 2 — off-chain.** `agent-signer` builds the UserOperation with
   `alloy`, signs `userOpHash` through the trait, packs the signature and
   submits to a bundler.

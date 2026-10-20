@@ -4,3 +4,9 @@
 [submodule "contracts/lib/solady"]
 	path = contracts/lib/solady
 	url = https://github.com/vectorized/solady
+[submodule "contracts/lib/kernel-7579-plugins"]
+	path = contracts/lib/kernel-7579-plugins
+	url = https://github.com/zerodevapp/kernel-7579-plugins
+[submodule "contracts/lib/kernel"]
+	path = contracts/lib/kernel
+	url = https://github.com/zerodevapp/kernel
