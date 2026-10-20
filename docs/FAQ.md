@@ -73,7 +73,8 @@ somewhere safe: they cannot be recovered. Copy each file to a second place
 too (another drive, a cloud folder — the file is useless without the
 passphrase).
 
-**4. Write the agent config** (start from `signer/agent.tropic01.base-sepolia.json`):
+**4. Write the agent config** (start from `signer/agent.tropic01.base-sepolia.json`;
+every field is specified in [`AGENT_CONFIG.md`](AGENT_CONFIG.md)):
 
 - `"agent": {"tpm": "0x81010011"}`;
 - `"owner": {"keyfile": "/media/…/owner.json"}` and `"ownerPublicKey"` with

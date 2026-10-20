@@ -85,7 +85,29 @@ sol! {
             external
             payable;
         function rootValidator() external view returns (bytes21);
+
+        struct PermissionConfig {
+            bytes2 permissionFlag;
+            address signer;
+            bytes22[] policyData;
+        }
+        function permissionConfig(bytes4 pId) external view returns (PermissionConfig memory);
         function execute(bytes32 execMode, bytes calldata executionCalldata) external payable;
+    }
+
+    /// Read side of the agent modules, for `permission show`.
+    #[sol(rpc)]
+    interface IAgentPolicyView {
+        function isAllowed(address account, bytes32 id, address target, bytes4 selector) external view returns (bool);
+        function tokenLimit(address account, bytes32 id, address token)
+            external
+            view
+            returns (uint128 maxPerOp, uint128 budget, uint128 spent, bool set);
+    }
+
+    #[sol(rpc)]
+    interface IP256SignerView {
+        function publicKeys(bytes32 id, address account) external view returns (bytes32 x, bytes32 y);
     }
 
     #[sol(rpc)]

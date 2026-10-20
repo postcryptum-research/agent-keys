@@ -415,6 +415,77 @@ impl Session {
         self.send_raw_at(kernel::execute_batch_calldata(calls), sign_as, sponsored, None).await
     }
 
+    /// What the chain holds for the config's permission, next to what the
+    /// config says. The config is only the owner's *intent*: the chain changes
+    /// when the owner signs a root operation (rotate / add / revoke), never
+    /// because the file changed.
+    pub async fn permission_show(&self) -> Result<()> {
+        use crate::abi::{IAgentPolicyView, IP256SignerView};
+        let id = self.cfg.permission_id()?;
+        let id32 = B256::right_padding_from(id.as_slice());
+        let mark = |same: bool| if same { "  ok " } else { "DIFF " };
+        let kernel_account = IKernel::new(self.account, self.provider.clone());
+        let pc = kernel_account.permissionConfig(id).call().await?;
+        println!("account:        {}", self.account);
+        println!("permission:     {id}");
+        if pc.signer == Address::ZERO {
+            println!("on chain:       NOT INSTALLED — the config describes nothing the account enforces");
+            return Ok(());
+        }
+        // signer key
+        let signer = IP256SignerView::new(pc.signer, self.provider.clone());
+        let on_key = signer.publicKeys(id32, self.account).call().await?;
+        let cfg_key = match &self.cfg.agent_public_key {
+            Some(pk) => pk.parse()?,
+            None => open_signer(&self.cfg.agent, Role::Agent)?.public_key()?,
+        };
+        let same_key = on_key.x.0 == cfg_key.x && on_key.y.0 == cfg_key.y;
+        println!("{}agent key       chain 0x{}… / config 0x{}…", mark(same_key), hex::encode(&on_key.x[..4]), hex::encode(&cfg_key.x[..4]));
+        // policies
+        for data in &pc.policyData {
+            let policy = Address::from_slice(&data[2..]);
+            println!("policy module:  {policy}{}", if policy == self.dep.agent_policy { "" } else { " (an older AgentPolicy than deployments.agentPolicy)" });
+            // configs(account, id): validUntil, epoch, maxValuePerOp, budget, spent[, validAfter]
+            let mut call = Vec::with_capacity(68);
+            call.extend_from_slice(&alloy::primitives::keccak256("configs(address,bytes32)")[..4]);
+            call.extend_from_slice(&B256::left_padding_from(self.account.as_slice()).0);
+            call.extend_from_slice(&id32.0);
+            let raw = self
+                .provider
+                .call(TransactionRequest::default().with_to(policy).with_input(Bytes::from(call)))
+                .await?;
+            let word = |i: usize| raw.get(i * 32..i * 32 + 32).map(U256::from_be_slice).unwrap_or_default();
+            let (until, max, budget, spent, after) = (word(0), word(2), word(3), word(4), word(5));
+            let p = &self.cfg.policy;
+            println!("{}validUntil      chain {until} / config {}", mark(until == U256::from(p.valid_until)), p.valid_until);
+            println!("{}validAfter      chain {after} / config {}", mark(after == U256::from(p.valid_after)), p.valid_after);
+            println!("{}maxValuePerOp   chain {max} / config {}", mark(max.to_string() == p.max_value_per_op), p.max_value_per_op);
+            println!("{}budget          chain {budget} / config {}", mark(budget.to_string() == p.budget), p.budget);
+            println!("      spent           chain {spent}");
+            let view = IAgentPolicyView::new(policy, self.provider.clone());
+            let params = self.cfg.policy_params()?;
+            for (target, selector) in params.targets.iter().zip(&params.selectors) {
+                let allowed = view.isAllowed(self.account, id32, *target, *selector).call().await?;
+                println!("{}allow           {target} {selector}{}", mark(allowed), if allowed { "" } else { "  — in the config, NOT allowed on chain" });
+            }
+            for (token, max, budget) in &params.tokens {
+                let limit = view.tokenLimit(self.account, id32, *token).call().await;
+                match limit {
+                    Ok(l) => println!(
+                        "{}token           {token} chain {}/{} (spent {}) / config {max}/{budget}",
+                        mark(l.set && l.maxPerOp == *max && l.budget == *budget),
+                        l.maxPerOp,
+                        l.budget,
+                        l.spent
+                    ),
+                    Err(_) => println!("DIFF token           {token}: this policy version has no token limits"),
+                }
+            }
+        }
+        println!("(entries allowed on chain but absent from the config are not listed: the chain keeps no list of them)");
+        Ok(())
+    }
+
     /// Root validator and recovery state, for `owner status`.
     pub async fn owner_status(&self) -> Result<()> {
         let kernel = IKernel::new(self.account, self.provider.clone());
@@ -795,6 +866,18 @@ mod tests {
             cfg!(feature = "insecure-software-keys"),
             "for the agent only in a build that opted in"
         );
+    }
+
+    #[test]
+    fn repository_configs_parse_and_typos_are_rejected() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for name in ["agent.base-sepolia.json", "agent.tropic01.base-sepolia.json", "agent.window-demo.base-sepolia.json"] {
+            AgentConfig::load(&dir.join(name)).unwrap_or_else(|e| panic!("{name}: {e:#}"));
+        }
+        let typo = std::fs::read_to_string(dir.join("agent.window-demo.base-sepolia.json"))
+            .unwrap()
+            .replace("\"validAfter\"", "\"validafter\"");
+        assert!(serde_json::from_str::<AgentConfig>(&typo).is_err(), "a misspelled field must be an error");
     }
 
     #[test]

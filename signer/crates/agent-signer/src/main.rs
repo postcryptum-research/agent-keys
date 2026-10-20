@@ -133,6 +133,12 @@ enum PermissionCmd {
         #[arg(long)]
         sponsored: bool,
     },
+    /// Show what the chain enforces for the config's permission, field by
+    /// field next to the config (read-only).
+    Show {
+        #[command(flatten)]
+        agent: AgentArgs,
+    },
     /// Install the permission the config describes alongside the existing
     /// ones — e.g. one window of a schedule (`policy.validAfter` …
     /// `validUntil`). Root operation signed by the owner key.
@@ -754,6 +760,7 @@ async fn main() -> Result<()> {
                 let inc = s.revoke_permission(parse_permission_id(&id)?, sponsored).await?;
                 println!("revoked permission {id}: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
             }
+            PermissionCmd::Show { agent } => session(&agent).await?.permission_show().await?,
             PermissionCmd::Add { agent, sponsored, dry_run } => {
                 let s = session(&agent).await?;
                 if !s.pinned {

@@ -90,6 +90,7 @@ pub enum Role {
 /// Public key coordinates in a config (`{"x": "0x…", "y": "0x…"}`), as
 /// `key show` prints them.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PublicKeyJson {
     pub x: String,
     pub y: String,
@@ -102,7 +103,7 @@ impl PublicKeyJson {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PolicyConfig {
     pub allow: Vec<AllowEntry>,
     /// wei, decimal string
@@ -122,7 +123,7 @@ pub struct PolicyConfig {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TokenEntry {
     pub token: Address,
     /// token units, decimal string
@@ -132,6 +133,7 @@ pub struct TokenEntry {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AllowEntry {
     pub target: Address,
     /// 4-byte hex; `0x00000000` allows a plain value transfer
@@ -139,7 +141,9 @@ pub struct AllowEntry {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// The agent config file (docs/AGENT_CONFIG.md). Unknown fields are an
+/// error: a misspelled `validAfter` must not silently become 0.
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentConfig {
     /// Relative to this file.
     pub deployments: PathBuf,
