@@ -64,13 +64,25 @@ compiler, linker and Windows SDK, free of charge, no Visual Studio IDE. It
 takes a few GB and some minutes. Then finish `rustup-init` with the default
 options and reopen PowerShell.
 
-Verify:
+Open a new PowerShell and record the whole session to a file — that file
+is what you send back:
 
 ```powershell
-rustc --version     # 1.85 or newer
+Start-Transcript -Path $HOME\tpm_sign-windows.log
+```
+
+Then print the environment (all text, no GUI windows):
+
+```powershell
+cmd /c ver                      # Windows version
+tpmtool getdeviceinformation    # TPM version and manufacturer
+rustc --version                 # 1.85 or newer
 cargo --version
 git --version
 ```
+
+If `tpmtool` asks for administrator rights, skip it and note the
+manufacturer shown in `tpm.msc` instead.
 
 ## 3. Get the code
 
@@ -122,21 +134,19 @@ key by name and deletes it.
 $B = ".\target\debug\agent-signer.exe"
 & $B key create --cng tpm_sign-demo
 & $B key show   --cng tpm_sign-demo
-& $B vector --backend cng --label tpm_sign-demo --message "TPM_sign: digest signed inside a Windows TPM via CNG" > ..\contracts\test\vectors\p256_windows.json
+& $B vector --backend cng --label tpm_sign-demo --message "TPM_sign: digest signed inside a Windows TPM via CNG" | Out-File -Encoding ascii ..\contracts\test\vectors\p256_windows.json
 Get-Content ..\contracts\test\vectors\p256_windows.json
-& $B verify --file ..\contracts\test\vectors\p256_windows.json     # OK
+& $B verify --file ..\contracts\test\vectors\p256_windows.json     # prints OK
 ```
 
 `key create` prints the public key; the private key stays in the TPM. The
 vector file is what we commit next to the Linux TPM vector so the Solidity
 tests verify a real Windows TPM signature on every run.
 
-Note: Windows PowerShell 5.1's `>` writes UTF-16 with a byte-order mark;
-`verify` reads that (and UTF-8 with or without a BOM). Before committing the
-file for the Solidity tests, prefer plain UTF-8:
-`& $B vector ... | Out-File -Encoding ascii ..\contracts\test\vectors\p256_windows.json`.
-Always start the binary with `&` (`& $B key create …`): `$B key create …`
-is a PowerShell parse error.
+Copy the commands as they are: `| Out-File -Encoding ascii` keeps the file
+plain text (Windows PowerShell 5.1's `>` writes UTF-16, which `verify`
+accepts but the Solidity tests do not), and the binary must be started with
+`&` — `$B key create …` without it is a PowerShell parse error.
 
 ## 8. Optional: an agent account on Base Sepolia
 
@@ -170,11 +180,21 @@ the flow is the one in the README: `account status` → `account fund` →
 
 ## 10. What to report back
 
-1. Windows version (`winver`) and the TPM manufacturer shown in `tpm.msc`.
-2. `rustc --version`.
-3. Step 5 output (the last lines, or the full error).
-4. Step 6 output.
-5. `key show` JSON and the `p256_windows.json` file from step 7.
+After step 11 (cleanup), stop the transcript and send the file:
+
+```powershell
+Stop-Transcript     # writes $HOME\tpm_sign-windows.log
+```
+
+It must contain, in order:
+
+1. the environment block from step 2 (Windows version, TPM, `rustc`);
+2. step 4 — `test result: ok. 1 passed`;
+3. step 5 — both commands ending in `Finished` (or the full error);
+4. step 6 — `cng_key_signs_and_verifies ... ok`;
+5. step 7 — the `key show` JSON, the `p256_windows.json` content, and
+   `verify` printing `OK`;
+6. step 11 — `deleted tpm_sign-demo`.
 
 ## 11. Cleanup
 

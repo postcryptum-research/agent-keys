@@ -1,8 +1,8 @@
 # TPM_sign — hardware-held keys for on-chain agents
 
 An AI agent (or any unattended process) signs its on-chain actions with a key
-that lives in the machine's secure element — TPM 2.0 today, Apple Secure
-Enclave and Windows CNG next — and never exists as a file. Its account is an
+that lives in a secure element — a TPM 2.0 on Linux or Windows, a Tropic
+Square TROPIC01, Apple's Secure Enclave — and never exists as a file. Its account is an
 ERC-4337 smart account that verifies the chip's **P-256** signature on-chain
 through the RIP-7212 precompile. No secp256k1 key, no MPC, no custodian: the
 only on-chain owner is the public key of the chip.
@@ -32,10 +32,28 @@ tx [`0x785332…e669bb`](https://sepolia.basescan.org/tx/0x785332105fd8085d50e54
   (tx [`0xc81174…75db4b`](https://sepolia.basescan.org/tx/0xc8117420694a9c17d3c91a14df3ce70f00298d2bc0fcd38f55997c1bfc75db4b));
   operations can also go through an ERC-4337 bundler instead of our own
   `handleOps` — a public bundler accepted and included one
-  (tx [`0xb42e30…527675`](https://sepolia.basescan.org/tx/0xb42e30ae72ac8d676c33198b65ae85e8ef06936d15b28cda5832ed4cc0527675));
-  a Secure Enclave backend awaits its first run on a Mac
-  ([`docs/SECURE_ENCLAVE.md`](docs/SECURE_ENCLAVE.md)) and a Windows TPM
-  backend (CNG) its first run on Windows ([`docs/WINDOWS.md`](docs/WINDOWS.md)).
+  (tx [`0xb42e30…527675`](https://sepolia.basescan.org/tx/0xb42e30ae72ac8d676c33198b65ae85e8ef06936d15b28cda5832ed4cc0527675)).
+- More hardware — the agent permission was rotated onto a key inside a
+  **TROPIC01** open-architecture secure element, which then signed a
+  sponsored operation
+  (tx [`0x6c1060…3622b5`](https://sepolia.basescan.org/tx/0x6c1060b43c1a40e3d123fe766adad914edccac8e9596cc1dc658617cf53622b5));
+  the **Windows TPM** backend (CNG) ran on a Windows 11 PC and its signature
+  is one of the test vectors.
+- Safes — `AgentPolicy` v3 lets the agent drive a Safe its account owns
+  (Olas / Jinn service Safes) and still judges the Safe transaction's
+  *inner* call, or every leg of a MultiSend batch, against the mandate
+  ([`docs/ERC1271.md`](docs/ERC1271.md)).
+- Existing agent frameworks on top — Coinbase AgentKit, a Claude Code /
+  OpenClaw skill, Jinn and Olas, each run on Base Sepolia (see
+  [Examples](#examples)).
+
+| Backend | Platform | Status |
+|---|---|---|
+| `tpm` | Linux, TPM 2.0 (tss-esapi) | on-chain since phase 0; PCR-sealed keys |
+| `windows-tpm` | Windows, TPM 2.0 via CNG | run on Windows 11; vector in the tests ([`docs/WINDOWS.md`](docs/WINDOWS.md)) |
+| `tropic01` | any, TROPIC01 USB DevKit | on-chain agent key ([`docs/TROPIC01.md`](docs/TROPIC01.md)) |
+| `secure-enclave` | macOS | written and type-checked; awaiting a run on a Mac ([`docs/SECURE_ENCLAVE.md`](docs/SECURE_ENCLAVE.md)) |
+| `software` | any | dev/CI only |
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design and
 [`docs/BENCHMARK.md`](docs/BENCHMARK.md) for what each authorization method
@@ -49,15 +67,34 @@ secp256k1 + `ecrecover`. The first prototype ([`legacy/`](legacy/)) hit exactly
 that wall. Account abstraction removes it: the chip stays a P-256 signer, and
 the smart account checks that signature itself.
 
+## Examples
+
+Open-source agent stacks with their wallet layer — a key file or a custodial
+wallet — replaced by a hardware-signed agent account. All of them go through
+one seam, `agent-signer op send --json`; details in
+[`examples/README.md`](examples/README.md).
+
+| Example | What changes | Shown on Base Sepolia |
+|---|---|---|
+| [Coinbase AgentKit](examples/agentkit/) (TS, Claude via LangChain) | a new `EvmWalletProvider` | an allowed call lands; a transfer to an outsider — what a prompt injection asks for — is refused by `AgentPolicy` |
+| [Claude Code / OpenClaw skill](examples/claude-skill/) | a `SKILL.md` that teaches the agent the CLI | — |
+| [Jinn](examples/jinn/) (Olas-based operator) | a Safe broadcaster whose Safe owner is the Kernel account | a claim-like call and a settlement-like MultiSend batch through the Safe execute; the Safe adding an owner is refused |
+| [Olas](examples/olas/) (open-autonomy, Python) | Safe owner and keeper become the Kernel account; the consensus key stays, without funds | a 1-agent service's `transaction_settlement_abci` path, built with open-autonomy's own code, settles through the Kernel; a keeper retry cannot execute twice |
+
+The Jinn and Olas folders also hold an integration analysis with file:line
+references, a patch plan and proposals for upstream.
+
 ## Layout
 
 ```
-signer/      Rust: hw-signer (HardwareSigner trait; software + tpm backends),
-             agent-signer CLI
-contracts/   Foundry: P256Validator, P256Signer, AgentPolicy (ERC-7579 modules)
-             + tests against Kernel v3.3 and EntryPoint v0.7; P-256 vectors
-             signed in software and in a TPM
-docs/        architecture, threat model, TPM design notes
+signer/      Rust: hw-signer (HardwareSigner trait; tpm, windows-tpm,
+             secure-enclave, tropic01, software backends), agent-signer CLI
+contracts/   Foundry: P256Validator, P256Signer, AgentPolicy (ERC-7579 modules),
+             WhitelistPaymaster + tests against Kernel v3.3, EntryPoint v0.7
+             and Safe v1.4.1; P-256 vectors signed in software, a Linux TPM,
+             a Windows TPM and a TROPIC01
+examples/    AgentKit, Claude Code skill, Jinn, Olas
+docs/        architecture, benchmark, ERC-1271 and Safes, per-platform guides
 legacy/      the original Python / tpm2-tools prototype, kept for reference
 ```
 
@@ -81,8 +118,9 @@ cargo run -p agent-signer --features tpm -- vector --backend tpm --message hello
 ```
 
 The `vector` command prints a JSON `(digest, r, s, x, y)` record; the Solidity
-tests under `contracts/test/vectors/` consume these, including one signed
-inside an Intel PTT.
+tests verify every file under `contracts/test/vectors/` — signed inside an
+Intel PTT, a Windows TPM and a TROPIC01. Windows: [`docs/WINDOWS.md`](docs/WINDOWS.md)
+(free toolchain only); TROPIC01: `--features tropic01`, [`docs/TROPIC01.md`](docs/TROPIC01.md).
 
 ## Run an agent account on Base Sepolia
 
@@ -110,6 +148,11 @@ $B op send --agent $A --env-file $E --target 0x... --data 0x...   # anything the
 address that could never be deployed. Operations outside the mandate are
 rejected during simulation, before any gas is spent.
 
+For programs driving the CLI, `op send --json` prints one JSON line
+(`account`, `userOpHash`, `nonce`, `tx`, `block`, `gasUsed`) and keeps progress
+on stderr; `--nonce` reuses the nonce of an earlier attempt, so retrying the
+same action can never execute it twice.
+
 Gasless, and the owner's controls:
 
 ```sh
@@ -130,6 +173,9 @@ $B key create --handle 0x81010012 --pcrs 0,2,4,7       # a key sealed to the boo
 # give the new permission a fresh id — then, signed by the owner key:
 $B permission rotate --agent $A --env-file $E --old-id 0x61676e74 --sponsored
 $B permission revoke --agent $A --env-file $E --id 0x61676e32          # when the agent is retired
+
+$B key create --tropic01 /dev/ttyACM0 --slot 1         # a key inside a TROPIC01 (--features tropic01)
+# signer/agent.tropic01.base-sepolia.json: that key as the agent, a Safe in the mandate
 ```
 
 ## Reference
