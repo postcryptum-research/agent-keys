@@ -173,13 +173,13 @@ enum PaymasterCmd {
 }
 
 /// Which secure element a `key` command addresses: a TPM persistent handle
-/// or a Secure Enclave keychain label — exactly one.
+/// or a Secure Enclave key label — exactly one.
 #[derive(Args)]
 struct KeyRef {
     /// TPM 2.0: persistent handle (hex), e.g. 0x81010010.
     #[arg(long, value_parser = parse_hex_u32, conflicts_with = "enclave")]
     handle: Option<u32>,
-    /// Apple Secure Enclave (macOS): keychain label.
+    /// Apple Secure Enclave (macOS): key label.
     #[arg(long)]
     enclave: Option<String>,
     /// Windows TPM through CNG: key name.
@@ -316,7 +316,7 @@ fn open_backend(backend: Backend, parent: u32, label: Option<String>, slot: u16)
             }
         }
         Backend::Enclave => {
-            let label = label.context("--backend enclave needs --label <keychain label>")?;
+            let label = label.context("--backend enclave needs --label <key label>")?;
             #[cfg(all(feature = "secure-enclave", target_os = "macos"))]
             {
                 Ok(Box::new(hw_signer::secure_enclave::SecureEnclaveSigner::open(&label)?))

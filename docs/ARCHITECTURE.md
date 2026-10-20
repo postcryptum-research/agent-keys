@@ -102,7 +102,7 @@ cargo features so a machine compiles only the one it has:
 |---|---|---|---|
 | `software` | all | in-memory `p256` key — **dev/CI only**, never for a funded account | done |
 | `tpm` | Linux | TPM 2.0 via `tss-esapi`; keys created under the SRK (`0x81000001`), transient or persisted | done |
-| `secure-enclave` | macOS | Secure Enclave via Security.framework (`kSecAttrTokenIDSecureEnclave`), keys by keychain label | written, type-checked for `aarch64-apple-darwin`; awaiting a run on Apple hardware — see `docs/SECURE_ENCLAVE.md` |
+| `secure-enclave` | macOS | Secure Enclave via CryptoKit (Swift shim); the enclave-wrapped key blob is kept in a file per label — no keychain entitlements needed | rewritten 2026-10-20, Rust side type-checked for `aarch64-apple-darwin`; awaiting a run on a Mac — see `docs/SECURE_ENCLAVE.md` |
 | `windows-tpm` | Windows | TPM 2.0 via CNG's Platform Crypto Provider, keys by name | done — run on a Windows 11 PC: hardware test, key in the TPM, vector `p256_windows.json` verified by the Solidity tests — see `docs/WINDOWS.md` |
 | `tropic01` | any (USB) | Tropic Square TROPIC01 USB DevKit — an open-architecture secure element; P-256 keys generated in an ECC slot, one secure session per operation over the vendor's Rust SDK (`tropicsquare/libtropic-rs`) | done — hardware test, vector `p256_tropic01.json`, and an agent operation on Base Sepolia — see `docs/TROPIC01.md` |
 

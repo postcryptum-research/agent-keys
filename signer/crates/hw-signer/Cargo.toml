@@ -14,8 +14,9 @@ software = []
 # builds everywhere and a machine only compiles the backend it has.
 #   tpm            Linux   — TPM 2.0 via tss-esapi (needs libtss2-dev)
 tpm = ["dep:tss-esapi"]
-#   secure-enclave macOS   — Apple Secure Enclave via Security.framework
-secure-enclave = ["dep:security-framework"]
+#   secure-enclave macOS   — Apple Secure Enclave via CryptoKit (a Swift shim
+#                            built by build.rs; needs the Xcode Command Line Tools)
+secure-enclave = []
 #   windows-tpm    Windows — TPM 2.0 via CNG's Platform Crypto Provider
 windows-tpm = ["dep:windows"]
 #   tropic01       any     — Tropic Square TROPIC01 USB DevKit (docs/TROPIC01.md)
@@ -37,9 +38,6 @@ serialport = { version = "4.7", default-features = false, optional = true }
 embedded-hal = { version = "1", optional = true }
 x25519-dalek = { version = "2", default-features = false, features = ["static_secrets"], optional = true }
 dummy-pin = { version = "1", optional = true }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-security-framework = { version = "3", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", optional = true, features = ["Win32_Security_Cryptography", "Win32_Foundation"] }

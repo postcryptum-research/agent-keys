@@ -44,7 +44,7 @@ pub enum TpmKey {
 pub enum KeySpec {
     /// Persistent TPM handle, optionally sealed to PCRs.
     Tpm(TpmKey),
-    /// Apple Secure Enclave key, addressed by its keychain label (macOS).
+    /// Apple Secure Enclave key, addressed by its label (macOS).
     #[serde(rename = "secure-enclave")]
     SecureEnclave(String),
     /// TPM 2.0 key through CNG's Platform Crypto Provider, by key name (Windows).

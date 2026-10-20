@@ -52,7 +52,7 @@ tx [`0x785332…e669bb`](https://sepolia.basescan.org/tx/0x785332105fd8085d50e54
 | `tpm` | Linux, TPM 2.0 (tss-esapi) | on-chain since phase 0; PCR-sealed keys |
 | `windows-tpm` | Windows, TPM 2.0 via CNG | run on Windows 11; vector in the tests ([`docs/WINDOWS.md`](docs/WINDOWS.md)) |
 | `tropic01` | any, TROPIC01 USB DevKit | on-chain agent key ([`docs/TROPIC01.md`](docs/TROPIC01.md)) |
-| `secure-enclave` | macOS | written and type-checked; awaiting a run on a Mac ([`docs/SECURE_ENCLAVE.md`](docs/SECURE_ENCLAVE.md)) |
+| `secure-enclave` | macOS, Secure Enclave via CryptoKit | Rust side type-checked; awaiting a run on a Mac ([`docs/SECURE_ENCLAVE.md`](docs/SECURE_ENCLAVE.md)) |
 | `software` | any | dev/CI only |
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design and

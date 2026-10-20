@@ -2420,7 +2420,6 @@ dependencies = [
  "hex",
  "p256",
  "rand_core 0.6.4",
- "security-framework",
  "serialport",
  "sha2",
  "thiserror 1.0.69",

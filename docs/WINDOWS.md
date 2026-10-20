@@ -143,6 +143,9 @@ Get-Content ..\contracts\test\vectors\p256_windows.json
 vector file is what we commit next to the Linux TPM vector so the Solidity
 tests verify a real Windows TPM signature on every run.
 
+If `key create` reports `NTE_EXISTS` (`0x8009000F`) — the key is left from
+an earlier run — skip it and continue with `key show`.
+
 Copy the commands as they are: `| Out-File -Encoding ascii` keeps the file
 plain text (Windows PowerShell 5.1's `>` writes UTF-16, which `verify`
 accepts but the Solidity tests do not), and the binary must be started with
