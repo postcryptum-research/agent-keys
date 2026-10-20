@@ -231,8 +231,14 @@ Lessons that cost real debugging time:
     `0x4519a35b5acdc19ffe713326964b5214677825d11040684f9869adbd8b195370`;
     the sealed key's first sponsored operation, tx
     `0xc8117420694a9c17d3c91a14df3ce70f00298d2bc0fcd38f55997c1bfc75db4b`.
-  - *3.4 later:* gas benchmark against the reference paper; a bundler RPC as
-    a drop-in for self-bundling; Windows CNG backend.
+  - *3.4 done (2026-10-20): gas benchmark* — `docs/BENCHMARK.md`,
+    `contracts/test/GasBenchmark.t.sol`. P-256 verification via RIP-7212
+    costs the same as `ecrecover` (7,433 vs 7,402 gas), so hardware keys
+    carry no gas penalty; the full agent path (real EntryPoint, Kernel,
+    policy + signer, paymaster) adds about 77k gas per operation; large
+    payloads are dominated by data cost, as the paper found.
+  - *later:* a bundler RPC as a drop-in for self-bundling; Windows CNG
+    backend.
 
   Lessons from 3.3: a fixed `callGasLimit` is a trap — an execution phase
   that runs out of gas reverts with *no data*, the outer `handleOps`

@@ -33,8 +33,10 @@ tx [`0x785332…e669bb`](https://sepolia.basescan.org/tx/0x785332105fd8085d50e54
   a Secure Enclave backend awaits its first run on a Mac
   ([`docs/SECURE_ENCLAVE.md`](docs/SECURE_ENCLAVE.md)).
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design and what
-remains (paymaster, rotation, PCR-sealed keys, Secure Enclave backend).
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design and
+[`docs/BENCHMARK.md`](docs/BENCHMARK.md) for what each authorization method
+costs — P-256 through RIP-7212 is as cheap as `ecrecover`, and the whole
+agent path adds about 77k gas per operation.
 
 ## Why not an EOA
 
