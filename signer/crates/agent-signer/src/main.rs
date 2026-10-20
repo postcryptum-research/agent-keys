@@ -1,5 +1,6 @@
 mod abi;
 mod agent;
+mod bundler;
 mod chain;
 mod kernel;
 
@@ -44,9 +45,13 @@ struct AgentArgs {
     /// Agent account config (keys, mandate, deployments).
     #[arg(long)]
     agent: PathBuf,
-    /// Optional .env with BASE_SEPOLIA_RPC_URL and GAS_WALLET_KEYFILE.
+    /// Optional .env with BASE_SEPOLIA_RPC_URL, GAS_WALLET_KEYFILE and BUNDLER_URL.
     #[arg(long)]
     env_file: Option<PathBuf>,
+    /// Deliver operations through this ERC-4337 bundler RPC instead of our
+    /// own handleOps (overrides BUNDLER_URL).
+    #[arg(long)]
+    bundler: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -148,6 +153,17 @@ enum PaymasterCmd {
         agent: AgentArgs,
         #[arg(long)]
         revoke: bool,
+    },
+    /// Stake the paymaster in the EntryPoint (owner only) — public bundlers
+    /// require it before relaying sponsored operations.
+    Stake {
+        #[command(flatten)]
+        agent: AgentArgs,
+        #[arg(long)]
+        wei: String,
+        /// Seconds before a later unstake can be withdrawn.
+        #[arg(long, default_value_t = 86_400)]
+        unstake_delay_sec: u32,
     },
 }
 
@@ -399,7 +415,7 @@ fn enclave_key(label: &str, _: KeyOp) -> Result<()> {
 }
 
 async fn session(args: &AgentArgs) -> Result<Session> {
-    let env = Env::load(args.env_file.as_deref())?;
+    let env = Env::load(args.env_file.as_deref(), args.bundler.as_deref())?;
     let (cfg, base) = AgentConfig::load(&args.agent)?;
     Session::open(&env, cfg, &base).await
 }
@@ -500,6 +516,12 @@ async fn main() -> Result<()> {
                 let s = session(&agent).await?;
                 let tx = s.sponsor(!revoke).await?;
                 println!("{} {}: tx {tx}", if revoke { "delisted" } else { "sponsored" }, s.account);
+            }
+            PaymasterCmd::Stake { agent, wei, unstake_delay_sec } => {
+                let s = session(&agent).await?;
+                let amount: U256 = wei.parse().context("--wei")?;
+                let tx = s.paymaster_stake(amount, unstake_delay_sec).await?;
+                println!("staked {amount} wei (unstake delay {unstake_delay_sec}s): tx {tx}");
             }
         },
         Cmd::Demo { agent, sponsored } => {

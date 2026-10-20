@@ -30,6 +30,9 @@ tx [`0x785332…e669bb`](https://sepolia.basescan.org/tx/0x785332105fd8085d50e54
   TPM keys can be sealed to the measured boot state (`key create --pcrs
   0,2,4,7`) and a sealed agent key ran on-chain
   (tx [`0xc81174…75db4b`](https://sepolia.basescan.org/tx/0xc8117420694a9c17d3c91a14df3ce70f00298d2bc0fcd38f55997c1bfc75db4b));
+  operations can also go through an ERC-4337 bundler instead of our own
+  `handleOps` — a public bundler accepted and included one
+  (tx [`0xb42e30…527675`](https://sepolia.basescan.org/tx/0xb42e30ae72ac8d676c33198b65ae85e8ef06936d15b28cda5832ed4cc0527675));
   a Secure Enclave backend awaits its first run on a Mac
   ([`docs/SECURE_ENCLAVE.md`](docs/SECURE_ENCLAVE.md)) and a Windows TPM
   backend (CNG) its first run on Windows ([`docs/WINDOWS.md`](docs/WINDOWS.md)).
@@ -113,6 +116,14 @@ Gasless, and the owner's controls:
 $B paymaster deposit --agent $A --env-file $E --wei 3000000000000000
 $B paymaster sponsor --agent $A --env-file $E          # list the account
 $B demo --agent $A --env-file $E --sponsored           # the paymaster pays
+
+$B demo --agent $A --env-file $E --bundler https://public.pimlico.io/v2/84532/rpc
+# ...or set BUNDLER_URL in .env: the bundler submits handleOps from its own
+# wallet and is paid from the account's (or the paymaster's) EntryPoint
+# deposit; the gas wallet is then only needed for deploying and funding.
+$B demo --agent $A --env-file $E --bundler https://public.pimlico.io/v2/84532/rpc --sponsored
+# ...chip signs, paymaster pays, bundler relays: no gas wallet in the path.
+$B paymaster stake --agent $A --env-file $E --wei 100000000000000000   # if a bundler's reputation rules require it
 
 $B key create --handle 0x81010012 --pcrs 0,2,4,7       # a key sealed to the boot state
 # in agent.json: pin "account", point "agent" at {"tpm": {"handle": "0x81010012", "pcrs": [0,2,4,7]}},

@@ -16,6 +16,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::abi::{IDemoCounter, IEntryPoint, IKernel, IKernelFactory, IWhitelistPaymaster};
 use crate::agent::{open_signer, parse32, AgentConfig, Deployments};
+use crate::bundler::Bundler;
 use crate::kernel::{self, PermissionId};
 
 /// Secrets come from the environment (optionally a `.env` file), never from
@@ -24,10 +25,13 @@ use crate::kernel::{self, PermissionId};
 pub struct Env {
     pub rpc_url: String,
     pub gas_key: [u8; 32],
+    /// `BUNDLER_URL`: when set (or overridden by `--bundler`), operations go
+    /// through an ERC-4337 bundler instead of our own `handleOps`.
+    pub bundler_url: Option<String>,
 }
 
 impl Env {
-    pub fn load(env_file: Option<&Path>) -> Result<Self> {
+    pub fn load(env_file: Option<&Path>, bundler_override: Option<&str>) -> Result<Self> {
         if let Some(path) = env_file {
             dotenvy::from_path(path).with_context(|| format!("loading {}", path.display()))?;
         }
@@ -36,13 +40,16 @@ impl Env {
             .context("set BASE_SEPOLIA_RPC_URL or RPC_URL")?;
         let keyfile = std::env::var("GAS_WALLET_KEYFILE").context("set GAS_WALLET_KEYFILE")?;
         let hex = std::fs::read_to_string(&keyfile).with_context(|| format!("reading {keyfile}"))?;
-        Ok(Self { rpc_url, gas_key: parse32(hex.trim())? })
+        let bundler_url = bundler_override.map(str::to_owned).or_else(|| std::env::var("BUNDLER_URL").ok());
+        Ok(Self { rpc_url, gas_key: parse32(hex.trim())?, bundler_url })
     }
 }
 
 pub struct Session {
     pub provider: DynProvider,
     pub gas_wallet: Address,
+    /// Set when operations are delivered through a bundler RPC.
+    pub bundler: Option<Bundler>,
     pub cfg: AgentConfig,
     pub dep: Deployments,
     pub init_data: Bytes,
@@ -70,6 +77,15 @@ impl Session {
         if chain_id != dep.chain_id {
             bail!("RPC is chain {chain_id} but deployments are for {}", dep.chain_id);
         }
+        let bundler = match &env.bundler_url {
+            Some(url) => {
+                let rpc = ProviderBuilder::new().connect(url).await.context("connecting to the bundler")?.erased();
+                let bundler = Bundler::new(rpc, dep.entry_point);
+                bundler.check_entry_point().await?;
+                Some(bundler)
+            }
+            None => None,
+        };
 
         // Only public keys are needed to derive the account.
         let owner_key = open_signer(&cfg.owner)?.public_key()?;
@@ -92,7 +108,7 @@ impl Session {
             }
         };
 
-        Ok(Self { provider, gas_wallet, cfg, dep, init_data, permission_data, account, pinned })
+        Ok(Self { provider, gas_wallet, bundler, cfg, dep, init_data, permission_data, account, pinned })
     }
 
     pub async fn is_deployed(&self) -> Result<bool> {
@@ -143,6 +159,14 @@ impl Session {
     pub async fn sponsor(&self, allowed: bool) -> Result<B256> {
         let paymaster = IWhitelistPaymaster::new(self.paymaster()?, self.provider.clone());
         let receipt = paymaster.setSponsored(self.account, allowed).send().await?.get_receipt().await?;
+        Ok(receipt.transaction_hash)
+    }
+
+    /// Stake the paymaster in the EntryPoint so public bundlers relay its
+    /// operations (owner only).
+    pub async fn paymaster_stake(&self, amount: U256, unstake_delay_sec: u32) -> Result<B256> {
+        let paymaster = IWhitelistPaymaster::new(self.paymaster()?, self.provider.clone());
+        let receipt = paymaster.addStake(unstake_delay_sec).value(amount).send().await?.get_receipt().await?;
         Ok(receipt.transaction_hash)
     }
 
@@ -304,13 +328,51 @@ impl Session {
             signature: Bytes::new(),
         };
 
-        let user_op_hash = ep.getUserOpHash(op.clone()).call().await?;
         let signer = open_signer(if as_root { &self.cfg.owner } else { &self.cfg.agent })?;
-        let sig = signer.sign_digest(&user_op_hash.0)?;
-        op.signature = if as_root { kernel::root_signature(&sig) } else { kernel::permission_signature(&sig) };
-        println!("userOpHash:     {user_op_hash}");
+        let frame = |sig: &hw_signer::Signature| {
+            if as_root {
+                kernel::root_signature(sig)
+            } else {
+                kernel::permission_signature(sig)
+            }
+        };
+        let mut user_op_hash = ep.getUserOpHash(op.clone()).call().await?;
+        op.signature = frame(&signer.sign_digest(&user_op_hash.0)?);
         println!("path:           {}", if as_root { "root (owner key)" } else { "permission (agent key)" });
         println!("gas paid by:    {}", if sponsored { "paymaster" } else { "the account" });
+
+        if let Some(bundler) = &self.bundler {
+            // The bundler's estimate replaces ours; the hash covers the gas
+            // fields, so the hardware signs once more.
+            let est = bundler.estimate(&mut op).await?;
+            println!(
+                "bundler est.:   preVerification {}, verification {}, call {}",
+                est.pre_verification_gas, est.verification_gas_limit, est.call_gas_limit
+            );
+            user_op_hash = ep.getUserOpHash(op.clone()).call().await?;
+            op.signature = frame(&signer.sign_digest(&user_op_hash.0)?);
+            println!("userOpHash:     {user_op_hash}");
+            let sent = bundler.send(&op).await?;
+            if sent != user_op_hash {
+                bail!("bundler reports userOpHash {sent}, we computed {user_op_hash}");
+            }
+            println!("delivery:       bundler accepted, waiting for inclusion");
+            let receipt = bundler.wait(user_op_hash, Duration::from_secs(120)).await?;
+            if !receipt.success {
+                bail!(
+                    "operation {user_op_hash} was included in tx {} but its execution reverted: {}",
+                    receipt.receipt.transaction_hash,
+                    receipt.reason.unwrap_or_default()
+                );
+            }
+            return Ok(Included {
+                tx: receipt.receipt.transaction_hash,
+                block: receipt.receipt.block_number.to::<u64>(),
+                gas_used: receipt.actual_gas_used.to::<u64>(),
+            });
+        }
+        println!("userOpHash:     {user_op_hash}");
+        println!("delivery:       self-bundled via handleOps");
 
         let pending = match ep.handleOps(vec![op], self.gas_wallet).send().await {
             Ok(p) => p,

@@ -95,5 +95,8 @@ sol! {
         function sponsored(address account) external view returns (bool);
         function deposit() external payable;
         function getDeposit() external view returns (uint256);
+        /// Public bundlers only relay operations whose paymaster is staked
+        /// in the EntryPoint (ERC-7562 reputation rules).
+        function addStake(uint32 unstakeDelaySec) external payable;
     }
 }

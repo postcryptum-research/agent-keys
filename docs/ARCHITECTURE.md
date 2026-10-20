@@ -238,8 +238,24 @@ Lessons that cost real debugging time:
     carry no gas penalty; the full agent path (real EntryPoint, Kernel,
     policy + signer, paymaster) adds about 77k gas per operation; large
     payloads are dominated by data cost, as the paper found.
-  - *later:* a bundler RPC as a drop-in for self-bundling; Windows CNG
-    backend.
+  - *3.5 done (2026-10-20): bundler RPC as a drop-in.* `--bundler <url>` or
+    `BUNDLER_URL` routes an operation through an ERC-4337 bundler: the
+    operation is serialized in the v0.7 unpacked form, the bundler's
+    `eth_estimateUserOperationGas` replaces our limits (the hash covers them,
+    so the hardware signs a second time), `eth_sendUserOperation`, then
+    `eth_getUserOperationReceipt` until inclusion. Pimlico's public endpoint
+    (no key, 20 requests/minute) accepted an agent operation — its ERC-7562
+    simulation passed `P256Signer` and `AgentPolicy` — and included it: tx
+    `0xb42e30ae72ac8d676c33198b65ae85e8ef06936d15b28cda5832ed4cc0527675`,
+    paid from the account's EntryPoint deposit; the gas wallet took no part.
+    A *sponsored* operation went through the same way (tx
+    `0x59b2814afc86bd161cd0ebf8abb96824a881746375881fabc686bb17c4c2539f`):
+    the chip signs, the paymaster pays, the bundler relays — no gas wallet
+    anywhere in the path. Trust does not change: a bundler can delay or
+    drop, not forge or redirect. Pimlico's public testnet endpoint relayed
+    from an unstaked paymaster; bundlers with default ERC-7562 reputation
+    rules require a staked one (`paymaster stake`).
+  - *later:* Windows CNG backend's first run; a TROPIC01 backend.
 
   Lessons from 3.3: a fixed `callGasLimit` is a trap — an execution phase
   that runs out of gas reverts with *no data*, the outer `handleOps`
