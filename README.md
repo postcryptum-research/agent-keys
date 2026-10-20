@@ -31,7 +31,8 @@ tx [`0x785332…e669bb`](https://sepolia.basescan.org/tx/0x785332105fd8085d50e54
   0,2,4,7`) and a sealed agent key ran on-chain
   (tx [`0xc81174…75db4b`](https://sepolia.basescan.org/tx/0xc8117420694a9c17d3c91a14df3ce70f00298d2bc0fcd38f55997c1bfc75db4b));
   a Secure Enclave backend awaits its first run on a Mac
-  ([`docs/SECURE_ENCLAVE.md`](docs/SECURE_ENCLAVE.md)).
+  ([`docs/SECURE_ENCLAVE.md`](docs/SECURE_ENCLAVE.md)) and a Windows TPM
+  backend (CNG) its first run on Windows ([`docs/WINDOWS.md`](docs/WINDOWS.md)).
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design and
 [`docs/BENCHMARK.md`](docs/BENCHMARK.md) for what each authorization method

@@ -16,6 +16,8 @@ default = []
 tpm = ["hw-signer/tpm"]
 # Enable Secure Enclave keys (macOS).
 secure-enclave = ["hw-signer/secure-enclave"]
+# Enable TPM keys through CNG (Windows).
+windows-tpm = ["hw-signer/windows-tpm"]
 
 [dependencies]
 hw-signer = { path = "../hw-signer" }

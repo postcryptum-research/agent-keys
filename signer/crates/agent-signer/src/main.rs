@@ -35,6 +35,8 @@ enum Backend {
     Tpm,
     /// Apple Secure Enclave, an existing key by label (macOS, `--features secure-enclave`).
     Enclave,
+    /// Windows TPM through CNG, an existing key by name (`--features windows-tpm`).
+    Cng,
 }
 
 #[derive(Args)]
@@ -159,6 +161,9 @@ struct KeyRef {
     /// Apple Secure Enclave (macOS): keychain label.
     #[arg(long)]
     enclave: Option<String>,
+    /// Windows TPM through CNG: key name.
+    #[arg(long, conflicts_with_all = ["handle", "enclave"])]
+    cng: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -285,6 +290,17 @@ fn open_backend(backend: Backend, parent: u32, label: Option<String>) -> Result<
                 bail!("Secure Enclave key {label}: needs macOS and `--features secure-enclave`")
             }
         }
+        Backend::Cng => {
+            let name = label.context("--backend cng needs --label <key name>")?;
+            #[cfg(all(feature = "windows-tpm", target_os = "windows"))]
+            {
+                Ok(Box::new(hw_signer::windows_tpm::CngSigner::open(&name)?))
+            }
+            #[cfg(not(all(feature = "windows-tpm", target_os = "windows")))]
+            {
+                bail!("Windows TPM key {name}: needs Windows and `--features windows-tpm`")
+            }
+        }
     }
 }
 
@@ -305,11 +321,31 @@ fn run_key(cmd: KeyCmd) -> Result<()> {
         KeyCmd::Show { key } => (key, KeyOp::Show),
         KeyCmd::Evict { key } => (key, KeyOp::Evict),
     };
-    match (key.handle, key.enclave) {
-        (Some(handle), None) => tpm_key(handle, op),
-        (None, Some(label)) => enclave_key(&label, op),
-        _ => bail!("give exactly one of --handle (TPM) or --enclave <label> (Secure Enclave)"),
+    match (key.handle, key.enclave, key.cng) {
+        (Some(handle), None, None) => tpm_key(handle, op),
+        (None, Some(label), None) => enclave_key(&label, op),
+        (None, None, Some(name)) => cng_key(&name, op),
+        _ => bail!("give exactly one of --handle (TPM), --enclave <label> (Secure Enclave) or --cng <name> (Windows TPM)"),
     }
+}
+
+#[cfg(all(feature = "windows-tpm", target_os = "windows"))]
+fn cng_key(name: &str, op: KeyOp) -> Result<()> {
+    use hw_signer::windows_tpm::CngSigner;
+    match op {
+        KeyOp::Create { .. } => print_key(name.into(), &CngSigner::create(name)?.public_key()?),
+        KeyOp::Show => print_key(name.into(), &CngSigner::open(name)?.public_key()?),
+        KeyOp::Evict => {
+            CngSigner::open(name)?.delete()?;
+            println!("deleted {name}");
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(all(feature = "windows-tpm", target_os = "windows")))]
+fn cng_key(name: &str, _: KeyOp) -> Result<()> {
+    bail!("Windows TPM key {name}: needs Windows and `--features windows-tpm`")
 }
 
 #[cfg(feature = "tpm")]

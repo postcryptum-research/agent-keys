@@ -25,7 +25,6 @@ remappings = [
     "forge-std/=lib/forge-std/src/",
     "solady/=lib/solady/src/",
     "kernel/=lib/kernel/",
-    "kernel-plugins/=lib/kernel-7579-plugins/src/",
     # eth-infinitism EntryPoint v0.7 sources (BasePaymaster); it expects
     # OpenZeppelin v5 under the npm-style path.
     "account-abstraction/=lib/account-abstraction/contracts/",
@@ -35,12 +34,6 @@ remappings = [
     "lib/kernel/:src/=lib/kernel/src/",
     "lib/kernel/:forge-std/=lib/forge-std/src/",
     "lib/kernel/:ExcessivelySafeCall/=lib/kernel/lib/ExcessivelySafeCall/src/",
-    # kernel-7579-plugins vendors its dependencies with soldeer.
-    "lib/kernel-7579-plugins/:src/=lib/kernel-7579-plugins/src/",
-    "lib/kernel-7579-plugins/:solady/=lib/kernel-7579-plugins/dependencies/solady-0.1.26/src/",
-    "lib/kernel-7579-plugins/:account-abstraction/=lib/kernel-7579-plugins/dependencies/eth-infinitism-account-abstraction-0.8.0/contracts/",
-    "lib/kernel-7579-plugins/:openzeppelin-contracts/contracts/=lib/kernel-7579-plugins/dependencies/@openzeppelin-contracts-5.5.0/",
-    "lib/kernel-7579-plugins/:forge-std/=lib/forge-std/src/",
 ]
 
 # Tests read JSON vectors produced by `agent-signer vector ...`; the deploy

@@ -47,6 +47,9 @@ pub enum KeySpec {
     /// Apple Secure Enclave key, addressed by its keychain label (macOS).
     #[serde(rename = "secure-enclave")]
     SecureEnclave(String),
+    /// TPM 2.0 key through CNG's Platform Crypto Provider, by key name (Windows).
+    #[serde(rename = "windows-tpm")]
+    WindowsTpm(String),
     /// 32-byte hex scalar. **Insecure** — for CI and machines without a
     /// supported secure element only; never for a funded account.
     Software(String),
@@ -185,6 +188,16 @@ pub fn open_signer(spec: &KeySpec) -> Result<Box<dyn HardwareSigner>> {
             #[cfg(not(all(feature = "secure-enclave", target_os = "macos")))]
             {
                 anyhow::bail!("key {label} is a Secure Enclave key: needs macOS and `--features secure-enclave`")
+            }
+        }
+        KeySpec::WindowsTpm(name) => {
+            #[cfg(all(feature = "windows-tpm", target_os = "windows"))]
+            {
+                Ok(Box::new(hw_signer::windows_tpm::CngSigner::open(name)?))
+            }
+            #[cfg(not(all(feature = "windows-tpm", target_os = "windows")))]
+            {
+                anyhow::bail!("key {name} is a Windows TPM key: needs Windows and `--features windows-tpm`")
             }
         }
         KeySpec::Software(hex) => {

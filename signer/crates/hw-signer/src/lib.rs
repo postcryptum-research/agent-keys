@@ -21,6 +21,8 @@ pub mod software;
 pub mod tpm;
 #[cfg(all(feature = "secure-enclave", target_os = "macos"))]
 pub mod secure_enclave;
+#[cfg(all(feature = "windows-tpm", target_os = "windows"))]
+pub mod windows_tpm;
 
 /// Uncompressed P-256 public key coordinates — what the smart account enrolls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
