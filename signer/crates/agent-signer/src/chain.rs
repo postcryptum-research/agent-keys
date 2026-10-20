@@ -314,7 +314,7 @@ impl Session {
         let fees = self.provider.estimate_eip1559_fees().await?;
         let verification_gas: u128 = if deployed { 300_000 } else { 1_500_000 };
         let call_gas = self.estimate_call_gas(&call_data, deployed).await?;
-        println!("gas limits:     verification {verification_gas}, call {call_gas}");
+        eprintln!("gas limits:     verification {verification_gas}, call {call_gas}");
 
         let mut op = IEntryPoint::PackedUserOperation {
             sender: self.account,
@@ -338,25 +338,25 @@ impl Session {
         };
         let mut user_op_hash = ep.getUserOpHash(op.clone()).call().await?;
         op.signature = frame(&signer.sign_digest(&user_op_hash.0)?);
-        println!("path:           {}", if as_root { "root (owner key)" } else { "permission (agent key)" });
-        println!("gas paid by:    {}", if sponsored { "paymaster" } else { "the account" });
+        eprintln!("path:           {}", if as_root { "root (owner key)" } else { "permission (agent key)" });
+        eprintln!("gas paid by:    {}", if sponsored { "paymaster" } else { "the account" });
 
         if let Some(bundler) = &self.bundler {
             // The bundler's estimate replaces ours; the hash covers the gas
             // fields, so the hardware signs once more.
             let est = bundler.estimate(&mut op).await?;
-            println!(
+            eprintln!(
                 "bundler est.:   preVerification {}, verification {}, call {}",
                 est.pre_verification_gas, est.verification_gas_limit, est.call_gas_limit
             );
             user_op_hash = ep.getUserOpHash(op.clone()).call().await?;
             op.signature = frame(&signer.sign_digest(&user_op_hash.0)?);
-            println!("userOpHash:     {user_op_hash}");
+            eprintln!("userOpHash:     {user_op_hash}");
             let sent = bundler.send(&op).await?;
             if sent != user_op_hash {
                 bail!("bundler reports userOpHash {sent}, we computed {user_op_hash}");
             }
-            println!("delivery:       bundler accepted, waiting for inclusion");
+            eprintln!("delivery:       bundler accepted, waiting for inclusion");
             let receipt = bundler.wait(user_op_hash, Duration::from_secs(120)).await?;
             if !receipt.success {
                 bail!(
@@ -366,13 +366,14 @@ impl Session {
                 );
             }
             return Ok(Included {
+                user_op_hash,
                 tx: receipt.receipt.transaction_hash,
                 block: receipt.receipt.block_number.to::<u64>(),
                 gas_used: receipt.actual_gas_used.to::<u64>(),
             });
         }
-        println!("userOpHash:     {user_op_hash}");
-        println!("delivery:       self-bundled via handleOps");
+        eprintln!("userOpHash:     {user_op_hash}");
+        eprintln!("delivery:       self-bundled via handleOps");
 
         let pending = match ep.handleOps(vec![op], self.gas_wallet).send().await {
             Ok(p) => p,
@@ -420,6 +421,7 @@ impl Session {
             None => bail!("tx {} carries no UserOperationEvent for {user_op_hash}", receipt.transaction_hash),
         }
         Ok(Included {
+            user_op_hash,
             tx: receipt.transaction_hash,
             block: receipt.block_number.unwrap_or_default(),
             gas_used: receipt.gas_used,
@@ -427,9 +429,11 @@ impl Session {
     }
 }
 
-/// An operation's inclusion: the bundling transaction, its block, and the
-/// gas the outer transaction used.
+/// An operation's inclusion: its hash, the bundling transaction, its block,
+/// and the gas used (the outer transaction's when self-bundled, the
+/// operation's actual gas through a bundler).
 pub struct Included {
+    pub user_op_hash: B256,
     pub tx: B256,
     pub block: u64,
     pub gas_used: u64,

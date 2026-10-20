@@ -259,6 +259,10 @@ enum OpCmd {
         /// Let the paymaster pay instead of the account.
         #[arg(long)]
         sponsored: bool,
+        /// Print the result as one JSON object on stdout (progress stays on
+        /// stderr), for programs that drive the CLI.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -519,12 +523,23 @@ async fn main() -> Result<()> {
             }
         },
         Cmd::Op { cmd } => match cmd {
-            OpCmd::Send { agent, target, wei, data, root, sponsored } => {
+            OpCmd::Send { agent, target, wei, data, root, sponsored, json } => {
                 let s = session(&agent).await?;
                 let value: U256 = wei.parse().context("--wei")?;
                 let data = Bytes::from(hex::decode(data.trim_start_matches("0x")).context("--data")?);
                 let inc = s.send_op(target, value, data, root, sponsored).await?;
-                println!("included: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
+                if json {
+                    let out = serde_json::json!({
+                        "account": s.account.to_string(),
+                        "userOpHash": inc.user_op_hash.to_string(),
+                        "tx": inc.tx.to_string(),
+                        "block": inc.block,
+                        "gasUsed": inc.gas_used,
+                    });
+                    println!("{out}");
+                } else {
+                    println!("included: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
+                }
             }
         },
         Cmd::Permission { cmd } => match cmd {

@@ -13,3 +13,7 @@ __pycache__/
 # Local secrets: RPC URLs, gas-wallet keys. Never commit.
 .env
 .env.*
+
+# Node examples
+node_modules/
+examples/**/dist/

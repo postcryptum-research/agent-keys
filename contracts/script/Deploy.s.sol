@@ -65,9 +65,22 @@ contract Deploy is Script {
         vm.serializeAddress(json, "agentPolicy", policy);
         vm.serializeAddress(json, "whitelistPaymaster", paymaster);
         vm.serializeAddress(json, "paymasterOwner", sponsor);
+        // Superseded module versions stay recorded: live permissions installed
+        // with them keep pointing there until the owner rotates them.
+        _keepSuperseded(json, recorded);
         string memory out = vm.serializeAddress(json, "demoCounter", counter);
         vm.writeJson(out, path);
         console.log("wrote", path);
+    }
+
+    function _keepSuperseded(string memory json, string memory recorded) internal {
+        string[2] memory superseded = ["agentPolicyV1", "agentPolicyV2"];
+        for (uint256 i; i < superseded.length; i++) {
+            string memory k = string.concat(".", superseded[i]);
+            if (bytes(recorded).length > 0 && vm.keyExistsJson(recorded, k)) {
+                vm.serializeAddress(json, superseded[i], vm.parseJsonAddress(recorded, k));
+            }
+        }
     }
 
     function _reuseOrDeploy(string memory recorded, string memory key, string memory name, bytes memory creationCode)

@@ -29,6 +29,11 @@ import {ValidatorLib} from "kernel/src/utils/ValidationTypeLib.sol";
 import {ExecLib} from "kernel/src/utils/ExecLib.sol";
 import {EntryPointLib} from "kernel/test/base/erc4337Util.sol";
 
+import {Safe} from "safe-smart-account/Safe.sol";
+import {SafeProxyFactory} from "safe-smart-account/proxies/SafeProxyFactory.sol";
+import {Enum} from "safe-smart-account/common/Enum.sol";
+import {MultiSendCallOnly} from "safe-smart-account/libraries/MultiSendCallOnly.sol";
+
 contract Counter {
     uint256 public count;
 
@@ -393,5 +398,221 @@ contract AgentPermissionTest is Test {
             policy.checkSignaturePolicy(bytes32(PermissionId.unwrap(AGENT_ID)), address(0), keccak256("permit"), ""),
             SIG_VALIDATION_FAILED_UINT
         );
+    }
+
+    // --- Safe pass-through: the agent drives a Safe this account owns ---
+
+    PermissionId internal constant SAFE_ID = PermissionId.wrap(0x73616665); // "safe"
+
+    MultiSendCallOnly internal multiSend;
+
+    /// A 1/1 Safe owned by the Kernel account, holding 1 ether, and a second
+    /// permission for the agent: drive that Safe, whose inner call may only
+    /// be `counter.increment()` or a small transfer to the counter — alone or
+    /// batched through MultiSendCallOnly.
+    function _withSafe() internal returns (Safe safe) {
+        Safe singleton = new Safe();
+        SafeProxyFactory safeFactory = new SafeProxyFactory();
+        address[] memory owners = new address[](1);
+        owners[0] = acct;
+        bytes memory setup = abi.encodeCall(
+            Safe.setup, (owners, 1, address(0), "", address(0), address(0), 0, payable(address(0)))
+        );
+        safe = Safe(payable(address(safeFactory.createProxyWithNonce(address(singleton), setup, 0))));
+        vm.deal(address(safe), 1 ether);
+
+        multiSend = new MultiSendCallOnly();
+        address[] memory targets = new address[](4);
+        bytes4[] memory selectors = new bytes4[](4);
+        (targets[3], selectors[3]) = (address(multiSend), MultiSendCallOnly.multiSend.selector);
+        (targets[0], selectors[0]) = (address(safe), Safe.execTransaction.selector);
+        (targets[1], selectors[1]) = (address(counter), Counter.increment.selector);
+        (targets[2], selectors[2]) = (address(counter), bytes4(0));
+        bytes[] memory entries = new bytes[](2);
+        entries[0] = abi.encodePacked(
+            bytes2(0), address(policy), abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry)
+        );
+        entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(agentX, agentY));
+
+        ValidationId vId = ValidatorLib.permissionToIdentifier(SAFE_ID);
+        Execution[] memory batch = new Execution[](2);
+        batch[0] = Execution(acct, 0, _installCall(vId, Kernel(payable(acct)).currentNonce(), abi.encode(entries)));
+        batch[1] = Execution(acct, 0, abi.encodeCall(Kernel.grantAccess, (vId, Kernel.execute.selector, true)));
+        _send(
+            _rootOp(
+                abi.encodeWithSelector(
+                    Kernel.execute.selector,
+                    ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))),
+                    ExecLib.encodeBatch(batch)
+                )
+            )
+        );
+    }
+
+    /// `execTransaction` with a pre-validated signature: v = 1 and r = the
+    /// owner, accepted because the owner (the Kernel account) is msg.sender.
+    function _safeExec(Safe, address to, uint256 value, bytes memory data, Enum.Operation op, uint256 gasPrice)
+        internal
+        view
+        returns (bytes memory)
+    {
+        bytes memory sig = abi.encodePacked(uint256(uint160(acct)), uint256(0), uint8(1));
+        return abi.encodeCall(
+            Safe.execTransaction, (to, value, data, op, 0, 0, gasPrice, address(0), payable(address(0)), sig)
+        );
+    }
+
+    function _agentViaSafe(Safe safe, bytes memory execData) internal view returns (PackedUserOperation memory) {
+        return _agentOpWith(AGENT, SAFE_ID, address(safe), 0, execData);
+    }
+
+    function _expectRefused(PackedUserOperation memory op) internal {
+        vm.expectRevert();
+        _send(op);
+    }
+
+    function test_safe_agentDrivesAllowedInnerCall() public {
+        Safe safe = _withSafe();
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+        _send(_agentViaSafe(safe, _safeExec(safe, address(counter), 0, inc, Enum.Operation.Call, 0)));
+        assertEq(counter.count(), 1);
+
+        // a small transfer out of the Safe counts against cap and budget
+        _send(_agentViaSafe(safe, _safeExec(safe, address(counter), 0.1 ether, "", Enum.Operation.Call, 0)));
+        assertEq(address(counter).balance, 0.1 ether);
+        assertEq(address(safe).balance, 0.9 ether);
+        (,,,, uint128 spent) = policy.configs(acct, bytes32(PermissionId.unwrap(SAFE_ID)));
+        assertEq(spent, 0.1 ether);
+    }
+
+    function test_safe_innerCallIsHeldToTheAllowList() public {
+        Safe safe = _withSafe();
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+        // other target, other selector
+        _expectRefused(_agentViaSafe(safe, _safeExec(safe, address(forbidden), 0, inc, Enum.Operation.Call, 0)));
+        _expectRefused(
+            _agentViaSafe(
+                safe,
+                _safeExec(safe, address(counter), 0, abi.encodeWithSelector(Counter.reset.selector), Enum.Operation.Call, 0)
+            )
+        );
+        // the Safe reconfiguring itself: add an owner the agent controls
+        bytes memory addOwner = abi.encodeWithSignature("addOwnerWithThreshold(address,uint256)", makeAddr("attacker"), 1);
+        _expectRefused(_agentViaSafe(safe, _safeExec(safe, address(safe), 0, addOwner, Enum.Operation.Call, 0)));
+        assertEq(counter.count(), 0);
+        assertFalse(safe.isOwner(makeAddr("attacker")));
+    }
+
+    function test_safe_refusesDelegatecallRefundsAndNesting() public {
+        Safe safe = _withSafe();
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+        // delegatecall would run the target's code as the Safe
+        _expectRefused(_agentViaSafe(safe, _safeExec(safe, address(counter), 0, inc, Enum.Operation.DelegateCall, 0)));
+        // gasPrice > 0 makes the Safe pay a refund out of its own balance
+        _expectRefused(_agentViaSafe(safe, _safeExec(safe, address(counter), 0, inc, Enum.Operation.Call, 1 gwei)));
+        // execTransaction wrapping execTransaction
+        bytes memory inner = _safeExec(safe, address(counter), 0, inc, Enum.Operation.Call, 0);
+        _expectRefused(_agentViaSafe(safe, _safeExec(safe, address(safe), 0, inner, Enum.Operation.Call, 0)));
+        assertEq(counter.count(), 0);
+    }
+
+    function test_safe_innerValueCapAndBudget() public {
+        Safe safe = _withSafe();
+        _expectRefused(_agentViaSafe(safe, _safeExec(safe, address(counter), 0.2 ether, "", Enum.Operation.Call, 0)));
+        _send(_agentViaSafe(safe, _safeExec(safe, address(counter), 0.1 ether, "", Enum.Operation.Call, 0)));
+        _send(_agentViaSafe(safe, _safeExec(safe, address(counter), 0.1 ether, "", Enum.Operation.Call, 0)));
+        // 0.2 spent of 0.25: another 0.1 would exceed the budget
+        _expectRefused(_agentViaSafe(safe, _safeExec(safe, address(counter), 0.1 ether, "", Enum.Operation.Call, 0)));
+        assertEq(address(safe).balance, 0.8 ether);
+    }
+
+    function test_safe_otherSafeFunctionsAreNotAllowed() public {
+        Safe safe = _withSafe();
+        // calling the Safe directly with anything but execTransaction
+        bytes memory addOwner = abi.encodeWithSignature("addOwnerWithThreshold(address,uint256)", makeAddr("attacker"), 1);
+        _expectRefused(_agentOpWith(AGENT, SAFE_ID, address(safe), 0, addOwner));
+        // the original permission has no Safe entry at all
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+        _expectRefused(_agentOp(address(safe), 0, _safeExec(safe, address(counter), 0, inc, Enum.Operation.Call, 0)));
+    }
+
+    // --- batches: DELEGATECALL into MultiSendCallOnly, every leg judged ---
+
+    function _legOf(uint8 op, address to, uint256 value, bytes memory data) internal pure returns (bytes memory) {
+        return abi.encodePacked(op, to, value, data.length, data);
+    }
+
+    function _batch(Safe safe, address ms, bytes memory txs, Enum.Operation op) internal view returns (bytes memory) {
+        return _safeExec(safe, ms, 0, abi.encodeCall(MultiSendCallOnly.multiSend, (txs)), op, 0);
+    }
+
+    function test_batch_allowedLegsRunAsTheSafe() public {
+        Safe safe = _withSafe();
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+        bytes memory txs = bytes.concat(_legOf(0, address(counter), 0, inc), _legOf(0, address(counter), 0.05 ether, ""));
+        _send(_agentViaSafe(safe, _batch(safe, address(multiSend), txs, Enum.Operation.DelegateCall)));
+        assertEq(counter.count(), 1);
+        assertEq(address(counter).balance, 0.05 ether);
+        (,,,, uint128 spent) = policy.configs(acct, bytes32(PermissionId.unwrap(SAFE_ID)));
+        assertEq(spent, 0.05 ether);
+    }
+
+    function test_batch_everyLegIsJudged() public {
+        Safe safe = _withSafe();
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+        bytes memory ok = _legOf(0, address(counter), 0, inc);
+        // one forbidden leg spoils the batch
+        _expectRefused(
+            _agentViaSafe(
+                safe,
+                _batch(safe, address(multiSend), bytes.concat(ok, _legOf(0, address(forbidden), 0, inc)), Enum.Operation.DelegateCall)
+            )
+        );
+        // a delegatecall leg
+        _expectRefused(
+            _agentViaSafe(
+                safe,
+                _batch(safe, address(multiSend), bytes.concat(ok, _legOf(1, address(counter), 0, inc)), Enum.Operation.DelegateCall)
+            )
+        );
+        // a leg that reconfigures the Safe
+        bytes memory addOwner = abi.encodeWithSignature("addOwnerWithThreshold(address,uint256)", makeAddr("attacker"), 1);
+        _expectRefused(
+            _agentViaSafe(
+                safe,
+                _batch(safe, address(multiSend), bytes.concat(ok, _legOf(0, address(safe), 0, addOwner)), Enum.Operation.DelegateCall)
+            )
+        );
+        // a leg that is itself a Safe transaction
+        bytes memory nested = _safeExec(safe, address(counter), 0, inc, Enum.Operation.Call, 0);
+        _expectRefused(
+            _agentViaSafe(
+                safe,
+                _batch(safe, address(multiSend), bytes.concat(ok, _legOf(0, address(safe), 0, nested)), Enum.Operation.DelegateCall)
+            )
+        );
+        assertEq(counter.count(), 0);
+    }
+
+    function test_batch_legValuesAddUp() public {
+        Safe safe = _withSafe();
+        // 0.06 + 0.06 > 0.1 per-operation cap, though each leg is under it
+        bytes memory txs = bytes.concat(_legOf(0, address(counter), 0.06 ether, ""), _legOf(0, address(counter), 0.06 ether, ""));
+        _expectRefused(_agentViaSafe(safe, _batch(safe, address(multiSend), txs, Enum.Operation.DelegateCall)));
+    }
+
+    function test_batch_onlyAnAllowListedBatcherAndOnlyByDelegatecall() public {
+        Safe safe = _withSafe();
+        bytes memory txs = _legOf(0, address(counter), 0, abi.encodeWithSelector(Counter.increment.selector));
+        // the same code at an address the owner did not allow-list
+        MultiSendCallOnly other = new MultiSendCallOnly();
+        _expectRefused(_agentViaSafe(safe, _batch(safe, address(other), txs, Enum.Operation.DelegateCall)));
+        // CALLing the batcher would run the legs as the batcher, not the Safe
+        _expectRefused(_agentViaSafe(safe, _batch(safe, address(multiSend), txs, Enum.Operation.Call)));
+        // and the account itself cannot call it directly
+        _expectRefused(
+            _agentOpWith(AGENT, SAFE_ID, address(multiSend), 0, abi.encodeCall(MultiSendCallOnly.multiSend, (txs)))
+        );
+        assertEq(counter.count(), 0);
     }
 }

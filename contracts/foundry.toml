@@ -34,6 +34,8 @@ remappings = [
     "lib/kernel/:src/=lib/kernel/src/",
     "lib/kernel/:forge-std/=lib/forge-std/src/",
     "lib/kernel/:ExcessivelySafeCall/=lib/kernel/lib/ExcessivelySafeCall/src/",
+    # Safe v1.4.1, for the Safe pass-through tests (Olas / Jinn service Safes).
+    "safe-smart-account/=lib/safe-smart-account/contracts/",
 ]
 
 # Tests read JSON vectors produced by `agent-signer vector ...`; the deploy

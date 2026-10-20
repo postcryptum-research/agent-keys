@@ -1,0 +1,32 @@
+# Examples: existing agent frameworks on a hardware-signed account
+
+Each example takes an open-source agent stack and replaces its wallet layer
+— usually a private key in a file or a custodial MPC/TEE wallet — with a
+TPM_sign agent account: a P-256 key inside a TPM, Secure Enclave or
+TROPIC01, an ERC-4337 Kernel account on Base Sepolia, and an on-chain
+mandate (`AgentPolicy`) that bounds what a compromised agent host can do.
+
+All of them drive the same seam: `agent-signer op send --json` (one call →
+one UserOperation signed in hardware → JSON result on stdout).
+
+| Example | Stack | What changes | Status |
+|---|---|---|---|
+| [`agentkit/`](agentkit/) | Coinbase AgentKit (TS) + LangChain/Claude | a new `EvmWalletProvider` | smoke test verified on Base Sepolia |
+| [`claude-skill/`](claude-skill/) | Claude Code / OpenClaw skills | a `SKILL.md` that teaches the agent the CLI | ready |
+| [`jinn/`](jinn/) | Jinn operator (Olas ecosystem) | a Safe broadcaster with a Kernel owner (`v = 1`) | adapter + demo verified on Base Sepolia; integration plan |
+
+Background: `docs/ERC1271.md` — why the agent signs no off-chain messages,
+and how Safes (Olas, Jinn) work anyway through `AgentPolicy`'s Safe
+pass-through.
+
+## Common setup
+
+```sh
+cd signer
+cargo build -p agent-signer --features tpm,tropic01   # the backends this machine has
+```
+
+The examples read `BASE_SEPOLIA_RPC_URL` and `BUNDLER_URL` from the project
+`.env` (outside the repo) and the agent config from
+`signer/agent.tropic01.base-sepolia.json` by default. The user running the
+agent needs group `tss` (TPM) and/or `dialout` (TROPIC01).

@@ -9,10 +9,18 @@
       "slot": 1
     }
   },
-  "permissionId": "0x74727031",
+  "permissionId": "0x74727333",
   "salt": "0x0",
   "policy": {
     "allow": [
+      {
+        "target": "0xd0b972a8ee7D8AB91a2e3381Eb6F10550B80E52A",
+        "selector": "0x6a761202"
+      },
+      {
+        "target": "0x40A2aCCbd92BCA938b02010E17A5b8929b49130D",
+        "selector": "0x8d80ff0a"
+      },
       {
         "target": "0xD2Adc331B867435b82Ceba1D4f7f715eeF9FdbC1",
         "selector": "0xd09de08a"
