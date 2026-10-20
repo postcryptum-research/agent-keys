@@ -154,6 +154,12 @@ Lessons that cost real debugging time:
   tpm2-tss 4.x headers.
 - The signing key must be *unrestricted*: a restricted key refuses to sign a
   host-computed digest without a TPM hash-check ticket.
+- Kernel permission ids must be *clean* 4-byte values. `bytes4(keccak256(…))`
+  leaves the rest of the hash as dirty low-order bits, and
+  `ValidatorLib.permissionToIdentifier` ORs the raw word in assembly: the
+  permission installs under `0x02 ‖ id ‖ garbage`, the nonce encodes
+  `0x02 ‖ id ‖ 0…0`, and every operation fails the allowed-selector check
+  with `InvalidValidator()` after the signer has already passed.
 
 ## Roadmap
 
@@ -167,9 +173,18 @@ Lessons that cost real debugging time:
   v3.3. `forge test` runs the full ERC-4337 path — EntryPoint v0.7 →
   `KernelFactory.createAccount` → Kernel → validator → `execute` — with a
   P-256 signature, and the committed TPM vector passes the validator.
-  *Next (1b):* `P256Signer` (`ISigner`) so the agent key operates under
-  Kernel permission policies (call allow-list, limits, TTL) instead of as
-  root; a deployment script for Base Sepolia.
+  *1b done (2026-10-20):* the agent key as a Kernel *permission* instead of
+  root — `contracts/src/P256Signer.sol` (`ISigner`) plus
+  `contracts/src/AgentPolicy.sol` (`IPolicy`): single-call `execute` only,
+  (target, selector) allow-list with `0x00000000` for plain transfers, value
+  cap per operation, total budget, hard expiry enforced by the EntryPoint via
+  `validUntil`, and ERC-1271 refused so the agent cannot sign permits or
+  orders off-chain. `forge test` covers allowed/denied targets and selectors,
+  cap and budget, expiry, and that the agent key is rejected on the root
+  path while the owner key is not. Permission signature format:
+  `0xff ‖ r ‖ s`; nonce key: `0x00 ‖ 0x02 ‖ id(4) ‖ 0×16 ‖ nonceKey(2)`.
+  *Next (1c):* deployment script for Base Sepolia (factory, validator,
+  signer, policy) and a whitelist paymaster.
 - **Phase 2 — off-chain.** `agent-signer` builds the UserOperation with
   `alloy`, signs `userOpHash` through the trait, packs the signature and
   submits to a bundler.

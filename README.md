@@ -8,10 +8,13 @@ through the RIP-7212 precompile. No secp256k1 key, no MPC, no custodian: the
 only on-chain owner is the public key of the chip.
 
 **Status:** Phase 0 done — a signature produced inside a real TPM 2.0 verifies
-on-chain in `forge test`. Phase 1a done — `P256Validator` (ERC-7579, ZeroDev
-Kernel v3.3) runs the full ERC-4337 path in `forge test`: EntryPoint → Kernel
-account → P-256 signature → `execute`. Next: a policy-bound signer so the agent
-key never holds root authority. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+on-chain in `forge test`. Phase 1 done — on ZeroDev Kernel v3.3 (ERC-7579):
+`P256Validator` makes the chip the account's root, and `P256Signer` +
+`AgentPolicy` make it an *agent permission* bound by a call allow-list, value
+cap, budget and expiry; the full ERC-4337 path (EntryPoint → Kernel →
+modules → `execute`) runs in `forge test`. Next: Base Sepolia deployment, a
+paymaster, and the Rust side building and submitting UserOperations signed in
+the TPM. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Why not an EOA
 
@@ -25,8 +28,9 @@ the smart account checks that signature itself.
 ```
 signer/      Rust: hw-signer (HardwareSigner trait; software + tpm backends),
              agent-signer CLI
-contracts/   Foundry: P256Validator (ERC-7579) + tests against Kernel v3.3 and
-             EntryPoint v0.7; P-256 vectors signed in software and in a TPM
+contracts/   Foundry: P256Validator, P256Signer, AgentPolicy (ERC-7579 modules)
+             + tests against Kernel v3.3 and EntryPoint v0.7; P-256 vectors
+             signed in software and in a TPM
 docs/        architecture, threat model, TPM design notes
 legacy/      the original Python / tpm2-tools prototype, kept for reference
 ```
