@@ -69,12 +69,68 @@ compromise. What it does guarantee:
    because root, not the agent's user, can read it.) PCR sealing guards
    against booting another OS or firmware, not against a compromise of the
    running system.
-5. **No plaintext private key, anywhere outside tests.** The software
-   backend exists for tests and test vectors only.
+5. **No private key at rest in plaintext, and none on the agent's host.**
+   The software backend exists for tests and test vectors only. One
+   exception, for the owner side only: an **encrypted** owner or recovery
+   key on removable media (a USB drive), under all of these conditions:
+   - encrypted with a memory-hard KDF (scrypt N ≥ 2^18, or argon2id with
+     ≥ 256 MiB) and an AEAD cipher;
+   - the passphrase is typed when the key is used and never stored;
+   - it is decrypted only on a machine that is not the agent's host
+     (preferably an offline one), held in locked memory and zeroized after
+     signing;
+   - the medium is plugged in only for an owner operation;
+   - it signs root operations only — never the agent's.
+   Its weakness is the moment of use: whatever host decrypts it holds the
+   key itself, not just a signing oracle. That is why it suits a cold
+   recovery owner, used rarely and away from the agent, rather than a daily
+   one ([`OWNER_DEVICES.md`](OWNER_DEVICES.md), section 6).
 6. **Testnet exception:** on Base Sepolia the owner and agent keys share one
    TPM, the owner key without an authValue, for the demo. This violates
    rule 3 knowingly and is acceptable only where nothing of value is at
    stake.
+
+## Hardening (not enforced)
+
+The project does **not** refuse a configuration where the owner key shares
+the agent's host: that would exclude every user without a separate device.
+Placement is the deployer's choice (rule 3, strongest first: separate
+device → same chip behind enclave-enforced presence → same chip behind the
+root/user boundary). What a value-bearing deployment should do instead:
+
+### Checklist: owner key on the agent's chip (placement iii)
+
+Placement (iii) relaxes premise 4; its safety is exactly the invariants
+below. Treat them as preconditions, verified at setup and re-checked —
+not as advice.
+
+- [ ] The owner key was **created** with an authValue
+      (`key create --handle … --auth-file …`), and the config references it
+      as `{"tpm": {"handle": …, "authFile": …}}` — not a bare handle.
+- [ ] The auth file is `root:root`, mode `0600`, and the agent's user
+      cannot read it: `sudo -u <agent-user> cat <authFile>` must fail.
+- [ ] The agent runs as an ordinary user: not root, not in `sudoers`, no
+      `sudo` rules (`sudo -l -U <agent-user>` lists nothing), no container
+      privileges that reach `/dev/tpmrm0` as root.
+- [ ] The agent's config carries `ownerPublicKey`, so its operations never
+      open the owner key (`account status` works as the agent's user).
+- [ ] Owner operations run as root by a human
+      (`sudo agent-signer permission …`), never from the agent's process.
+- [ ] Drift is monitored: changes to `sudoers`, the auth file's ownership or
+      mode, the agent user's groups, and kernel patch level (local privilege
+      escalation) raise an alert.
+
+If any item fails, the owner key is as reachable as the agent key.
+
+### Further hardening
+
+- **An owner device with a presence check** (touch, button, biometric), so
+  a host compromise during an owner operation cannot sign more than the
+  human confirms. Candidate devices: [`OWNER_DEVICES.md`](OWNER_DEVICES.md).
+- **A mainnet check in the deployment's own tooling** — a wrapper or CI step
+  that flags an unprotected co-located owner key when the chain id is a
+  mainnet. The project leaves this, and whether it warns or blocks, to the
+  deployer.
 
 ## What the code must allow
 
@@ -85,4 +141,5 @@ compromise. What it does guarantee:
   owner key is (for the root/user placement: `sudo agent-signer permission …`).
 - A TPM owner key can carry an authValue read from a root-only file.
 - Selecting a software key must be an explicit test-only choice, never
-  available to the owner role.
+  available to the owner role. An encrypted key file (rule 5's exception)
+  is accepted for owner and recovery operations only, never for the agent.
