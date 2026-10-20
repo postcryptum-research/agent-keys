@@ -38,6 +38,8 @@ enum Backend {
     Enclave,
     /// Windows TPM through CNG, an existing key by name (`--features windows-tpm`).
     Cng,
+    /// TROPIC01 over its USB DevKit: `--label <serial port> --slot <n>` (`--features tropic01`).
+    Tropic01,
 }
 
 #[derive(Args)]
@@ -66,9 +68,12 @@ enum Cmd {
         /// TPM storage parent for the new key (persistent handle, hex).
         #[arg(long, default_value = "0x81000001", value_parser = parse_hex_u32)]
         parent: u32,
-        /// Secure Enclave: keychain label of the key to sign with.
+        /// Secure Enclave / CNG: key label or name; TROPIC01: serial port.
         #[arg(long)]
         label: Option<String>,
+        /// TROPIC01: ECC key slot.
+        #[arg(long, default_value_t = 0)]
+        slot: u16,
     },
     /// Verify a JSON test vector off-chain with the `p256` crate.
     Verify {
@@ -180,6 +185,12 @@ struct KeyRef {
     /// Windows TPM through CNG: key name.
     #[arg(long, conflicts_with_all = ["handle", "enclave"])]
     cng: Option<String>,
+    /// TROPIC01 USB DevKit: serial port (e.g. /dev/ttyACM0); pair with --slot.
+    #[arg(long, conflicts_with_all = ["handle", "enclave", "cng"])]
+    tropic01: Option<String>,
+    /// TROPIC01: ECC key slot (0..31).
+    #[arg(long, default_value_t = 0)]
+    slot: u16,
 }
 
 #[derive(Subcommand)]
@@ -281,7 +292,7 @@ fn parse_permission_id(s: &str) -> Result<kernel::PermissionId> {
     Ok(kernel::PermissionId::from(arr))
 }
 
-fn open_backend(backend: Backend, parent: u32, label: Option<String>) -> Result<Box<dyn HardwareSigner>> {
+fn open_backend(backend: Backend, parent: u32, label: Option<String>, slot: u16) -> Result<Box<dyn HardwareSigner>> {
     match backend {
         Backend::Software => Ok(Box::new(SoftwareSigner::random())),
         Backend::Tpm => {
@@ -317,6 +328,17 @@ fn open_backend(backend: Backend, parent: u32, label: Option<String>) -> Result<
                 bail!("Windows TPM key {name}: needs Windows and `--features windows-tpm`")
             }
         }
+        Backend::Tropic01 => {
+            let port = label.context("--backend tropic01 needs --label <serial port> (and --slot)")?;
+            #[cfg(feature = "tropic01")]
+            {
+                Ok(Box::new(hw_signer::tropic01::Tropic01Signer::open(&port, slot)?))
+            }
+            #[cfg(not(feature = "tropic01"))]
+            {
+                bail!("TROPIC01 key in slot {slot} on {port}: needs `--features tropic01`")
+            }
+        }
     }
 }
 
@@ -337,12 +359,35 @@ fn run_key(cmd: KeyCmd) -> Result<()> {
         KeyCmd::Show { key } => (key, KeyOp::Show),
         KeyCmd::Evict { key } => (key, KeyOp::Evict),
     };
-    match (key.handle, key.enclave, key.cng) {
-        (Some(handle), None, None) => tpm_key(handle, op),
-        (None, Some(label), None) => enclave_key(&label, op),
-        (None, None, Some(name)) => cng_key(&name, op),
-        _ => bail!("give exactly one of --handle (TPM), --enclave <label> (Secure Enclave) or --cng <name> (Windows TPM)"),
+    match (key.handle, key.enclave, key.cng, key.tropic01) {
+        (Some(handle), None, None, None) => tpm_key(handle, op),
+        (None, Some(label), None, None) => enclave_key(&label, op),
+        (None, None, Some(name), None) => cng_key(&name, op),
+        (None, None, None, Some(port)) => tropic01_key(&port, key.slot, op),
+        _ => bail!(
+            "give exactly one of --handle (TPM), --enclave <label> (Secure Enclave), --cng <name> (Windows TPM) or --tropic01 <port> (TROPIC01)"
+        ),
     }
+}
+
+#[cfg(feature = "tropic01")]
+fn tropic01_key(port: &str, slot: u16, op: KeyOp) -> Result<()> {
+    use hw_signer::tropic01::Tropic01Signer;
+    let name = format!("{port} slot {slot}");
+    match op {
+        KeyOp::Create { .. } => print_key(name, &Tropic01Signer::create(port, slot)?.public_key()?),
+        KeyOp::Show => print_key(name, &Tropic01Signer::open(port, slot)?.public_key()?),
+        KeyOp::Evict => {
+            Tropic01Signer::open(port, slot)?.erase()?;
+            println!("erased {name}");
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(feature = "tropic01"))]
+fn tropic01_key(port: &str, slot: u16, _: KeyOp) -> Result<()> {
+    bail!("TROPIC01 key in slot {slot} on {port}: needs `--features tropic01`")
 }
 
 #[cfg(all(feature = "windows-tpm", target_os = "windows"))]
@@ -423,8 +468,8 @@ async fn session(args: &AgentArgs) -> Result<Session> {
 #[tokio::main]
 async fn main() -> Result<()> {
     match Cli::parse().cmd {
-        Cmd::Vector { message, backend, parent, label } => {
-            let signer = open_backend(backend, parent, label)?;
+        Cmd::Vector { message, backend, parent, label, slot } => {
+            let signer = open_backend(backend, parent, label, slot)?;
             let digest: [u8; 32] = Sha256::digest(message.as_bytes()).into();
             let sig = signer.sign_digest(&digest)?;
             let pk = signer.public_key()?;

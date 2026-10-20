@@ -23,6 +23,10 @@ pub mod tpm;
 pub mod secure_enclave;
 #[cfg(all(feature = "windows-tpm", target_os = "windows"))]
 pub mod windows_tpm;
+/// Tropic Square TROPIC01 over the USB DevKit. The module is not in tree
+/// yet; docs/TROPIC01.md states the interface the CLI expects from it.
+#[cfg(feature = "tropic01")]
+pub mod tropic01;
 
 /// Uncompressed P-256 public key coordinates — what the smart account enrolls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

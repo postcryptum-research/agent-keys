@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, Vm} from "forge-std/Test.sol";
 import {P256} from "solady/utils/P256.sol";
 
 /// Phase 0: a digest signed off-chain by `agent-signer` verifies on-chain
@@ -62,5 +62,29 @@ contract P256VectorTest is Test {
 
     function test_tpmVector() public view {
         _assertVector("test/vectors/p256_tpm.json");
+    }
+
+    /// Every committed vector — so one signed by a new secure element
+    /// (Secure Enclave, Windows CNG, TROPIC01, …) is covered the moment it
+    /// lands in test/vectors/.
+    function test_everyCommittedVector() public view {
+        Vm.DirEntry[] memory entries = vm.readDir("test/vectors");
+        uint256 checked;
+        for (uint256 i; i < entries.length; i++) {
+            if (entries[i].isDir || !_endsWith(entries[i].path, ".json")) continue;
+            _assertVector(entries[i].path);
+            checked++;
+        }
+        assertGe(checked, 2, "software and TPM vectors are always present");
+    }
+
+    function _endsWith(string memory s, string memory suffix) internal pure returns (bool) {
+        bytes memory b = bytes(s);
+        bytes memory e = bytes(suffix);
+        if (e.length > b.length) return false;
+        for (uint256 i; i < e.length; i++) {
+            if (b[b.length - e.length + i] != e[i]) return false;
+        }
+        return true;
     }
 }

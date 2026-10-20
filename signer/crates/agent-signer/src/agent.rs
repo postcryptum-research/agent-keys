@@ -50,6 +50,8 @@ pub enum KeySpec {
     /// TPM 2.0 key through CNG's Platform Crypto Provider, by key name (Windows).
     #[serde(rename = "windows-tpm")]
     WindowsTpm(String),
+    /// Tropic Square TROPIC01 on its USB DevKit: serial port and ECC key slot.
+    Tropic01 { port: String, slot: u16 },
     /// 32-byte hex scalar. **Insecure** — for CI and machines without a
     /// supported secure element only; never for a funded account.
     Software(String),
@@ -198,6 +200,16 @@ pub fn open_signer(spec: &KeySpec) -> Result<Box<dyn HardwareSigner>> {
             #[cfg(not(all(feature = "windows-tpm", target_os = "windows")))]
             {
                 anyhow::bail!("key {name} is a Windows TPM key: needs Windows and `--features windows-tpm`")
+            }
+        }
+        KeySpec::Tropic01 { port, slot } => {
+            #[cfg(feature = "tropic01")]
+            {
+                Ok(Box::new(hw_signer::tropic01::Tropic01Signer::open(port, *slot)?))
+            }
+            #[cfg(not(feature = "tropic01"))]
+            {
+                anyhow::bail!("key in TROPIC01 slot {slot} on {port}: needs `--features tropic01`")
             }
         }
         KeySpec::Software(hex) => {
