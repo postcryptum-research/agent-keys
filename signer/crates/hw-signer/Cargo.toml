@@ -14,7 +14,8 @@ software = []
 # builds everywhere and a machine only compiles the backend it has.
 #   tpm            Linux   — TPM 2.0 via tss-esapi (needs libtss2-dev)
 tpm = ["dep:tss-esapi"]
-#   secure-enclave macOS   — Apple Secure Enclave via Security.framework (planned)
+#   secure-enclave macOS   — Apple Secure Enclave via Security.framework
+secure-enclave = ["dep:security-framework"]
 #   windows-tpm    Windows — TPM 2.0 via CNG Platform Crypto Provider (planned)
 
 [dependencies]
@@ -25,6 +26,9 @@ thiserror = "1"
 # instead of the crate's pre-generated bindings, which target an older tss
 # ABI and segfault against tpm2-tss 4.x. Needs libtss2-dev + libclang.
 tss-esapi = { version = "7", optional = true, features = ["generate-bindings"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = { version = "3", optional = true }
 
 [dev-dependencies]
 hex = "0.4"

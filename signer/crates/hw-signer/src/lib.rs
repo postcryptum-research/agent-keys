@@ -19,6 +19,8 @@ use p256::{EncodedPoint, FieldBytes};
 pub mod software;
 #[cfg(feature = "tpm")]
 pub mod tpm;
+#[cfg(all(feature = "secure-enclave", target_os = "macos"))]
+pub mod secure_enclave;
 
 /// Uncompressed P-256 public key coordinates — what the smart account enrolls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

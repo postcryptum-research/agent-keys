@@ -30,6 +30,9 @@ pub struct Deployments {
 pub enum KeySpec {
     /// Persistent TPM handle, e.g. `"0x81010010"`.
     Tpm(String),
+    /// Apple Secure Enclave key, addressed by its keychain label (macOS).
+    #[serde(rename = "secure-enclave")]
+    SecureEnclave(String),
     /// 32-byte hex scalar. **Insecure** — for CI and machines without a
     /// supported secure element only; never for a funded account.
     Software(String),
@@ -149,6 +152,16 @@ pub fn open_signer(spec: &KeySpec) -> Result<Box<dyn HardwareSigner>> {
             #[cfg(not(feature = "tpm"))]
             {
                 anyhow::bail!("key {handle} is a TPM handle but this build has no `tpm` feature")
+            }
+        }
+        KeySpec::SecureEnclave(label) => {
+            #[cfg(all(feature = "secure-enclave", target_os = "macos"))]
+            {
+                Ok(Box::new(hw_signer::secure_enclave::SecureEnclaveSigner::open(label)?))
+            }
+            #[cfg(not(all(feature = "secure-enclave", target_os = "macos")))]
+            {
+                anyhow::bail!("key {label} is a Secure Enclave key: needs macOS and `--features secure-enclave`")
             }
         }
         KeySpec::Software(hex) => {

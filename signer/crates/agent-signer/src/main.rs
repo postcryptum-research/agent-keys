@@ -85,24 +85,37 @@ enum Cmd {
     },
 }
 
+/// Which secure element a `key` command addresses: a TPM persistent handle
+/// or a Secure Enclave keychain label — exactly one.
+#[derive(Args)]
+struct KeyRef {
+    /// TPM 2.0: persistent handle (hex), e.g. 0x81010010.
+    #[arg(long, value_parser = parse_hex_u32, conflicts_with = "enclave")]
+    handle: Option<u32>,
+    /// Apple Secure Enclave (macOS): keychain label.
+    #[arg(long)]
+    enclave: Option<String>,
+}
+
 #[derive(Subcommand)]
 enum KeyCmd {
-    /// Generate a P-256 key inside the TPM and persist it at `handle`.
+    /// Generate a P-256 key inside the secure element.
     Create {
-        #[arg(long, value_parser = parse_hex_u32)]
-        handle: u32,
+        #[command(flatten)]
+        key: KeyRef,
+        /// TPM storage parent for the new key.
         #[arg(long, default_value = "0x81000001", value_parser = parse_hex_u32)]
         parent: u32,
     },
-    /// Print the public key persisted at `handle`.
+    /// Print the public key.
     Show {
-        #[arg(long, value_parser = parse_hex_u32)]
-        handle: u32,
+        #[command(flatten)]
+        key: KeyRef,
     },
-    /// Remove the key persisted at `handle` from the TPM.
+    /// Remove the key from the secure element.
     Evict {
-        #[arg(long, value_parser = parse_hex_u32)]
-        handle: u32,
+        #[command(flatten)]
+        key: KeyRef,
     },
 }
 
@@ -161,7 +174,7 @@ struct Vector {
 
 #[derive(Serialize)]
 struct KeyInfo {
-    handle: String,
+    key: String,
     x: String,
     y: String,
 }
@@ -187,34 +200,71 @@ fn open_backend(backend: Backend, parent: u32) -> Result<Box<dyn HardwareSigner>
     }
 }
 
-fn key_info(handle: u32, pk: &PublicKey) -> KeyInfo {
-    KeyInfo { handle: format!("0x{handle:08x}"), x: hex32(&pk.x), y: hex32(&pk.y) }
-}
-
-#[cfg(feature = "tpm")]
-fn run_key(cmd: KeyCmd) -> Result<()> {
-    use hw_signer::tpm::TpmSigner;
-    match cmd {
-        KeyCmd::Create { handle, parent } => {
-            let mut signer = TpmSigner::create_under(parent)?;
-            signer.persist(handle)?;
-            println!("{}", serde_json::to_string_pretty(&key_info(handle, &signer.public_key()?))?);
-        }
-        KeyCmd::Show { handle } => {
-            let signer = TpmSigner::open_persistent(handle)?;
-            println!("{}", serde_json::to_string_pretty(&key_info(handle, &signer.public_key()?))?);
-        }
-        KeyCmd::Evict { handle } => {
-            TpmSigner::evict(handle)?;
-            println!("evicted 0x{handle:08x}");
-        }
-    }
+fn print_key(key: String, pk: &PublicKey) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(&KeyInfo { key, x: hex32(&pk.x), y: hex32(&pk.y) })?);
     Ok(())
 }
 
+enum KeyOp {
+    Create { parent: u32 },
+    Show,
+    Evict,
+}
+
+fn run_key(cmd: KeyCmd) -> Result<()> {
+    let (key, op) = match cmd {
+        KeyCmd::Create { key, parent } => (key, KeyOp::Create { parent }),
+        KeyCmd::Show { key } => (key, KeyOp::Show),
+        KeyCmd::Evict { key } => (key, KeyOp::Evict),
+    };
+    match (key.handle, key.enclave) {
+        (Some(handle), None) => tpm_key(handle, op),
+        (None, Some(label)) => enclave_key(&label, op),
+        _ => bail!("give exactly one of --handle (TPM) or --enclave <label> (Secure Enclave)"),
+    }
+}
+
+#[cfg(feature = "tpm")]
+fn tpm_key(handle: u32, op: KeyOp) -> Result<()> {
+    use hw_signer::tpm::TpmSigner;
+    let name = format!("0x{handle:08x}");
+    match op {
+        KeyOp::Create { parent } => {
+            let mut signer = TpmSigner::create_under(parent)?;
+            signer.persist(handle)?;
+            print_key(name, &signer.public_key()?)
+        }
+        KeyOp::Show => print_key(name, &TpmSigner::open_persistent(handle)?.public_key()?),
+        KeyOp::Evict => {
+            TpmSigner::evict(handle)?;
+            println!("evicted {name}");
+            Ok(())
+        }
+    }
+}
+
 #[cfg(not(feature = "tpm"))]
-fn run_key(_: KeyCmd) -> Result<()> {
-    bail!("`key` needs the `tpm` feature: cargo build --features tpm")
+fn tpm_key(_: u32, _: KeyOp) -> Result<()> {
+    bail!("TPM keys need the `tpm` feature: cargo build --features tpm")
+}
+
+#[cfg(all(feature = "secure-enclave", target_os = "macos"))]
+fn enclave_key(label: &str, op: KeyOp) -> Result<()> {
+    use hw_signer::secure_enclave::SecureEnclaveSigner;
+    match op {
+        KeyOp::Create { .. } => print_key(label.into(), &SecureEnclaveSigner::create(label)?.public_key()?),
+        KeyOp::Show => print_key(label.into(), &SecureEnclaveSigner::open(label)?.public_key()?),
+        KeyOp::Evict => {
+            SecureEnclaveSigner::open(label)?.delete()?;
+            println!("deleted {label}");
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(all(feature = "secure-enclave", target_os = "macos")))]
+fn enclave_key(label: &str, _: KeyOp) -> Result<()> {
+    bail!("Secure Enclave key {label}: needs macOS and `--features secure-enclave`")
 }
 
 async fn session(args: &AgentArgs) -> Result<Session> {
