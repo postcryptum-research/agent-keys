@@ -146,6 +146,15 @@ it next to the others (an owner operation). The agent uses the config of the
 window it is in; outside every window it can do nothing. Install the
 calendar ahead (one owner session for a month), or week by week.
 
+Shown on Base Sepolia (2026-10-20): a window permission
+(`signer/agent.window-demo.base-sepolia.json`, opening four minutes after
+installation) was added next to the agent's everyday one (tx
+`0x11032de8dcec0a361d2f18118049ad182d2fb2c3807be291ae3cbded8dd0f2b6`); an
+agent operation under it before the window opened was refused by the
+EntryPoint (`AA22 expired or not due`), and the same operation right after
+it opened went through (tx
+`0x64b99b7b0126fd0a20967d98dcdc84bf4766787b3992dd32ecec1607139aef0e`).
+
 **Sequence, once the missing parts exist:**
 
 1. Run [`SECURE_ENCLAVE.md`](SECURE_ENCLAVE.md) on the Mac (build, hardware
