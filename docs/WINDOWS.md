@@ -1,5 +1,10 @@
 # Building and testing on Windows (TPM through CNG)
 
+> **Status (2026-10-20): verified on a Windows 11 PC.** Build without NASM or
+> CMake, the hardware test `cng_key_signs_and_verifies`, `key create/show
+> --cng`, and a signed vector — `contracts/test/vectors/p256_windows.json`,
+> checked off-chain and by the Solidity tests (RIP-7212 path).
+
 > **Кратко по-русски.** Нужен ПК с Windows 10/11 и включённым TPM 2.0 (у
 > Windows 11 он обязателен). Всё ПО бесплатное: Rust (`rustup`), Git,
 > Visual Studio Build Tools (только компилятор/линкер, без самой Visual
@@ -126,9 +131,12 @@ Get-Content ..\contracts\test\vectors\p256_windows.json
 vector file is what we commit next to the Linux TPM vector so the Solidity
 tests verify a real Windows TPM signature on every run.
 
-Note: PowerShell's `>` writes UTF-16 by default on Windows PowerShell 5. If
-`verify` complains about the file, use
+Note: Windows PowerShell 5.1's `>` writes UTF-16 with a byte-order mark;
+`verify` reads that (and UTF-8 with or without a BOM). Before committing the
+file for the Solidity tests, prefer plain UTF-8:
 `& $B vector ... | Out-File -Encoding ascii ..\contracts\test\vectors\p256_windows.json`.
+Always start the binary with `&` (`& $B key create …`): `$B key create …`
+is a PowerShell parse error.
 
 ## 8. Optional: an agent account on Base Sepolia
 
@@ -157,7 +165,8 @@ the flow is the one in the README: `account status` → `account fund` →
 | `NTE_EXISTS` (`0x8009000F`) on `key create` | a key with that name already exists | `key evict --cng <name>` or pick another name |
 | `NTE_BAD_KEYSET` (`0x80090016`) on `key show` | no key with that name for this user | `key create` first; names are per Windows user |
 | `NTE_DEVICE_NOT_READY` (`0x80090030`) | TPM busy or not initialized | wait and retry; check `tpm.msc` → "Prepare the TPM" |
-| `verify` reports `INVALID` after a successful `key show` | the vector file is UTF-16 | write it with `Out-File -Encoding ascii` (step 7) |
+| `verify`: `expected value at line 1 column 1` | an older build reading a UTF-16 file from `>` | `git pull` and rebuild, or write it with `Out-File -Encoding ascii` (step 7) |
+| `Unexpected token 'key' in expression or statement` | `$B key …` without the call operator | `& $B key …` |
 
 ## 10. What to report back
 

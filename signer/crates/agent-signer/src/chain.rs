@@ -210,6 +210,11 @@ impl Session {
     }
 
     /// Build, sign in hardware, and submit one `execute(single)` operation.
+    ///
+    /// `pinned` fixes the EntryPoint nonce instead of taking the next free
+    /// one. A caller that may resend the *same* logical action (a retry after
+    /// a timeout) pins the nonce of its first attempt: at most one of the
+    /// copies can ever be included, and a resend after inclusion fails fast.
     pub async fn send_op(
         &self,
         target: Address,
@@ -217,8 +222,9 @@ impl Session {
         data: Bytes,
         as_root: bool,
         sponsored: bool,
+        pinned: Option<U256>,
     ) -> Result<Included> {
-        self.send_raw(kernel::execute_calldata(target, value, &data), as_root, sponsored).await
+        self.send_raw_at(kernel::execute_calldata(target, value, &data), as_root, sponsored, pinned).await
     }
 
     /// Root operation signed by the owner key: remove the agent permission.
@@ -284,6 +290,16 @@ impl Session {
     /// first operation carries `initCode` and deploys the account. With
     /// `sponsored`, the whitelist paymaster pays instead of the account.
     async fn send_raw(&self, call_data: Bytes, as_root: bool, sponsored: bool) -> Result<Included> {
+        self.send_raw_at(call_data, as_root, sponsored, None).await
+    }
+
+    async fn send_raw_at(
+        &self,
+        call_data: Bytes,
+        as_root: bool,
+        sponsored: bool,
+        pinned: Option<U256>,
+    ) -> Result<Included> {
         let ep = IEntryPoint::new(self.dep.entry_point, self.provider.clone());
         let deployed = self.is_deployed().await?;
         if !deployed && !sponsored && self.provider.get_balance(self.account).await?.is_zero() {
@@ -310,7 +326,21 @@ impl Session {
         } else {
             kernel::permission_nonce_key(self.cfg.permission_id()?)
         };
-        let nonce = ep.getNonce(self.account, key).call().await?;
+        let next = ep.getNonce(self.account, key).call().await?;
+        // EntryPoint nonces are `key (192 bits) ‖ sequence (64 bits)`.
+        let nonce = match pinned {
+            None => next,
+            Some(n) => {
+                if n >> 64 != next >> 64 {
+                    bail!("--nonce {n:#x} is not in this path's nonce space (key {:#x})", next >> 64);
+                }
+                if n < next {
+                    bail!("nonce {n:#x} is already used: an operation with it was included (next is {next:#x})");
+                }
+                n
+            }
+        };
+        eprintln!("nonce:          {nonce:#x}");
         let fees = self.provider.estimate_eip1559_fees().await?;
         let verification_gas: u128 = if deployed { 300_000 } else { 1_500_000 };
         let call_gas = self.estimate_call_gas(&call_data, deployed).await?;
@@ -367,6 +397,7 @@ impl Session {
             }
             return Ok(Included {
                 user_op_hash,
+                nonce,
                 tx: receipt.receipt.transaction_hash,
                 block: receipt.receipt.block_number.to::<u64>(),
                 gas_used: receipt.actual_gas_used.to::<u64>(),
@@ -422,6 +453,7 @@ impl Session {
         }
         Ok(Included {
             user_op_hash,
+            nonce,
             tx: receipt.transaction_hash,
             block: receipt.block_number.unwrap_or_default(),
             gas_used: receipt.gas_used,
@@ -434,6 +466,7 @@ impl Session {
 /// operation's actual gas through a bundler).
 pub struct Included {
     pub user_op_hash: B256,
+    pub nonce: U256,
     pub tx: B256,
     pub block: u64,
     pub gas_used: u64,

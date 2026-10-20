@@ -7,13 +7,16 @@ TROPIC01, an ERC-4337 Kernel account on Base Sepolia, and an on-chain
 mandate (`AgentPolicy`) that bounds what a compromised agent host can do.
 
 All of them drive the same seam: `agent-signer op send --json` (one call →
-one UserOperation signed in hardware → JSON result on stdout).
+one UserOperation signed in hardware → JSON result on stdout). Callers that
+may retry the same action pass `--nonce` with the nonce of their first
+attempt, so a retry can never execute it twice.
 
 | Example | Stack | What changes | Status |
 |---|---|---|---|
 | [`agentkit/`](agentkit/) | Coinbase AgentKit (TS) + LangChain/Claude | a new `EvmWalletProvider` | smoke test verified on Base Sepolia |
 | [`claude-skill/`](claude-skill/) | Claude Code / OpenClaw skills | a `SKILL.md` that teaches the agent the CLI | ready |
 | [`jinn/`](jinn/) | Jinn operator (Olas ecosystem) | a Safe broadcaster with a Kernel owner (`v = 1`) | adapter + demo verified on Base Sepolia; integration plan |
+| [`olas/`](olas/) | Olas / open-autonomy (Python) | Safe owner and keeper become the Kernel; consensus key stays, without funds | `transaction_settlement_abci` path verified on Base Sepolia; upstream plan |
 
 Background: `docs/ERC1271.md` — why the agent signs no off-chain messages,
 and how Safes (Olas, Jinn) work anyway through `AgentPolicy`'s Safe

@@ -25,6 +25,8 @@ export interface AgentSignerConfig {
 export interface AgentSignerResult {
   readonly account: Address;
   readonly userOpHash: Hex;
+  /** EntryPoint nonce the operation used; pass it back as `nonce` to retry safely. */
+  readonly nonce: Hex;
   readonly txHash: Hex;
   readonly blockNumber: bigint;
   readonly gasUsed: bigint;
@@ -69,7 +71,7 @@ export class AgentSignerError extends Error {
 function classify(stderr: string): AgentSignerErrorKind {
   if (stderr.includes(POLICY_FAILED)) return "policy-denied";
   if (/AA22/.test(stderr)) return "policy-expired";
-  if (/AA25|invalid account nonce/i.test(stderr)) return "nonce";
+  if (/AA25|invalid account nonce|is already used/i.test(stderr)) return "nonce";
   if (/AA2\d|signature error/i.test(stderr)) return "policy-denied";
   if (/its execution reverted/.test(stderr)) return "execution-revert";
   if (/reverted during simulation|eth_estimateUserOperationGas/.test(stderr)) return "simulation-revert";
@@ -94,11 +96,23 @@ function reason(stderr: string): string {
 /** Send one call from the Kernel account (agent permission), signed in hardware. */
 export function agentSignerSend(
   cfg: AgentSignerConfig,
-  call: { readonly to: Address; readonly value: bigint; readonly data: Hex },
+  call: {
+    readonly to: Address;
+    readonly value: bigint;
+    readonly data: Hex;
+    /**
+     * Pin the EntryPoint nonce (from an earlier attempt's result). A Safe
+     * `v = 1` signature does not commit to the Safe nonce, so a retry of the
+     * same Safe transaction must reuse its first nonce: at most one copy is
+     * ever included, and a retry after inclusion fails fast ("already used").
+     */
+    readonly nonce?: Hex;
+  },
 ): Promise<AgentSignerResult> {
   const args = ["op", "send", "--agent", cfg.configPath, "--target", call.to, "--wei", call.value.toString(), "--data", call.data, "--json"];
   if (cfg.envFile) args.push("--env-file", cfg.envFile);
   if (cfg.sponsored) args.push("--sponsored");
+  if (call.nonce) args.push("--nonce", call.nonce);
 
   return new Promise((resolve, reject) => {
     const child = spawn(cfg.bin, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -125,6 +139,7 @@ export function agentSignerSend(
         const j = JSON.parse(stdout.trim().split("\n").pop()!) as {
           account: string;
           userOpHash: string;
+          nonce: string;
           tx: string;
           block: number;
           gasUsed: number;
@@ -135,6 +150,7 @@ export function agentSignerSend(
         resolve({
           account: j.account as Address,
           userOpHash: j.userOpHash as Hex,
+          nonce: j.nonce as Hex,
           txHash: j.tx as Hex,
           blockNumber: BigInt(j.block),
           gasUsed: BigInt(j.gasUsed),

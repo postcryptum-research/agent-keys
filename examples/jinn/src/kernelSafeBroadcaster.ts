@@ -134,9 +134,11 @@ export function createKernelSafeBroadcaster(input: {
       alreadySettled: false,
     };
     // NOTE for a retry layer: a v = 1 signature does not commit to the Safe
-    // nonce, so re-sending after an AgentSignerError of kind "not-included"
-    // may execute the call twice. Reconcile `error.userOpHash` first
-    // (eth_getUserOperationReceipt on the bundler), never retry blindly.
+    // nonce, so an unpinned resend after an AgentSignerError of kind
+    // "not-included" may execute the call twice. Record the first attempt's
+    // EntryPoint nonce per logicalTx and resend only with
+    // `agentSignerSend(..., { ..., nonce })`, or reconcile `error.userOpHash`
+    // (eth_getUserOperationReceipt on the bundler) first.
   }
 
   return {

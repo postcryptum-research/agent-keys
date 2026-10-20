@@ -17,3 +17,5 @@ __pycache__/
 # Node examples
 node_modules/
 examples/**/dist/
+examples/olas/.venv/
+examples/olas/open-autonomy/

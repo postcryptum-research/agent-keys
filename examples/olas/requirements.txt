@@ -1,0 +1,4 @@
+# Python 3.10–3.14. The wheel ships the contracts; the skills (payload_tools)
+# come from a clone of valory-xyz/open-autonomy at the same tag (OPEN_AUTONOMY_SRC).
+open-autonomy==0.21.29
+open-aea-ledger-ethereum==2.2.9

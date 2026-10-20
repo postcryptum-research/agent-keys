@@ -263,6 +263,11 @@ enum OpCmd {
         /// stderr), for programs that drive the CLI.
         #[arg(long)]
         json: bool,
+        /// Use this EntryPoint nonce (as printed in `nonce` of an earlier
+        /// attempt) instead of the next free one: resending the same action
+        /// can then never execute it twice.
+        #[arg(long)]
+        nonce: Option<String>,
     },
 }
 
@@ -493,7 +498,8 @@ async fn main() -> Result<()> {
         }
         Cmd::Verify { file } => {
             let bytes = std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
-            let v: Vector = serde_json::from_slice(&bytes)?;
+            let v: Vector = serde_json::from_str(&decode_text(&bytes)?)
+                .with_context(|| format!("parsing {}", file.display()))?;
             let ok = verify_p256(
                 &parse32(&v.digest)?,
                 &Signature { r: parse32(&v.r)?, s: parse32(&v.s)? },
@@ -523,15 +529,17 @@ async fn main() -> Result<()> {
             }
         },
         Cmd::Op { cmd } => match cmd {
-            OpCmd::Send { agent, target, wei, data, root, sponsored, json } => {
+            OpCmd::Send { agent, target, wei, data, root, sponsored, json, nonce } => {
                 let s = session(&agent).await?;
                 let value: U256 = wei.parse().context("--wei")?;
                 let data = Bytes::from(hex::decode(data.trim_start_matches("0x")).context("--data")?);
-                let inc = s.send_op(target, value, data, root, sponsored).await?;
+                let nonce = nonce.map(|n| n.parse::<U256>()).transpose().context("--nonce")?;
+                let inc = s.send_op(target, value, data, root, sponsored, nonce).await?;
                 if json {
                     let out = serde_json::json!({
                         "account": s.account.to_string(),
                         "userOpHash": inc.user_op_hash.to_string(),
+                        "nonce": format!("{:#x}", inc.nonce),
                         "tx": inc.tx.to_string(),
                         "block": inc.block,
                         "gasUsed": inc.gas_used,
@@ -588,11 +596,30 @@ async fn main() -> Result<()> {
             let s = session(&agent).await?;
             let before = s.counter().await?;
             let data = Bytes::from(abi::IDemoCounter::incrementCall::SELECTOR.to_vec());
-            let inc = s.send_op(s.dep.demo_counter, U256::ZERO, data, false, sponsored).await?;
+            let inc = s.send_op(s.dep.demo_counter, U256::ZERO, data, false, sponsored, None).await?;
             let after = s.counter_at(inc.block).await?;
             println!("included: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
             println!("counter:  {before} -> {after}");
         }
     }
     Ok(())
+}
+
+/// Text from a file that may come from Windows PowerShell 5.1, whose `>`
+/// writes UTF-16 LE with a byte-order mark: accept UTF-16 (either order) and
+/// UTF-8 with or without a BOM.
+fn decode_text(bytes: &[u8]) -> Result<String> {
+    let utf16 = |be: bool| -> Result<String> {
+        let units: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| if be { u16::from_be_bytes([c[0], c[1]]) } else { u16::from_le_bytes([c[0], c[1]]) })
+            .collect();
+        String::from_utf16(&units).context("invalid UTF-16")
+    };
+    match bytes {
+        [0xFF, 0xFE, ..] => utf16(false),
+        [0xFE, 0xFF, ..] => utf16(true),
+        [0xEF, 0xBB, 0xBF, rest @ ..] => Ok(std::str::from_utf8(rest).context("invalid UTF-8")?.to_owned()),
+        _ => Ok(std::str::from_utf8(bytes).context("invalid UTF-8")?.to_owned()),
+    }
 }

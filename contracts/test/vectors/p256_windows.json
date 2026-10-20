@@ -1,0 +1,9 @@
+{
+  "backend": "cng",
+  "message": "TPM_sign: digest signed inside a Windows TPM via CNG",
+  "digest": "0xe4ccac34756a322b48fb3a30b7266e16a037257b03a2f24db1fa97ff786d8468",
+  "r": "0x158c360e9bbd9057936f61ca831642225797077a590278dfcd2fed24624c9625",
+  "s": "0x68af0d5259a28e2b55e3ed743058435652109e034acfdcc656b86d2dcf55adc0",
+  "x": "0xba1b8d3ffeae6828fa9b0b84de258d3c5bf332dc6c300430514a17a7e9ae78e8",
+  "y": "0x30b433c168866b6b9e28c2ce296487462d61b48ba08d6808bdd7f0655240e87a"
+}
