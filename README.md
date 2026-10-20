@@ -55,6 +55,8 @@ tx [`0x785332…e669bb`](https://sepolia.basescan.org/tx/0x785332105fd8085d50e54
 | `secure-enclave` | macOS, Secure Enclave via CryptoKit | Rust side type-checked; awaiting a run on a Mac ([`docs/SECURE_ENCLAVE.md`](docs/SECURE_ENCLAVE.md)) |
 | `software` | any | dev/CI only |
 
+New here? [`docs/FAQ.md`](docs/FAQ.md) walks through two setups (a Linux
+laptop with $100, a Mac with a scheduled $100k budget) and common questions.
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design and
 [`docs/BENCHMARK.md`](docs/BENCHMARK.md) for what each authorization method
 costs — P-256 through RIP-7212 is as cheap as `ecrecover`, and the whole

@@ -1,0 +1,344 @@
+# FAQ
+
+Practical questions about running an AI agent on a TPM_sign account. Each
+answer says what works today and what does not yet; the project runs on Base
+Sepolia (testnet), and an internal review, not a professional audit, is all
+the code has had (see the last section).
+
+The words used below:
+
+- **agent key** — signs the agent's operations automatically; lives in a
+  secure element on the machine the agent runs on;
+- **owner key** — the account's root: changes or revokes the agent's
+  mandate; used rarely, a human may confirm it;
+- **recovery key** — a cold key that can only take the owner role over if
+  the owner key is lost ([`RESILIENCE.md`](RESILIENCE.md));
+- **mandate** — what the agent may do, enforced on-chain by `AgentPolicy`:
+  allowed contracts and functions, a cap per operation, a total budget,
+  per-token limits, an expiry ([`KEY_POLICY.md`](KEY_POLICY.md)).
+
+---
+
+## 1. "I have a Linux laptop (it probably has a TPM 2.0, I'm not sure) and one or two USB drives. The agent will manage up to $100. I don't need special security. What do I do?"
+
+That fits what works today. Plan: agent key in the laptop's TPM, owner key
+and recovery key as encrypted files on the two USB drives.
+
+**1. Check the TPM.** Almost every laptop since ~2016 has one, often a
+firmware TPM (Intel PTT, AMD fTPM) that must be enabled in the firmware setup.
+
+```sh
+ls /dev/tpmrm0                                   # exists → the kernel sees a TPM
+cat /sys/class/tpm/tpm0/tpm_version_major         # must print 2
+```
+
+If `/dev/tpmrm0` is missing, enable "TPM", "PTT" or "fTPM" in the firmware
+setup and reboot. Without a TPM, a supported alternative for the agent key
+is a TROPIC01 devkit ([`TROPIC01.md`](TROPIC01.md)); a software key is not
+allowed for an agent with money (it would be a file, which is what the
+project exists to avoid).
+
+**2. Install and build.**
+
+```sh
+sudo apt install libtss2-dev libclang-dev git build-essential
+sudo usermod -aG tss "$USER"                      # TPM access; log out and back in
+curl https://sh.rustup.rs -sSf | sh               # Rust
+git clone --recursive https://github.com/77ph/TPM_sign.git
+cd TPM_sign/signer && cargo build -p agent-signer --features tpm
+B=target/debug/agent-signer
+```
+
+**3. Create the keys.**
+
+Keys are created under the TPM's storage root key at `0x81000001`. Many
+distributions persist one there already; if `key create` says the handle
+does not exist, create it once with tpm2-tools:
+
+```sh
+sudo apt install tpm2-tools
+tpm2_createprimary -C o -g sha256 -G ecc -c srk.ctx && tpm2_evictcontrol -C o -c srk.ctx 0x81000001
+```
+
+Then:
+
+```sh
+$B key create --handle 0x81010011                           # agent key, inside the TPM
+$B key create --keyfile /media/$USER/USB1/owner.json        # owner key, encrypted (asks a passphrase)
+$B key create --keyfile /media/$USER/USB2/recovery.json     # recovery key, on the second drive
+```
+
+Each `key create` prints the public key. Write the passphrases down
+somewhere safe: they cannot be recovered. Copy each file to a second place
+too (another drive, a cloud folder — the file is useless without the
+passphrase).
+
+**4. Write the agent config** (start from `signer/agent.tropic01.base-sepolia.json`):
+
+- `"agent": {"tpm": "0x81010011"}`;
+- `"owner": {"keyfile": "/media/…/owner.json"}` and `"ownerPublicKey"` with
+  the `x`, `y` that `key create` printed — so the agent never needs the
+  owner's drive plugged in;
+- `"recovery": {"keyfile": "/media/…/recovery.json"}`;
+- the **mandate** in `"policy"`: which contracts and functions the agent may
+  call (`allow`), `maxValuePerOp` and `budget` in wei, `validUntil` (a Unix
+  time), and for tokens a `tokens` entry with per-operation and total limits
+  (for $100 in USDC: e.g. `maxPerOp` 20 USDC, `budget` 100 USDC, in 6-decimal
+  units);
+- a new `permissionId` (any 4 bytes, e.g. `0x61676e74`).
+
+**5. Fund the account and start.**
+
+The CLI reads an `.env` (outside the repository) with `BASE_SEPOLIA_RPC_URL`
+(or your chain's RPC), `BUNDLER_URL` (e.g. Pimlico's public endpoint) and
+`GAS_WALLET_KEYFILE` — a small hot wallet that pays outer transactions when
+the CLI submits operations itself. Today the CLI requires that file even
+when a bundler is used; keep only a few dollars of gas in it.
+
+```sh
+$B account status --agent my-agent.json --env-file .env     # prints the account address
+# send up to $100 of ETH or tokens to that address (some ETH for gas)
+$B op send --agent my-agent.json --env-file .env --target <an allowed contract> --data <calldata>
+#   ↑ the first operation also deploys the account
+$B owner add-recovery --agent my-agent.json --env-file .env  # plug in USB1; enter the owner passphrase
+```
+
+Then point the agent at `agent-signer op send …` (or one of the
+[examples](../examples/README.md): AgentKit, a Claude Code skill).
+
+**What you get:** the agent key cannot be copied off the laptop; a hacked
+laptop can spend at most what the mandate allows; you can revoke the agent
+from anywhere you have the owner drive and passphrase.
+
+**What to know:** today this runs on Base **Sepolia** (testnet). For real
+money on Base, the project has to deploy its modules there first — once, for
+everyone (see "Who deploys the contracts?" below); you deploy nothing
+yourself. A firmware update that clears the TPM loses the agent key —
+harmless: create a new one and `permission rotate` with the owner drive.
+
+---
+
+## 2. "I have a Mac, I can buy whatever devices you recommend. The agent will manage up to $100k, not continuously: I want a schedule — on which days it may spend how much, and on what. What do I do?"
+
+The design supports this, but **not everything it needs is built yet**. Here
+is the target setup, and which parts are missing.
+
+**Target setup:**
+
+| Role | Where | Status |
+|---|---|---|
+| agent key | the Mac's Secure Enclave | written, **not yet run on a Mac** ([`SECURE_ENCLAVE.md`](SECURE_ENCLAVE.md)) |
+| owner key | a separate device with a button: YubiKey 5 / Nitrokey 3 (PIV, P-256) or a Trezor | **not yet supported** — the PIV/OpenPGP backend is planned ([`OWNER_DEVICES.md`](OWNER_DEVICES.md)) |
+| recovery key | an encrypted file on two USB drives in different places, or a seed-backed Trezor | file: works today; behind a time lock: planned ([`RESILIENCE.md`](RESILIENCE.md)) |
+| money | most of it **not** on the agent's account — in an owner-controlled vault; the agent's account is topped up per period | operational, works today |
+
+**The schedule.** A mandate today has an expiry but no start time, so all
+installed mandates are active at once. Two ways to get "on which days, how
+much, on what":
+
+- **today, by rotation:** before each period, the owner installs that
+  period's mandate (allowed contracts and functions, per-operation cap,
+  budget, token limits, `validUntil` = end of the period) and tops the
+  agent's account up to that period's budget. One owner operation per
+  period — a human touches the owner device, which fits the policy (owner
+  operations are rare and may be confirmed by a person).
+- **planned (small contract change):** a start time (`validAfter`) per
+  mandate, so the owner pre-installs a whole calendar at once — e.g.
+  "Mon–Fri: up to 5,000 USDC per day to these two exchanges; the 1st of the
+  month: payroll up to 40,000 USDC to these addresses" — each as its own
+  mandate with its own window and budget. The EntryPoint already enforces
+  such windows; `AgentPolicy` only has to pass the start time through.
+
+**Sequence, once the missing parts exist:**
+
+1. Run [`SECURE_ENCLAVE.md`](SECURE_ENCLAVE.md) on the Mac (build, hardware
+   test, `key create --enclave agent`).
+2. Buy a YubiKey 5 or Nitrokey 3 (owner) — or two, the second as a backup
+   owner — and two USB drives (recovery file copies).
+3. Once the project's modules are on Base mainnet (a one-time deployment for
+   everyone), either let the account pay its own gas or run your own sponsor
+   (deploy a `WhitelistPaymaster` you own, `paymaster deposit`,
+   `paymaster sponsor --budget --max-per-op`).
+4. Create the account with the owner on the YubiKey, install the recovery
+   key behind a time lock, rehearse a recovery once with a small amount.
+5. Put the $100k in an owner-controlled vault (an owner Safe or a separate
+   account), not on the agent's account.
+6. For each period: install the period's mandate and top the agent's account
+   up to its budget (or, with `validAfter`, install the calendar ahead).
+7. Monitor the account's events; run `key check` on the owner device monthly.
+
+**Why the money should not sit on the agent's account:** the mandate bounds
+what the agent can do, but the smallest possible exposure is "what is on the
+account right now". A compromised Mac can spend at most the current period's
+budget — not the $100k.
+
+**Before $100k, also:** a professional audit of `AgentPolicy`, the
+validators and `agent-signer`; the Secure Enclave run; and the owner device
+backend. Those are the prerequisites, not options.
+
+---
+
+## 3. More questions
+
+### My agent's computer was hacked. What can the attacker actually do?
+
+Assume malware can do whatever the agent's user can do — that is the
+realistic case, and the project does not try to tell them apart
+([`KEY_POLICY.md`](KEY_POLICY.md)). So, while it is on the machine, it can:
+
+- **use the agent key** — ask the TPM (or Secure Enclave, TROPIC01) to sign,
+  exactly as the agent does. It gets *as much as the mandate allows*: the
+  allowed contracts and functions, the per-operation cap, the budget, the
+  token limits, until the expiry. It cannot **copy** the key: once the
+  machine is cleaned, the key is safe again;
+- **read every file the user can read** — the agent config (public data),
+  the `.env` with RPC / bundler URLs and API keys, and the **gas wallet's key
+  file** if you use one (a plain hot key: keep only a few dollars in it);
+- **take the owner or recovery key if it can reach it** — an owner key file on
+  a drive that is plugged in while you type its passphrase, or an owner TPM
+  key without a root-only secret on that same machine. Keep owner keys off the
+  agent's machine, or behind root (rule 3), and plug the owner drive in only
+  for owner operations.
+
+What it cannot do: sign messages for the account (no permits, no SIWE logins
+— the policy refuses ERC-1271), change the mandate, or act beyond it.
+What you do: revoke the agent with the owner key
+(`agent-signer permission revoke`) from another machine, then reinstall.
+
+### Realistic failures — what breaks, and what happens then?
+
+The common ones, roughly from most to least likely:
+
+| What happens | Effect | Fix |
+|---|---|---|
+| you forget the passphrase of an owner/recovery key file | that key is gone | run `key check` now and then; keep the passphrase written down somewhere safe |
+| a BIOS/firmware update or "Clear TPM" wipes a firmware TPM | the TPM's keys are gone | agent key: create a new one, `permission rotate`. Owner key in that TPM: use the recovery key |
+| the laptop is lost, stolen or replaced | its TPM / Secure Enclave keys are gone for you — and a thief may still use an unsealed TPM key (e.g. by booting another OS on it) | revoke or rotate the agent with the owner key right away; a PCR-sealed agent key (`key create --pcrs`) refuses to sign under another OS |
+| a USB drive dies after a few years | that copy of a key file is gone | keep two copies on different media |
+| the mandate expires (`validUntil`) | the agent stops — by design | renew it with the owner key |
+
+An ordinary OS reinstall does **not** remove TPM keys, and a reboot never
+does. Losing the agent key costs nothing but a rotation; losing the owner key
+is what the recovery key is for; losing both freezes the account for good
+([`RESILIENCE.md`](RESILIENCE.md)).
+
+### Do I need a Ledger, YubiKey or Trezor?
+
+Only for setups that hold real value, as the **owner** key — a separate
+device with a button. For small amounts, owner and recovery keys as encrypted
+files on USB drives are enough. (Support for these devices as the owner key
+is planned: [`OWNER_DEVICES.md`](OWNER_DEVICES.md). They are not suited for
+the agent key: they want a button press per signature.)
+
+### Which machines and which networks?
+
+**Machines** for the agent key: Linux with a TPM 2.0, Windows with a TPM 2.0,
+a TROPIC01 USB devkit (all three verified), a Mac's Secure Enclave (written,
+awaiting its first run).
+
+**Networks:** every EVM network that has the contracts it needs — the
+ERC-4337 EntryPoint v0.7, ZeroDev Kernel v3.3 and its factory, a P-256
+signature precompile (RIP-7212; on Ethereum mainnet EIP-7951), and the
+canonical CREATE2 deployer — plus this project's modules, deployed once per
+network. Today: Base Sepolia. Base mainnet has all the prerequisites; the
+modules are not deployed there yet.
+
+### Who deploys the contracts — every user, or the project once?
+
+The project, once per chain, for everyone. The modules — `P256Validator`,
+`P256Signer`, `AgentPolicy`, `SafeNonceAssert`, `P256RecoveryValidator` —
+are shared singletons: no owner, no admin functions, all state keyed by the
+calling account, so one deployment serves every user and no user can touch
+another's. They go through the canonical CREATE2 deployer
+(`0x4e59b44847b379578588920cA78FbF26c0B4956C`) with salt 0, so their
+addresses depend only on their bytecode — the same on every chain, whoever
+deploys them; anyone may run `contracts/script/Deploy.s.sol`, and the first
+run makes them available to all.
+
+What each user gets is their **account**: a Kernel proxy created by ZeroDev's
+factory, automatically, by the user's first operation (it carries the
+`initCode`) — no separate step.
+
+The exception is the gas sponsor: a `WhitelistPaymaster` has an owner who
+decides whom it pays for and how much, so each sponsor deploys their own (its
+address depends on the owner). Users who pay their own gas need none.
+
+### Who pays for gas?
+
+Plan for **the user paying** — that always works. The variants:
+
+1. **The account pays for itself** (default). Keep some ETH on the agent's
+   account; each operation is paid from it. The maximum possible gas cost of
+   each operation counts against the agent's budget, so a compromised host
+   cannot burn the balance on fees beyond the mandate.
+2. **Your own sponsor.** Deploy a `WhitelistPaymaster` you own, deposit ETH
+   into it and list your accounts with a gas budget and a per-operation cap
+   (`paymaster sponsor --budget --max-per-op`). Useful for several agents, or
+   to keep the agent's account free of ETH.
+3. **Someone else's sponsor** — a service's paymaster, or an ERC-20 paymaster
+   that takes gas in USDC. Works with any ERC-4337 paymaster; the CLI only
+   speaks to the project's own paymaster today.
+
+How the operation reaches the chain (next question) is a separate choice.
+
+### Do I need a bundler or a gas wallet?
+
+An ERC-4337 operation has to be put on-chain by *someone* sending an
+ordinary transaction (`EntryPoint.handleOps`). Three ways:
+
+| Who submits | What you need | Notes |
+|---|---|---|
+| **a public bundler** (e.g. Pimlico's free endpoint) | its URL (`BUNDLER_URL`) | the bundler pays the outer transaction and is repaid from the account or the paymaster; no hot key of yours involved. Public endpoints have rate limits (Pimlico's free one: about 20 requests per minute). |
+| **a bundler you run or rent** | its URL, possibly an API key | same, without others' rate limits |
+| **`agent-signer` itself** | a **gas wallet**: a small hot key with ETH (`GAS_WALLET_KEYFILE`) | the CLI sends `handleOps` from it; the EntryPoint repays it from the account's deposit or the paymaster's, so it only needs a float. It is a plain key file — keep a few dollars in it. |
+
+Today the CLI asks for `GAS_WALLET_KEYFILE` even when a bundler is used (it
+also funds deployments and the paymaster); making it optional with a bundler
+is a known to-do.
+
+### Can it drive a Safe (Olas, Jinn)? Which AI frameworks work?
+
+Yes: the account can own a Safe, and the mandate judges the Safe's
+transactions call by call, including MultiSend batches; replays are refused
+on-chain ([`ERC1271.md`](ERC1271.md)). Frameworks with a worked example:
+Coinbase AgentKit, a Claude Code / OpenClaw skill, Jinn and Olas
+([`examples/`](../examples/README.md)). Anything else that can run a command
+(`agent-signer op send --json`) or call a function that sends one transaction
+works the same way.
+
+### What does an operation cost, and how long does it take?
+
+**Gas**, measured on Base Sepolia (whole transactions, from the receipts,
+[`BENCHMARK.md`](BENCHMARK.md)):
+
+| Operation | Gas | For comparison |
+|---|---:|---|
+| a simple agent call, account pays | ~154,000 | a plain ETH transfer from a normal wallet: 21,000 |
+| the same, gas sponsored | ~163,000 | |
+| the first operation (deploys the account) | ~700,000 | once per account |
+| an owner operation (rotate the agent) | ~450,000 | rare |
+
+The money depends on the network: multiply by its gas price (on rollups such
+as Base, add the L1 data fee, which grows with the operation's size). On Base,
+at ~0.01 gwei, a simple agent call is about 1.5 × 10⁻⁶ ETH of L2 gas — a
+fraction of a cent; on a network with 10 gwei it would be a thousand times
+more. Verifying
+the P-256 signature itself costs the same as an ordinary `ecrecover`
+(~7,400 gas); the overhead is the smart-account machinery, about 77k gas per
+operation over a bare call.
+
+**Time**, from "the agent decides" to "the call is on-chain": signing takes
+milliseconds in a TPM, about 2 seconds on the TROPIC01 devkit, about 1 second
+to open an encrypted key file; then the operation waits for the next block
+(Base: 2 s) plus the bundler's own delay — a few seconds in our runs.
+
+### Is it audited?
+
+An internal review on 2026-10-20 by a separate AI session found eight
+issues; all are fixed and re-checked
+([`AUDIT-2026-10-20.md`](AUDIT-2026-10-20.md)). It is not a professional
+audit. The bigger the amount, the more review it deserves — an independent
+professional audit before anything substantial. But no audit makes a system
+safe on its own: keep the agent's account holding only what the current
+period needs, keep mandates tight and short-lived, and keep the owner key on
+a separate device. Those limits hold even if a bug slips through.
