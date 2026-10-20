@@ -34,8 +34,12 @@ remappings = [
     "lib/kernel-7579-plugins/:forge-std/=lib/forge-std/src/",
 ]
 
-# Tests read JSON vectors produced by `agent-signer vector ...`.
-fs_permissions = [{ access = "read", path = "./test/vectors" }]
+# Tests read JSON vectors produced by `agent-signer vector ...`; the deploy
+# script records addresses under deployments/.
+fs_permissions = [
+    { access = "read", path = "./test/vectors" },
+    { access = "read-write", path = "./deployments" },
+]
 
 [rpc_endpoints]
 # Set in ../../.env (outside the repo); never hard-code an RPC URL here.

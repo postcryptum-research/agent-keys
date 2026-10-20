@@ -7,14 +7,24 @@ ERC-4337 smart account that verifies the chip's **P-256** signature on-chain
 through the RIP-7212 precompile. No secp256k1 key, no MPC, no custodian: the
 only on-chain owner is the public key of the chip.
 
-**Status:** Phase 0 done — a signature produced inside a real TPM 2.0 verifies
-on-chain in `forge test`. Phase 1 done — on ZeroDev Kernel v3.3 (ERC-7579):
-`P256Validator` makes the chip the account's root, and `P256Signer` +
-`AgentPolicy` make it an *agent permission* bound by a call allow-list, value
-cap, budget and expiry; the full ERC-4337 path (EntryPoint → Kernel →
-modules → `execute`) runs in `forge test`. Next: Base Sepolia deployment, a
-paymaster, and the Rust side building and submitting UserOperations signed in
-the TPM. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+**Status: it runs on Base Sepolia.** An account whose owner key and agent key
+both live in a TPM 2.0 executed its first operation on 2026-10-20 — the agent
+key, bound by `AgentPolicy`, incremented the demo counter; the operation was
+built and submitted by `agent-signer`, with no bundler, paymaster or custodian
+in between:
+account [`0xEdB645B14e2f952C5784e34949b58F0826fBc9E9`](https://sepolia.basescan.org/address/0xEdB645B14e2f952C5784e34949b58F0826fBc9E9),
+tx [`0x785332…e669bb`](https://sepolia.basescan.org/tx/0x785332105fd8085d50e542ff9f677eba964399bbc0d71333ddd71fed03e669bb).
+
+- Phase 0 — a signature produced inside a real TPM verifies on-chain (RIP-7212).
+- Phase 1 — on ZeroDev Kernel v3.3 (ERC-7579): `P256Validator` makes the chip
+  the account's root; `P256Signer` + `AgentPolicy` make it an *agent
+  permission* bound by a call allow-list, value cap, budget and expiry.
+- Phase 2 — `agent-signer` (Rust) derives the account, builds the
+  UserOperation, signs its hash in the TPM and submits it through
+  `EntryPoint.handleOps` itself.
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design and what
+remains (paymaster, rotation, PCR-sealed keys, Secure Enclave backend).
 
 ## Why not an EOA
 
@@ -57,6 +67,32 @@ cargo run -p agent-signer --features tpm -- vector --backend tpm --message hello
 The `vector` command prints a JSON `(digest, r, s, x, y)` record; the Solidity
 tests under `contracts/test/vectors/` consume these, including one signed
 inside an Intel PTT.
+
+## Run an agent account on Base Sepolia
+
+Secrets stay outside the repository: a `.env` with `BASE_SEPOLIA_RPC_URL` and
+`GAS_WALLET_KEYFILE` (a file holding the hex key of a funded testnet EOA that
+pays for the outer `handleOps` transactions). The account itself is described
+by `signer/agent.base-sepolia.json`: two TPM handles, a permission id and the
+agent's mandate. Module addresses come from `contracts/deployments/84532.json`
+(`forge script script/Deploy.s.sol` writes it; CREATE2 with salt 0, so they
+are the same on every chain).
+
+```sh
+cd signer && cargo build -p agent-signer --features tpm
+B=target/debug/agent-signer; A=agent.base-sepolia.json; E=../../.env
+
+$B key create --handle 0x81010010      # owner key, stays in the TPM
+$B key create --handle 0x81010011      # agent key, stays in the TPM
+$B account status --agent $A --env-file $E   # counterfactual address
+$B account fund   --agent $A --env-file $E --wei 2000000000000000
+$B demo           --agent $A --env-file $E   # first op deploys the account
+$B op send --agent $A --env-file $E --target 0x... --data 0x...   # anything the mandate allows
+```
+
+`account fund` simulates `createAccount` first and refuses to send ETH to an
+address that could never be deployed. Operations outside the mandate are
+rejected during simulation, before any gas is spent.
 
 ## Reference
 

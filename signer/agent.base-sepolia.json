@@ -1,0 +1,16 @@
+{
+  "deployments": "../contracts/deployments/84532.json",
+  "owner": { "tpm": "0x81010010" },
+  "agent": { "tpm": "0x81010011" },
+  "permissionId": "0x61676e74",
+  "salt": "0x0",
+  "policy": {
+    "allow": [
+      { "target": "0xD2Adc331B867435b82Ceba1D4f7f715eeF9FdbC1", "selector": "0xd09de08a" },
+      { "target": "0xD2Adc331B867435b82Ceba1D4f7f715eeF9FdbC1", "selector": "0x00000000" }
+    ],
+    "maxValuePerOp": "1000000000000000",
+    "budget": "3000000000000000",
+    "validUntil": 1795046400
+  }
+}

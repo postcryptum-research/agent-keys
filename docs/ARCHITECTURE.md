@@ -183,16 +183,31 @@ Lessons that cost real debugging time:
   cap and budget, expiry, and that the agent key is rejected on the root
   path while the owner key is not. Permission signature format:
   `0xff ‖ r ‖ s`; nonce key: `0x00 ‖ 0x02 ‖ id(4) ‖ 0×16 ‖ nonceKey(2)`.
-  *Next (1c):* deployment script for Base Sepolia (factory, validator,
-  signer, policy) and a whitelist paymaster.
-- **Phase 2 — off-chain.** `agent-signer` builds the UserOperation with
-  `alloy`, signs `userOpHash` through the trait, packs the signature and
-  submits to a bundler.
-- **Phase 3 — operations.** Whitelist paymaster, enrollment registry
-  (agent id ↔ public key ↔ active), rotation and revocation, PCR-sealed keys
-  so the TPM only signs from a trusted boot state.
-- **Phase 4 — agent demo + gas benchmark** on Base Sepolia, mirroring the
-  reference paper's measurements with a TPM in place of the ATECC608A.
+  *1c done:* `script/Deploy.s.sol` deploys the three modules and a demo
+  target through the canonical CREATE2 deployer (salt 0) and records them in
+  `deployments/<chainid>.json`; Kernel v3.3, its factory and EntryPoint v0.7
+  are ZeroDev's and eth-infinitism's canonical deployments.
+- **Phase 2 — off-chain. Done (2026-10-20).** `agent-signer` derives the
+  account from the two hardware public keys and the mandate (`agent.*.json`),
+  builds the `PackedUserOperation` with `alloy`, fetches `userOpHash` from the
+  EntryPoint, signs it through the `HardwareSigner` trait, frames the
+  signature for the root or the permission path, and submits
+  `EntryPoint.handleOps` itself from a gas wallet — no bundler, no paymaster,
+  no custodian. First on-chain run on Base Sepolia: account
+  `0xEdB645B14e2f952C5784e34949b58F0826fBc9E9`, tx
+  `0x785332105fd8085d50e542ff9f677eba964399bbc0d71333ddd71fed03e669bb`
+  (deploys the account and executes the agent's call in one operation).
+  Lessons: `alloy`'s `abi_encode()` on a dynamic tuple prepends an offset
+  word — use `abi_encode_params()` for `abi.encode(a, b, c)`; public RPC
+  replicas lag behind the one that returned the receipt, so post-inclusion
+  reads are pinned to the receipt's block; simulate `createAccount` before
+  funding a counterfactual address.
+- **Phase 3 — operations.** Whitelist paymaster (gasless agent), optional
+  bundler RPC as a drop-in for self-bundling, rotation and revocation of the
+  agent permission, PCR-sealed TPM keys so the chip only signs from a trusted
+  boot state, Secure Enclave and Windows CNG backends.
+- **Phase 4 — gas benchmark** on Base Sepolia, mirroring the reference paper's
+  measurements with a TPM in place of the ATECC608A.
 
 ## License
 
