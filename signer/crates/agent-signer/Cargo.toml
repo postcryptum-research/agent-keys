@@ -1,0 +1,25 @@
+[package]
+name = "agent-signer"
+version = "0.1.0"
+description = "CLI for signing ERC-4337 agent operations with a hardware-held P-256 key"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "agent-signer"
+path = "src/main.rs"
+
+[features]
+default = []
+# Enable `--backend tpm` (Linux, needs libtss2-dev).
+tpm = ["hw-signer/tpm"]
+
+[dependencies]
+hw-signer = { path = "../hw-signer" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"

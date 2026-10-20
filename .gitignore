@@ -1,0 +1,15 @@
+# Rust
+signer/target/
+
+# Foundry
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+
+# Python (legacy prototype)
+__pycache__/
+*.pyc
+
+# Local secrets: RPC URLs, gas-wallet keys. Never commit.
+.env
+.env.*

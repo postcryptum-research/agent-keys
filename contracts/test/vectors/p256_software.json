@@ -1,0 +1,9 @@
+{
+  "backend": "software",
+  "message": "TPM_sign phase 0: digest signed off-chain, verified on-chain via RIP-7212",
+  "digest": "0x8f7cc24edb02e08c032cbee523ae7ed7870591c967bd462283bee9ea5e7e23bc",
+  "r": "0x1ce37b4ff01411dafd9d67059de06a207af0783c8efd2569b2c1dd850e2ea34c",
+  "s": "0x0a4f9e92278b71e440dd53377235e97ab659a7b8662418184953a8cdf903144b",
+  "x": "0x8b220bd77993f7a62376eff142385912209668969d99778ea0d63c2e3bfe55b3",
+  "y": "0x5eef6817af7fcfcec309421919ce5980687d19ea66feea10e97a533a9ee329d4"
+}

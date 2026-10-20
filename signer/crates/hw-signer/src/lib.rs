@@ -1,0 +1,121 @@
+//! Hardware-backed P-256 (secp256r1) signer abstraction.
+//!
+//! Every platform we care about exposes a hardware-protected ECDSA key on the
+//! same curve: TPM 2.0 (Linux/Windows), Apple Secure Enclave (macOS/iOS) and
+//! WebAuthn passkeys all speak NIST P-256. None of them can do secp256k1, which
+//! is exactly why the on-chain side is an ERC-4337 smart account that verifies
+//! P-256 — not an EOA.
+//!
+//! The trait is deliberately tiny: a 32-byte digest goes in, `(r, s)` comes
+//! out. Everything above it (UserOperation building, signature packing,
+//! bundler I/O) is platform-neutral; everything below it is one backend per
+//! platform, selected by cargo feature.
+
+use p256::ecdsa::signature::hazmat::PrehashVerifier;
+use p256::ecdsa::VerifyingKey;
+use p256::{EncodedPoint, FieldBytes};
+
+#[cfg(feature = "software")]
+pub mod software;
+#[cfg(feature = "tpm")]
+pub mod tpm;
+
+/// Uncompressed P-256 public key coordinates — what the smart account enrolls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PublicKey {
+    pub x: [u8; 32],
+    pub y: [u8; 32],
+}
+
+/// Raw ECDSA signature over P-256, normalized to low-s.
+///
+/// RIP-7212 accepts either `s`, but the Solady verifier (and most account
+/// validators) reject `s > n/2` to kill malleability, so backends normalize
+/// before returning. `(r, n - s)` is an equally valid signature, so this is
+/// safe to do off-chip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Signature {
+    pub r: [u8; 32],
+    pub s: [u8; 32],
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SignerError {
+    #[error("key unavailable: {0}")]
+    Key(String),
+    #[error("signing failed: {0}")]
+    Sign(String),
+    #[error("backend error: {0}")]
+    Backend(String),
+}
+
+/// Flip a high `s` to `n - s`. Hardware returns whichever `s` it computed;
+/// the on-chain verifier wants the canonical low one.
+pub fn normalize_low_s(sig: Signature) -> Signature {
+    let mut raw = [0u8; 64];
+    raw[..32].copy_from_slice(&sig.r);
+    raw[32..].copy_from_slice(&sig.s);
+    match p256::ecdsa::Signature::from_slice(&raw) {
+        Ok(parsed) => {
+            let parsed = parsed.normalize_s().unwrap_or(parsed);
+            let (r, s) = parsed.split_bytes();
+            Signature { r: r.into(), s: s.into() }
+        }
+        Err(_) => sig,
+    }
+}
+
+/// A key that lives in hardware and never leaves it.
+pub trait HardwareSigner {
+    /// Public key coordinates. The private key is never exposed.
+    fn public_key(&self) -> Result<PublicKey, SignerError>;
+
+    /// Sign a 32-byte digest. The caller decides what the digest commits to —
+    /// for ERC-4337 it is the `userOpHash`. The hardware only ever sees `h`.
+    fn sign_digest(&self, digest: &[u8; 32]) -> Result<Signature, SignerError>;
+}
+
+/// Off-chain P-256 verification, mirroring what the on-chain validator checks:
+/// `(h, r, s)` against `(x, y)`. Used by tests and the CLI self-check.
+pub fn verify_p256(digest: &[u8; 32], sig: &Signature, pk: &PublicKey) -> bool {
+    let point = EncodedPoint::from_affine_coordinates(
+        &FieldBytes::from(pk.x),
+        &FieldBytes::from(pk.y),
+        false,
+    );
+    let Ok(vk) = VerifyingKey::from_encoded_point(&point) else {
+        return false;
+    };
+    let mut raw = [0u8; 64];
+    raw[..32].copy_from_slice(&sig.r);
+    raw[32..].copy_from_slice(&sig.s);
+    let Ok(sig) = p256::ecdsa::Signature::from_slice(&raw) else {
+        return false;
+    };
+    vk.verify_prehash(digest, &sig).is_ok()
+}
+
+#[cfg(all(test, feature = "software"))]
+mod tests {
+    use super::*;
+
+    /// n/2 for P-256; a low-s signature has s <= this (big-endian compare).
+    const N_HALF: &str = "7fffffff800000007fffffffffffffffde737d56d38bcf4279dce5617e3192a8";
+
+    #[test]
+    fn software_roundtrip_rejects_tamper_and_is_low_s() {
+        let signer = software::SoftwareSigner::random();
+        let digest = [7u8; 32];
+
+        let sig = signer.sign_digest(&digest).unwrap();
+        let pk = signer.public_key().unwrap();
+        assert!(verify_p256(&digest, &sig, &pk));
+
+        let mut tampered = digest;
+        tampered[0] ^= 1;
+        assert!(!verify_p256(&tampered, &sig, &pk));
+
+        let n_half = hex::decode(N_HALF).unwrap();
+        assert!(sig.s.as_slice() <= n_half.as_slice(), "s must be normalized to low-s");
+    }
+}

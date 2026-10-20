@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["crates/hw-signer", "crates/agent-signer"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/77ph/TPM_sign"
+
+[profile.release]
+lto = true
+codegen-units = 1

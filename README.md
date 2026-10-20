@@ -1,112 +1,64 @@
-# 🛡️ TPM-Backed Scalable Signer: Architecture Overview
+# TPM_sign — hardware-held keys for on-chain agents
 
-This document describes a scalable and reboot-resilient architecture for signing messages using TPM 2.0 without exposing private keys to user space or host.
+An AI agent (or any unattended process) signs its on-chain actions with a key
+that lives in the machine's secure element — TPM 2.0 today, Apple Secure
+Enclave and Windows CNG next — and never exists as a file. Its account is an
+ERC-4337 smart account that verifies the chip's **P-256** signature on-chain
+through the RIP-7212 precompile. No secp256k1 key, no MPC, no custodian: the
+only on-chain owner is the public key of the chip.
 
----
+**Status:** Phase 0 done — a signature produced inside a real TPM 2.0 verifies
+on-chain in `forge test`. Phase 1 (P256 validator + policy module on an
+ERC-7579 account) in progress. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-## 🎯 Goals
+## Why not an EOA
 
-- ✅ Persist across reboots (keys survive system restart)
-- ✅ Store a large number of private keys securely (beyond TPM NVRAM limits)
-- ✅ Run multiple signer processes with limited transient handle usage
-- ✅ Never expose private keys to RAM or disk in plaintext
+Every secure element speaks NIST P-256; none speaks secp256k1, and an EOA is
+secp256k1 + `ecrecover`. The first prototype ([`legacy/`](legacy/)) hit exactly
+that wall. Account abstraction removes it: the chip stays a P-256 signer, and
+the smart account checks that signature itself.
 
----
+## Layout
 
-## 🧠 Key Concepts
-
-| Type             | Description                                                  |
-|------------------|--------------------------------------------------------------|
-| `Persistent Primary Key` | Stored permanently in TPM NVRAM (handle: `0x81000001`) |
-| `key.priv/.pub` pairs    | TPM-encrypted private keys and public keys stored on disk |
-| Transient Handles        | Temporary TPM objects in RAM used for loaded keys       |
-| Signer Context           | TPM object handle for active key (created on-the-fly)   |
-
----
-
-## 🧱 System Architecture
-
-```text
-               [ Disk Storage ]
-        +-----------------------------+
-        | key1.priv / key1.pub        |
-        | key2.priv / key2.pub        |
-        | ...                         |
-        +-----------------------------+
-
-              |
-              v  (load on demand)
-    +------------------------------+
-    |    Signer Process            |
-    |------------------------------|
-    | - Loads key.priv/.pub into TPM |
-    | - Signs digest                |
-    | - Flushes context if needed   |
-    +------------------------------+
-
-              |
-              v
-        [ TPM Transient Handle (RAM) ]
-              |
-              v
-        Signature Output (r, s)
+```
+signer/      Rust: hw-signer (HardwareSigner trait; software + tpm backends),
+             agent-signer CLI
+contracts/   Foundry: P-256 verification tests (Solady), validator and account
+             contracts as Phase 1 lands
+docs/        architecture, threat model, TPM design notes
+legacy/      the original Python / tpm2-tools prototype, kept for reference
 ```
 
----
+## Quick start
 
-## 🔁 Workflow
+Any platform, no hardware (software backend — dev/CI only):
 
-1. **Create Persistent Primary Key** (once):
-   ```bash
-   tpm2_createprimary -C o -G ecc -c primary.ctx
-   tpm2_evictcontrol -C o -c primary.ctx 0x81000001
-   ```
-
-2. **Create Private Key for Disk Storage** (repeatable):
-   ```bash
-   tpm2_create -C 0x81000001 -G ecc -u key1.pub -r key1.priv
-   ```
-
-3. **Signer Process Execution** (per request):
-   ```bash
-   tpm2_load -C 0x81000001 -u key1.pub -r key1.priv -c signer.ctx
-   tpm2_sign -c signer.ctx -g sha256 -m digest.bin -o signature.bin
-   tpm2_flushcontext signer.ctx
-   ```
-
----
-
-## ⚙️ Scalability Considerations
-
-| Property           | Strategy                          |
-|--------------------|------------------------------------|
-| Max persistent keys| Use only one: the primary key      |
-| Unlimited keys     | Store key.priv/.pub files on disk  |
-| TPM RAM slots      | Use one context at a time, flush after use |
-| Parallel signing   | Use a worker queue or LRU slot management |
-
----
-
-## 🔐 Security Guarantees
-
-- TPM signs hashes inside the chip
-- Private keys never loaded in RAM in plaintext
-- Even `key.priv` is unusable outside TPM
-- Supports recovery after reboot
-
----
-
-## 🧩 Future Extensions
-
-- Signer REST API with key pool loader
-- Key rotation and indexing
-- PCR-based sealing for specific boot states
-
-## Not compatible with secp256k1
+```sh
+cd signer && cargo test
+cd ../contracts && forge test      # RIP-7212 enabled locally via odyssey = true
 ```
-sudo tpm2_getcap ecc-curves
-TPM2_ECC_NIST_P256: 0x3
-TPM2_ECC_NIST_P384: 0x4
-TPM2_ECC_BN_P256: 0x10
-TPM2_ECC_SM2_P256: 0x20
+
+Linux with a TPM 2.0:
+
+```sh
+sudo apt install libtss2-dev libclang-dev
+sudo usermod -aG tss "$USER"       # access to /dev/tpmrm0; re-login
+cd signer
+cargo test --features tpm -- --ignored
+cargo run -p agent-signer --features tpm -- vector --backend tpm --message hello
 ```
+
+The `vector` command prints a JSON `(digest, r, s, x, y)` record; the Solidity
+tests under `contracts/test/vectors/` consume these, including one signed
+inside an Intel PTT.
+
+## Reference
+
+Y. Madhwal, *Integrating Secure Elements with Account Abstraction for
+Autonomous IoT Blockchain Agents* (Skoltech research seminar, 2026) — the same
+design with an ATECC608A; this project generalizes it to the TPM / Secure
+Enclave in ordinary machines and to AI agents.
+
+## License
+
+MIT.

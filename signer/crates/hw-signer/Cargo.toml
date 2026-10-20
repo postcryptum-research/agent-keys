@@ -1,0 +1,30 @@
+[package]
+name = "hw-signer"
+version = "0.1.0"
+description = "Hardware-backed P-256 signer abstraction (TPM 2.0, Secure Enclave, ...) for ERC-4337 agent accounts"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["software"]
+# In-memory key. Dev/CI only: the one backend that exists on every platform.
+software = []
+# Hardware backends, one per platform. Each is feature-gated so the crate
+# builds everywhere and a machine only compiles the backend it has.
+#   tpm            Linux   — TPM 2.0 via tss-esapi (needs libtss2-dev)
+tpm = ["dep:tss-esapi"]
+#   secure-enclave macOS   — Apple Secure Enclave via Security.framework (planned)
+#   windows-tpm    Windows — TPM 2.0 via CNG Platform Crypto Provider (planned)
+
+[dependencies]
+p256 = { version = "0.13", features = ["ecdsa"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+thiserror = "1"
+# `generate-bindings`: run bindgen against the installed tpm2-tss headers
+# instead of the crate's pre-generated bindings, which target an older tss
+# ABI and segfault against tpm2-tss 4.x. Needs libtss2-dev + libclang.
+tss-esapi = { version = "7", optional = true, features = ["generate-bindings"] }
+
+[dev-dependencies]
+hex = "0.4"

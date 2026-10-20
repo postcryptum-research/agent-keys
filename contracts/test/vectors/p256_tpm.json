@@ -1,0 +1,9 @@
+{
+  "backend": "tpm",
+  "message": "TPM_sign phase 0: digest signed inside Intel PTT (TPM 2.0), verified on-chain via RIP-7212",
+  "digest": "0x23b8700b450c9ed55d3e2eca33c8e65932ebe3b19c8c5ebd7502f70ca3535203",
+  "r": "0xc63233ab0d57a06d571e19b1fa78538c0e0e7eb244062ca09318add0e4a566ed",
+  "s": "0x007694103661218fe67f2cfa7ddbe16c9dfc1c3f6fabcd6409098e442aeb2ac7",
+  "x": "0xb6f5b1aaef38d08d2bf50f656eb693af1dc46327d5a5f1d56859e541c0a9fddb",
+  "y": "0xacb85278f486a7583cf657c4cb7e44dc67e22d6d2dc910c46f0189282ca75f9c"
+}
