@@ -5,15 +5,6 @@
 > `aarch64-apple-darwin`, the Swift shim compiles only on a Mac. This
 > procedure is the first real run.
 
-> **Кратко по-русски.** Нужен Mac с Secure Enclave (любой Apple Silicon или
-> Intel с чипом T2). Всё бесплатно: Xcode Command Line Tools (компилятор,
-> Swift, git) и Rust (`rustup`); ни Homebrew, ни CMake, ни аккаунта Apple
-> Developer не нужно. Весь сеанс пишется в файл командой `script`, его и
-> присылаем. Собираем `agent-signer` с фичей `secure-enclave`, запускаем
-> тест на железе, создаём ключ в enclave, подписываем вектор и проверяем
-> его. Приватный ключ из enclave не извлекается. 20–30 минут, бо́льшая часть
-> — компиляция.
-
 ## What you are testing
 
 `signer/crates/hw-signer/src/secure_enclave.rs` keeps a P-256 key inside

@@ -1,14 +1,5 @@
 # Jinn operator on a hardware-signed owner
 
-> **Кратко по-русски.** Jinn (Olas-экосистема) держит agent-ключ в
-> keystore на диске; агент — единственный владелец 1/1 service Safe и
-> подписывает Safe-транзакции eth_sign. Здесь владелец Safe — Kernel-аккаунт
-> TPM_sign: ключ агента в TPM/TROPIC01, Kernel вызывает `execTransaction` с
-> подписью `v = 1`, а `AgentPolicy` проверяет внутренний вызов Safe (и каждую
-> ногу MultiSend-батча) по allow-list владельца. `src/kernelSafeBroadcaster.ts`
-> структурно совместим с их `BaseVenueSafeBroadcaster`; полный разбор и план —
-> `ADAPTATION.md`.
-
 [Jinn](https://github.com/Jinn-Network/mono) operators claim, deliver,
 settle and verify work through a 1/1 **service Safe** registered with Olas.
 Today the Safe's owner is an agent EOA whose key is derived from a mnemonic

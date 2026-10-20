@@ -1,16 +1,5 @@
 # Olas service Safe with a hardware-signed owner
 
-> **Кратко по-русски.** У агента Olas один secp256k1-ключ в файле несёт три
-> роли: консенсусная идентичность (подписи ABCI-payload'ов), on-chain agent
-> instance / owner service Safe, и keeper, который шлёт `execTransaction` и
-> платит газ. Контракты Olas (registries, Safe, staking) принимают
-> смарт-аккаунт в роли instance/owner, поэтому роли 2 и 3 переходят к
-> Kernel-аккаунту TPM_sign с ключом в TPM/TROPIC01, а консенсусный ключ
-> остаётся отдельным и **без денег и полномочий**. Демо ниже проходит путь
-> `transaction_settlement_abci` 1-агентного сервиса функциями самого
-> open-autonomy и подменяет только два EOA-шага. Полный разбор, план патчей и
-> предложения upstream — `ADAPTATION.md`.
-
 ## The idea
 
 An Olas agent's key file holds one secp256k1 key with three jobs:

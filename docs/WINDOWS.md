@@ -5,15 +5,6 @@
 > --cng`, and a signed vector — `contracts/test/vectors/p256_windows.json`,
 > checked off-chain and by the Solidity tests (RIP-7212 path).
 
-> **Кратко по-русски.** Нужен ПК с Windows 10/11 и включённым TPM 2.0 (у
-> Windows 11 он обязателен). Всё ПО бесплатное: Rust (`rustup`), Git,
-> Visual Studio Build Tools (только компилятор/линкер, без самой Visual
-> Studio). CMake и NASM **не нужны**: C-библиотека AWS-LC собирается
-> компилятором MSVC, а ассемблерные объекты берутся готовыми. Собираем `agent-signer` с фичей
-> `windows-tpm`, запускаем тест, создаём ключ в TPM командой `key create
-> --cng`, присылаем вывод из раздела «What to report back». Приватный ключ
-> из TPM не извлекается.
-
 ## What you are testing
 
 `signer/crates/hw-signer/src/windows_tpm.rs` keeps a P-256 key inside the

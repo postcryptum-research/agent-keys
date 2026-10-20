@@ -1,13 +1,5 @@
 # TROPIC01 backend
 
-> **Кратко по-русски.** Устройство — TROPIC01 USB DevKit (Tropic Square,
-> open-architecture secure element, чип `TR01-C2P-T103`, devkit v3.1).
-> Бэкенд `signer/crates/hw-signer/src/tropic01.rs` (фича `tropic01`):
-> ключ P-256 генерируется в ECC-слоте чипа и не покидает его. Проверено на
-> железе (hardware-тест, вектор `p256_tropic01.json` в forge) и on-chain:
-> агентский permission аккаунта на Base Sepolia переведён на ключ в слоте 1
-> чипа, и чип подписал спонсированную операцию под `AgentPolicy`.
-
 ## Hardware
 
 - **TROPIC01 USB DevKit**, product version 3.1 (PCB TS1303, STM32U5
