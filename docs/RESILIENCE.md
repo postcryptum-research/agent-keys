@@ -1,4 +1,6 @@
-# Resilience: поломка и потеря ключей (TPM_sign)
+# Resilience: key breakage and loss (TPM_sign)
+
+*Russian original: [RESILIENCE_ru.md](RESILIENCE_ru.md).*
 
 > **English summary (2026-10-20).** Resilience against a secure element that
 > breaks, is reset or is lost — not against an attacker. Keys here can never
@@ -66,697 +68,697 @@
 > `P256Signer` as a permission, but needs `execute` granted to create
 > proposals on Kernel v3.3 and is not known to be audited or deployed.
 
-Дата: 2026-10-20. Код репозитория **не менялся**. Метки: **[V]** — проверено
-(URL или файл:строка), **[I]** — вывод / по памяти, не перепроверено.
+Date: 2026-10-20. Repository code **was not changed**. Markers: **[V]** — verified
+(URL or file:line), **[I]** — inference / from memory, not re-checked.
 
-Состояние кода на момент исследования (параллельно идёт работа):
-`contracts/src/P256RecoveryValidator.sol` (= `P256Validator` по другому адресу),
+State of the code at the time of the study (work is ongoing in parallel):
+`contracts/src/P256RecoveryValidator.sol` (= `P256Validator` at a different address),
 `kernel.rs: add_recovery_calldata / change_root_calldata`,
-`agent.rs: KeySpec::Recovery`, тесты `AgentPermission.t.sol:798–900`
+`agent.rs: KeySpec::Recovery`, tests `AgentPermission.t.sol:798–900`
 (`test_recovery_canOnlyTakeOverRoot`, `test_recovery_replacesALostOwner`) [V].
 
 ---
 
-## 0. Главное за минуту
+## 0. The essentials in one minute
 
-1. **Агентский ключ терять не страшно.** Владелец ротирует permission
-   (`permission rotate`), адрес аккаунта, средства, Safe и мандат остаются [V
-   по коду, §2.1].
-2. **Owner-ключ — единственная точка отказа.** Без него и без recovery
-   агент работает до `validUntil` (в тестнет-конфиге — **2026-11-19 00:00 UTC**,
-   `signer/agent.base-sepolia.json`, [V]), а после этой даты аккаунт и Safe,
-   которым он владеет единолично, замораживаются навсегда (§2.3).
-3. **На тестнет-хосте оба ключа в одном fTPM** (Intel PTT: ACPI HID
-   `INTC6001`, Lenovo, i7-13700H, [V локально `/sys/class/tpm/tpm0/device/hid`];
-   «INTC6001 = PTT» — [I]). Owner `0x81010010` без authValue, агент
-   `0x81010012`, запечатан на PCR 0,2,4,7 [V конфиг]. Один `TPM2_Clear`,
-   сброс PTT при обновлении BIOS или замена материнской платы уничтожат
-   **оба** ключа одновременно. Recovery нужен даже на тестнете, хотя бы чтобы
-   отрепетировать процедуру.
-4. **Восстанавливаемость без экспорта** достигается не копированием ключа, а
-   **избыточностью ключей на цепи**: несколько независимых неэкспортируемых
-   ключей (или один seed-backed), каждый из которых зарегистрирован в Kernel с
-   правом `changeRootValidator`. Резервная копия — это второй ключ, а не копия
-   первого.
-5. **Две находки по коду (важно для текущей реализации):**
-   - **ERC-1271 обходит выдачу селекторов.** `ValidationManager._verifySignature`
-     для не-root валидатора проверяет только «установлен» и
-     `nonce >= validNonceFrom`. `allowedSelectors` не проверяется
+1. **Losing the agent key is not a problem.** The owner rotates the permission
+   (`permission rotate`); the account address, funds, Safe and mandate stay [V
+   by code, §2.1].
+2. **The owner key is the single point of failure.** Without it and without recovery
+   the agent runs until `validUntil` (in the testnet config — **2026-11-19 00:00 UTC**,
+   `signer/agent.base-sepolia.json`, [V]), and after that date the account and the Safe
+   it solely owns are frozen forever (§2.3).
+3. **On the testnet host both keys are in one fTPM** (Intel PTT: ACPI HID
+   `INTC6001`, Lenovo, i7-13700H, [V locally `/sys/class/tpm/tpm0/device/hid`];
+   "INTC6001 = PTT" — [I]). Owner `0x81010010` without authValue, agent
+   `0x81010012`, sealed to PCR 0,2,4,7 [V config]. A single `TPM2_Clear`,
+   a PTT reset during a BIOS update or a motherboard replacement will destroy
+   **both** keys at once. Recovery is needed even on the testnet, if only to
+   rehearse the procedure.
+4. **Recoverability without export** is achieved not by copying the key but by
+   **key redundancy on-chain**: several independent non-exportable
+   keys (or one seed-backed key), each registered in Kernel with the
+   `changeRootValidator` right. A backup is a second key, not a copy
+   of the first.
+5. **Two code findings (important for the current implementation):**
+   - **ERC-1271 bypasses the selector grants.** `ValidationManager._verifySignature`
+     for a non-root validator checks only "installed" and
+     `nonce >= validNonceFrom`. `allowedSelectors` is not checked
      [V `contracts/lib/kernel/src/core/ValidationManager.sol:424–449`].
-     `P256RecoveryValidator` наследует `isValidSignatureWithSender` от
+     `P256RecoveryValidator` inherits `isValidSignatureWithSender` from
      `P256Validator` [V `contracts/src/P256Validator.sol` `isValidSignatureWithSender`].
-     Следовательно, **recovery-ключ уже сейчас может подписать ERC-2612
-     permit / Permit2 / EIP-3009 от имени аккаунта**, без всякого
-     `changeRootValidator` и без таймлока. Та же проблема со **старым
-     owner-валидатором**, который остаётся установленным после
-     `changeRootValidator`: `changeRootValidator` его не удаляет
-     [V `Kernel.sol:135–155`], и тест `test_recovery_replacesALostOwner`
-     проверяет только userOp-путь. Исправление: в `P256RecoveryValidator`
-     переопределить `isValidSignatureWithSender` → `ERC1271_INVALID` (как
-     `AgentPolicy.checkSignaturePolicy` для агента, [V `AgentPolicy.sol:210–218`]),
-     а в процедуре recovery — `uninstallValidation(oldOwnerVId)`. Добавить
-     тесты на оба случая.
-   - **Recovery = root без задержки.** Кража флешки вместе с паролем даёт
-     мгновенный захват. Для ценного деплоя нужен таймлок с отменой
-     владельцем (§3.4).
+     Consequently, **the recovery key can already sign an ERC-2612
+     permit / Permit2 / EIP-3009 on behalf of the account**, without any
+     `changeRootValidator` and without a timelock. The same problem applies to the **old
+     owner validator**, which stays installed after
+     `changeRootValidator`: `changeRootValidator` does not remove it
+     [V `Kernel.sol:135–155`], and the test `test_recovery_replacesALostOwner`
+     checks only the userOp path. Fix: in `P256RecoveryValidator`
+     override `isValidSignatureWithSender` → `ERC1271_INVALID` (like
+     `AgentPolicy.checkSignaturePolicy` for the agent, [V `AgentPolicy.sol:210–218`]),
+     and in the recovery procedure — `uninstallValidation(oldOwnerVId)`. Add
+     tests for both cases.
+   - **Recovery = root with no delay.** Theft of the USB drive together with the passphrase gives
+     an instant takeover. A value-bearing deployment needs a timelock with cancellation
+     by the owner (§3.4).
 
 ---
 
-## 1. Режимы отказа по бэкендам
+## 1. Failure modes by backend
 
-### 1.1 TPM 2.0: семантика иерархий и сидов (основа всего остального)
+### 1.1 TPM 2.0: semantics of hierarchies and seeds (the basis for everything else)
 
-- В TPM 2.0 три постоянных сида: **EPS** (endorsement), **SPS** (storage /
-  owner hierarchy), **PPS** (platform). Ключи, созданные под SRK
-  (`0x81000001`, первичный ключ, выводимый из SPS), зашифрованы на SRK. Если
-  SPS сменился, тот же шаблон даёт **другой** SRK, и все дочерние ключи
-  становятся невосстановимы.
-- **SPS меняет только `TPM2_Clear`** (плюс производство). `TPM2_Clear`
-  «Reset storage hierarchy seed from RNG» и сбрасывает persistent- и
-  loaded-объекты storage- и endorsement-иерархий [V референсная реализация
+- TPM 2.0 has three persistent seeds: **EPS** (endorsement), **SPS** (storage /
+  owner hierarchy), **PPS** (platform). Keys created under the SRK
+  (`0x81000001`, a primary key derived from the SPS) are encrypted to the SRK. If
+  the SPS changes, the same template yields a **different** SRK, and all child keys
+  become unrecoverable.
+- **Only `TPM2_Clear` changes the SPS** (plus manufacturing). `TPM2_Clear`
+  does "Reset storage hierarchy seed from RNG" and flushes persistent and
+  loaded objects of the storage and endorsement hierarchies [V reference implementation
   `Clear.c`: https://android.googlesource.com/platform/external/tpm2/+/716a46a/Clear.c;
   man `tpm2_clear`: https://www.mankier.com/1/tpm2_clear]. `TPM2_ChangeEPS`
-  и `TPM2_ChangePPS` меняют другие сиды и наш ключ не трогают, но
-  `ChangeEPS` тоже чистит объекты endorsement-иерархии [I].
-- **Наши ключи** — persistent-объекты `0x8101xxxx` в owner-иерархии под SRK
-  [V `signer/crates/hw-signer/src/tpm.rs:4,51`, конфиг]. Значит:
+  and `TPM2_ChangePPS` change the other seeds and do not touch our key, but
+  `ChangeEPS` also flushes endorsement-hierarchy objects [I].
+- **Our keys** are persistent objects `0x8101xxxx` in the owner hierarchy under the SRK
+  [V `signer/crates/hw-signer/src/tpm.rs:4,51`, config]. Therefore:
 
-| Событие | Что с нашим ключом | Комментарий |
+| Event | What happens to our key | Comment |
 |---|---|---|
-| Перезагрузка, обновление ОС/ядра | жив | persistent handle |
-| `TPM2_Clear` (tpm2_clear, «Clear TPM» в Windows Security / tpm.msc / UEFI, PPI-запрос из ОС) | **уничтожен** | SPS новый, persistent-объекты удалены [V] |
-| Смена SPS — только через Clear | **уничтожен** | «регенерация SRK» с тем же шаблоном без Clear даёт тот же SRK [I по спецификации: первичные ключи детерминированы от сида и шаблона] |
-| Случайный `key evict` / `tpm2_evictcontrol` | **уничтожен** | blob мы не храним, восстановить нечем [V: `KeyCmd::Evict` есть в CLI, main.rs:229] |
-| Обновление BIOS на машине с **fTPM** | зависит от вендора; **часто уничтожен** | §1.2 |
-| Обновление **прошивки самого TPM** (dTPM или fTPM) | часто уничтожен | Intel NUC: «TPM firmware update clears all data in the TPM» [V https://www.intel.com/content/dam/support/us/en/documents/mini-pcs/NUC5i3MY-TPM-Firmware-Update.pdf]; Infineon-апдейты (ROCA) требовали очистки [V https://www.getac.com/uploads/2023/01/infineon_tpm_security_update_20230116.pdf, I детали] |
-| Замена CPU (AMD fTPM) | **уничтожен** при ответе «Y» | §1.2 |
-| Замена материнской платы | fTPM — **уничтожен**; пинновый dTPM-модуль, переставленный на новую плату, — ключ жив [I], PCR-запечатанные — молчат | |
-| Изменение PCR (BIOS, Secure Boot db/dbx, загрузчик) | ключ жив, но **PCR-запечатанный не подписывает** | §1.4 |
-| Dictionary-attack lockout (неверный authValue N раз) | жив; **временная** блокировка | восстанавливается по таймеру или через lockoutAuth [I] |
+| Reboot, OS/kernel update | alive | persistent handle |
+| `TPM2_Clear` (tpm2_clear, "Clear TPM" in Windows Security / tpm.msc / UEFI, PPI request from the OS) | **destroyed** | new SPS, persistent objects removed [V] |
+| SPS change — only via Clear | **destroyed** | "regenerating the SRK" with the same template without Clear yields the same SRK [I per the specification: primary keys are deterministic from the seed and the template] |
+| Accidental `key evict` / `tpm2_evictcontrol` | **destroyed** | we do not store the blob, nothing to restore from [V: `KeyCmd::Evict` exists in the CLI, main.rs:229] |
+| BIOS update on a machine with **fTPM** | vendor-dependent; **often destroyed** | §1.2 |
+| Update of the **TPM's own firmware** (dTPM or fTPM) | often destroyed | Intel NUC: "TPM firmware update clears all data in the TPM" [V https://www.intel.com/content/dam/support/us/en/documents/mini-pcs/NUC5i3MY-TPM-Firmware-Update.pdf]; Infineon updates (ROCA) required a clear [V https://www.getac.com/uploads/2023/01/infineon_tpm_security_update_20230116.pdf, I details] |
+| CPU replacement (AMD fTPM) | **destroyed** when answering "Y" | §1.2 |
+| Motherboard replacement | fTPM — **destroyed**; a pin-header dTPM module moved to the new board — key alive [I], PCR-sealed keys go silent | |
+| PCR change (BIOS, Secure Boot db/dbx, bootloader) | key alive, but **a PCR-sealed key does not sign** | §1.4 |
+| Dictionary-attack lockout (wrong authValue N times) | alive; **temporary** lockout | recovers on a timer or via lockoutAuth [I] |
 
-**Защита от случайного/злонамеренного Clear из ОС:**
-`tpm2_clearcontrol -C l s` выставляет `disableClear`, и lockout-иерархия
-больше не может выполнить Clear. Platform-иерархия (BIOS) — может всегда, и
-снять `disableClear` тоже может только platform [V
+**Protection against an accidental/malicious Clear from the OS:**
+`tpm2_clearcontrol -C l s` sets `disableClear`, and the lockout hierarchy
+can no longer perform Clear. The platform hierarchy (BIOS) always can, and
+only platform can unset `disableClear` [V
 https://man.archlinux.org/man/extra/tpm2-tools/tpm2_clearcontrol.1.en].
-Значит, от «Clear TPM» в UEFI и PPI-запроса на очистку это не защищает
-[I: PPI выполняется прошивкой через platform-иерархию]. Ставить имеет
-смысл: от опечатки и от скрипта, сделавшего `tpm2_clear`, защищает.
+So this does not protect against "Clear TPM" in UEFI or a PPI clear request
+[I: PPI is executed by the firmware via the platform hierarchy]. It is worth
+setting: it protects against a typo and against a script that runs `tpm2_clear`.
 
 ### 1.2 Firmware TPM (Intel PTT, AMD fTPM)
 
-- **Где живёт:** fTPM — приложение внутри Intel CSME / AMD PSP. Его NV
-  лежит в SPI-флэше материнской платы и зашифровано ключом, привязанным к
-  CPU/чипсету [I]. Отсюда две уязвимости: перепрошивка SPI и смена CPU.
-- **AMD fTPM.** После замены CPU **или обновления BIOS** выводится
-  «New CPU installed. fTPM/PSP NV corrupted or fTPM/PSP NV structure changed»
-  с выбором Y (reset fTPM) или N (оставить) [V
+- **Where it lives:** an fTPM is an application inside Intel CSME / AMD PSP. Its NV
+  sits in the motherboard's SPI flash and is encrypted with a key bound to the
+  CPU/chipset [I]. Hence two weak points: reflashing the SPI and changing the CPU.
+- **AMD fTPM.** After a CPU replacement **or a BIOS update** it prints
+  "New CPU installed. fTPM/PSP NV corrupted or fTPM/PSP NV structure changed"
+  with a choice of Y (reset fTPM) or N (keep) [V
   https://www.wintips.org/?p=55403, https://forum.asrock.com/printer_friendly_posts.asp?TID=25098].
-  «Y» = Clear, ключи потеряны. При реальной смене CPU старые данные не
-  расшифровать [I]. Вероятность: **высокая** для настольных AMD при апгрейде
-  CPU, **средняя** при обновлениях AGESA/BIOS.
-- **Intel PTT.** Сообщения пользователей: «When you flash the BIOS on a system
-  using a firmware TPM, you lose the keys» [V форум,
+  "Y" = Clear, keys lost. With an actual CPU change the old data cannot be
+  decrypted [I]. Likelihood: **high** for desktop AMD on a CPU
+  upgrade, **medium** on AGESA/BIOS updates.
+- **Intel PTT.** User reports: "When you flash the BIOS on a system
+  using a firmware TPM, you lose the keys" [V forum,
   https://winraid.level1techs.com/t/bios-downgrade-without-tpm-key-reset/32584].
-  У крупных вендоров (Lenovo, Dell, HP) обычное обновление BIOS PTT, как
-  правило, сохраняет, а обновление ME-региона или даунгрейд — нет [I].
-  **Это наш тестнет-хост.** Вероятность: **средняя** за год при регулярных
-  обновлениях (LVFS/fwupd или вендорный апдейтер).
-- **CMOS reset / батарейка.** Сам по себе NV fTPM не стирает (он в SPI) [I],
-  но может выключить PTT в настройках или сбросить Secure Boot-ключи → PCR7
-  → запечатанные ключи молчат.
-- **Пункт «Clear TPM» / «Reset fTPM» в UEFI** — Clear, ключи потеряны [V MS
-  doc ниже].
-- **Ремонт ноутбука** (замена платы по гарантии) = новый fTPM =
-  **гарантированная потеря** [I, следует из архитектуры].
+  With major vendors (Lenovo, Dell, HP) a regular BIOS update usually
+  preserves PTT, while an ME-region update or a downgrade does not [I].
+  **This is our testnet host.** Likelihood: **medium** per year with regular
+  updates (LVFS/fwupd or the vendor updater).
+- **CMOS reset / battery.** By itself it does not wipe the fTPM NV (that is in SPI) [I],
+  but it can disable PTT in the settings or reset the Secure Boot keys → PCR7
+  → sealed keys go silent.
+- **The "Clear TPM" / "Reset fTPM" item in UEFI** — Clear, keys lost [V MS
+  doc below].
+- **Laptop repair** (board replacement under warranty) = new fTPM =
+  **guaranteed loss** [I, follows from the architecture].
 
-### 1.3 Дискретный TPM
+### 1.3 Discrete TPM
 
-- Отдельный чип (Infineon SLB 9670/9672, Nuvoton NPCT7xx, ST33). Отказы
-  самого чипа редки [I, публичной статистики нет]. Основные риски: смерть
-  платы, к которой чип припаян; обновление прошивки TPM (Infineon требовал
-  Clear); Clear из ОС или UEFI.
-- Плюс dTPM: прошивки BIOS/ME/PSP его не касаются. Пинновый модуль
-  (LPC/SPI-хедер) переживает замену материнской платы [I].
+- A separate chip (Infineon SLB 9670/9672, Nuvoton NPCT7xx, ST33). Failures
+  of the chip itself are rare [I, no public statistics]. The main risks: death
+  of the board the chip is soldered to; a TPM firmware update (Infineon required
+  Clear); Clear from the OS or UEFI.
+- Plus of a dTPM: BIOS/ME/PSP firmware updates do not touch it. A pin-header module
+  (LPC/SPI header) survives a motherboard replacement [I].
 
-### 1.4 PCR-запечатанные ключи (по замыслу)
+### 1.4 PCR-sealed keys (by design)
 
-- Агентский ключ на тестнете запечатан на PCR 0,2,4,7 [V конфиг].
-  `TPM2_PolicyPCR` с **точным** дайджестом [V `tpm.rs:240–252`]. После любого
-  изменения измерений ключ **жив, но не подписывает**. Откатить измерения
-  обычно нельзя.
-  - PCR0 — код прошивки (обновление BIOS);
-  - PCR2 — option ROM (замена GPU/NIC, обновление их прошивки);
-  - PCR4 — загрузчик (обновления shim/grub/systemd-boot, ядро при UKI);
-  - PCR7 — состояние Secure Boot (db/dbx/KEK; в 2026 году идёт массовая
-    ротация сертификатов Microsoft: KEK CA 2011 истекает 24.06.2026, UEFI CA
-    2011 — 27.06.2026, их заменяют на CA 2023 через обновления db/KEK [V
+- The agent key on the testnet is sealed to PCR 0,2,4,7 [V config].
+  `TPM2_PolicyPCR` with an **exact** digest [V `tpm.rs:240–252`]. After any
+  change to the measurements the key is **alive but does not sign**. Rolling back the measurements
+  is usually impossible.
+  - PCR0 — firmware code (BIOS update);
+  - PCR2 — option ROM (GPU/NIC replacement, update of their firmware);
+  - PCR4 — bootloader (shim/grub/systemd-boot updates, the kernel with UKI);
+  - PCR7 — Secure Boot state (db/dbx/KEK; in 2026 a mass rotation of
+    Microsoft certificates is under way: KEK CA 2011 expires 24.06.2026, UEFI CA
+    2011 — 27.06.2026, they are being replaced with CA 2023 via db/KEK updates [V
     https://support.microsoft.com/help/5062710,
     https://eclypsium.com/blog/microsoft-secure-boot-certificates-expire-2026/]).
-    Изменение db/KEK меняет PCR7 [I: PCR7 измеряет переменные Secure Boot].
-- **Вывод:** PCR-sealing для агентского ключа — это ежегодная (или чаще)
-  гарантированная «поломка». Это нормально, ротация дешёвая, но процедура
-  должна быть рутинной: перед обновлением прошивки создать новый ключ после
-  перезагрузки и ротировать. Для owner-ключа PCR-sealing **не использовать**
-  (правило 4 KEY_POLICY и так говорит, что он не защищает от компрометации
-  работающей системы). Альтернатива, переживающая обновления, —
-  `PolicyAuthorize` с подписанными политиками [I], для нас избыточна.
+    A db/KEK change changes PCR7 [I: PCR7 measures the Secure Boot variables].
+- **Conclusion:** PCR sealing for the agent key is a yearly (or more frequent)
+  guaranteed "breakage". That is fine, rotation is cheap, but the procedure
+  must be routine: before a firmware update, create a new key after
+  the reboot and rotate. Do **not** use PCR sealing for the owner key
+  (rule 4 of KEY_POLICY already says it does not protect against compromise of
+  the running system). An alternative that survives updates is
+  `PolicyAuthorize` with signed policies [I]; for us it is overkill.
 
 ### 1.5 Apple Secure Enclave (CryptoKit `dataRepresentation`)
 
-Устройство бэкенда: blob `dataRepresentation` лежит **файлом** в
-`~/Library/Application Support/tpm_sign/enclave/<label>` (или
-`$TPM_SIGN_ENCLAVE_DIR`); флаги `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`
-+ `.privateKeyUsage`, без биометрии
+How the backend works: the `dataRepresentation` blob lies **as a file** in
+`~/Library/Application Support/tpm_sign/enclave/<label>` (or
+`$TPM_SIGN_ENCLAVE_DIR`); flags `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`
++ `.privateKeyUsage`, no biometrics
 [V `hw-signer/src/secure_enclave.rs:1–19`, `swift/SecureEnclaveShim.swift:53–59`].
 
-| Событие | Результат |
+| Event | Result |
 |---|---|
-| Удалили файл blob (удаление пользователя, чистка `~/Library`, переустановка без переноса) | **ключ потерян** — «Deleting the blob file destroys the key for good» [V `secure_enclave.rs:15`] |
-| Обновление macOS | жив [I] |
-| blob скопирован на другой Mac / Migration Assistant | **бесполезен**: чужой SE не развернёт [V `secure_enclave.rs:16`; DTS: https://developer.apple.com/forums/thread/708749] |
-| Erase All Content and Settings / стирание с переустановкой | **потерян**, даже если blob сохранён: erase уничтожает ключи в effaceable storage / anti-replay, «does NOT survive … device restore, device erase» [V-вторичный: сводка форумов Apple DTS, https://developer.apple.com/forums/thread/708749; механизм — https://support.apple.com/en-is/guide/security/sece8608431d/web]. Точная привязка CryptoKit-blob к «эпохе» стирания — [I] |
-| Замена логической платы (SE в SoC/T2) | **потерян** (новый UID) [V: UID «unique to each device», Apple Platform Security] |
-| Смена Apple ID / выход из iCloud | не влияет [I: blob не в iCloud Keychain, флаг ThisDeviceOnly] |
-| Смена пароля пользователя | скорее всего жив [I]; **проверить** |
-| Owner-ключ с `.biometryCurrentSet` + добавили/удалили отпечаток | **ключ инвалидирован** [I, документированное поведение флага]. Для owner-ключа использовать `.userPresence` или `.biometryAny` |
+| The blob file was deleted (user deletion, `~/Library` cleanup, reinstall without migration) | **key lost** — "Deleting the blob file destroys the key for good" [V `secure_enclave.rs:15`] |
+| macOS update | alive [I] |
+| blob copied to another Mac / Migration Assistant | **useless**: another SE will not unwrap it [V `secure_enclave.rs:16`; DTS: https://developer.apple.com/forums/thread/708749] |
+| Erase All Content and Settings / erase with reinstall | **lost**, even if the blob was kept: erase destroys keys in effaceable storage / anti-replay, "does NOT survive … device restore, device erase" [V-secondary: summary of Apple DTS forums, https://developer.apple.com/forums/thread/708749; mechanism — https://support.apple.com/en-is/guide/security/sece8608431d/web]. The exact binding of a CryptoKit blob to the erase "epoch" — [I] |
+| Logic board replacement (SE in SoC/T2) | **lost** (new UID) [V: UID "unique to each device", Apple Platform Security] |
+| Apple ID change / signing out of iCloud | no effect [I: the blob is not in iCloud Keychain, ThisDeviceOnly flag] |
+| User password change | most likely alive [I]; **check** |
+| Owner key with `.biometryCurrentSet` + a fingerprint added/removed | **key invalidated** [I, documented behavior of the flag]. For the owner key use `.userPresence` or `.biometryAny` |
 
-**Практика:** blob **можно и нужно бэкапить** (Time Machine, вторая копия
-файла). Это не нарушает «no export»: blob бесполезен вне этого SE. Бэкап
-защищает от удаления файла, но не от стирания Mac или замены платы.
+**Practice:** the blob **can and should be backed up** (Time Machine, a second copy
+of the file). This does not violate "no export": the blob is useless outside this SE. The backup
+protects against file deletion, but not against erasing the Mac or replacing the board.
 
 ### 1.6 Windows CNG Platform Crypto Provider
 
-- Наш ключ — **пользовательский** persisted key (`NCryptCreatePersistedKey`,
-  флаги 0, не `NCRYPT_MACHINE_KEY_FLAG`) [V `hw-signer/src/windows_tpm.rs:40–60`].
-  PCP хранит обёрнутый TPM blob **файлом в профиле пользователя**
-  (`%LOCALAPPDATA%\Microsoft\Crypto\PCPKSP\…`) [I, путь не подтверждён
-  официально].
-- Удаление профиля, переустановка Windows, «Reset this PC → Remove
-  everything» → файл удалён → **ключ потерян** [I].
+- Our key is a **per-user** persisted key (`NCryptCreatePersistedKey`,
+  flags 0, not `NCRYPT_MACHINE_KEY_FLAG`) [V `hw-signer/src/windows_tpm.rs:40–60`].
+  PCP stores the wrapped TPM blob **as a file in the user profile**
+  (`%LOCALAPPDATA%\Microsoft\Crypto\PCPKSP\…`) [I, path not officially
+  confirmed].
+- Profile deletion, Windows reinstall, "Reset this PC → Remove
+  everything" → file deleted → **key lost** [I].
 - Clear TPM (Windows Security → Device security → Security processor
-  troubleshooting → Clear TPM, tpm.msc, `Clear-Tpm`, UEFI) → **все ключи
-  TPM потеряны**; после этого «Windows will automatically reinitialize it» [V
+  troubleshooting → Clear TPM, tpm.msc, `Clear-Tpm`, UEFI) → **all TPM keys
+  lost**; after that "Windows will automatically reinitialize it" [V
   https://learn.microsoft.com/en-us/windows/security/hardware-security/tpm/initialize-and-configure-ownership-of-the-tpm].
-  Microsoft сама рекомендует Clear перед чистой установкой ОС: ровно та
-  рутина, которую делает админ, не думая о нашем ключе.
-- Переключение между двумя TPM в UEFI (dTPM ↔ fTPM) Windows не
-  поддерживает, рекомендация MS — Clear и переустановка [V там же].
-- **Практика:** бэкап файла PCPKEY (как blob SE) безопасен и защищает от
-  потери профиля, но не от Clear [I].
+  Microsoft itself recommends Clear before a clean OS install: exactly the
+  routine an admin performs without thinking about our key.
+- Windows does not support switching between two TPMs in UEFI (dTPM ↔ fTPM);
+  MS recommends Clear and a reinstall [V same source].
+- **Practice:** backing up the PCPKEY file (like the SE blob) is safe and protects against
+  losing the profile, but not against Clear [I].
 
-### 1.7 USB secure elements и аппаратные кошельки
+### 1.7 USB secure elements and hardware wallets
 
-| Устройство | Неверный PIN | Прошивка | Физика | Восстановимость |
+| Device | Wrong PIN | Firmware | Physical | Recoverability |
 |---|---|---|---|---|
-| **YubiKey 5 PIV** | PIN 3 попытки → PUK 3 попытки → только `reset` PIV, **все слоты стёрты** [V https://docs.yubico.com/yesdk/users-manual/application-piv/pin-puk-mgmt-key.html] | не обновляется (ключ не сотрёт апдейт, но и уязвимость не закроет) [V OWNER_DEVICES] | потеря, поломка USB-разъёма, стирка | нет (если ключ сгенерирован внутри) |
-| **Nitrokey 3** | PIV/OpenPGP PIN 3 → PUK/Admin PIN → factory reset [V https://docs.nitrokey.com/nitrokey3/reset.html] | обновляемая; сохранность ключей при обновлении обычно да [I], исторические инциденты — проверить | как выше | нет |
-| **Ledger Nano S Plus** | **3 неверных PIN → сброс устройства**, восстановление из 24 слов [V https://ledger.com/academy/topics/ledgersolutions/ledger-pin-code-what-you-need-to-know] | Ethereum-app: ключ из seed, переживает всё. **OpenPGP-app: ключи в NVM приложения стираются при любом обновлении приложения или ОС**, если не включён **Seed Mode** [V https://openpgp.apps.ledger.com/app-openpgp.html, https://openpgp.apps.ledger.com/gpgcard-addon.html] | потеря | seed (при Seed Mode — и для P-256) |
-| **Trezor Safe 3/5/7** | 16 неверных PIN → wipe, задержки растут экспоненциально [V https://trezor.io/guides/trezor-devices/pin-protection-on-trezor-devices] | `SignIdentity` nist256p1 детерминирован от seed [V OWNER_DEVICES §1] — переживает всё | потеря | **seed (12–24 слова)** |
-| **TROPIC01 devkit** | PIN на чипе нет; если построен на `MAC_And_Destroy`, попытки ограничены чипом [V OWNER_DEVICES §3.1] | обновления FW чипа — сохранность R-mem [I] | потеря, ESD | нет. Плюс **уникальный риск**: потерян SH1PRIV при инвалидированном SH0 → сессию не открыть никогда, ключ мёртв, хотя чип цел. Инвалидировать все 4 pairing-слота = кирпич [V datasheet §7.5.3 через OWNER_DEVICES]. Ошибка в I-Config необратима |
-| **FIDO2-ключ** | 8 неверных PIN → блок; reset стирает credentials [I] | — | потеря | нет |
+| **YubiKey 5 PIV** | PIN 3 attempts → PUK 3 attempts → only PIV `reset`, **all slots wiped** [V https://docs.yubico.com/yesdk/users-manual/application-piv/pin-puk-mgmt-key.html] | not updatable (an update will not wipe the key, but will not fix a vulnerability either) [V OWNER_DEVICES] | loss, broken USB connector, washing machine | none (if the key was generated inside) |
+| **Nitrokey 3** | PIV/OpenPGP PIN 3 → PUK/Admin PIN → factory reset [V https://docs.nitrokey.com/nitrokey3/reset.html] | updatable; keys usually preserved across updates [I], historical incidents — check | as above | none |
+| **Ledger Nano S Plus** | **3 wrong PINs → device reset**, restore from 24 words [V https://ledger.com/academy/topics/ledgersolutions/ledger-pin-code-what-you-need-to-know] | Ethereum app: key from the seed, survives everything. **OpenPGP app: keys in the app's NVM are wiped on any app or OS update**, unless **Seed Mode** is enabled [V https://openpgp.apps.ledger.com/app-openpgp.html, https://openpgp.apps.ledger.com/gpgcard-addon.html] | loss | seed (with Seed Mode — for P-256 too) |
+| **Trezor Safe 3/5/7** | 16 wrong PINs → wipe, delays grow exponentially [V https://trezor.io/guides/trezor-devices/pin-protection-on-trezor-devices] | `SignIdentity` nist256p1 is deterministic from the seed [V OWNER_DEVICES §1] — survives everything | loss | **seed (12–24 words)** |
+| **TROPIC01 devkit** | no PIN on the chip; if built on `MAC_And_Destroy`, attempts are limited by the chip [V OWNER_DEVICES §3.1] | chip FW updates — R-mem preservation [I] | loss, ESD | none. Plus a **unique risk**: SH1PRIV lost while SH0 is invalidated → the session can never be opened, the key is dead although the chip is intact. Invalidating all 4 pairing slots = brick [V datasheet §7.5.3 via OWNER_DEVICES]. A mistake in I-Config is irreversible |
+| **FIDO2 key** | 8 wrong PINs → block; reset wipes credentials [I] | — | loss | none |
 
-### 1.8 Флешка с зашифрованным recovery-ключом
+### 1.8 USB drive with an encrypted recovery key
 
-- **Удержание данных без питания.** JEDEC JESD218 требует от *клиентских SSD*
-  1 год при 30 °C без питания; при нагреве удержание резко падает [V
-  https://www.anandtech.com/show/9248/the-truth-abou]. Для дешёвых
-  USB-флешек (TLC/QLC, неизвестный контроллер) спецификации нет, реальность
-  может быть хуже [I]. Отказ контроллера — внезапный и полный [I].
-- **Забытый пароль** — на практике самый вероятный отказ холодного ключа,
-  который используют раз в несколько лет [I]. KDF с N ≥ 2^18 (правило 5)
-  делает перебор нереальным и для самого владельца.
-- **Смягчение (без ослабления no-export, т.к. это и так экспортируемый
-  ключ):**
-  - две флешки разных производителей в двух местах;
-  - **третья копия на бумаге: QR шифротекста** (keystore JSON ~ 500 байт
-    помещается в один QR). Бумага не гниёт, а шифротекст без пароля
-    бесполезен [I];
-  - ежегодно вставлять, проверять расшифровку и подпись (§4), переписывать
-    файл (обновить заряд ячеек) [I];
-  - пароль: diceware 6–7 слов, записан на бумаге и хранится **отдельно** от
-    носителей (или у доверенного лица). Иначе — «ключ есть, пароля нет».
+- **Unpowered data retention.** JEDEC JESD218 requires 1 year at 30 °C unpowered
+  from *client SSDs*; with heat, retention drops sharply [V
+  https://www.anandtech.com/show/9248/the-truth-abou]. For cheap
+  USB drives (TLC/QLC, unknown controller) there is no specification, reality
+  may be worse [I]. Controller failure is sudden and total [I].
+- **A forgotten passphrase** is in practice the most likely failure of a cold key
+  that is used once every few years [I]. A KDF with N ≥ 2^18 (rule 5)
+  makes brute force infeasible for the owner as well.
+- **Mitigation (without weakening no-export, since this key is exportable
+  anyway):**
+  - two USB drives from different manufacturers in two places;
+  - **a third copy on paper: a QR of the ciphertext** (keystore JSON ~ 500 bytes
+    fits in one QR). Paper does not rot, and the ciphertext is useless without the passphrase
+    [I];
+  - yearly: plug it in, check decryption and signing (§4), rewrite the
+    file (refresh the cell charge) [I];
+  - passphrase: diceware 6–7 words, written on paper and stored **separately** from
+    the media (or with a trusted person). Otherwise — "the key is there, the passphrase is not".
 
 ---
 
-## 2. Последствия для каждой роли ключа
+## 2. Consequences for each key role
 
-### 2.1 Потерян агентский ключ
+### 2.1 Agent key lost
 
-- Owner выполняет `permission rotate` — одна root-операция, которая
-  заменяет permission новым ключом и/или мандатом [V `main.rs:130–145`].
-- **Ничего не теряется:**
-  - адрес аккаунта (Kernel-прокси уже задеплоен, `account` закреплён в
-    конфиге [V `agent.rs:140–143`]);
-  - баланс и токены;
-  - Safe: владелец — аккаунт, а не ключ [V `docs/ERC1271.md`];
-  - отношения с paymaster: спонсорство привязано к аккаунту [I по
+- The owner runs `permission rotate` — a single root operation that
+  replaces the permission with a new key and/or mandate [V `main.rs:130–145`].
+- **Nothing is lost:**
+  - the account address (the Kernel proxy is already deployed, `account` is pinned in the
+    config [V `agent.rs:140–143`]);
+  - balance and tokens;
+  - Safe: the owner is the account, not the key [V `docs/ERC1271.md`];
+  - relationship with the paymaster: sponsorship is bound to the account [I based on
     `paymaster sponsor`].
-- **Нюансы:**
-  - Бюджет `spent` в новом мандате начинается заново — это решение
-    владельца.
-  - Потерянный ключ не нужно «отзывать»: он мёртв. Если же ключ скорее
-    «скомпрометирован, чем потерян» — rotate тоже это закрывает.
-  - Owner должен быть доступен. Цепочка «агентский ключ умер → owner нужен
-    срочно» — основная практическая причина держать owner живым и
-    проверенным.
-  - Если агент и owner в одном fTPM (тестнет), они умирают **вместе**, и
-    §2.1 не помогает.
+- **Nuances:**
+  - The `spent` budget starts over in the new mandate — this is the owner's
+    decision.
+  - A lost key does not need to be "revoked": it is dead. If the key is more likely
+    "compromised than lost", rotate covers that too.
+  - The owner must be available. The chain "agent key died → owner needed
+    urgently" is the main practical reason to keep the owner alive and
+    tested.
+  - If the agent and the owner are in one fTPM (testnet), they die **together**, and
+    §2.1 does not help.
 
-### 2.2 Потерян owner-ключ, агент работает
+### 2.2 Owner key lost, agent still running
 
-- Агент продолжает работать в рамках мандата: allow-list, лимиты, бюджет,
+- The agent keeps working within the mandate: allow-list, limits, budget,
   `validUntil` [V `AgentPolicy.sol:183–207`].
-- **Недоступно** всё, что требует root:
-  - ротация и отзыв агента;
-  - смена мандата и продление `validUntil`;
+- **Unavailable** is everything that requires root:
+  - rotation and revocation of the agent;
+  - mandate change and extension of `validUntil`;
   - `upgradeTo`;
-  - установка и удаление модулей;
-  - любые переводы за пределами allow-list;
+  - installing and uninstalling modules;
+  - any transfers outside the allow-list;
   - `invalidateNonce`;
-  - смена owner Safe [V `Kernel.sol:88–103,135,157,330–440` — всё под
+  - changing the Safe owner [V `Kernel.sol:88–103,135,157,330–440` — all under
     `onlyEntryPointOrSelfOrRoot`].
-- Когда `block.timestamp > validUntil`, EntryPoint отклоняет любые
-  операции агента, потому что политика возвращает `validUntil`
+- Once `block.timestamp > validUntil`, the EntryPoint rejects any
+  agent operations, because the policy returns `validUntil`
   [V `AgentPolicy.sol:207`].
-- **Ограниченный «спасательный коридор».** Если в allow-list заранее есть
-  запись `(coldAddress, 0x00000000)`, агент (и только в сторону
-  `coldAddress`) может выводить ETH в пределах `maxValuePerOp` и `budget`
-  до `validUntil` [I по логике `_judge`]. Это безопасно: атакующий на
-  хосте агента может отправить деньги лишь владельцу. Но лимит бюджета
-  ограничивает спасаемую сумму, а ERC-20 так не выведешь: получатель
-  `transfer(to,…)` в allow-list не фиксируется [I: `AgentPolicy` проверяет
-  `(target, selector)` и лимиты токена, а не аргумент `to`].
+- **A limited "rescue corridor".** If the allow-list contains in advance an
+  entry `(coldAddress, 0x00000000)`, the agent can withdraw ETH (and only towards
+  `coldAddress`) within `maxValuePerOp` and `budget`
+  until `validUntil` [I based on the logic of `_judge`]. This is safe: an attacker on
+  the agent host can only send money to the owner. But the budget limit
+  caps the amount that can be rescued, and ERC-20 cannot be withdrawn this way: the recipient of
+  `transfer(to,…)` is not pinned in the allow-list [I: `AgentPolicy` checks
+  `(target, selector)` and token limits, not the `to` argument].
 
-### 2.3 Потеряны owner **и** recovery: «мёртвый аккаунт»
+### 2.3 Owner **and** recovery lost: the "dead account"
 
-- **Что происходит:**
-  - До `validUntil` работает только агент, в рамках мандата.
-  - После `validUntil` никто и никогда не сможет подписать операцию:
-    - root-путь требует owner-ключ;
-    - permission истёк;
-    - восстановления нет.
-  - Kernel не upgradeable без root.
-  - EntryPoint deposit аккаунта не вывести (`withdrawTo` вызывает только
-    аккаунт) [I].
-- **Что замораживается:**
-  - ETH и токены на Kernel-аккаунте;
-  - всё в Safe, где Kernel — единственный owner при threshold 1;
-  - NFT;
-  - позиции в протоколах, которые требуют действия владельца (LP,
-    стейкинг, займы — по займу возможна **ликвидация**, потому что
-    довнести залог некому);
-  - роли и права аккаунта в других контрактах (owner paymaster'а, если это
-    этот аккаунт).
-- **Масштаб:** 100 % стоимости аккаунта и подчинённых Safe, минус то, что
-  агент успеет вывести по «коридору» из §2.2.
-- **Вероятность:** складывается из независимых отказов. Пример на тестнете
-  (owner и агент в одном PTT, без recovery): вероятность «мёртвого
-  аккаунта» за год ≈ вероятность Clear/сброса PTT за год. По опыту
-  обновлений прошивок это единицы–десятки процентов [I, порядок величины].
-  С двумя независимыми носителями (owner на устройстве A, recovery на
-  флешках B1+B2 + QR) нужен одновременный отказ нескольких независимых
-  вещей, и вероятность падает на порядки — при условии регулярных проверок,
-  иначе отказы «копятся» незаметно.
+- **What happens:**
+  - Until `validUntil` only the agent works, within the mandate.
+  - After `validUntil` nobody will ever be able to sign an operation:
+    - the root path requires the owner key;
+    - the permission has expired;
+    - there is no recovery.
+  - Kernel is not upgradeable without root.
+  - The account's EntryPoint deposit cannot be withdrawn (`withdrawTo` can only be called by the
+    account) [I].
+- **What gets frozen:**
+  - ETH and tokens on the Kernel account;
+  - everything in a Safe where Kernel is the sole owner with threshold 1;
+  - NFTs;
+  - positions in protocols that require owner action (LP,
+    staking, loans — a loan may get **liquidated**, because
+    nobody can top up the collateral);
+  - roles and rights of the account in other contracts (the paymaster owner, if it is
+    this account).
+- **Scale:** 100 % of the value of the account and the Safes under it, minus what
+  the agent manages to withdraw through the "corridor" from §2.2.
+- **Likelihood:** composed of independent failures. Example on the testnet
+  (owner and agent in one PTT, no recovery): the likelihood of a "dead
+  account" per year ≈ the likelihood of a PTT Clear/reset per year. Based on experience
+  with firmware updates this is single-digit to tens of percent [I, order of magnitude].
+  With two independent media (owner on device A, recovery on
+  USB drives B1+B2 + QR) a simultaneous failure of several independent
+  things is required, and the likelihood drops by orders of magnitude — provided there are regular checks,
+  otherwise failures "accumulate" unnoticed.
 
 ---
 
-## 3. Архитектуры восстановления без экспорта ключей
+## 3. Recovery architectures without key export
 
-### 3.0 Что даёт Kernel v3.3 (проверено по коду `contracts/lib/kernel`, тег v3.3)
+### 3.0 What Kernel v3.3 provides (verified against the code in `contracts/lib/kernel`, tag v3.3)
 
-- **Root-валидатор ровно один** (`vs.rootValidator`). Остальные
-  валидаторы и permissions работают **только по выданным селекторам**
+- **There is exactly one root validator** (`vs.rootValidator`). The other
+  validators and permissions work **only for granted selectors**
   (`grantAccess`) [V `Kernel.sol:229–275,392`].
-- `changeRootValidator(vId, hook, data, hookData)`: если `vId` уже
-  установлен, данные игнорируются (`onInstall` не зовётся) [V
-  `Kernel.sol:135–155`]. **Поэтому новый owner-ключ нельзя положить в тот
-  же экземпляр `P256Validator`**: в нём уже лежит старый ключ, и
-  `onInstall` дважды не вызвать (`AlreadyInitialized`, [V
-  `P256Validator.sol` onInstall]). Нужен **другой экземпляр контракта**
-  (как в тесте `test_recovery_replacesALostOwner`) или
-  `uninstallValidation` + установка заново.
-- **ERC-1271** для не-root валидатора не проверяет селекторы
-  [V `ValidationManager.sol:424–449`] — см. находку в §0.
-- `invalidateNonce(n)` отзывает **все** не-root валидаторы и permissions с
-  `nonce < n` разом [V `ValidationManager.sol:146–158`, `Kernel.sol:242–244`]:
-  это «аварийный рубильник», задевающий и агента, и recovery.
-- Готовые модули рядом с Kernel:
-  - `WeightedECDSAValidator` (в самом репо Kernel v3.3): веса и порог
-    гвардианов, **`delay`** (proposal → approve → исполнение не раньше
-    `validAfter`), `veto` вызывает только сам аккаунт (`msg.sender` =
-    kernel, т. е. root-операция) [V
+- `changeRootValidator(vId, hook, data, hookData)`: if `vId` is already
+  installed, the data is ignored (`onInstall` is not called) [V
+  `Kernel.sol:135–155`]. **Therefore a new owner key cannot be put into the same
+  `P256Validator` instance**: it already holds the old key, and
+  `onInstall` cannot be called twice (`AlreadyInitialized`, [V
+  `P256Validator.sol` onInstall]). A **different contract instance** is needed
+  (as in the test `test_recovery_replacesALostOwner`) or
+  `uninstallValidation` + a fresh install.
+- **ERC-1271** for a non-root validator does not check selectors
+  [V `ValidationManager.sol:424–449`] — see the finding in §0.
+- `invalidateNonce(n)` revokes **all** non-root validators and permissions with
+  `nonce < n` at once [V `ValidationManager.sol:146–158`, `Kernel.sol:242–244`]:
+  this is a "kill switch" that hits both the agent and recovery.
+- Ready-made modules next to Kernel:
+  - `WeightedECDSAValidator` (in the Kernel v3.3 repo itself): guardian weights and
+    threshold, **`delay`** (proposal → approve → execution no earlier than
+    `validAfter`), `veto` can only be called by the account itself (`msg.sender` =
+    kernel, i.e. a root operation) [V
     `contracts/lib/kernel/src/validator/WeightedECDSAValidator.sol:17–23,141–187,189–258`].
-    Минусы: только secp256k1-гвардианы; **1271-путь проверяет порог подписей
-    и игнорирует delay** [V там же :280–303]. Адрес деплоя на Base — [I].
-  - ZeroDev `TimelockPolicy` (kernel-7579-plugins, последнее изменение
-    2026-04-07): **policy** для permission. No-op userOp с данными
-    предложения в подписи создаёт proposal. Исполнение возможно после
-    `delay` и до `delay + expirationPeriod` — это `validAfter`/`validUntil`,
-    которые форсит EntryPoint. `cancelProposal` вызывает аккаунт или
-    отдельный `guardian`-адрес. ERC-1271 **отклоняет** (revert)
+    Downsides: secp256k1 guardians only; **the 1271 path checks the signature threshold
+    and ignores the delay** [V same file :280–303]. Deployment address on Base — [I].
+  - ZeroDev `TimelockPolicy` (kernel-7579-plugins, last change
+    2026-04-07): a **policy** for a permission. A no-op userOp with the
+    proposal data in the signature creates a proposal. Execution is possible after
+    `delay` and before `delay + expirationPeriod` — these are `validAfter`/`validUntil`,
+    enforced by the EntryPoint. `cancelProposal` is called by the account or by
+    a separate `guardian` address. ERC-1271 is **rejected** (revert)
     [V https://github.com/zerodevapp/kernel-7579-plugins/blob/HEAD/src/policies/TimelockPolicy.sol,
-    строки 17–41, 143–264, 345–365]. Аудит и канонический адрес в README не
-    указаны [V README]; «не аудирован и не задеплоен» — [I].
+    lines 17–41, 143–264, 345–365]. An audit and a canonical address are not
+    given in the README [V README]; "not audited and not deployed" — [I].
   - ZeroDev recovery executor `0xe884C2868CC82c16177eC73a93f7D9E6F3A5DC6E`
-    (`doRecovery(validator, data)`) — **только для аккаунтов с
+    (`doRecovery(validator, data)`) — **only for accounts with
     `ECDSAValidator`** [V https://docs.zerodev.app/sdk/advanced/recovery];
-    таймлока нет. Нам не подходит.
-  - Rhinestone core-modules (ERC-7579, аудит Ackee 2024 [V
+    no timelock. Not suitable for us.
+  - Rhinestone core-modules (ERC-7579, Ackee audit 2024 [V
     https://ackee.xyz/blog/rhinestone-core-modules-audit-summary/]):
     - `SocialRecovery`;
-    - `DeadmanSwitch`: validator + hook. Hook при каждой операции
-      обновляет `lastAccess`; nominee (ECDSA или 1271-контракт через
-      `isValidSignatureNow`) получает доступ после
+    - `DeadmanSwitch`: validator + hook. The hook updates `lastAccess` on every
+      operation; the nominee (ECDSA or a 1271 contract via
+      `isValidSignatureNow`) gets access after
       `lastAccess + timeout`; ERC-1271 — revert [V
       https://raw.githubusercontent.com/rhinestonewtf/core-modules/main/src/DeadmanSwitch/DeadmanSwitch.sol];
-    - `ColdStorageHook` (таймлок исполнения).
+    - `ColdStorageHook` (execution timelock).
 
-    Совместимость с Kernel v3.3 сомнительна: Kernel не ставит hook
-    отдельно, только в паре с validator/executor/selector [V комментарий
-    `Kernel.sol:378–383`] — [I], проверять в форк-тесте.
+    Compatibility with Kernel v3.3 is questionable: Kernel does not install a hook
+    on its own, only paired with a validator/executor/selector [V comment
+    `Kernel.sol:378–383`] — [I], to be checked in a fork test.
 
-### 3.1 N независимых owner-устройств (избыточность)
+### 3.1 N independent owner devices (redundancy)
 
-- **Схема:** owner A — root; устройства B, C — по отдельному экземпляру
-  P-256-валидатора с `grantAccess(changeRootValidator)`. Устройство B
-  становится root, когда A потеряно. Это ровно механизм
-  `P256RecoveryValidator`, только ключ не «холодный», а в другом SE.
-  Альтернатива — свой `P256MultiKeyValidator` (1-of-N: любой из
-  зарегистрированных P-256 ключей = root), ~60–80 строк Solidity [I].
-- **Плюсы:**
-  - ни один ключ не экспортируется;
-  - отказы независимы (разные производители, места);
-  - каждое устройство тестируемо подписью (§4);
-  - на цепи всё уже есть.
-- **Минусы:**
-  - покупка и учёт второго устройства;
-  - каждое дополнительное устройство — ещё одна поверхность атаки
-    (любое = root);
-  - ERC-1271 — см. §0.
-- **Стоимость:** Nitrokey 3 €55 / YubiKey $58 / второй Mac или ПК с TPM
-  $0 [V OWNER_DEVICES §1]; Solidity — ноль (новый экземпляр
-  `P256RecoveryValidator` на каждое устройство) или ~80 строк.
+- **Scheme:** owner A is root; devices B, C each have a separate instance of the
+  P-256 validator with `grantAccess(changeRootValidator)`. Device B
+  becomes root when A is lost. This is exactly the
+  `P256RecoveryValidator` mechanism, only the key is not "cold" but in another SE.
+  Alternative — our own `P256MultiKeyValidator` (1-of-N: any of the
+  registered P-256 keys = root), ~60–80 lines of Solidity [I].
+- **Pros:**
+  - no key is exported;
+  - failures are independent (different manufacturers, places);
+  - each device is testable with a signature (§4);
+  - everything is already on-chain.
+- **Cons:**
+  - buying and tracking a second device;
+  - each additional device is one more attack surface
+    (any one = root);
+  - ERC-1271 — see §0.
+- **Cost:** Nitrokey 3 €55 / YubiKey $58 / a second Mac or PC with a TPM
+  $0 [V OWNER_DEVICES §1]; Solidity — zero (a new instance of
+  `P256RecoveryValidator` per device) or ~80 lines.
 
-### 3.2 Холодный recovery-owner
+### 3.2 Cold recovery owner
 
-| Вариант | Носитель | Валидатор | Плюсы | Минусы |
+| Option | Medium | Validator | Pros | Cons |
 |---|---|---|---|---|
-| Зашифрованный P-256 файл на флешке (текущий план) | 2 флешки + QR шифротекста | `P256RecoveryValidator` | дёшево; копируемо; кривая наша | ключ в памяти хоста в момент подписи [V KEY_POLICY rule 5]; пароль забывается; нет presence |
-| Trezor `SignIdentity` nist256p1 | устройство + seed 12–24 слова | `P256RecoveryValidator` как есть | ключ в железе, seed восстанавливается на **любом** новом Trezor; экран и PIN | $59; нужен клиент `trezor-client` |
-| Ledger OpenPGP-app в **Seed Mode** | устройство + seed | `P256RecoveryValidator` | у пользователя уже есть Nano S Plus | без Seed Mode ключ стирается при обновлении app/OS [V]; PIN 3 попытки → wipe |
-| Ledger/Trezor Ethereum-app | устройство + seed | ZeroDev `ECDSAValidator` `0x845A…cE57` как recovery-валидатор + `grantAccess(changeRootValidator)` | никакого кода в устройстве; seed | secp256k1; вторая ветка в CLI (alloy-signer-ledger/trezor) |
-| Бумажный P-256 ключ, импорт в SE при нужде | бумага в сейфе | `P256RecoveryValidator` | вечный носитель | plaintext-ключ на бумаге противоречит правилу 5 (там разрешён только *зашифрованный* носитель) — только как QR **шифротекста** |
+| Encrypted P-256 file on a USB drive (current plan) | 2 USB drives + QR of the ciphertext | `P256RecoveryValidator` | cheap; copyable; our curve | key in host memory at signing time [V KEY_POLICY rule 5]; passphrase gets forgotten; no presence |
+| Trezor `SignIdentity` nist256p1 | device + seed of 12–24 words | `P256RecoveryValidator` as is | key in hardware, seed restores onto **any** new Trezor; screen and PIN | $59; needs the `trezor-client` client |
+| Ledger OpenPGP app in **Seed Mode** | device + seed | `P256RecoveryValidator` | the user already has a Nano S Plus | without Seed Mode the key is wiped on an app/OS update [V]; PIN 3 attempts → wipe |
+| Ledger/Trezor Ethereum app | device + seed | ZeroDev `ECDSAValidator` `0x845A…cE57` as the recovery validator + `grantAccess(changeRootValidator)` | no code on the device; seed | secp256k1; a second branch in the CLI (alloy-signer-ledger/trezor) |
+| Paper P-256 key, imported into an SE when needed | paper in a safe | `P256RecoveryValidator` | everlasting medium | a plaintext key on paper contradicts rule 5 (which allows only an *encrypted* medium) — only as a QR of the **ciphertext** |
 
-### 3.3 M-of-N гвардианы / social recovery
+### 3.3 M-of-N guardians / social recovery
 
-- **Варианты:**
-  - (а) свой `P256ThresholdValidator` k-of-n, ~100–150 строк + аудит [I];
-  - (б) ZeroDev `WeightedECDSAValidator` (k1-гвардианы, есть delay+veto)
-    [V код];
-  - (в) Safe как гвардиан: recovery-валидатор, проверяющий 1271 у Safe
-    (k-of-n владельцев Safe) — своего такого валидатора в Kernel нет, ~40
-    строк поверх `SignatureCheckerLib` [I];
-  - (г) Rhinestone `SocialRecovery` [V существует; совместимость — I].
-- **Плюсы:** нет одной точки отказа и одной точки компрометации.
-- **Минусы:**
-  - координация людей;
-  - гвардианы тоже теряют ключи — их свежесть надо проверять;
-  - сговор k гвардианов = захват (нужен таймлок);
-  - сложнее в коде и в аудите.
-- Для одного владельца-разработчика это избыточно на старте. Разумно, когда
-  на аккаунте реальные суммы третьих лиц.
+- **Options:**
+  - (a) our own `P256ThresholdValidator` k-of-n, ~100–150 lines + audit [I];
+  - (b) ZeroDev `WeightedECDSAValidator` (k1 guardians, has delay+veto)
+    [V code];
+  - (c) a Safe as guardian: a recovery validator that checks 1271 on the Safe
+    (k-of-n Safe owners) — Kernel has no such validator of its own, ~40
+    lines on top of `SignatureCheckerLib` [I];
+  - (d) Rhinestone `SocialRecovery` [V exists; compatibility — I].
+- **Pros:** no single point of failure and no single point of compromise.
+- **Cons:**
+  - coordinating people;
+  - guardians lose keys too — their freshness has to be checked;
+  - collusion of k guardians = takeover (a timelock is needed);
+  - more complex in code and in audit.
+- For a single developer-owner this is overkill at the start. It makes sense once
+  the account holds real third-party funds.
 
-### 3.4 Таймлок на recovery (рекомендуется для ценного деплоя)
+### 3.4 Timelock on recovery (recommended for a value-bearing deployment)
 
-**Цель:** recovery может заменить root только после задержки `D`. Если
-текущий owner жив (его ключ украли не вместе с recovery), он видит событие
-и отменяет его.
+**Goal:** recovery can replace root only after a delay `D`. If
+the current owner is alive (their key was not stolen together with recovery), they see the event
+and cancel it.
 
-**Вариант A — ZeroDev `TimelockPolicy` + наш `P256Signer` как permission.**
+**Option A — ZeroDev `TimelockPolicy` + our `P256Signer` as a permission.**
 - Permission = `{signer: P256Signer(recoveryKey), policies: [TimelockPolicy(delay, expiry, guardian)]}`
   + `grantAccess(changeRootValidator)`.
-- **Подводный камень Kernel v3.3:** для no-op предложения нужен
-  `callData = execute(single, address(0), 0, "")` (пустой callData падает
-  на `bytes4(callData[0:4])`, `executeUserOp`-формы требуют hook). Значит,
-  permission-у нужно выдать и селектор `execute` [V
-  `Kernel.sol:259–273`; `TimelockPolicy._isNoOpCalldata`]. Это расширяет
-  права recovery до «любой `execute` после задержки». Эквивалентно root
-  после задержки, т. е. не хуже, чем `changeRootValidator`, но AgentPolicy-
-  подобного ограничения нет [I].
-- **Отмена:**
-  - root-операция владельца `TimelockPolicy.cancelProposal(...)`
-    (msg.sender = аккаунт);
-  - или с адреса `guardian` (EOA, напр. адрес Ledger).
-- **Плюсы:** код существует, ERC-1271 закрыт.
-- **Минусы:**
-  - аудит и деплой не подтверждены;
-  - нужен форк-тест.
+- **Kernel v3.3 pitfall:** a no-op proposal needs
+  `callData = execute(single, address(0), 0, "")` (empty callData fails
+  on `bytes4(callData[0:4])`, the `executeUserOp` forms require a hook). So
+  the permission must also be granted the `execute` selector [V
+  `Kernel.sol:259–273`; `TimelockPolicy._isNoOpCalldata`]. This expands the
+  recovery's rights to "any `execute` after the delay". Equivalent to root
+  after the delay, i.e. no worse than `changeRootValidator`, but there is no
+  AgentPolicy-like restriction [I].
+- **Cancellation:**
+  - the owner's root operation `TimelockPolicy.cancelProposal(...)`
+    (msg.sender = account);
+  - or from the `guardian` address (an EOA, e.g. a Ledger address).
+- **Pros:** the code exists, ERC-1271 is closed.
+- **Cons:**
+  - audit and deployment not confirmed;
+  - a fork test is needed.
 
-**Вариант B — свой `TimelockedP256RecoveryValidator`, ~100–130 строк [I].**
-Набросок:
-- `initiate(account, newRootCallHash, sig)`: вызывает кто угодно (газ-кошелёк).
-  Проверяет P-256 подпись recovery-ключа над
-  `(chainid, this, account, newRootCallHash, nonce)`, записывает
-  `pending[account] = {hash, readyAt = now + D}`, эмитит
+**Option B — our own `TimelockedP256RecoveryValidator`, ~100–130 lines [I].**
+Sketch:
+- `initiate(account, newRootCallHash, sig)`: callable by anyone (a gas wallet).
+  Checks the recovery key's P-256 signature over
+  `(chainid, this, account, newRootCallHash, nonce)`, records
+  `pending[account] = {hash, readyAt = now + D}`, emits
   `RecoveryInitiated`.
 - `validateUserOp`:
   - `bytes4(callData) == changeRootValidator`;
   - `keccak256(callData) == pending.hash`;
-  - подпись recovery-ключа над `userOpHash`;
-  - вернуть `packValidationData(validAfter = readyAt, validUntil = readyAt + W)`.
+  - the recovery key's signature over `userOpHash`;
+  - return `packValidationData(validAfter = readyAt, validUntil = readyAt + W)`.
   
-  EntryPoint сам не пустит операцию раньше срока.
-- `cancel()`: `msg.sender == account`, т. е. root-операция текущего
-  владельца. Агенту в allow-list **не давать** (иначе атакующий на хосте
-  агента блокирует восстановление).
+  The EntryPoint itself will not let the operation through early.
+- `cancel()`: `msg.sender == account`, i.e. a root operation of the current
+  owner. Do **not** give it to the agent in the allow-list (otherwise an attacker on the agent
+  host blocks recovery).
 - `isValidSignatureWithSender` → `ERC1271_INVALID`.
-- `onInstall(x, y, D, W)` с нижней границей `D` (например ≥ 1 день на
+- `onInstall(x, y, D, W)` with a lower bound on `D` (e.g. ≥ 1 day on
   mainnet).
 
-Плюсы: маленький, наш стиль, P-256 нативно, без лишних селекторов.
-Минусы: свой код → свой аудит.
+Pros: small, our style, native P-256, no extra selectors.
+Cons: our own code → our own audit.
 
-**Выбор `D`:**
-- `D` должен быть меньше интервала, за который владелец гарантированно
-  заметит событие: монитор событий на хосте агента ключей не требует и шлёт
-  алерт.
-- `D` должен быть больше времени реакции.
-- Рекомендация: тестнет 10 минут, mainnet 3–7 дней [I].
+**Choosing `D`:**
+- `D` must be shorter than the interval within which the owner is guaranteed to
+  notice the event: an event monitor on the agent host needs no keys and sends
+  an alert.
+- `D` must be longer than the reaction time.
+- Recommendation: testnet 10 minutes, mainnet 3–7 days [I].
 
-**Цена задержки:** при честной потере owner-ключа восстановление занимает
-`D` дней, а мандат агента должен эти дни пережить (`validUntil` с запасом,
+**The cost of the delay:** with an honest loss of the owner key, recovery takes
+`D` days, and the agent's mandate must outlive those days (`validUntil` with a margin,
 §4).
 
-**Dead-man вариант** (Rhinestone `DeadmanSwitch`-подобный): recovery
-активен, только если owner молчит `T` дней. Hook нужно повесить **только на
-root-валидатор**, иначе активность агента сбрасывает таймер. Семантически
-это самое точное средство против «владелец исчез», но в Kernel v3.3 hook
-на root ставится лишь при установке/смене root, а root-операции с hook идут
-через `executeUserOp` [V `Kernel.sol:150–153,259–273`]. Сложнее
-таймлока, отложить [I].
+**Dead-man option** (`DeadmanSwitch`-like, as in Rhinestone): recovery is
+active only if the owner has been silent for `T` days. The hook must be attached **only to
+the root validator**, otherwise agent activity resets the timer. Semantically
+this is the most precise tool against "the owner disappeared", but in Kernel v3.3 a hook
+on root is set only when root is installed/changed, and root operations with a hook go
+through `executeUserOp` [V `Kernel.sol:150–153,259–273`]. More complex than a
+timelock, postpone [I].
 
-### 3.5 Seed-derivable vs неэкспортируемый SE: компромисс
+### 3.5 Seed-derivable vs non-exportable SE: the trade-off
 
-| | Неэкспортируемый SE (TPM, SE, YubiKey, TROPIC01) | Seed-устройство (Trezor, Ledger Seed Mode) |
+| | Non-exportable SE (TPM, SE, YubiKey, TROPIC01) | Seed device (Trezor, Ledger Seed Mode) |
 |---|---|---|
-| Кража ключа удалённо | невозможна | невозможна (ключ в устройстве) |
-| Кража ключа физически | нужен сам чип + PIN/auth | достаточно **бумажки с seed** |
-| Поломка или потеря устройства | ключ потерян навсегда | новое устройство + seed = тот же ключ |
-| Аттестация «сгенерирован в чипе» | возможна | нет (ключ выводим) |
-| Что защищает | конфиденциальность | доступность |
+| Remote key theft | impossible | impossible (key in the device) |
+| Physical key theft | needs the chip itself + PIN/auth | a **slip of paper with the seed** is enough |
+| Device breakage or loss | key lost forever | new device + seed = the same key |
+| "Generated in the chip" attestation | possible | no (the key is derivable) |
+| What it protects | confidentiality | availability |
 
-Смешанная схема — **ежедневный ключ неэкспортируемый, recovery
-seed-backed** — разумна, потому что роли разные:
-- ежедневный ключ используется часто, на подключённых машинах: главное —
-  чтобы его нельзя было унести (компрометация хоста = только подписи в
-  момент присутствия);
-- recovery используется раз в годы, хранится офлайн: главное — чтобы он
-  **пережил** время. Риск кражи seed закрывается физическим хранением
-  (сейф, раздельные места; SLIP-39 Shamir у Trezor [I]) и **таймлоком на
-  цепи**: украденный seed ещё должен пережить `D` дней без отмены владельцем.
+A mixed scheme — **daily key non-exportable, recovery
+seed-backed** — is reasonable, because the roles differ:
+- the daily key is used often, on connected machines: the main thing is
+  that it cannot be carried off (host compromise = signatures only while
+  the attacker is present);
+- recovery is used once in years and stored offline: the main thing is that it
+  **outlives** time. The risk of seed theft is covered by physical storage
+  (a safe, separate places; SLIP-39 Shamir on Trezor [I]) and by an **on-chain
+  timelock**: a stolen seed still has to survive `D` days without being cancelled by the owner.
 
-Таймлок превращает «кражу recovery» из мгновенной катастрофы в
-обнаруживаемое событие. Поэтому именно он делает seed-backed recovery
-приемлемым рядом с no-export основным ключом.
+The timelock turns "recovery theft" from an instant catastrophe into a
+detectable event. That is why it is what makes seed-backed recovery
+acceptable next to a no-export primary key.
 
 ---
 
-## 4. Эксплуатационные практики
+## 4. Operational practices
 
-1. **Health check без отправки транзакции** (`agent-signer health`) для
-   owner, recovery и агента:
-   - прочитать с цепи зарегистрированный ключ:
+1. **Health check without sending a transaction** (`agent-signer health`) for
+   owner, recovery and agent:
+   - read the registered key from the chain:
      `P256Validator.publicKeys(account)`,
-     `P256RecoveryValidator.publicKeys(account)`, ключ агента из
+     `P256RecoveryValidator.publicKeys(account)`, the agent key from
      `P256Signer`;
-   - попросить устройство подписать случайный challenge
+   - ask the device to sign a random challenge
      (`keccak("tpm_sign health" ‖ chainId ‖ account ‖ role ‖ timestamp)`);
-   - проверить off-chain крейтом `p256` против ключа **с цепи**, а не из
-     конфига: так ловится и «ключ жив, но не тот»;
-   - дополнительно: `eth_call` симуляция реальной root-операции через
-     бандлер (`eth_estimateUserOperationGas` прогоняет валидацию) — без
-     отправки [I].
+   - verify off-chain with the `p256` crate against the key **from the chain**, not from the
+     config: this also catches "the key is alive, but it is the wrong one";
+   - additionally: an `eth_call` simulation of a real root operation via the
+     bundler (`eth_estimateUserOperationGas` runs validation) — without
+     sending [I].
    
-   Owner с presence (Touch ID / кнопка) — проверять раз в месяц вручную;
-   агент — автоматически ежедневно. PCR-запечатанный агент после обновления
-   прошивки здесь и отвалится — это сигнал к ротации.
-2. **Продление мандата как heartbeat.**
-   - `validUntil` = 2× интервал продления (например, продление раз в 30 дней,
-     `validUntil` на 60). Каждое продление — это root-подпись, т. е.
-     доказательство, что owner жив.
-   - Пропуск продления → алерт задолго до заморозки.
-   - С таймлоком на recovery: `validUntil` − сейчас > `D` + время на
-     покупку нового устройства, иначе агент встанет во время честного
-     восстановления.
-3. **Мониторинг событий** (на хосте агента, без ключей): `RootValidatorUpdated`,
+   Owner with presence (Touch ID / button) — check monthly by hand;
+   agent — automatically daily. A PCR-sealed agent will fail here after a firmware
+   update — that is the signal to rotate.
+2. **Mandate renewal as a heartbeat.**
+   - `validUntil` = 2× the renewal interval (e.g. renewal every 30 days,
+     `validUntil` at 60). Each renewal is a root signature, i.e.
+     proof that the owner is alive.
+   - A missed renewal → an alert long before the freeze.
+   - With a timelock on recovery: `validUntil` − now > `D` + time to
+     buy a new device, otherwise the agent stops during an honest
+     recovery.
+3. **Event monitoring** (on the agent host, without keys): `RootValidatorUpdated`,
    `ModuleInstalled/Uninstalled`, `RecoveryInitiated` / `ProposalCreated`,
-   `NonceInvalidated`, `P256KeyRegistered` → алерт владельцу (почта или
+   `NonceInvalidated`, `P256KeyRegistered` → alert to the owner (email or
    Telegram).
-4. **Реестр ключей** (`docs/KEYS.md` или приватный файл вне репо):
-   - роль;
-   - публичный ключ;
-   - валидатор и адрес;
-   - устройство и серийный номер;
-   - место хранения;
-   - кто знает PIN или пароль;
-   - дата последней проверки.
+4. **Key registry** (`docs/KEYS.md` or a private file outside the repo):
+   - role;
+   - public key;
+   - validator and address;
+   - device and serial number;
+   - storage location;
+   - who knows the PIN or passphrase;
+   - date of the last check.
 
-   Для TPM добавить: машина, fTPM или dTPM, handle, PCR-sealing да/нет, дату
-   последнего обновления BIOS.
-5. **Перед обновлением BIOS/прошивки на хосте с fTPM:**
-   - запустить health check;
-   - убедиться, что owner **не** на этом TPM (или recovery жив);
-   - после обновления: проверить агента и при необходимости ротировать.
+   For a TPM add: machine, fTPM or dTPM, handle, PCR sealing yes/no, date
+   of the last BIOS update.
+5. **Before a BIOS/firmware update on a host with an fTPM:**
+   - run the health check;
+   - make sure the owner is **not** on this TPM (or recovery is alive);
+   - after the update: check the agent and rotate if needed.
 
-   На тестнет-хосте до появления recovery — **не обновлять BIOS**.
-6. **`tpm2_clearcontrol -C l s`** на хостах с ключами (§1.1), плюс
-   lockoutAuth. Не защищает от Clear из UEFI, но защищает от скрипта.
-7. **Бэкапить wrapped blobs там, где они есть:** SE `dataRepresentation`,
-   Windows PCPKEY. Для Linux можно дополнительно хранить
-   `TPM2B_PUBLIC/PRIVATE` агентского ключа, чтобы `evict` был обратим [I].
-   Всё это безопасно: blob бесполезен вне своего чипа.
-8. **Флешка recovery:**
-   - две копии на разных носителях и в разных местах + QR шифротекста;
-   - раз в год: расшифровать на офлайн-машине, подписать health-challenge,
-     переписать файл.
-   - пароль хранить отдельно.
-9. **Репетиция recovery на тестнете** — раз в год и после каждого изменения
-   кода: полный путь «owner потерян → recovery → новый owner → агент
-   работает → старый owner-валидатор удалён → 1271 со старым и recovery
-   ключом не проходит». Часть уже покрыта тестом
+   On the testnet host, until recovery exists — **do not update the BIOS**.
+6. **`tpm2_clearcontrol -C l s`** on hosts with keys (§1.1), plus
+   lockoutAuth. Does not protect against Clear from UEFI, but protects against a script.
+7. **Back up wrapped blobs where they exist:** SE `dataRepresentation`,
+   Windows PCPKEY. On Linux one can additionally store the agent key's
+   `TPM2B_PUBLIC/PRIVATE` so that `evict` is reversible [I].
+   All of this is safe: a blob is useless outside its chip.
+8. **Recovery USB drive:**
+   - two copies on different media and in different places + QR of the ciphertext;
+   - once a year: decrypt on an offline machine, sign a health challenge,
+     rewrite the file.
+   - store the passphrase separately.
+9. **Recovery rehearsal on the testnet** — once a year and after every code
+   change: the full path "owner lost → recovery → new owner → agent
+   works → old owner validator removed → 1271 with the old and the recovery
+   key does not pass". Part of it is already covered by the test
    `test_recovery_replacesALostOwner` [V].
-10. **Safe:** если в Safe лежат значимые средства, а единственный owner —
-    Kernel, Safe наследует все риски аккаунта. Вариант: второй owner Safe
-    (тот же recovery-ключ через отдельный адрес) или модуль с задержкой
-    (Zodiac Delay) [I]. Это усложняет `AgentPolicy`-проверки Safe — решать
-    отдельно.
+10. **Safe:** if the Safe holds significant funds and its sole owner is
+    Kernel, the Safe inherits all of the account's risks. Option: a second Safe owner
+    (the same recovery key via a separate address) or a module with a delay
+    (Zodiac Delay) [I]. This complicates the `AgentPolicy` checks of the Safe — to be decided
+    separately.
 
 ---
 
-## 5. Рекомендация для проекта
+## 5. Recommendation for the project
 
-### 5a. Тестнет (сейчас)
+### 5a. Testnet (now)
 
-Минимум, который реально убирает «один Clear = конец»:
+The minimum that actually removes "one Clear = the end":
 
-1. **`P256RecoveryValidator` + `grantAccess(changeRootValidator)`** — уже в
-   работе [V]. Ключ — зашифрованный файл (scrypt N ≥ 2^18 + AEAD) на **двух**
-   флешках + QR шифротекста. Расшифровка только на машине, которая не хост
-   агента (KEY_POLICY rule 5).
-2. **Сразу закрыть 1271** у recovery: переопределить
-   `isValidSignatureWithSender` → `ERC1271_INVALID`, тест: подпись
-   recovery-ключа через `Kernel.isValidSignature` отклоняется.
-3. **Процедура recovery = три шага, все в CLI:**
+1. **`P256RecoveryValidator` + `grantAccess(changeRootValidator)`** — already in
+   progress [V]. The key is an encrypted file (scrypt N ≥ 2^18 + AEAD) on **two**
+   USB drives + QR of the ciphertext. Decryption only on a machine that is not the agent
+   host (KEY_POLICY rule 5).
+2. **Close 1271 on recovery right away:** override
+   `isValidSignatureWithSender` → `ERC1271_INVALID`, test: a signature by the
+   recovery key via `Kernel.isValidSignature` is rejected.
+3. **Recovery procedure = three steps, all in the CLI:**
    1. recovery-op `changeRootValidator(recoveryVId)`;
-   2. root-op (теперь recovery) batch:
+   2. root-op (now recovery) batch:
       `uninstallValidation(oldOwnerVId)` + `changeRootValidator(freshValidatorVId, key)`.
-      Свежий экземпляр `P256Validator` нужен из-за `AlreadyInitialized`;
-      вместо него можно `uninstallValidation(P256Validator)` и затем
-      повторную установку того же адреса;
-   3. проверка: health check нового owner, агент работает, старый owner и
-      recovery не проходят ни userOp, ни 1271.
+      A fresh `P256Validator` instance is needed because of `AlreadyInitialized`;
+      instead, one can `uninstallValidation(P256Validator)` and then
+      reinstall the same address;
+   3. verification: health check of the new owner, the agent works, the old owner and
+      recovery pass neither userOp nor 1271.
    
-   Шаг 2 можно объединить с шагом 1, только если recovery получает больше
-   селекторов. Не надо: два шага проще аудировать.
-4. **Тест в Foundry** на остаточный 1271 старого owner-валидатора после
-   recovery: он должен быть удалён.
-5. **`validUntil`** тестнет-мандата (19.11.2026) продлевать
-   `permission rotate` и рассматривать как heartbeat.
-6. **Не обновлять BIOS** этого Lenovo, пока recovery не установлен и не
-   отрепетирован.
+   Step 2 can be merged with step 1 only if recovery gets more
+   selectors. Don't: two steps are easier to audit.
+4. **A Foundry test** for residual 1271 of the old owner validator after
+   recovery: it must be removed.
+5. **`validUntil`** of the testnet mandate (19.11.2026) — extend it with
+   `permission rotate` and treat it as a heartbeat.
+6. **Do not update the BIOS** of this Lenovo until recovery is installed and
+   rehearsed.
 
-Таймлок на тестнете не обязателен, но удобно сразу сделать вариант B с
-`D` = 10 мин: отрепетировать UX ожидания и отмены.
+A timelock on the testnet is not required, but it is convenient to build option B right away with
+`D` = 10 min: to rehearse the UX of waiting and cancelling.
 
-### 5b. Деплой с ценностью (Base mainnet)
+### 5b. Value-bearing deployment (Base mainnet)
 
-| Роль | Носитель | Валидатор | Почему |
+| Role | Medium | Validator | Why |
 |---|---|---|---|
-| Агент | TPM/SE хоста агента (PCR-sealing по желанию) | `P256Signer` + `AgentPolicy` | как сейчас; потеря дешёвая |
-| Owner (daily) | **отдельное** неэкспортируемое устройство с presence: Nitrokey 3 / YubiKey PIV (touch=always) / Mac SE с `.userPresence` | `P256Validator` (root) | KEY_POLICY rule 3 (i)/(ii) |
-| Owner #2 (опц.) | второе устройство другого типа | `P256RecoveryValidator` #2, `changeRootValidator`, **без** таймлока или с коротким | быстрое восстановление при поломке daily |
-| Recovery (cold) | **Trezor `SignIdentity` nist256p1** (seed в сейфе, SLIP-39 по желанию) **или** зашифрованный файл ×2 + QR | **`TimelockedP256RecoveryValidator`** (`D` = 3–7 дней), 1271 закрыт | переживает любые поломки; кража гасится таймлоком |
-| Монитор | хост агента, без ключей | — | алерт на `RecoveryInitiated` / смену root |
+| Agent | TPM/SE of the agent host (PCR sealing optional) | `P256Signer` + `AgentPolicy` | as now; loss is cheap |
+| Owner (daily) | a **separate** non-exportable device with presence: Nitrokey 3 / YubiKey PIV (touch=always) / Mac SE with `.userPresence` | `P256Validator` (root) | KEY_POLICY rule 3 (i)/(ii) |
+| Owner #2 (opt.) | a second device of a different type | `P256RecoveryValidator` #2, `changeRootValidator`, **without** a timelock or with a short one | fast recovery if the daily one breaks |
+| Recovery (cold) | **Trezor `SignIdentity` nist256p1** (seed in a safe, SLIP-39 optional) **or** encrypted file ×2 + QR | **`TimelockedP256RecoveryValidator`** (`D` = 3–7 days), 1271 closed | survives any breakage; theft is neutralized by the timelock |
+| Monitor | agent host, no keys | — | alert on `RecoveryInitiated` / root change |
 
-Плюс:
-- mandate heartbeat (продление каждые 30 дней, `validUntil` = 60 дней > `D` + запас);
-- ежемесячный health check owner;
-- ежегодный health check recovery;
-- ежегодная репетиция на Base Sepolia;
-- реестр ключей;
-- `disableClear` на TPM-хостах.
+Plus:
+- mandate heartbeat (renewal every 30 days, `validUntil` = 60 days > `D` + margin);
+- monthly owner health check;
+- yearly recovery health check;
+- yearly rehearsal on Base Sepolia;
+- key registry;
+- `disableClear` on TPM hosts.
 
-### 5c. Работа по коду
+### 5c. Code work
 
 **Solidity:**
 1. `P256RecoveryValidator.isValidSignatureWithSender` → `ERC1271_INVALID`
-   (≈5 строк) + тест.
-2. Тест: после recovery старый owner-валидатор удалён, его 1271 не
-   проходит.
-3. `TimelockedP256RecoveryValidator` (~100–130 строк): `initiate` / `cancel` /
-   `validateUserOp` с `validAfter` / 1271 закрыт; тесты:
-   - раньше срока — refused;
-   - cancel владельцем;
-   - чужой callData;
-   - повтор после исполнения;
-   - истечение окна `W`.
+   (≈5 lines) + test.
+2. Test: after recovery the old owner validator is removed, its 1271 does not
+   pass.
+3. `TimelockedP256RecoveryValidator` (~100–130 lines): `initiate` / `cancel` /
+   `validateUserOp` with `validAfter` / 1271 closed; tests:
+   - before the deadline — refused;
+   - cancel by the owner;
+   - foreign callData;
+   - replay after execution;
+   - expiry of the `W` window.
    
-   Альтернатива — форк-тест ZeroDev `TimelockPolicy` с `P256Signer` (нужен
-   `execute`-грант, см. §3.4).
-4. (Опц.) `P256MultiKeyValidator` 1-of-N или k-of-n, если нужно несколько
-   daily-устройств.
+   Alternative — a fork test of ZeroDev `TimelockPolicy` with `P256Signer` (needs
+   the `execute` grant, see §3.4).
+4. (Opt.) `P256MultiKeyValidator` 1-of-N or k-of-n, if several
+   daily devices are needed.
 
 **CLI (`agent-signer`):**
-- `owner add-recovery --recovery-key <spec>` — уже есть
-  `add_recovery_calldata` [V `kernel.rs:48–67`]. Добавить проверку, что
-  валидатор ещё не установлен, и печать реестровой записи.
+- `owner add-recovery --recovery-key <spec>` — there is already
+  `add_recovery_calldata` [V `kernel.rs:48–67`]. Add a check that the
+  validator is not yet installed, and printing of the registry entry.
 - `owner recover --new-owner <spec>`:
-  - шаг 1: recovery-op `changeRootValidator(recoveryVId)`; для таймлока —
-    сначала `recover initiate`, потом `recover execute` после `D`;
-  - шаг 2: batch `uninstallValidation(old)` + `changeRootValidator(fresh, key)`;
-  - шаг 3: обновить конфиг (`owner`, `ownerPublicKey` — адрес аккаунта
-    остаётся закреплён в `account`) и запустить health.
-- `owner recover cancel` — root-op отмены.
-- `health [--role owner|recovery|agent]` — подпись challenge + сверка с
-  ключом **с цепи** + опц. симуляция через бандлер; код выхода для cron.
-- `watch` — подписка на события аккаунта и валидаторов → stdout/webhook.
-- `key backup-blob` для SE и CNG (копия wrapped blob) [I].
-- Бэкенд `keyfile` (encrypted) уже упомянут в `agent.rs:68–73,159–162` [V].
-  Добавить `--print-qr` для бумажной копии шифротекста.
+  - step 1: recovery-op `changeRootValidator(recoveryVId)`; with a timelock —
+    first `recover initiate`, then `recover execute` after `D`;
+  - step 2: batch `uninstallValidation(old)` + `changeRootValidator(fresh, key)`;
+  - step 3: update the config (`owner`, `ownerPublicKey` — the account address
+    stays pinned in `account`) and run health.
+- `owner recover cancel` — the cancellation root-op.
+- `health [--role owner|recovery|agent]` — challenge signature + comparison with
+  the key **from the chain** + opt. simulation via the bundler; exit code for cron.
+- `watch` — subscription to account and validator events → stdout/webhook.
+- `key backup-blob` for SE and CNG (a copy of the wrapped blob) [I].
+- The `keyfile` (encrypted) backend is already mentioned in `agent.rs:68–73,159–162` [V].
+  Add `--print-qr` for a paper copy of the ciphertext.
 
-**Документация:**
-- раздел «Что делать, если…» (TPM очищен / Mac стёрт / устройство
-  потеряно / флешка не читается / пароль забыт);
-- реестр ключей;
-- запрет co-located owner на fTPM для mainnet (в духе Hardening).
+**Documentation:**
+- a "What to do if…" section (TPM cleared / Mac erased / device
+  lost / USB drive unreadable / passphrase forgotten);
+- key registry;
+- a ban on a co-located owner on an fTPM for mainnet (in the spirit of Hardening).
 
 ---
 
-## 6. Источники
+## 6. Sources
 
-- **Код:**
-  - `contracts/lib/kernel/src/Kernel.sol` (v3.3, коммит `cd697c7`):
+- **Code:**
+  - `contracts/lib/kernel/src/Kernel.sol` (v3.3, commit `cd697c7`):
     88–103, 135–155, 229–275, 392, 405–427;
   - `contracts/lib/kernel/src/core/ValidationManager.sol`: 146–158,
     223–245, 424–449, 542–575;
@@ -786,15 +788,15 @@ seed-backed** — разумна, потому что роли разные:
 - **Apple:**
   - https://support.apple.com/en-is/guide/security/sece8608431d/web
   - https://developer.apple.com/forums/thread/708749
-- **Устройства:**
+- **Devices:**
   - https://docs.yubico.com/yesdk/users-manual/application-piv/pin-puk-mgmt-key.html
   - https://docs.nitrokey.com/nitrokey3/reset.html
   - https://ledger.com/academy/topics/ledgersolutions/ledger-pin-code-what-you-need-to-know
   - https://openpgp.apps.ledger.com/app-openpgp.html
   - https://openpgp.apps.ledger.com/gpgcard-addon.html
   - https://trezor.io/guides/trezor-devices/pin-protection-on-trezor-devices
-- **Флеш-память:** https://www.anandtech.com/show/9248/the-truth-abou
-- **Модули:**
+- **Flash memory:** https://www.anandtech.com/show/9248/the-truth-abou
+- **Modules:**
   - https://github.com/zerodevapp/kernel-7579-plugins (README, `src/policies/TimelockPolicy.sol`)
   - https://docs.zerodev.app/sdk/advanced/recovery
   - https://raw.githubusercontent.com/rhinestonewtf/core-modules/main/src/DeadmanSwitch/DeadmanSwitch.sol
