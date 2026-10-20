@@ -25,6 +25,11 @@ tx [`0x785332…e669bb`](https://sepolia.basescan.org/tx/0x785332105fd8085d50e54
 - Phase 3 — `WhitelistPaymaster` sponsors listed accounts, so an agent
   account need not hold ETH at all (`demo --sponsored`,
   tx [`0xae73b5…5f2106`](https://sepolia.basescan.org/tx/0xae73b53d17b74ad8c7b6d65f8cc98abd40c513a808b09764828dff8a3a5f2106));
+  the owner key rotates or revokes the agent's mandate in one root operation
+  (tx [`0x4519a3…195370`](https://sepolia.basescan.org/tx/0x4519a35b5acdc19ffe713326964b5214677825d11040684f9869adbd8b195370));
+  TPM keys can be sealed to the measured boot state (`key create --pcrs
+  0,2,4,7`) and a sealed agent key ran on-chain
+  (tx [`0xc81174…75db4b`](https://sepolia.basescan.org/tx/0xc8117420694a9c17d3c91a14df3ce70f00298d2bc0fcd38f55997c1bfc75db4b));
   a Secure Enclave backend awaits its first run on a Mac
   ([`docs/SECURE_ENCLAVE.md`](docs/SECURE_ENCLAVE.md)).
 
@@ -98,6 +103,20 @@ $B op send --agent $A --env-file $E --target 0x... --data 0x...   # anything the
 `account fund` simulates `createAccount` first and refuses to send ETH to an
 address that could never be deployed. Operations outside the mandate are
 rejected during simulation, before any gas is spent.
+
+Gasless, and the owner's controls:
+
+```sh
+$B paymaster deposit --agent $A --env-file $E --wei 3000000000000000
+$B paymaster sponsor --agent $A --env-file $E          # list the account
+$B demo --agent $A --env-file $E --sponsored           # the paymaster pays
+
+$B key create --handle 0x81010012 --pcrs 0,2,4,7       # a key sealed to the boot state
+# in agent.json: pin "account", point "agent" at {"tpm": {"handle": "0x81010012", "pcrs": [0,2,4,7]}},
+# give the new permission a fresh id — then, signed by the owner key:
+$B permission rotate --agent $A --env-file $E --old-id 0x61676e74 --sponsored
+$B permission revoke --agent $A --env-file $E --id 0x61676e32          # when the agent is retired
+```
 
 ## Reference
 

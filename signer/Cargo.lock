@@ -2306,6 +2306,7 @@ dependencies = [
  "p256",
  "rand_core 0.6.4",
  "security-framework",
+ "sha2",
  "thiserror 1.0.69",
  "tss-esapi",
 ]

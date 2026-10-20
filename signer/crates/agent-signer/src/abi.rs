@@ -22,6 +22,19 @@ sol! {
         error FailedOp(uint256 opIndex, string reason);
         error FailedOpWithRevert(uint256 opIndex, string reason, bytes inner);
 
+        event UserOperationEvent(
+            bytes32 indexed userOpHash,
+            address indexed sender,
+            address indexed paymaster,
+            uint256 nonce,
+            bool success,
+            uint256 actualGasCost,
+            uint256 actualGasUsed
+        );
+        event UserOperationRevertReason(
+            bytes32 indexed userOpHash, address indexed sender, uint256 nonce, bytes revertReason
+        );
+
         function getNonce(address sender, uint192 key) external view returns (uint256 nonce);
         function getUserOpHash(PackedUserOperation calldata userOp) external view returns (bytes32);
         function handleOps(PackedUserOperation[] calldata ops, address beneficiary) external;
@@ -34,11 +47,24 @@ sol! {
         function getAddress(bytes calldata data, bytes32 salt) external view returns (address);
     }
 
+    #[sol(rpc)]
     interface IKernel {
         struct ValidationConfig {
             uint32 nonce;
             address hook;
         }
+
+        struct Execution {
+            address target;
+            uint256 value;
+            bytes callData;
+        }
+
+        function uninstallValidation(bytes21 vId, bytes calldata deinitData, bytes calldata hookDeinitData)
+            external
+            payable;
+        function currentNonce() external view returns (uint32);
+        function validationConfig(bytes21 vId) external view returns (ValidationConfig memory);
 
         function initialize(
             bytes21 rootValidator,

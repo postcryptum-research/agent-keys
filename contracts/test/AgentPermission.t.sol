@@ -14,6 +14,7 @@ import {IEntryPoint} from "kernel/src/interfaces/IEntryPoint.sol";
 import {IERC7579Account} from "kernel/src/interfaces/IERC7579Account.sol";
 import {IHook, IValidator} from "kernel/src/interfaces/IERC7579Modules.sol";
 import {PackedUserOperation} from "kernel/src/interfaces/PackedUserOperation.sol";
+import {Execution} from "kernel/src/types/Structs.sol";
 import {CallType, ExecMode, PermissionId, ValidationId} from "kernel/src/types/Types.sol";
 import {
     CALLTYPE_BATCH,
@@ -42,7 +43,7 @@ contract Counter {
     receive() external payable {}
 }
 
-/// Phase 1b: the agent's hardware key is a *permission*, not the root.
+/// Phase 1b / 3.3: the agent's hardware key is a *permission*, not the root.
 ///
 /// Account layout:
 ///   root       = P256Validator with the OWNER key
@@ -50,12 +51,14 @@ contract Counter {
 ///                + P256Signer with the AGENT key
 ///
 /// The agent may call `counter.increment()` and send small amounts to it,
-/// and nothing else. The owner key can do anything.
+/// and nothing else. The owner key can do anything — including revoking the
+/// agent or rotating it to a new key.
 contract AgentPermissionTest is Test {
     uint256 internal constant N =
         0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551;
     uint256 internal constant OWNER = 0x0000000000000000000000000000000000000000000000000000000000000AA1;
     uint256 internal constant AGENT = 0x0000000000000000000000000000000000000000000000000000000000000BB2;
+    uint256 internal constant AGENT2 = 0x0000000000000000000000000000000000000000000000000000000000000CC3;
     // A clean 4-byte literal, deliberately. `bytes4(keccak256(...))` leaves the
     // hash's remaining bytes as dirty low-order bits, and Kernel's
     // `ValidatorLib.permissionToIdentifier` ORs the raw word into the
@@ -63,6 +66,7 @@ contract AgentPermissionTest is Test {
     // `0x02 ++ id ++ <garbage>` while the nonce encodes `0x02 ++ id ++ 0…0`,
     // and every operation fails the allowed-selector check.
     PermissionId internal constant AGENT_ID = PermissionId.wrap(0x61676e74); // "agnt"
+    PermissionId internal constant AGENT_ID2 = PermissionId.wrap(0x61676e32); // "agn2"
 
     uint128 internal constant MAX_VALUE = 0.1 ether;
     uint128 internal constant BUDGET = 0.25 ether;
@@ -100,30 +104,9 @@ contract AgentPermissionTest is Test {
         expiry = uint48(block.timestamp + 1 days);
         permVId = ValidatorLib.permissionToIdentifier(AGENT_ID);
 
-        // --- the agent's mandate ---
-        address[] memory targets = new address[](2);
-        bytes4[] memory selectors = new bytes4[](2);
-        targets[0] = address(counter);
-        selectors[0] = Counter.increment.selector;
-        targets[1] = address(counter);
-        selectors[1] = bytes4(0); // plain value transfer
-        bytes[] memory entries = new bytes[](2);
-        entries[0] = abi.encodePacked(
-            bytes2(0), address(policy), abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry)
-        );
-        entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(agentX, agentY));
-        bytes memory permissionData = abi.encode(entries);
-
         // --- install the permission during account initialization ---
-        ValidationId[] memory vIds = new ValidationId[](1);
-        vIds[0] = permVId;
-        ValidationManager.ValidationConfig[] memory cfgs = new ValidationManager.ValidationConfig[](1);
-        cfgs[0] = ValidationManager.ValidationConfig({nonce: 1, hook: IHook(address(1))});
-        bytes[] memory vData = new bytes[](1);
-        vData[0] = permissionData;
-        bytes[] memory hData = new bytes[](1);
         bytes[] memory initConfig = new bytes[](2);
-        initConfig[0] = abi.encodeCall(Kernel.installValidations, (vIds, cfgs, vData, hData));
+        initConfig[0] = _installCall(permVId, 1, _permissionData(agentX, agentY));
         initConfig[1] = abi.encodeCall(Kernel.grantAccess, (permVId, Kernel.execute.selector, true));
 
         bytes memory initData = abi.encodeWithSelector(
@@ -140,34 +123,68 @@ contract AgentPermissionTest is Test {
 
     // --- helpers ---
 
+    /// The agent's mandate with a given signer key: increment the counter and
+    /// send it small amounts.
+    function _permissionData(bytes32 keyX, bytes32 keyY) internal view returns (bytes memory) {
+        address[] memory targets = new address[](2);
+        bytes4[] memory selectors = new bytes4[](2);
+        targets[0] = address(counter);
+        selectors[0] = Counter.increment.selector;
+        targets[1] = address(counter);
+        selectors[1] = bytes4(0); // plain value transfer
+        bytes[] memory entries = new bytes[](2);
+        entries[0] = abi.encodePacked(
+            bytes2(0), address(policy), abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry)
+        );
+        entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(keyX, keyY));
+        return abi.encode(entries);
+    }
+
+    function _installCall(ValidationId vId, uint32 nonce, bytes memory permissionData)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        ValidationId[] memory vIds = new ValidationId[](1);
+        vIds[0] = vId;
+        ValidationManager.ValidationConfig[] memory cfgs = new ValidationManager.ValidationConfig[](1);
+        cfgs[0] = ValidationManager.ValidationConfig({nonce: nonce, hook: IHook(address(1))});
+        bytes[] memory vData = new bytes[](1);
+        vData[0] = permissionData;
+        bytes[] memory hData = new bytes[](1);
+        return abi.encodeCall(Kernel.installValidations, (vIds, cfgs, vData, hData));
+    }
+
+    /// Kernel's PermissionDisableDataFormat: one entry per policy, then the
+    /// signer. Our modules need nothing beyond the id Kernel prepends.
+    function _uninstallCall(ValidationId vId) internal pure returns (bytes memory) {
+        bytes[] memory entries = new bytes[](2);
+        return abi.encodeCall(Kernel.uninstallValidation, (vId, abi.encode(entries), hex""));
+    }
+
+    /// Low-s normalized `abi.encodePacked(r, s)`, exactly what `agent-signer` emits.
     function _sign(uint256 priv, bytes32 digest) internal pure returns (bytes memory) {
         (bytes32 r, bytes32 s) = vm.signP256(priv, digest);
         if (uint256(s) > N / 2) s = bytes32(N - uint256(s));
         return abi.encodePacked(r, s);
     }
 
-    function _permissionNonce() internal view returns (uint256) {
+    function _permissionNonce(PermissionId id) internal view returns (uint256) {
         uint192 key = ValidatorLib.encodeAsNonceKey(
             ValidationMode.unwrap(VALIDATION_MODE_DEFAULT),
             ValidationType.unwrap(VALIDATION_TYPE_PERMISSION),
-            bytes20(PermissionId.unwrap(AGENT_ID)),
+            bytes20(PermissionId.unwrap(id)),
             0
         );
         return entryPoint.getNonce(acct, key);
     }
 
-    function _op(uint256 nonce, address target, uint256 value, bytes memory data)
-        internal
-        view
-        returns (PackedUserOperation memory op)
-    {
+    function _op(uint256 nonce, bytes memory callData) internal view returns (PackedUserOperation memory op) {
         op = PackedUserOperation({
             sender: acct,
             nonce: nonce,
             initCode: hex"",
-            callData: abi.encodeWithSelector(
-                Kernel.execute.selector, ExecMode.wrap(bytes32(0)), ExecLib.encodeSingle(target, value, data)
-            ),
+            callData: callData,
             accountGasLimits: bytes32((uint256(1_000_000) << 128) | uint256(1_000_000)),
             preVerificationGas: 100_000,
             gasFees: bytes32((uint256(1 gwei) << 128) | uint256(1 gwei)),
@@ -176,15 +193,35 @@ contract AgentPermissionTest is Test {
         });
     }
 
-    /// An operation authorized by the agent key under its permission.
-    function _agentOp(address target, uint256 value, bytes memory data)
+    function _singleCall(address target, uint256 value, bytes memory data) internal pure returns (bytes memory) {
+        return abi.encodeWithSelector(
+            Kernel.execute.selector, ExecMode.wrap(bytes32(0)), ExecLib.encodeSingle(target, value, data)
+        );
+    }
+
+    /// An operation authorized by an agent key under its permission.
+    function _agentOpWith(uint256 priv, PermissionId id, address target, uint256 value, bytes memory data)
         internal
         view
         returns (PackedUserOperation memory op)
     {
-        op = _op(_permissionNonce(), target, value, data);
+        op = _op(_permissionNonce(id), _singleCall(target, value, data));
         // no policy signature segments; 0xff introduces the signer's bytes
-        op.signature = abi.encodePacked(bytes1(0xff), _sign(AGENT, entryPoint.getUserOpHash(op)));
+        op.signature = abi.encodePacked(bytes1(0xff), _sign(priv, entryPoint.getUserOpHash(op)));
+    }
+
+    function _agentOp(address target, uint256 value, bytes memory data)
+        internal
+        view
+        returns (PackedUserOperation memory)
+    {
+        return _agentOpWith(AGENT, AGENT_ID, target, value, data);
+    }
+
+    /// A root-path operation with arbitrary calldata, signed by the OWNER key.
+    function _rootOp(bytes memory callData) internal view returns (PackedUserOperation memory op) {
+        op = _op(entryPoint.getNonce(acct, 0), callData);
+        op.signature = _sign(OWNER, entryPoint.getUserOpHash(op));
     }
 
     function _send(PackedUserOperation memory op) internal {
@@ -253,13 +290,62 @@ contract AgentPermissionTest is Test {
     function test_agent_keyIsNotRoot() public {
         // root nonce (key 0) routes to P256Validator, which only knows the OWNER key
         PackedUserOperation memory op =
-            _op(entryPoint.getNonce(acct, 0), address(counter), 0, abi.encodeWithSelector(Counter.reset.selector));
+            _op(entryPoint.getNonce(acct, 0), _singleCall(address(counter), 0, abi.encodeWithSelector(Counter.reset.selector)));
         op.signature = _sign(AGENT, entryPoint.getUserOpHash(op));
         vm.expectRevert();
         _send(op);
 
         op.signature = _sign(OWNER, entryPoint.getUserOpHash(op));
         _send(op); // the owner is not bound by the agent's mandate
+    }
+
+    // --- the owner controls the mandate ---
+
+    function test_owner_revokesAgent() public {
+        _send(_agentOp(address(counter), 0, abi.encodeWithSelector(Counter.increment.selector)));
+        assertEq(counter.count(), 1);
+
+        _send(_rootOp(_uninstallCall(permVId)));
+
+        assertFalse(policy.isAllowed(acct, bytes32(PermissionId.unwrap(AGENT_ID)), address(counter), Counter.increment.selector));
+        (bytes32 x,) = signer.publicKeys(bytes32(PermissionId.unwrap(AGENT_ID)), acct);
+        assertEq(x, bytes32(0), "signer key removed");
+
+        PackedUserOperation memory op = _agentOp(address(counter), 0, abi.encodeWithSelector(Counter.increment.selector));
+        vm.expectRevert();
+        _send(op);
+        assertEq(counter.count(), 1, "the revoked agent cannot act");
+    }
+
+    function test_owner_rotatesAgentKey() public {
+        (uint256 x2, uint256 y2) = vm.publicKeyP256(AGENT2);
+        ValidationId permVId2 = ValidatorLib.permissionToIdentifier(AGENT_ID2);
+        // a never-installed permission installs at the account's current nonce
+        uint32 nonce = Kernel(payable(acct)).currentNonce();
+
+        // one root operation: revoke the old permission, install the new one
+        // (same mandate, new key), grant it execute()
+        Execution[] memory batch = new Execution[](3);
+        batch[0] = Execution(acct, 0, _uninstallCall(permVId));
+        batch[1] = Execution(acct, 0, _installCall(permVId2, nonce, _permissionData(bytes32(x2), bytes32(y2))));
+        batch[2] = Execution(acct, 0, abi.encodeCall(Kernel.grantAccess, (permVId2, Kernel.execute.selector, true)));
+        bytes memory callData = abi.encodeWithSelector(
+            Kernel.execute.selector, ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))), ExecLib.encodeBatch(batch)
+        );
+        _send(_rootOp(callData));
+
+        // the old key under the old permission is dead
+        PackedUserOperation memory stale = _agentOp(address(counter), 0, abi.encodeWithSelector(Counter.increment.selector));
+        vm.expectRevert();
+        _send(stale);
+
+        // the new key under the new permission works, within the same mandate
+        _send(_agentOpWith(AGENT2, AGENT_ID2, address(counter), 0, abi.encodeWithSelector(Counter.increment.selector)));
+        assertEq(counter.count(), 1);
+        PackedUserOperation memory outside =
+            _agentOpWith(AGENT2, AGENT_ID2, address(counter), 0, abi.encodeWithSelector(Counter.reset.selector));
+        vm.expectRevert();
+        _send(outside);
     }
 
     // --- modules in isolation ---
@@ -308,5 +394,4 @@ contract AgentPermissionTest is Test {
             SIG_VALIDATION_FAILED_UINT
         );
     }
-
 }

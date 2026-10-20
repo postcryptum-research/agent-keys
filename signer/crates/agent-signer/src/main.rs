@@ -88,6 +88,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: PaymasterCmd,
     },
+    /// The agent permission, controlled by the owner key.
+    Permission {
+        #[command(subcommand)]
+        cmd: PermissionCmd,
+    },
     /// Demo: the agent increments the deployed counter.
     Demo {
         #[command(flatten)]
@@ -95,6 +100,34 @@ enum Cmd {
         /// Let the paymaster pay instead of the account.
         #[arg(long)]
         sponsored: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum PermissionCmd {
+    /// Remove permission `id` (root operation signed by the owner key).
+    Revoke {
+        #[command(flatten)]
+        agent: AgentArgs,
+        /// 4-byte hex permission id to remove.
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        sponsored: bool,
+    },
+    /// Replace permission `old_id` with the one the config describes — new
+    /// agent key and/or mandate — in one root operation. Pin `account` in
+    /// the config first.
+    Rotate {
+        #[command(flatten)]
+        agent: AgentArgs,
+        #[arg(long)]
+        old_id: String,
+        #[arg(long)]
+        sponsored: bool,
+        /// Print the batch calldata instead of sending it.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -137,6 +170,10 @@ enum KeyCmd {
         /// TPM storage parent for the new key.
         #[arg(long, default_value = "0x81000001", value_parser = parse_hex_u32)]
         parent: u32,
+        /// TPM: seal the key to these PCRs (e.g. 0,2,4,7); it then signs only
+        /// while the measured boot state matches today's.
+        #[arg(long, value_delimiter = ',')]
+        pcrs: Vec<u8>,
     },
     /// Print the public key.
     Show {
@@ -217,6 +254,12 @@ fn hex32(b: &[u8; 32]) -> String {
     format!("0x{}", hex::encode(b))
 }
 
+fn parse_permission_id(s: &str) -> Result<kernel::PermissionId> {
+    let raw = hex::decode(s.trim_start_matches("0x")).context("permission id")?;
+    let arr: [u8; 4] = raw.as_slice().try_into().map_err(|_| anyhow::anyhow!("permission id must be 4 bytes"))?;
+    Ok(kernel::PermissionId::from(arr))
+}
+
 fn open_backend(backend: Backend, parent: u32, label: Option<String>) -> Result<Box<dyn HardwareSigner>> {
     match backend {
         Backend::Software => Ok(Box::new(SoftwareSigner::random())),
@@ -251,14 +294,14 @@ fn print_key(key: String, pk: &PublicKey) -> Result<()> {
 }
 
 enum KeyOp {
-    Create { parent: u32 },
+    Create { parent: u32, pcrs: Vec<u8> },
     Show,
     Evict,
 }
 
 fn run_key(cmd: KeyCmd) -> Result<()> {
     let (key, op) = match cmd {
-        KeyCmd::Create { key, parent } => (key, KeyOp::Create { parent }),
+        KeyCmd::Create { key, parent, pcrs } => (key, KeyOp::Create { parent, pcrs }),
         KeyCmd::Show { key } => (key, KeyOp::Show),
         KeyCmd::Evict { key } => (key, KeyOp::Evict),
     };
@@ -274,9 +317,16 @@ fn tpm_key(handle: u32, op: KeyOp) -> Result<()> {
     use hw_signer::tpm::TpmSigner;
     let name = format!("0x{handle:08x}");
     match op {
-        KeyOp::Create { parent } => {
-            let mut signer = TpmSigner::create_under(parent)?;
+        KeyOp::Create { parent, pcrs } => {
+            let mut signer = if pcrs.is_empty() {
+                TpmSigner::create_under(parent)?
+            } else {
+                TpmSigner::create_sealed_under(parent, &pcrs)?
+            };
             signer.persist(handle)?;
+            if !pcrs.is_empty() {
+                eprintln!("sealed to PCRs {pcrs:?}: reference it as {{\"tpm\": {{\"handle\": \"{name}\", \"pcrs\": {pcrs:?}}}}}");
+            }
             print_key(name, &signer.public_key()?)
         }
         KeyOp::Show => print_key(name, &TpmSigner::open_persistent(handle)?.public_key()?),
@@ -378,6 +428,29 @@ async fn main() -> Result<()> {
                 let data = Bytes::from(hex::decode(data.trim_start_matches("0x")).context("--data")?);
                 let inc = s.send_op(target, value, data, root, sponsored).await?;
                 println!("included: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
+            }
+        },
+        Cmd::Permission { cmd } => match cmd {
+            PermissionCmd::Revoke { agent, id, sponsored } => {
+                let s = session(&agent).await?;
+                let inc = s.revoke_permission(parse_permission_id(&id)?, sponsored).await?;
+                println!("revoked permission {id}: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
+            }
+            PermissionCmd::Rotate { agent, old_id, sponsored, dry_run } => {
+                let s = session(&agent).await?;
+                if !s.pinned {
+                    bail!("pin the deployed account in the config (\"account\": \"0x…\") before rotating");
+                }
+                if dry_run {
+                    println!("account:  {}", s.account);
+                    println!("callData: {}", s.rotate_calldata(parse_permission_id(&old_id)?).await?);
+                    return Ok(());
+                }
+                let inc = s.rotate_permission(parse_permission_id(&old_id)?, sponsored).await?;
+                println!(
+                    "rotated {old_id} -> {}: tx {} (block {}, {} gas)",
+                    s.cfg.permission_id, inc.tx, inc.block, inc.gas_used
+                );
             }
         },
         Cmd::Paymaster { cmd } => match cmd {

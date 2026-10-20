@@ -11,11 +11,12 @@ use alloy::primitives::{Address, Bytes, B256, U256};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
+use alloy::sol_types::SolEvent;
 use anyhow::{bail, Context, Result};
 
-use crate::abi::{IDemoCounter, IEntryPoint, IKernelFactory, IWhitelistPaymaster};
+use crate::abi::{IDemoCounter, IEntryPoint, IKernel, IKernelFactory, IWhitelistPaymaster};
 use crate::agent::{open_signer, parse32, AgentConfig, Deployments};
-use crate::kernel;
+use crate::kernel::{self, PermissionId};
 
 /// Secrets come from the environment (optionally a `.env` file), never from
 /// the agent config: `BASE_SEPOLIA_RPC_URL` (or `RPC_URL`) and
@@ -45,7 +46,12 @@ pub struct Session {
     pub cfg: AgentConfig,
     pub dep: Deployments,
     pub init_data: Bytes,
+    /// The agent permission described by the config (installed at creation,
+    /// or the next one for a rotation).
+    pub permission_data: Bytes,
     pub account: Address,
+    /// `account` came from the config rather than from the factory.
+    pub pinned: bool,
 }
 
 impl Session {
@@ -71,12 +77,22 @@ impl Session {
         let perm = cfg.permission_id()?;
         let permission_data =
             kernel::permission_data(dep.agent_policy, &cfg.policy_params()?, dep.p256_signer, &agent_key);
-        let init_data = kernel::init_data(dep.p256_validator, &owner_key, perm, permission_data);
+        let init_data = kernel::init_data(dep.p256_validator, &owner_key, perm, permission_data.clone());
 
-        let factory = IKernelFactory::new(dep.kernel_factory, provider.clone());
-        let account = factory.getAddress(init_data.clone(), cfg.salt()?).call().await?;
+        let (account, pinned) = match cfg.account {
+            Some(pinned) => {
+                if provider.get_code_at(pinned).await?.is_empty() {
+                    bail!("config pins account {pinned} but nothing is deployed there");
+                }
+                (pinned, true)
+            }
+            None => {
+                let factory = IKernelFactory::new(dep.kernel_factory, provider.clone());
+                (factory.getAddress(init_data.clone(), cfg.salt()?).call().await?, false)
+            }
+        };
 
-        Ok(Self { provider, gas_wallet, cfg, dep, init_data, account })
+        Ok(Self { provider, gas_wallet, cfg, dep, init_data, permission_data, account, pinned })
     }
 
     pub async fn is_deployed(&self) -> Result<bool> {
@@ -87,7 +103,7 @@ impl Session {
         let ep = IEntryPoint::new(self.dep.entry_point, self.provider.clone());
         println!("chain:          {}", self.dep.chain_id);
         println!("kernel impl:    {}", self.dep.kernel);
-        println!("account:        {}", self.account);
+        println!("account:        {} ({})", self.account, if self.pinned { "pinned in config" } else { "derived from keys + mandate" });
         println!("deployed:       {}", self.is_deployed().await?);
         println!("balance:        {} wei", self.provider.get_balance(self.account).await?);
         println!("ep deposit:     {} wei", ep.balanceOf(self.account).call().await?);
@@ -169,9 +185,7 @@ impl Session {
         Ok(receipt.transaction_hash)
     }
 
-    /// Build, sign in hardware, and submit one operation through `handleOps`.
-    /// The first operation carries `initCode` and deploys the account. With
-    /// `sponsored`, the whitelist paymaster pays instead of the account.
+    /// Build, sign in hardware, and submit one `execute(single)` operation.
     pub async fn send_op(
         &self,
         target: Address,
@@ -180,6 +194,72 @@ impl Session {
         as_root: bool,
         sponsored: bool,
     ) -> Result<Included> {
+        self.send_raw(kernel::execute_calldata(target, value, &data), as_root, sponsored).await
+    }
+
+    /// Root operation signed by the owner key: remove the agent permission.
+    /// Its signer key and policy entries are uninstalled; its nonce space
+    /// stays burned.
+    pub async fn revoke_permission(&self, perm: PermissionId, sponsored: bool) -> Result<Included> {
+        self.send_raw(kernel::uninstall_permission_calldata(perm), true, sponsored).await
+    }
+
+    /// Root operation signed by the owner key: replace permission `old` with
+    /// the one the config describes (new agent key and/or mandate) in a
+    /// single batch — uninstall, install, grant `execute`.
+    pub async fn rotate_permission(&self, old: PermissionId, sponsored: bool) -> Result<Included> {
+        let call_data = self.rotate_calldata(old).await?;
+        self.send_raw(call_data, true, sponsored).await
+    }
+
+    /// The batch a rotation executes, for inspection (`--dry-run`).
+    pub async fn rotate_calldata(&self, old: PermissionId) -> Result<Bytes> {
+        let new = self.cfg.permission_id()?;
+        let nonce = self.install_nonce(new).await?;
+        let calls = vec![
+            (self.account, U256::ZERO, kernel::uninstall_permission_calldata(old)),
+            (self.account, U256::ZERO, kernel::install_permission_calldata(new, self.permission_data.clone(), nonce)),
+            (self.account, U256::ZERO, kernel::grant_execute_calldata(new)),
+        ];
+        Ok(kernel::execute_batch_calldata(calls))
+    }
+
+    /// `callGasLimit` for the execution phase: what the calldata needs when
+    /// the EntryPoint calls the account with it, plus a margin. A fixed limit
+    /// is a trap — an execution that runs out of gas reverts with no data,
+    /// the EntryPoint still charges for it, and nothing says why.
+    async fn estimate_call_gas(&self, call_data: &Bytes, deployed: bool) -> Result<u128> {
+        const FLOOR: u128 = 150_000;
+        if !deployed {
+            // nothing to simulate against yet; the first call is the demo's
+            return Ok(FLOOR * 2);
+        }
+        let tx = TransactionRequest::default()
+            .with_from(self.dep.entry_point)
+            .with_to(self.account)
+            .with_input(call_data.clone());
+        let estimate = self
+            .provider
+            .estimate_gas(tx)
+            .await
+            .context("estimating the execution phase (the call itself reverts; see the message above)")?;
+        Ok(((estimate as u128) * 13 / 10).max(FLOOR))
+    }
+
+    /// Kernel's rule for `installValidations`: the config nonce must equal
+    /// `currentNonce()`, except that re-installing an id whose stored nonce
+    /// already equals it bumps `currentNonce` first.
+    async fn install_nonce(&self, perm: PermissionId) -> Result<u32> {
+        let account = IKernel::new(self.account, self.provider.clone());
+        let current = account.currentNonce().call().await?;
+        let stored = account.validationConfig(kernel::permission_vid(perm)).call().await?.nonce;
+        Ok(if stored == current { current + 1 } else { current })
+    }
+
+    /// Sign `call_data` in hardware and submit it through `handleOps`. The
+    /// first operation carries `initCode` and deploys the account. With
+    /// `sponsored`, the whitelist paymaster pays instead of the account.
+    async fn send_raw(&self, call_data: Bytes, as_root: bool, sponsored: bool) -> Result<Included> {
         let ep = IEntryPoint::new(self.dep.entry_point, self.provider.clone());
         let deployed = self.is_deployed().await?;
         if !deployed && !sponsored && self.provider.get_balance(self.account).await?.is_zero() {
@@ -209,13 +289,15 @@ impl Session {
         let nonce = ep.getNonce(self.account, key).call().await?;
         let fees = self.provider.estimate_eip1559_fees().await?;
         let verification_gas: u128 = if deployed { 300_000 } else { 1_500_000 };
+        let call_gas = self.estimate_call_gas(&call_data, deployed).await?;
+        println!("gas limits:     verification {verification_gas}, call {call_gas}");
 
         let mut op = IEntryPoint::PackedUserOperation {
             sender: self.account,
             nonce,
             initCode: init_code,
-            callData: kernel::execute_calldata(target, value, &data),
-            accountGasLimits: kernel::pack_gas(verification_gas, 200_000),
+            callData: call_data,
+            accountGasLimits: kernel::pack_gas(verification_gas, call_gas),
             preVerificationGas: U256::from(100_000u64),
             gasFees: kernel::pack_gas(fees.max_priority_fee_per_gas, fees.max_fee_per_gas),
             paymasterAndData: paymaster_and_data,
@@ -249,6 +331,31 @@ impl Session {
         let receipt = pending.get_receipt().await?;
         if !receipt.status() {
             bail!("handleOps transaction {} reverted", receipt.transaction_hash);
+        }
+        // The outer transaction succeeds even when the operation's execution
+        // phase reverts: the EntryPoint charges for it and reports through
+        // events. Only UserOperationEvent.success == true means it ran.
+        let mut executed = None;
+        let mut revert_reason = None;
+        for log in receipt.logs() {
+            if let Ok(ev) = IEntryPoint::UserOperationEvent::decode_log(&log.inner) {
+                if ev.userOpHash == user_op_hash {
+                    executed = Some(ev.success);
+                }
+            } else if let Ok(ev) = IEntryPoint::UserOperationRevertReason::decode_log(&log.inner) {
+                if ev.userOpHash == user_op_hash {
+                    revert_reason = Some(ev.revertReason.clone());
+                }
+            }
+        }
+        match executed {
+            Some(true) => {}
+            Some(false) => bail!(
+                "operation {user_op_hash} was included in tx {} but its execution reverted: 0x{}",
+                receipt.transaction_hash,
+                revert_reason.map(hex::encode).unwrap_or_default()
+            ),
+            None => bail!("tx {} carries no UserOperationEvent for {user_op_hash}", receipt.transaction_hash),
         }
         Ok(Included {
             tx: receipt.transaction_hash,

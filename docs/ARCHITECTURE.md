@@ -214,10 +214,35 @@ Lessons that cost real debugging time:
     operation (tx `0xae73b53d17b74ad8c7b6d65f8cc98abd40c513a808b09764828dff8a3a5f2106`)
     left the account's balance untouched. `agent-signer paymaster
     deposit|sponsor` and `--sponsored` on `op send` / `demo`.
-  - *3.3 next:* rotation and revocation of the agent permission by the owner
-    key; PCR-sealed TPM keys so the chip only signs from a trusted boot state.
-  - *3.4 later:* a bundler RPC as a drop-in for self-bundling; Windows CNG
-    backend.
+  - *3.3 done (2026-10-20).* **Rotation and revocation:** root operations
+    signed by the owner key — `permission revoke` uninstalls the agent
+    permission; `permission rotate` replaces it in one batch (uninstall the
+    old id, `installValidations` the one the config describes, grant
+    `execute`), with the install nonce derived from Kernel's rule
+    (`currentNonce()`, plus one when re-installing the same id). The config
+    pins the deployed `account` so a changed mandate or key describes the
+    *next* permission, not a new address. **PCR sealing:** `key create
+    --pcrs 0,2,4,7` creates a key whose auth policy is `TPM2_PolicyPCR`
+    over those registers with `userWithAuth` cleared; signing opens a policy
+    session with an empty digest so the TPM compares the registers' current
+    values itself, and refuses once the measured boot state changed (the
+    hardware test seals to the resettable PCR 16, extends it, sees the refusal,
+    resets it). On Base Sepolia: rotation `agnt → agn2` to a sealed key, tx
+    `0x4519a35b5acdc19ffe713326964b5214677825d11040684f9869adbd8b195370`;
+    the sealed key's first sponsored operation, tx
+    `0xc8117420694a9c17d3c91a14df3ce70f00298d2bc0fcd38f55997c1bfc75db4b`.
+  - *3.4 later:* gas benchmark against the reference paper; a bundler RPC as
+    a drop-in for self-bundling; Windows CNG backend.
+
+  Lessons from 3.3: a fixed `callGasLimit` is a trap — an execution phase
+  that runs out of gas reverts with *no data*, the outer `handleOps`
+  still succeeds and the sponsor pays; `agent-signer` now estimates the
+  execution as a call from the EntryPoint and treats
+  `UserOperationEvent.success == false` as failure. `cast run` replays in a
+  local EVM without RIP-7212 unless given `--odyssey`, so it shows
+  `AA24 signature error` for operations the chain accepted; use it only
+  with the flag, or trace the execution calldata with `cast call --from
+  <EntryPoint> --trace`, where no signature is involved.
 
   Lesson from 3.2: solc's metadata hash embeds compiler settings, so adding
   remappings changed every contract's creation code and the deploy script

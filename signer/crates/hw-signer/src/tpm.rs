@@ -8,22 +8,31 @@
 //! The key is an *unrestricted* P-256 signing key. That matters: a restricted
 //! key only signs digests the TPM hashed itself (proved by a hash-check
 //! ticket), while we need it to sign a host-computed `userOpHash`.
+//!
+//! A key can additionally be *sealed to PCRs*: its auth policy is
+//! `TPM2_PolicyPCR` over a set of platform configuration registers, so the
+//! chip only signs while the measured boot state equals the one the key was
+//! created under. After a firmware or bootloader change the key goes silent
+//! and the owner rotates the agent permission to a fresh one.
 
 use std::str::FromStr;
 use std::sync::Mutex;
 
-use tss_esapi::attributes::ObjectAttributesBuilder;
+use sha2::{Digest as Sha2Digest, Sha256};
+use tss_esapi::attributes::{ObjectAttributesBuilder, SessionAttributesBuilder};
 use tss_esapi::constants::tss::{TPM2_RH_NULL, TPM2_ST_HASHCHECK};
-use tss_esapi::handles::{KeyHandle, ObjectHandle, PersistentTpmHandle, TpmHandle};
+use tss_esapi::constants::SessionType;
+use tss_esapi::handles::{KeyHandle, ObjectHandle, PersistentTpmHandle, SessionHandle, TpmHandle};
 use tss_esapi::interface_types::algorithm::{HashingAlgorithm, PublicAlgorithm};
 use tss_esapi::interface_types::dynamic_handles::Persistent;
 use tss_esapi::interface_types::ecc::EccCurve;
 use tss_esapi::interface_types::resource_handles::Provision;
-use tss_esapi::interface_types::session_handles::AuthSession;
+use tss_esapi::interface_types::session_handles::{AuthSession, PolicySession};
 use tss_esapi::structures::{
     Digest, EccPoint, EccScheme, HashScheme, HashcheckTicket, KeyDerivationFunctionScheme,
-    Public, PublicBuilder, PublicEccParametersBuilder, Signature as TpmSignature,
-    SignatureScheme, SymmetricDefinitionObject,
+    PcrSelectionList, PcrSelectionListBuilder, PcrSlot, Public, PublicBuilder,
+    PublicEccParametersBuilder, Signature as TpmSignature, SignatureScheme, SymmetricDefinition,
+    SymmetricDefinitionObject,
 };
 use tss_esapi::tcti_ldr::TctiNameConf;
 use tss_esapi::tss2_esys::TPMT_TK_HASHCHECK;
@@ -39,11 +48,13 @@ pub const DEFAULT_PARENT: u32 = 0x8100_0001;
 const DEFAULT_TCTI: &str = "device:/dev/tpmrm0";
 
 /// A P-256 key living in the TPM, either transient (flushed on drop) or
-/// persistent (survives reboots at a `0x81xxxxxx` handle).
+/// persistent (survives reboots at a `0x81xxxxxx` handle), optionally sealed
+/// to a PCR selection.
 pub struct TpmSigner {
     ctx: Mutex<Context>,
     key: KeyHandle,
     persistent: bool,
+    sealed_to: Option<PcrSelectionList>,
 }
 
 fn tss(e: tss_esapi::Error) -> SignerError {
@@ -67,17 +78,20 @@ fn connect() -> Result<Context, SignerError> {
         .map_err(tss)?;
     let mut ctx = Context::new(tcti).map_err(tss)?;
     // Password session with an empty auth value: the SRK and our keys carry no
-    // password. PCR / policy binding is a later phase.
+    // password. Sealed keys authorize through a policy session instead.
     ctx.set_sessions((Some(AuthSession::Password), None, None));
     Ok(ctx)
 }
 
-fn p256_signing_template() -> Result<Public, SignerError> {
+/// `auth_policy` makes the key usable only through a session that satisfies
+/// that policy; `user_with_auth` is then cleared so the (empty) password
+/// cannot bypass it.
+fn p256_signing_template(auth_policy: Option<Digest>) -> Result<Public, SignerError> {
     let attributes = ObjectAttributesBuilder::new()
         .with_fixed_tpm(true)
         .with_fixed_parent(true)
         .with_sensitive_data_origin(true)
-        .with_user_with_auth(true)
+        .with_user_with_auth(auth_policy.is_none())
         .with_sign_encrypt(true)
         .with_restricted(false)
         .with_decrypt(false)
@@ -93,14 +107,130 @@ fn p256_signing_template() -> Result<Public, SignerError> {
         .with_key_derivation_function_scheme(KeyDerivationFunctionScheme::Null)
         .build()
         .map_err(tss)?;
-    PublicBuilder::new()
+    let mut builder = PublicBuilder::new()
         .with_public_algorithm(PublicAlgorithm::Ecc)
         .with_name_hashing_algorithm(HashingAlgorithm::Sha256)
         .with_object_attributes(attributes)
         .with_ecc_parameters(ecc)
-        .with_ecc_unique_identifier(EccPoint::default())
+        .with_ecc_unique_identifier(EccPoint::default());
+    if let Some(policy) = auth_policy {
+        builder = builder.with_auth_policy(policy);
+    }
+    builder.build().map_err(tss)
+}
+
+// --- PCR policy helpers ---
+
+fn pcr_slot(index: u8) -> Result<PcrSlot, SignerError> {
+    use PcrSlot::*;
+    Ok(match index {
+        0 => Slot0,
+        1 => Slot1,
+        2 => Slot2,
+        3 => Slot3,
+        4 => Slot4,
+        5 => Slot5,
+        6 => Slot6,
+        7 => Slot7,
+        8 => Slot8,
+        9 => Slot9,
+        10 => Slot10,
+        11 => Slot11,
+        12 => Slot12,
+        13 => Slot13,
+        14 => Slot14,
+        15 => Slot15,
+        16 => Slot16,
+        17 => Slot17,
+        18 => Slot18,
+        19 => Slot19,
+        20 => Slot20,
+        21 => Slot21,
+        22 => Slot22,
+        23 => Slot23,
+        _ => return Err(SignerError::Backend(format!("PCR index {index} out of range"))),
+    })
+}
+
+/// Sorted, de-duplicated PCR indices: `TPM2_PolicyPCR` digests the selected
+/// registers in ascending order, so the caller's order must not matter.
+fn normalize_pcrs(pcrs: &[u8]) -> Result<Vec<u8>, SignerError> {
+    if pcrs.is_empty() {
+        return Err(SignerError::Backend("sealing needs at least one PCR".into()));
+    }
+    let mut v = pcrs.to_vec();
+    v.sort_unstable();
+    v.dedup();
+    Ok(v)
+}
+
+fn pcr_selection(pcrs: &[u8]) -> Result<PcrSelectionList, SignerError> {
+    let slots = pcrs.iter().map(|&i| pcr_slot(i)).collect::<Result<Vec<_>, _>>()?;
+    PcrSelectionListBuilder::new()
+        .with_selection(HashingAlgorithm::Sha256, &slots)
         .build()
         .map_err(tss)
+}
+
+/// SHA-256 over the concatenated current values of the selected PCRs — the
+/// `pcrDigest` that `TPM2_PolicyPCR` commits a trial session to. `pcr_read`
+/// returns the digests in selection order (ascending index), which is also
+/// the order PolicyPCR hashes them in.
+fn current_pcr_digest(ctx: &mut Context, selection: &PcrSelectionList, pcrs: &[u8]) -> Result<Digest, SignerError> {
+    let (_, _, digests) = ctx
+        .execute_without_session(|ctx| ctx.pcr_read(selection.clone()))
+        .map_err(tss)?;
+    let values = digests.value();
+    if values.len() != pcrs.len() {
+        return Err(SignerError::Backend(format!(
+            "asked for {} PCRs, the TPM returned {} (at most 8 per read)",
+            pcrs.len(),
+            values.len()
+        )));
+    }
+    let mut concat = Vec::with_capacity(32 * values.len());
+    for value in values {
+        concat.extend_from_slice(value.value());
+    }
+    Digest::try_from(Sha256::digest(&concat).to_vec()).map_err(tss)
+}
+
+fn start_policy_session(ctx: &mut Context, kind: SessionType) -> Result<AuthSession, SignerError> {
+    let session = ctx
+        .execute_without_session(|ctx| {
+            ctx.start_auth_session(
+                None,
+                None,
+                None,
+                kind,
+                SymmetricDefinition::AES_256_CFB,
+                HashingAlgorithm::Sha256,
+            )
+        })
+        .map_err(tss)?
+        .ok_or_else(|| SignerError::Backend("TPM returned no session handle".into()))?;
+    let (attributes, mask) = SessionAttributesBuilder::new().with_decrypt(true).with_encrypt(true).build();
+    ctx.tr_sess_set_attributes(session, attributes, mask).map_err(tss)?;
+    Ok(session)
+}
+
+fn flush_session(ctx: &mut Context, session: AuthSession) {
+    let _ = ctx.flush_context(ObjectHandle::from(SessionHandle::from(session)));
+}
+
+/// The policy digest a key must carry to be bound to the current values of
+/// `pcrs`: computed in a trial session, exactly as the real session will
+/// recompute it at signing time.
+fn pcr_policy_digest(ctx: &mut Context, selection: &PcrSelectionList, pcrs: &[u8]) -> Result<Digest, SignerError> {
+    let pcr_digest = current_pcr_digest(ctx, selection, pcrs)?;
+    let trial = start_policy_session(ctx, SessionType::Trial)?;
+    let policy = ctx.execute_without_session(|ctx| -> Result<Digest, SignerError> {
+        let session = PolicySession::try_from(trial).map_err(tss)?;
+        ctx.policy_pcr(session, pcr_digest, selection.clone()).map_err(tss)?;
+        ctx.policy_get_digest(session).map_err(tss)
+    });
+    flush_session(ctx, trial);
+    policy
 }
 
 impl TpmSigner {
@@ -115,37 +245,69 @@ impl TpmSigner {
         Ok(object.into())
     }
 
-    /// Generate a fresh P-256 key inside the TPM under `parent` and load it.
-    /// The key is transient: it is flushed when the signer is dropped unless
-    /// [`persist`](Self::persist) is called.
-    pub fn create_under(parent: u32) -> Result<Self, SignerError> {
+    fn create(parent: u32, sealed_to: Option<&[u8]>) -> Result<Self, SignerError> {
         let mut ctx = connect()?;
+        let (policy, selection) = match sealed_to {
+            None => (None, None),
+            Some(pcrs) => {
+                let pcrs = normalize_pcrs(pcrs)?;
+                let selection = pcr_selection(&pcrs)?;
+                let policy = pcr_policy_digest(&mut ctx, &selection, &pcrs)?;
+                (Some(policy), Some(selection))
+            }
+        };
         let parent = Self::resolve(&mut ctx, parent)?;
         let created = ctx
-            .create(parent, p256_signing_template()?, None, None, None, None)
+            .create(parent, p256_signing_template(policy)?, None, None, None, None)
             .map_err(tss)?;
         let key = ctx
             .load(parent, created.out_private, created.out_public)
             .map_err(tss)?;
-        Ok(Self { ctx: Mutex::new(ctx), key, persistent: false })
+        Ok(Self { ctx: Mutex::new(ctx), key, persistent: false, sealed_to: selection })
+    }
+
+    /// Generate a fresh P-256 key inside the TPM under `parent` and load it.
+    /// The key is transient: it is flushed when the signer is dropped unless
+    /// [`persist`](Self::persist) is called.
+    pub fn create_under(parent: u32) -> Result<Self, SignerError> {
+        Self::create(parent, None)
+    }
+
+    /// Like [`create_under`](Self::create_under), but the key only signs
+    /// while the SHA-256 values of `pcrs` equal their values right now.
+    pub fn create_sealed_under(parent: u32, pcrs: &[u8]) -> Result<Self, SignerError> {
+        Self::create(parent, Some(pcrs))
     }
 
     /// Use a key previously persisted at `handle`.
     pub fn open_persistent(handle: u32) -> Result<Self, SignerError> {
         let mut ctx = connect()?;
         let key = Self::resolve(&mut ctx, handle)?;
-        Ok(Self { ctx: Mutex::new(ctx), key, persistent: true })
+        Ok(Self { ctx: Mutex::new(ctx), key, persistent: true, sealed_to: None })
+    }
+
+    /// Use a persisted key that was sealed to `pcrs` (the TPM does not record
+    /// the selection with the key, so the caller supplies it).
+    pub fn open_persistent_sealed(handle: u32, pcrs: &[u8]) -> Result<Self, SignerError> {
+        let mut ctx = connect()?;
+        let key = Self::resolve(&mut ctx, handle)?;
+        let selection = pcr_selection(&normalize_pcrs(pcrs)?)?;
+        Ok(Self { ctx: Mutex::new(ctx), key, persistent: true, sealed_to: Some(selection) })
     }
 
     /// Persist the loaded key at `handle` (owner hierarchy) so it survives
     /// reboots and process restarts.
     pub fn persist(&mut self, handle: u32) -> Result<(), SignerError> {
         let target = PersistentTpmHandle::new(handle).map_err(tss)?;
-        let mut ctx = self.ctx.lock().map_err(|_| SignerError::Backend("poisoned lock".into()))?;
-        let persisted = ctx
-            .evict_control(Provision::Owner, self.key.into(), Persistent::Persistent(target))
-            .map_err(tss)?;
-        let _ = ctx.flush_context(self.key.into());
+        let key = self.key;
+        let persisted = {
+            let mut ctx = self.ctx.lock().map_err(|_| SignerError::Backend("poisoned lock".into()))?;
+            let persisted = ctx
+                .evict_control(Provision::Owner, key.into(), Persistent::Persistent(target))
+                .map_err(tss)?;
+            let _ = ctx.flush_context(key.into());
+            persisted
+        };
         self.key = persisted.into();
         self.persistent = true;
         Ok(())
@@ -163,8 +325,19 @@ impl TpmSigner {
         Ok(())
     }
 
+    pub fn is_sealed(&self) -> bool {
+        self.sealed_to.is_some()
+    }
+
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Context>, SignerError> {
         self.ctx.lock().map_err(|_| SignerError::Backend("poisoned lock".into()))
+    }
+
+    /// Run a raw ESAPI call on this signer's context (tests: PCR extend/reset).
+    #[cfg(test)]
+    fn with_ctx<T>(&self, f: impl FnOnce(&mut Context) -> tss_esapi::Result<T>) -> Result<T, SignerError> {
+        let mut ctx = self.lock()?;
+        f(&mut ctx).map_err(tss)
     }
 }
 
@@ -195,9 +368,32 @@ impl HardwareSigner for TpmSigner {
         let scheme = SignatureScheme::EcDsa {
             hash_scheme: HashScheme::new(HashingAlgorithm::Sha256),
         };
-        let TpmSignature::EcDsa(sig) =
-            ctx.sign(self.key, digest, scheme, validation).map_err(tss)?
-        else {
+        let key = self.key;
+
+        let signed = match &self.sealed_to {
+            None => ctx.sign(key, digest, scheme, validation).map_err(tss),
+            Some(selection) => {
+                let selection = selection.clone();
+                let session = start_policy_session(&mut ctx, SessionType::Policy)?;
+                // An empty pcrDigest tells TPM2_PolicyPCR to use the registers'
+                // current values; the session then satisfies the key's policy
+                // only if those equal the values the key was sealed to, and
+                // the TPM refuses to sign otherwise.
+                let armed = ctx.execute_without_session(|ctx| {
+                    let policy = PolicySession::try_from(session).map_err(tss)?;
+                    ctx.policy_pcr(policy, Digest::default(), selection).map_err(tss)
+                });
+                let signed = match armed {
+                    Ok(()) => ctx
+                        .execute_with_session(Some(session), |ctx| ctx.sign(key, digest, scheme, validation))
+                        .map_err(tss),
+                    Err(e) => Err(e),
+                };
+                flush_session(&mut ctx, session);
+                signed
+            }
+        };
+        let TpmSignature::EcDsa(sig) = signed? else {
             return Err(SignerError::Sign("TPM returned a non-ECDSA signature".into()));
         };
         let r = pad32(sig.signature_r().value())?;
@@ -220,6 +416,8 @@ impl Drop for TpmSigner {
 mod tests {
     use super::*;
     use crate::verify_p256;
+    use tss_esapi::handles::PcrHandle;
+    use tss_esapi::structures::DigestValues;
 
     /// Needs a real TPM (`/dev/tpmrm0`, `tss` group).
     /// Run: `cargo test --features tpm -- --ignored`
@@ -235,5 +433,29 @@ mod tests {
         let mut tampered = digest;
         tampered[0] ^= 1;
         assert!(!verify_p256(&tampered, &sig, &pk));
+    }
+
+    /// PCR 16 is the resettable debug register, so a key sealed to it can be
+    /// locked out and restored within one test: extend → the TPM refuses to
+    /// sign; reset → it signs again.
+    #[test]
+    #[ignore = "requires TPM hardware"]
+    fn sealed_key_follows_pcr16() {
+        let signer = TpmSigner::create_sealed_under(DEFAULT_PARENT, &[16]).unwrap();
+        assert!(signer.is_sealed());
+        let pk = signer.public_key().unwrap();
+        let digest = [0x42u8; 32];
+        let sig = signer.sign_digest(&digest).unwrap();
+        assert!(verify_p256(&digest, &sig, &pk));
+
+        // "Boot state changed": extend PCR 16 with an arbitrary measurement.
+        let mut tamper = DigestValues::new();
+        tamper.set(HashingAlgorithm::Sha256, Digest::try_from(Sha256::digest(b"tamper").to_vec()).unwrap());
+        signer.with_ctx(|ctx| ctx.pcr_extend(PcrHandle::Pcr16, tamper)).unwrap();
+        assert!(signer.sign_digest(&digest).is_err(), "a sealed key must refuse to sign after a PCR change");
+
+        signer.with_ctx(|ctx| ctx.pcr_reset(PcrHandle::Pcr16)).unwrap();
+        let again = signer.sign_digest(&digest).unwrap();
+        assert!(verify_p256(&digest, &again, &pk));
     }
 }

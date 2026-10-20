@@ -29,12 +29,21 @@ pub struct Deployments {
     pub paymaster_owner: Option<Address>,
 }
 
+/// A TPM key: `"0x81010010"`, or `{"handle": "0x81010011", "pcrs": [0, 2, 4, 7]}`
+/// for a key sealed to those PCRs (the selection is not stored in the TPM).
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum TpmKey {
+    Handle(String),
+    Sealed { handle: String, pcrs: Vec<u8> },
+}
+
 /// Where a key lives.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum KeySpec {
-    /// Persistent TPM handle, e.g. `"0x81010010"`.
-    Tpm(String),
+    /// Persistent TPM handle, optionally sealed to PCRs.
+    Tpm(TpmKey),
     /// Apple Secure Enclave key, addressed by its keychain label (macOS).
     #[serde(rename = "secure-enclave")]
     SecureEnclave(String),
@@ -73,6 +82,10 @@ pub struct AgentConfig {
     pub permission_id: String,
     #[serde(default)]
     pub salt: Option<String>,
+    /// Pin the deployed account. Once set, keys and mandate in this file
+    /// describe the *next* permission (rotation), not the account's address.
+    #[serde(default)]
+    pub account: Option<Address>,
     pub policy: PolicyConfig,
 }
 
@@ -148,15 +161,20 @@ pub fn parse32(s: &str) -> Result<[u8; 32]> {
 /// feature; the software variant warns loudly.
 pub fn open_signer(spec: &KeySpec) -> Result<Box<dyn HardwareSigner>> {
     match spec {
-        KeySpec::Tpm(handle) => {
+        KeySpec::Tpm(key) => {
             #[cfg(feature = "tpm")]
             {
-                let handle = parse_hex_u32(handle)?;
-                Ok(Box::new(hw_signer::tpm::TpmSigner::open_persistent(handle)?))
+                use hw_signer::tpm::TpmSigner;
+                Ok(match key {
+                    TpmKey::Handle(handle) => Box::new(TpmSigner::open_persistent(parse_hex_u32(handle)?)?),
+                    TpmKey::Sealed { handle, pcrs } => {
+                        Box::new(TpmSigner::open_persistent_sealed(parse_hex_u32(handle)?, pcrs)?)
+                    }
+                })
             }
             #[cfg(not(feature = "tpm"))]
             {
-                anyhow::bail!("key {handle} is a TPM handle but this build has no `tpm` feature")
+                anyhow::bail!("key {key:?} is a TPM key but this build has no `tpm` feature")
             }
         }
         KeySpec::SecureEnclave(label) => {

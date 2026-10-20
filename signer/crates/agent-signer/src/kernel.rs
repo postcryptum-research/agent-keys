@@ -84,6 +84,46 @@ pub fn permission_data(
     entries.abi_encode().into()
 }
 
+/// `installValidations([perm], [{nonce, hook = address(1)}], [data], [""])`.
+/// `nonce` must equal the account's validation nonce at execution time:
+/// `currentNonce()`, or one more if this id was installed before.
+pub fn install_permission_calldata(perm: PermissionId, permission_data: Bytes, nonce: u32) -> Bytes {
+    IKernel::installValidationsCall {
+        vIds: vec![permission_vid(perm)],
+        configs: vec![IKernel::ValidationConfig { nonce, hook: Address::with_last_byte(1) }],
+        validationData: vec![permission_data],
+        hookData: vec![Bytes::new()],
+    }
+    .abi_encode()
+    .into()
+}
+
+/// `grantAccess(perm, execute.selector, true)` — a permission may only use
+/// the selectors it was granted.
+pub fn grant_execute_calldata(perm: PermissionId) -> Bytes {
+    IKernel::grantAccessCall {
+        vId: permission_vid(perm),
+        selector: FixedBytes::from(IKernel::executeCall::SELECTOR),
+        allow: true,
+    }
+    .abi_encode()
+    .into()
+}
+
+/// `uninstallValidation(perm, disableData, "")` where `disableData` is
+/// Kernel's PermissionDisableDataFormat: one entry per policy, then the
+/// signer. Our modules need nothing beyond the id Kernel prepends.
+pub fn uninstall_permission_calldata(perm: PermissionId) -> Bytes {
+    let entries: Vec<Bytes> = vec![Bytes::new(), Bytes::new()];
+    IKernel::uninstallValidationCall {
+        vId: permission_vid(perm),
+        deinitData: entries.abi_encode().into(),
+        hookDeinitData: Bytes::new(),
+    }
+    .abi_encode()
+    .into()
+}
+
 /// `Kernel.initialize(...)` calldata: the owner key as root, the agent
 /// permission installed and granted `execute` through `initConfig`.
 pub fn init_data(
@@ -92,28 +132,30 @@ pub fn init_data(
     perm: PermissionId,
     permission_data: Bytes,
 ) -> Bytes {
-    let install = IKernel::installValidationsCall {
-        vIds: vec![permission_vid(perm)],
-        configs: vec![IKernel::ValidationConfig { nonce: 1, hook: Address::with_last_byte(1) }],
-        validationData: vec![permission_data],
-        hookData: vec![Bytes::new()],
-    }
-    .abi_encode();
-    let grant = IKernel::grantAccessCall {
-        vId: permission_vid(perm),
-        selector: FixedBytes::from(IKernel::executeCall::SELECTOR),
-        allow: true,
-    }
-    .abi_encode();
     IKernel::initializeCall {
         rootValidator: validator_id(validator),
         hook: Address::ZERO,
         validatorData: encode_pubkey(owner_key),
         hookData: Bytes::new(),
-        initConfig: vec![install.into(), grant.into()],
+        // initialize() sets the validation nonce to 1 before running initConfig
+        initConfig: vec![install_permission_calldata(perm, permission_data, 1), grant_execute_calldata(perm)],
     }
     .abi_encode()
     .into()
+}
+
+/// `execute(batch/default, abi.encode(Execution[]))` — several calls in one
+/// operation; self-calls let a root operation reconfigure the account.
+pub fn execute_batch_calldata(calls: Vec<(Address, U256, Bytes)>) -> Bytes {
+    let executions: Vec<IKernel::Execution> = calls
+        .into_iter()
+        .map(|(target, value, call_data)| IKernel::Execution { target, value, callData: call_data })
+        .collect();
+    let mut mode = [0u8; 32];
+    mode[0] = 0x01; // CALLTYPE_BATCH, EXECTYPE_DEFAULT
+    IKernel::executeCall { execMode: B256::from(mode), executionCalldata: executions.abi_encode().into() }
+        .abi_encode()
+        .into()
 }
 
 /// ERC-4337 `initCode`: `factory ‖ createAccount(initData, salt)`.

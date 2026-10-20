@@ -21,6 +21,7 @@ secure-enclave = ["dep:security-framework"]
 [dependencies]
 p256 = { version = "0.13", features = ["ecdsa"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
+sha2 = "0.10"
 thiserror = "1"
 # `generate-bindings`: run bindgen against the installed tpm2-tss headers
 # instead of the crate's pre-generated bindings, which target an older tss
