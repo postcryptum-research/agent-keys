@@ -111,7 +111,7 @@ contract GasBenchmarkTest is Test {
             bytes2(0),
             address(policy),
             abi.encode(
-                targets, selectors, uint128(0), uint128(0), uint48(block.timestamp + 365 days), new AgentPolicy.TokenCap[](0)
+                targets, selectors, uint128(0), uint128(0), uint48(block.timestamp + 365 days), new AgentPolicy.TokenCap[](0), uint48(0)
             )
         );
         entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(bytes32(ax), bytes32(ay)));

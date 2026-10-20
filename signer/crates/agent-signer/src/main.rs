@@ -133,6 +133,18 @@ enum PermissionCmd {
         #[arg(long)]
         sponsored: bool,
     },
+    /// Install the permission the config describes alongside the existing
+    /// ones — e.g. one window of a schedule (`policy.validAfter` …
+    /// `validUntil`). Root operation signed by the owner key.
+    Add {
+        #[command(flatten)]
+        agent: AgentArgs,
+        #[arg(long)]
+        sponsored: bool,
+        /// Print the batch calldata instead of sending it.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Replace permission `old_id` with the one the config describes — new
     /// agent key and/or mandate — in one root operation. Pin `account` in
     /// the config first.
@@ -741,6 +753,27 @@ async fn main() -> Result<()> {
                 let s = session(&agent).await?;
                 let inc = s.revoke_permission(parse_permission_id(&id)?, sponsored).await?;
                 println!("revoked permission {id}: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
+            }
+            PermissionCmd::Add { agent, sponsored, dry_run } => {
+                let s = session(&agent).await?;
+                if !s.pinned {
+                    bail!("pin the deployed account in the config (\"account\": \"0x…\") before adding a permission");
+                }
+                if dry_run {
+                    println!("account:  {}", s.account);
+                    println!("callData: {}", s.add_calldata().await?);
+                    return Ok(());
+                }
+                let inc = s.add_permission(sponsored).await?;
+                println!(
+                    "added permission {} (valid {} … {}): tx {} (block {}, {} gas)",
+                    s.cfg.permission_id,
+                    s.cfg.policy.valid_after,
+                    s.cfg.policy.valid_until,
+                    inc.tx,
+                    inc.block,
+                    inc.gas_used
+                );
             }
             PermissionCmd::Rotate { agent, old_id, sponsored, dry_run } => {
                 let s = session(&agent).await?;

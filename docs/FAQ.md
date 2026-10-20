@@ -90,10 +90,9 @@ passphrase).
 **5. Fund the account and start.**
 
 The CLI reads an `.env` (outside the repository) with `BASE_SEPOLIA_RPC_URL`
-(or your chain's RPC), `BUNDLER_URL` (e.g. Pimlico's public endpoint) and
-`GAS_WALLET_KEYFILE` — a small hot wallet that pays outer transactions when
-the CLI submits operations itself. Today the CLI requires that file even
-when a bundler is used; keep only a few dollars of gas in it.
+(or your chain's RPC) and `BUNDLER_URL` (e.g. Pimlico's public endpoint).
+A gas wallet (`GAS_WALLET_KEYFILE`) is optional — see "Do I need a bundler or
+a gas wallet?" below.
 
 ```sh
 $B account status --agent my-agent.json --env-file .env     # prints the account address
@@ -132,22 +131,20 @@ is the target setup, and which parts are missing.
 | recovery key | an encrypted file on two USB drives in different places, or a seed-backed Trezor | file: works today; behind a time lock: planned ([`RESILIENCE.md`](RESILIENCE.md)) |
 | money | most of it **not** on the agent's account — in an owner-controlled vault; the agent's account is topped up per period | operational, works today |
 
-**The schedule.** A mandate today has an expiry but no start time, so all
-installed mandates are active at once. Two ways to get "on which days, how
-much, on what":
+**The schedule.** Each mandate has a time window — `validAfter` (start) and
+`validUntil` (end) — that the EntryPoint enforces. The owner installs
+several mandates for the same agent key, each with its own window, budget,
+token limits and allowed contracts, e.g.:
 
-- **today, by rotation:** before each period, the owner installs that
-  period's mandate (allowed contracts and functions, per-operation cap,
-  budget, token limits, `validUntil` = end of the period) and tops the
-  agent's account up to that period's budget. One owner operation per
-  period — a human touches the owner device, which fits the policy (owner
-  operations are rare and may be confirmed by a person).
-- **planned (small contract change):** a start time (`validAfter`) per
-  mandate, so the owner pre-installs a whole calendar at once — e.g.
-  "Mon–Fri: up to 5,000 USDC per day to these two exchanges; the 1st of the
-  month: payroll up to 40,000 USDC to these addresses" — each as its own
-  mandate with its own window and budget. The EntryPoint already enforces
-  such windows; `AgentPolicy` only has to pass the start time through.
+- "Mon–Fri of this week: up to 5,000 USDC per day to these two exchanges" —
+  one mandate per day;
+- "the 1st of the month: payroll up to 40,000 USDC to these addresses".
+
+Each mandate is one agent config file with its own `permissionId` and
+`policy.validAfter` / `validUntil`; `agent-signer permission add` installs
+it next to the others (an owner operation). The agent uses the config of the
+window it is in; outside every window it can do nothing. Install the
+calendar ahead (one owner session for a month), or week by week.
 
 **Sequence, once the missing parts exist:**
 
@@ -163,8 +160,8 @@ much, on what":
    key behind a time lock, rehearse a recovery once with a small amount.
 5. Put the $100k in an owner-controlled vault (an owner Safe or a separate
    account), not on the agent's account.
-6. For each period: install the period's mandate and top the agent's account
-   up to its budget (or, with `validAfter`, install the calendar ahead).
+6. Install the calendar of mandates (`permission add`, one per window) and
+   top the agent's account up before each window to that window's budget.
 7. Monitor the account's events; run `key check` on the owner device monthly.
 
 **Why the money should not sit on the agent's account:** the mandate bounds
@@ -292,9 +289,10 @@ ordinary transaction (`EntryPoint.handleOps`). Three ways:
 | **a bundler you run or rent** | its URL, possibly an API key | same, without others' rate limits |
 | **`agent-signer` itself** | a **gas wallet**: a small hot key with ETH (`GAS_WALLET_KEYFILE`) | the CLI sends `handleOps` from it; the EntryPoint repays it from the account's deposit or the paymaster's, so it only needs a float. It is a plain key file — keep a few dollars in it. |
 
-Today the CLI asks for `GAS_WALLET_KEYFILE` even when a bundler is used (it
-also funds deployments and the paymaster); making it optional with a bundler
-is a known to-do.
+With a bundler, no gas wallet is needed: leave `GAS_WALLET_KEYFILE` unset.
+It is only required to submit `handleOps` yourself and for the commands that
+send ETH from it (`account fund`, `paymaster deposit / sponsor / stake`);
+those say so when it is missing.
 
 ### Can it drive a Safe (Olas, Jinn)? Which AI frameworks work?
 

@@ -35,7 +35,10 @@ import {SafeNonceAssert} from "./SafeNonceAssert.sol";
 ///  - ERC-20 `transfer` / `transferFrom` / `approve` / `increaseAllowance`
 ///    amounts capped per operation and by a budget per token; an
 ///    allow-listed token selector without a token limit is refused;
-///  - a hard expiry that the EntryPoint enforces through `validUntil`.
+///  - a time window `[validAfter, validUntil]` that the EntryPoint enforces:
+///    several permissions for the same agent key, each with its own window,
+///    budget and allow-list, make a schedule ("weekdays: up to X on these
+///    contracts; the 1st: payroll up to Y").
 ///
 /// Safe pass-through: an allow-list entry `(safe, execTransaction)` lets the
 /// agent drive a Safe that this account owns (Olas / Jinn service Safes),
@@ -66,6 +69,7 @@ contract AgentPolicy is IPolicy {
         uint128 maxValuePerOp;
         uint128 budget;
         uint128 spent;
+        uint48 validAfter; // 0 = from installation on
     }
 
     /// Install-time limit for one ERC-20 token.
@@ -124,7 +128,8 @@ contract AgentPolicy is IPolicy {
     }
 
     /// @param data `bytes32 id ++ abi.encode(address[] targets, bytes4[] selectors,
-    ///              uint128 maxValuePerOp, uint128 budget, uint48 validUntil, TokenCap[] tokens)`
+    ///              uint128 maxValuePerOp, uint128 budget, uint48 validUntil, TokenCap[] tokens,
+    ///              uint48 validAfter)`
     function onInstall(bytes calldata data) external payable override {
         bytes32 id = bytes32(data[0:32]);
         Config storage c = configs[msg.sender][id];
@@ -135,9 +140,12 @@ contract AgentPolicy is IPolicy {
             uint128 maxValuePerOp,
             uint128 budget,
             uint48 validUntil,
-            TokenCap[] memory tokens
-        ) = abi.decode(data[32:], (address[], bytes4[], uint128, uint128, uint48, TokenCap[]));
-        if (targets.length == 0 || targets.length != selectors.length || validUntil == 0) revert InvalidConfig();
+            TokenCap[] memory tokens,
+            uint48 validAfter
+        ) = abi.decode(data[32:], (address[], bytes4[], uint128, uint128, uint48, TokenCap[], uint48));
+        if (targets.length == 0 || targets.length != selectors.length || validUntil == 0 || validAfter >= validUntil) {
+            revert InvalidConfig();
+        }
 
         Mandate storage m = _mandates[msg.sender][id][c.epoch];
         for (uint256 i; i < targets.length; i++) {
@@ -148,6 +156,7 @@ contract AgentPolicy is IPolicy {
             m.tokens[tokens[i].token] = TokenLimit(tokens[i].maxPerOp, tokens[i].budget, 0, true);
         }
         c.validUntil = validUntil;
+        c.validAfter = validAfter;
         c.maxValuePerOp = maxValuePerOp;
         c.budget = budget;
         c.spent = 0;
@@ -160,6 +169,7 @@ contract AgentPolicy is IPolicy {
         Config storage c = configs[msg.sender][id];
         if (c.validUntil == 0) revert NotInitialized(msg.sender);
         c.validUntil = 0;
+        c.validAfter = 0;
         c.epoch++;
         usedIds[msg.sender]--;
     }
@@ -180,8 +190,8 @@ contract AgentPolicy is IPolicy {
         return _mandates[account][id][configs[account][id].epoch].tokens[token];
     }
 
-    /// @dev Returns `packValidationData(0, validUntil)` on success so the
-    /// EntryPoint enforces the expiry, `SIG_VALIDATION_FAILED_UINT` otherwise
+    /// @dev Returns `packValidationData(validAfter, validUntil)` on success so
+    /// the EntryPoint enforces the window, `SIG_VALIDATION_FAILED_UINT` otherwise
     /// (which Kernel turns into a `PolicyFailed` revert, undoing any token
     /// accounting done on the way).
     function checkUserOpPolicy(bytes32 id, PackedUserOperation calldata userOp)
@@ -204,7 +214,7 @@ contract AgentPolicy is IPolicy {
         if (spent > c.budget) return SIG_VALIDATION_FAILED_UINT;
         c.spent = uint128(spent);
 
-        return packValidationData(ValidAfter.wrap(0), ValidUntil.wrap(c.validUntil));
+        return packValidationData(ValidAfter.wrap(c.validAfter), ValidUntil.wrap(c.validUntil));
     }
 
     /// @dev Agents do not sign messages. See the contract notice.

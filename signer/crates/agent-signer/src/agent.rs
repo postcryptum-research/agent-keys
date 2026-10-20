@@ -111,6 +111,10 @@ pub struct PolicyConfig {
     pub budget: String,
     /// unix seconds
     pub valid_until: u64,
+    /// unix seconds; the mandate takes effect only from then (0 = at once).
+    /// Several permissions with their own windows make a schedule.
+    #[serde(default)]
+    pub valid_after: u64,
     /// Per-token limits for ERC-20 `transfer` / `transferFrom` / `approve` /
     /// `increaseAllowance`; an allow-listed token selector needs one.
     #[serde(default)]
@@ -219,6 +223,7 @@ impl AgentConfig {
             max_value_per_op: self.policy.max_value_per_op.parse().context("maxValuePerOp")?,
             budget: self.policy.budget.parse().context("budget")?,
             valid_until: self.policy.valid_until,
+            valid_after: self.policy.valid_after,
             tokens: self
                 .policy
                 .tokens

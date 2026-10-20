@@ -20,11 +20,13 @@ use crate::bundler::Bundler;
 use crate::kernel::{self, PermissionId};
 
 /// Secrets come from the environment (optionally a `.env` file), never from
-/// the agent config: `BASE_SEPOLIA_RPC_URL` (or `RPC_URL`) and
-/// `GAS_WALLET_KEYFILE`, a file holding the bundler EOA's hex key.
+/// the agent config: `BASE_SEPOLIA_RPC_URL` (or `RPC_URL`) and, optionally,
+/// `GAS_WALLET_KEYFILE`, a file holding the hex key of a small hot wallet that
+/// submits `handleOps` itself and funds things. Without it, operations go
+/// through a bundler and the wallet-paid commands are unavailable.
 pub struct Env {
     pub rpc_url: String,
-    pub gas_key: [u8; 32],
+    pub gas_key: Option<[u8; 32]>,
     /// `BUNDLER_URL`: when set (or overridden by `--bundler`), operations go
     /// through an ERC-4337 bundler instead of our own `handleOps`.
     pub bundler_url: Option<String>,
@@ -38,10 +40,18 @@ impl Env {
         let rpc_url = std::env::var("BASE_SEPOLIA_RPC_URL")
             .or_else(|_| std::env::var("RPC_URL"))
             .context("set BASE_SEPOLIA_RPC_URL or RPC_URL")?;
-        let keyfile = std::env::var("GAS_WALLET_KEYFILE").context("set GAS_WALLET_KEYFILE")?;
-        let hex = std::fs::read_to_string(&keyfile).with_context(|| format!("reading {keyfile}"))?;
+        let gas_key = match std::env::var("GAS_WALLET_KEYFILE") {
+            Ok(keyfile) => {
+                let hex = std::fs::read_to_string(&keyfile).with_context(|| format!("reading {keyfile}"))?;
+                Some(parse32(hex.trim())?)
+            }
+            Err(_) => None,
+        };
         let bundler_url = bundler_override.map(str::to_owned).or_else(|| std::env::var("BUNDLER_URL").ok());
-        Ok(Self { rpc_url, gas_key: parse32(hex.trim())?, bundler_url })
+        if gas_key.is_none() && bundler_url.is_none() {
+            bail!("set BUNDLER_URL (operations go through a bundler) or GAS_WALLET_KEYFILE (submit them ourselves)");
+        }
+        Ok(Self { rpc_url, gas_key, bundler_url })
     }
 }
 
@@ -89,7 +99,8 @@ impl SignAs {
 
 pub struct Session {
     pub provider: DynProvider,
-    pub gas_wallet: Address,
+    /// The hot wallet that submits `handleOps` and pays for funding, if any.
+    pub gas_wallet: Option<Address>,
     /// Set when operations are delivered through a bundler RPC.
     pub bundler: Option<Bundler>,
     pub cfg: AgentConfig,
@@ -108,14 +119,16 @@ pub struct Session {
 
 impl Session {
     pub async fn open(env: &Env, cfg: AgentConfig, base: &Path) -> Result<Self> {
-        let signer = PrivateKeySigner::from_slice(&env.gas_key).context("gas wallet key")?;
-        let gas_wallet = signer.address();
-        let provider = ProviderBuilder::new()
-            .wallet(signer)
-            .connect(&env.rpc_url)
-            .await
-            .context("connecting to RPC")?
-            .erased();
+        let (provider, gas_wallet) = match &env.gas_key {
+            Some(key) => {
+                let signer = PrivateKeySigner::from_slice(key).context("gas wallet key")?;
+                let address = signer.address();
+                let provider =
+                    ProviderBuilder::new().wallet(signer).connect(&env.rpc_url).await.context("connecting to RPC")?.erased();
+                (provider, Some(address))
+            }
+            None => (ProviderBuilder::new().connect(&env.rpc_url).await.context("connecting to RPC")?.erased(), None),
+        };
 
         let dep = cfg.load_deployments(base)?;
         let chain_id = provider.get_chain_id().await?;
@@ -172,8 +185,13 @@ impl Session {
         println!("deployed:       {}", self.is_deployed().await?);
         println!("balance:        {} wei", self.provider.get_balance(self.account).await?);
         println!("ep deposit:     {} wei", ep.balanceOf(self.account).call().await?);
-        println!("gas wallet:     {}", self.gas_wallet);
-        println!("gas balance:    {} wei", self.provider.get_balance(self.gas_wallet).await?);
+        match self.gas_wallet {
+            Some(w) => {
+                println!("gas wallet:     {w}");
+                println!("gas balance:    {} wei", self.provider.get_balance(w).await?);
+            }
+            None => println!("gas wallet:     (none — operations go through the bundler)"),
+        }
         match self.dep.whitelist_paymaster {
             Some(pm) => {
                 let paymaster = IWhitelistPaymaster::new(pm, self.provider.clone());
@@ -201,8 +219,15 @@ impl Session {
             .context("no whitelistPaymaster in deployments; run script/Deploy.s.sol")
     }
 
+    /// The gas wallet, for commands that send a transaction from it.
+    fn require_gas_wallet(&self, what: &str) -> Result<Address> {
+        self.gas_wallet
+            .with_context(|| format!("{what} sends a transaction from the gas wallet: set GAS_WALLET_KEYFILE"))
+    }
+
     /// Top up the paymaster's EntryPoint deposit from the gas wallet.
     pub async fn paymaster_deposit(&self, amount: U256) -> Result<B256> {
+        self.require_gas_wallet("paymaster deposit")?;
         let paymaster = IWhitelistPaymaster::new(self.paymaster()?, self.provider.clone());
         let receipt = paymaster.deposit().value(amount).send().await?.get_receipt().await?;
         Ok(receipt.transaction_hash)
@@ -211,6 +236,7 @@ impl Session {
     /// List (or delist) this account for sponsorship. Only the paymaster's
     /// owner — the gas wallet that deployed it — may do this.
     pub async fn sponsor(&self, budget: u128, max_per_op: u128) -> Result<B256> {
+        self.require_gas_wallet("paymaster sponsor")?;
         let paymaster = IWhitelistPaymaster::new(self.paymaster()?, self.provider.clone());
         let receipt = paymaster.setSponsored(self.account, budget, max_per_op).send().await?.get_receipt().await?;
         Ok(receipt.transaction_hash)
@@ -219,6 +245,7 @@ impl Session {
     /// Stake the paymaster in the EntryPoint so public bundlers relay its
     /// operations (owner only).
     pub async fn paymaster_stake(&self, amount: U256, unstake_delay_sec: u32) -> Result<B256> {
+        self.require_gas_wallet("paymaster stake")?;
         let paymaster = IWhitelistPaymaster::new(self.paymaster()?, self.provider.clone());
         let receipt = paymaster.addStake(unstake_delay_sec).value(amount).send().await?.get_receipt().await?;
         Ok(receipt.transaction_hash)
@@ -247,6 +274,7 @@ impl Session {
     /// our init data: ETH sent to an address that can never be deployed is
     /// gone for good.
     pub async fn fund(&self, amount: U256) -> Result<B256> {
+        self.require_gas_wallet("account fund")?;
         if !self.is_deployed().await? {
             let factory = IKernelFactory::new(self.dep.kernel_factory, self.provider.clone());
             let simulated = factory
@@ -427,6 +455,28 @@ impl Session {
     }
 
     /// The batch a rotation executes, for inspection (`--dry-run`).
+    /// Root operation signed by the owner key: install the permission the
+    /// config describes *next to* the existing ones (a schedule: each with
+    /// its own window, budget and allow-list).
+    pub async fn add_permission(&self, sponsored: bool) -> Result<Included> {
+        let call = self.add_calldata().await?;
+        self.send_raw(call, true, sponsored).await
+    }
+
+    pub async fn add_calldata(&self) -> Result<Bytes> {
+        let new = self.cfg.permission_id()?;
+        let kernel_account = IKernel::new(self.account, self.provider.clone());
+        if kernel_account.validationConfig(kernel::permission_vid(new)).call().await?.hook != Address::ZERO {
+            bail!("permission {new} is already installed: give the new window its own permissionId");
+        }
+        let nonce = self.install_nonce(new).await?;
+        let calls = vec![
+            (self.account, U256::ZERO, kernel::install_permission_calldata(new, self.permission_data.clone(), nonce)),
+            (self.account, U256::ZERO, kernel::grant_execute_calldata(new)),
+        ];
+        Ok(kernel::execute_batch_calldata(calls))
+    }
+
     pub async fn rotate_calldata(&self, old: PermissionId) -> Result<Bytes> {
         let new = self.cfg.permission_id()?;
         let nonce = self.install_nonce(new).await?;
@@ -488,6 +538,12 @@ impl Session {
         sponsored: bool,
         pinned: Option<U256>,
     ) -> Result<Included> {
+        // Without a bundler we submit handleOps ourselves: check that we can
+        // before the hardware signs anything.
+        let beneficiary = match &self.bundler {
+            Some(_) => None,
+            None => Some(self.require_gas_wallet("submitting without a bundler (no BUNDLER_URL)")?),
+        };
         let ep = IEntryPoint::new(self.dep.entry_point, self.provider.clone());
         let deployed = self.is_deployed().await?;
         if !deployed && !sponsored && self.provider.get_balance(self.account).await?.is_zero() {
@@ -608,7 +664,8 @@ impl Session {
         eprintln!("userOpHash:     {user_op_hash}");
         eprintln!("delivery:       self-bundled via handleOps");
 
-        let pending = match ep.handleOps(vec![op], self.gas_wallet).send().await {
+        let beneficiary = beneficiary.expect("checked before signing");
+        let pending = match ep.handleOps(vec![op], beneficiary).send().await {
             Ok(p) => p,
             Err(e) => {
                 if let Some(decoded) = e.as_decoded_interface_error::<IEntryPoint::IEntryPointErrors>() {

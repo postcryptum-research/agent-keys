@@ -126,9 +126,10 @@ Intel PTT, a Windows TPM and a TROPIC01. Windows: [`docs/WINDOWS.md`](docs/WINDO
 
 ## Run an agent account on Base Sepolia
 
-Secrets stay outside the repository: a `.env` with `BASE_SEPOLIA_RPC_URL` and
-`GAS_WALLET_KEYFILE` (a file holding the hex key of a funded testnet EOA that
-pays for the outer `handleOps` transactions). The account itself is described
+Secrets stay outside the repository: a `.env` with `BASE_SEPOLIA_RPC_URL`,
+and `BUNDLER_URL` and/or `GAS_WALLET_KEYFILE` (a file holding the hex key of
+a small funded EOA that submits `handleOps` itself and pays for funding
+commands; not needed when a bundler delivers the operations). The account itself is described
 by `signer/agent.base-sepolia.json`: two TPM handles, a permission id and the
 agent's mandate. Module addresses come from `contracts/deployments/84532.json`
 (`forge script script/Deploy.s.sol` writes it; CREATE2 with salt 0, so they
@@ -194,6 +195,9 @@ $B key create --handle 0x81010012 --pcrs 0,2,4,7       # a key sealed to the boo
 # give the new permission a fresh id — then, signed by the owner key:
 $B permission rotate --agent $A --env-file $E --old-id 0x61676e74 --sponsored
 $B permission revoke --agent $A --env-file $E --id 0x61676e32          # when the agent is retired
+# a schedule: one config per time window (own permissionId, policy.validAfter … validUntil,
+# budget, allow-list), each installed alongside the others:
+$B permission add --agent window-mon.json --env-file $E --sponsored
 
 $B key create --tropic01 /dev/ttyACM0 --slot 1         # a key inside a TROPIC01 (--features tropic01)
 # signer/agent.tropic01.base-sepolia.json: that key as the agent, a Safe in the mandate

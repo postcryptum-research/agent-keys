@@ -118,6 +118,7 @@ pub struct PolicyParams {
     pub valid_until: u64,
     /// `(token, maxPerOp, budget)`
     pub tokens: Vec<(Address, u128, u128)>,
+    pub valid_after: u64,
 }
 
 /// Kernel's `PermissionEnableDataFormat`: `abi.encode(bytes[] entries)` where
@@ -130,7 +131,7 @@ pub fn permission_data(
     signer: Address,
     agent_key: &PublicKey,
 ) -> Bytes {
-    // `abi.encode(targets, selectors, max, budget, until, tokens)`: a parameter
+    // `abi.encode(targets, selectors, max, budget, until, tokens, after)`: a parameter
     // sequence, not one tuple value — `abi_encode()` on a dynamic tuple would
     // prepend an offset word and the policy's `abi.decode` would reject it.
     let policy_init = (
@@ -144,6 +145,7 @@ pub fn permission_data(
             .iter()
             .map(|&(token, max, budget)| (token, U256::from(max), U256::from(budget)))
             .collect::<Vec<_>>(),
+        U256::from(params.valid_after),
     )
         .abi_encode_params();
     let flag = FixedBytes::<2>::ZERO;

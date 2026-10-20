@@ -183,7 +183,7 @@ contract AgentPermissionTest is Test {
         returns (bytes memory)
     {
         return abi.encodePacked(
-            bytes2(0), address(policy), abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps)
+            bytes2(0), address(policy), abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0))
         );
     }
 
@@ -295,7 +295,7 @@ contract AgentPermissionTest is Test {
     }
 
     function _spent(PermissionId id) internal view returns (uint128 spent) {
-        (,,,, spent) = policy.configs(acct, bytes32(PermissionId.unwrap(id)));
+        (,,,, spent,) = policy.configs(acct, bytes32(PermissionId.unwrap(id)));
     }
 
     /// A root-path operation with arbitrary calldata, signed by the OWNER key.
@@ -920,5 +920,77 @@ contract AgentPermissionTest is Test {
         // and the agent's mandate survived the whole exchange
         _send(_agentOp(address(counter), 0, abi.encodeWithSelector(Counter.increment.selector)));
         assertEq(counter.count(), 2);
+    }
+
+    // --- schedule: permissions with their own time windows ---
+
+    /// A second permission for the same agent key: only increments, only
+    /// within [opensAt, closesAt].
+    function _addWindowedPermission(PermissionId id, uint48 opensAt, uint48 closesAt) internal {
+        address[] memory targets = new address[](1);
+        bytes4[] memory selectors = new bytes4[](1);
+        (targets[0], selectors[0]) = (address(counter), Counter.increment.selector);
+        bytes[] memory entries = new bytes[](2);
+        entries[0] = abi.encodePacked(
+            bytes2(0),
+            address(policy),
+            abi.encode(targets, selectors, MAX_VALUE, BUDGET, closesAt, new AgentPolicy.TokenCap[](0), opensAt)
+        );
+        entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(agentX, agentY));
+        ValidationId vId = ValidatorLib.permissionToIdentifier(id);
+        Execution[] memory batch = new Execution[](2);
+        batch[0] = Execution(acct, 0, _installCall(vId, Kernel(payable(acct)).currentNonce(), abi.encode(entries)));
+        batch[1] = Execution(acct, 0, abi.encodeCall(Kernel.grantAccess, (vId, Kernel.execute.selector, true)));
+        _send(
+            _rootOp(
+                abi.encodeWithSelector(
+                    Kernel.execute.selector, ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))), ExecLib.encodeBatch(batch)
+                )
+            )
+        );
+    }
+
+    function test_schedule_windowIsEnforced() public {
+        PermissionId friday = PermissionId.wrap(0x66726931); // "fri1"
+        uint48 opens = uint48(block.timestamp + 2 days);
+        uint48 closes = uint48(block.timestamp + 3 days);
+        _addWindowedPermission(friday, opens, closes);
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+
+        // before the window: refused
+        _expectRefused(_agentOpWith(AGENT, friday, address(counter), 0, inc));
+        // inside it: works
+        vm.warp(opens + 1);
+        _send(_agentOpWith(AGENT, friday, address(counter), 0, inc));
+        assertEq(counter.count(), 1);
+        // after it: refused
+        vm.warp(closes + 1);
+        _expectRefused(_agentOpWith(AGENT, friday, address(counter), 0, inc));
+        assertEq(counter.count(), 1);
+    }
+
+    function test_schedule_windowsCoexist() public {
+        // the everyday permission (no start) and a later window, side by side
+        PermissionId later = PermissionId.wrap(0x6c617465); // "late"
+        _addWindowedPermission(later, uint48(block.timestamp + 1 hours), uint48(block.timestamp + 2 hours));
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+        _send(_agentOp(address(counter), 0, inc));
+        _expectRefused(_agentOpWith(AGENT, later, address(counter), 0, inc));
+        vm.warp(block.timestamp + 1 hours + 1);
+        _send(_agentOpWith(AGENT, later, address(counter), 0, inc));
+        _send(_agentOp(address(counter), 0, inc));
+        assertEq(counter.count(), 3);
+    }
+
+    function test_schedule_emptyWindowIsRejected() public {
+        address[] memory targets = new address[](1);
+        bytes4[] memory selectors = new bytes4[](1);
+        (targets[0], selectors[0]) = (address(counter), Counter.increment.selector);
+        bytes memory install = abi.encodePacked(
+            bytes32(uint256(0x77)),
+            abi.encode(targets, selectors, MAX_VALUE, BUDGET, uint48(100), new AgentPolicy.TokenCap[](0), uint48(100))
+        );
+        vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+        policy.onInstall(install);
     }
 }

@@ -3,7 +3,7 @@
     "addressOnly": 3443,
     "intrinsicCalldataEstimate": 22760,
     "k1Signature": 7402,
-    "p256AgentAccountPaymaster": 81421,
+    "p256AgentAccountPaymaster": 81605,
     "p256Signature": 7433,
     "payloadBytes": 10
   },
@@ -11,7 +11,7 @@
     "addressOnly": 4258,
     "intrinsicCalldataEstimate": 24200,
     "k1Signature": 8264,
-    "p256AgentAccountPaymaster": 82416,
+    "p256AgentAccountPaymaster": 82600,
     "p256Signature": 8269,
     "payloadBytes": 100
   },
@@ -19,7 +19,7 @@
     "addressOnly": 11826,
     "intrinsicCalldataEstimate": 38600,
     "k1Signature": 16090,
-    "p256AgentAccountPaymaster": 91603,
+    "p256AgentAccountPaymaster": 91787,
     "p256Signature": 16095,
     "payloadBytes": 1000
   },
@@ -27,7 +27,7 @@
     "addressOnly": 88868,
     "intrinsicCalldataEstimate": 182600,
     "k1Signature": 96074,
-    "p256AgentAccountPaymaster": 185368,
+    "p256AgentAccountPaymaster": 185552,
     "p256Signature": 96435,
     "payloadBytes": 10000
   },
@@ -35,7 +35,7 @@
     "addressOnly": 956236,
     "intrinsicCalldataEstimate": 1622600,
     "k1Signature": 1026826,
-    "p256AgentAccountPaymaster": 1293424,
+    "p256AgentAccountPaymaster": 1293608,
     "p256Signature": 1064773,
     "payloadBytes": 100000
   }
