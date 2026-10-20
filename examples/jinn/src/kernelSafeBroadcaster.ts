@@ -63,6 +63,7 @@ export interface KernelSafeBroadcaster {
 
 const ENTRY_POINT_V07 = "0x0000000071727De22E5E9d8BAf0edAc6f37da032";
 const SAFE_ABI = parseAbi([
+  "function nonce() view returns (uint256)",
   "function execTransaction(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, bytes signatures) payable returns (bool)",
 ]);
 const ENTRY_POINT_ABI = parseAbi([
@@ -111,6 +112,8 @@ export function createKernelSafeBroadcaster(input: {
 }): KernelSafeBroadcaster {
   const kernel = input.signer.account;
   const signature = preValidatedSignature(kernel);
+  /** logicalTx → the Safe nonce its first attempt targeted. */
+  const safeNonces = new Map<string, bigint>();
   const classify =
     input.classify ??
     ((error: unknown): VenueRevertClassification =>
@@ -123,8 +126,17 @@ export function createKernelSafeBroadcaster(input: {
       // no refund (gasPrice 0): AgentPolicy refuses anything else
       args: [req.to, req.value, req.data, req.operation ?? 0, 0n, 0n, 0n, zeroAddress, zeroAddress, signature],
     });
+    // The Safe nonce this transaction is meant for, fixed at its first
+    // attempt: agent-signer asserts it on-chain in the same batch, so a retry
+    // of an attempt that did land reverts instead of running twice.
+    let safeNonce = safeNonces.get(req.logicalTx);
+    if (safeNonce === undefined) {
+      safeNonce = await input.publicClient.readContract({ address: input.safeAddress, abi: SAFE_ABI, functionName: "nonce" });
+      safeNonces.set(req.logicalTx, safeNonce);
+    }
     // The Safe pays `req.value` from its own balance; the outer call carries none.
-    const sent = await agentSignerSend(input.signer, { to: input.safeAddress, value: 0n, data });
+    const sent = await agentSignerSend(input.signer, { to: input.safeAddress, value: 0n, data, safeNonce });
+    safeNonces.delete(req.logicalTx);
     const receipt = await input.publicClient.getTransactionReceipt({ hash: sent.txHash });
     return {
       txHash: sent.txHash,
@@ -133,12 +145,10 @@ export function createKernelSafeBroadcaster(input: {
       logs: userOpLogs(receipt.logs, sent.userOpHash),
       alreadySettled: false,
     };
-    // NOTE for a retry layer: a v = 1 signature does not commit to the Safe
-    // nonce, so an unpinned resend after an AgentSignerError of kind
-    // "not-included" may execute the call twice. Record the first attempt's
-    // EntryPoint nonce per logicalTx and resend only with
-    // `agentSignerSend(..., { ..., nonce })`, or reconcile `error.userOpHash`
-    // (eth_getUserOperationReceipt on the bundler) first.
+    // A retry of the same logicalTx reuses its Safe nonce (kept in
+    // `safeNonces` until success): if the earlier attempt landed, the
+    // on-chain assertion makes the retry revert. A durable store should back
+    // this map in a long-running operator.
   }
 
   return {

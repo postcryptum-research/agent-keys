@@ -175,7 +175,10 @@ def main() -> None:
     cmd = [os.environ.get("AGENT_SIGNER_BIN", str(TPM / "signer/target/debug/agent-signer")), "op", "send",
            "--agent", os.environ.get("AGENT_CONFIG", str(TPM / "signer/agent.tropic01.base-sepolia.json")),
            "--env-file", str(ENV_FILE),
-           "--target", SAFE, "--wei", "0", "--data", calldata, "--sponsored", "--json"]
+           "--target", SAFE, "--wei", "0", "--data", calldata, "--sponsored", "--json",
+           # the Safe nonce the hash above was computed for: agent-signer
+           # sends the Safe tx as a batch that asserts it on-chain first
+           "--safe-nonce", str(nonce)]
     shown = [("0x…" if c == calldata else c) for c in cmd]
     print("5. keeper send:", " ".join(shown))
     if not args.send:
@@ -193,14 +196,18 @@ def main() -> None:
     run_verifiers(S, api, res["tx"], h, owners, sigs, p["to_address"], p["ether_value"], p["data"], p["operation"])
     print(f"   Safe nonce now {S.get_safe_nonce(api, SAFE)['safe_nonce']} (staking activity = Safe nonce delta)")
 
-    # 7. A keeper retry of the same Safe tx (timeout, late message). A v = 1
-    #    signature does not commit to the Safe nonce, so an unpinned resend
-    #    would execute the call again; pinned to the recorded nonce it cannot.
-    retry = subprocess.run(cmd + ["--nonce", res["nonce"]], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    reason = next((l.strip() for l in retry.stderr.splitlines() if "already used" in l), retry.stderr.strip()[-200:])
-    print(f"7. keeper retry with the recorded nonce -> exit {retry.returncode}: {reason}")
-    if retry.returncode == 0:
-        sys.exit("the retry went through: double execution")
+    # 7. A keeper retry of the same Safe tx (timeout, late message), sent
+    #    WITHOUT pinning the EntryPoint nonce — what a naive or compromised
+    #    host would do. A v = 1 signature does not commit to the Safe nonce,
+    #    but the batch's on-chain assertion does: the retry is admitted by the
+    #    mandate, then reverts on-chain instead of executing twice.
+    retry = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    reason = next((l.strip() for l in retry.stderr.splitlines() if "reverted" in l), retry.stderr.strip()[-200:])
+    after = S.get_safe_nonce(api, SAFE)["safe_nonce"]
+    print(f"7. keeper retry, unpinned -> exit {retry.returncode}: {reason}")
+    print(f"   Safe nonce still {after}: the call ran once")
+    if retry.returncode == 0 or after != nonce + 1:
+        sys.exit("the retry executed: double execution")
 
 
 if __name__ == "__main__":

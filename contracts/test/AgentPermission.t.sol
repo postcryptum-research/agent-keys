@@ -6,6 +6,7 @@ import {Test} from "forge-std/Test.sol";
 import {P256Validator} from "../src/P256Validator.sol";
 import {P256Signer} from "../src/P256Signer.sol";
 import {AgentPolicy} from "../src/AgentPolicy.sol";
+import {SafeNonceAssert} from "../src/SafeNonceAssert.sol";
 
 import {Kernel} from "kernel/src/Kernel.sol";
 import {KernelFactory} from "kernel/src/factory/KernelFactory.sol";
@@ -33,6 +34,34 @@ import {Safe} from "safe-smart-account/Safe.sol";
 import {SafeProxyFactory} from "safe-smart-account/proxies/SafeProxyFactory.sol";
 import {Enum} from "safe-smart-account/common/Enum.sol";
 import {MultiSendCallOnly} from "safe-smart-account/libraries/MultiSendCallOnly.sol";
+
+/// A minimal ERC-20 for the token-limit tests.
+contract MockToken {
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    function mint(address to, uint256 amount) external {
+        balanceOf[to] += amount;
+    }
+
+    function transfer(address to, uint256 amount) external returns (bool) {
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += amount;
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        allowance[from][msg.sender] -= amount;
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+        return true;
+    }
+}
 
 contract Counter {
     uint256 public count;
@@ -80,6 +109,8 @@ contract AgentPermissionTest is Test {
     P256Validator internal rootValidator;
     P256Signer internal signer;
     AgentPolicy internal policy;
+    SafeNonceAssert internal nonceAssert;
+    MockToken internal token;
     Counter internal counter;
     Counter internal forbidden;
 
@@ -97,7 +128,9 @@ contract AgentPermissionTest is Test {
         KernelFactory factory = new KernelFactory(address(impl));
         rootValidator = new P256Validator();
         signer = new P256Signer();
-        policy = new AgentPolicy();
+        nonceAssert = new SafeNonceAssert();
+        policy = new AgentPolicy(address(nonceAssert));
+        token = new MockToken();
         counter = new Counter();
         forbidden = new Counter();
 
@@ -124,23 +157,46 @@ contract AgentPermissionTest is Test {
         );
         acct = KernelFactory(factory).createAccount(initData, bytes32(0));
         vm.deal(acct, 10 ether);
+        token.mint(acct, 100 ether);
     }
 
     // --- helpers ---
 
-    /// The agent's mandate with a given signer key: increment the counter and
-    /// send it small amounts.
-    function _permissionData(bytes32 keyX, bytes32 keyY) internal view returns (bytes memory) {
-        address[] memory targets = new address[](2);
-        bytes4[] memory selectors = new bytes4[](2);
-        targets[0] = address(counter);
-        selectors[0] = Counter.increment.selector;
-        targets[1] = address(counter);
-        selectors[1] = bytes4(0); // plain value transfer
-        bytes[] memory entries = new bytes[](2);
-        entries[0] = abi.encodePacked(
-            bytes2(0), address(policy), abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry)
+    /// Token limits for the agent's mandate: at most 10 tokens per operation,
+    /// 25 in total.
+    uint128 internal constant TOKEN_MAX = 10 ether;
+    uint128 internal constant TOKEN_BUDGET = 25 ether;
+    /// Every test operation pays its own gas: (1M + 1M + 100k) gas at 1 gwei,
+    /// charged to the budget at validation.
+    uint256 internal constant GAS_PER_OP = 2_100_000 gwei;
+
+    function _tokenCaps() internal view returns (AgentPolicy.TokenCap[] memory caps) {
+        caps = new AgentPolicy.TokenCap[](1);
+        caps[0] = AgentPolicy.TokenCap(address(token), TOKEN_MAX, TOKEN_BUDGET);
+    }
+
+    function _policyEntry(address[] memory targets, bytes4[] memory selectors, AgentPolicy.TokenCap[] memory caps)
+        internal
+        view
+        returns (bytes memory)
+    {
+        return abi.encodePacked(
+            bytes2(0), address(policy), abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps)
         );
+    }
+
+    /// The agent's mandate with a given signer key: increment the counter,
+    /// send it small amounts, transfer and approve the token within limits.
+    function _permissionData(bytes32 keyX, bytes32 keyY) internal view returns (bytes memory) {
+        address[] memory targets = new address[](5);
+        bytes4[] memory selectors = new bytes4[](5);
+        (targets[0], selectors[0]) = (address(counter), Counter.increment.selector);
+        (targets[1], selectors[1]) = (address(counter), bytes4(0)); // plain value transfer
+        (targets[2], selectors[2]) = (address(token), MockToken.transfer.selector);
+        (targets[3], selectors[3]) = (address(token), MockToken.approve.selector);
+        (targets[4], selectors[4]) = (address(forbidden), MockToken.transfer.selector); // no token limit
+        bytes[] memory entries = new bytes[](2);
+        entries[0] = _policyEntry(targets, selectors, _tokenCaps());
         entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(keyX, keyY));
         return abi.encode(entries);
     }
@@ -221,6 +277,23 @@ contract AgentPermissionTest is Test {
         returns (PackedUserOperation memory)
     {
         return _agentOpWith(AGENT, AGENT_ID, target, value, data);
+    }
+
+    /// An agent operation that executes a Kernel batch.
+    function _agentBatchWith(uint256 priv, PermissionId id, Execution[] memory calls)
+        internal
+        view
+        returns (PackedUserOperation memory op)
+    {
+        bytes memory callData = abi.encodeWithSelector(
+            Kernel.execute.selector, ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))), ExecLib.encodeBatch(calls)
+        );
+        op = _op(_permissionNonce(id), callData);
+        op.signature = abi.encodePacked(bytes1(0xff), _sign(priv, entryPoint.getUserOpHash(op)));
+    }
+
+    function _spent(PermissionId id) internal view returns (uint128 spent) {
+        (,,,, spent) = policy.configs(acct, bytes32(PermissionId.unwrap(id)));
     }
 
     /// A root-path operation with arbitrary calldata, signed by the OWNER key.
@@ -373,10 +446,21 @@ contract AgentPermissionTest is Test {
         PackedUserOperation memory op;
         op.sender = acct;
 
-        // batch mode
+        // batch mode with a single call's encoding: the same decoder Kernel
+        // executes with rejects it (a revert in validation is a refusal)
         op.callData = abi.encodeWithSelector(
             IERC7579Account.execute.selector,
             ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))),
+            ExecLib.encodeSingle(address(counter), 0, abi.encodeWithSelector(Counter.increment.selector))
+        );
+        vm.prank(acct);
+        vm.expectRevert();
+        policy.checkUserOpPolicy(id, op);
+
+        // "try" exec type, which would let a failed leg pass silently
+        op.callData = abi.encodeWithSelector(
+            IERC7579Account.execute.selector,
+            ExecMode.wrap(bytes32(uint256(1) << 240)), // calltype single, exectype try
             ExecLib.encodeSingle(address(counter), 0, abi.encodeWithSelector(Counter.increment.selector))
         );
         vm.prank(acct);
@@ -429,9 +513,7 @@ contract AgentPermissionTest is Test {
         (targets[1], selectors[1]) = (address(counter), Counter.increment.selector);
         (targets[2], selectors[2]) = (address(counter), bytes4(0));
         bytes[] memory entries = new bytes[](2);
-        entries[0] = abi.encodePacked(
-            bytes2(0), address(policy), abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry)
-        );
+        entries[0] = _policyEntry(targets, selectors, new AgentPolicy.TokenCap[](0));
         entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(agentX, agentY));
 
         ValidationId vId = ValidatorLib.permissionToIdentifier(SAFE_ID);
@@ -462,8 +544,13 @@ contract AgentPermissionTest is Test {
         );
     }
 
+    /// The only shape the policy admits for a Safe transaction: a batch that
+    /// first asserts the Safe's current nonce.
     function _agentViaSafe(Safe safe, bytes memory execData) internal view returns (PackedUserOperation memory) {
-        return _agentOpWith(AGENT, SAFE_ID, address(safe), 0, execData);
+        Execution[] memory calls = new Execution[](2);
+        calls[0] = Execution(address(nonceAssert), 0, abi.encodeCall(SafeNonceAssert.check, (address(safe), safe.nonce())));
+        calls[1] = Execution(address(safe), 0, execData);
+        return _agentBatchWith(AGENT, SAFE_ID, calls);
     }
 
     function _expectRefused(PackedUserOperation memory op) internal {
@@ -481,8 +568,7 @@ contract AgentPermissionTest is Test {
         _send(_agentViaSafe(safe, _safeExec(safe, address(counter), 0.1 ether, "", Enum.Operation.Call, 0)));
         assertEq(address(counter).balance, 0.1 ether);
         assertEq(address(safe).balance, 0.9 ether);
-        (,,,, uint128 spent) = policy.configs(acct, bytes32(PermissionId.unwrap(SAFE_ID)));
-        assertEq(spent, 0.1 ether);
+        assertEq(_spent(SAFE_ID), 0.1 ether + 2 * GAS_PER_OP);
     }
 
     function test_safe_innerCallIsHeldToTheAllowList() public {
@@ -553,8 +639,7 @@ contract AgentPermissionTest is Test {
         _send(_agentViaSafe(safe, _batch(safe, address(multiSend), txs, Enum.Operation.DelegateCall)));
         assertEq(counter.count(), 1);
         assertEq(address(counter).balance, 0.05 ether);
-        (,,,, uint128 spent) = policy.configs(acct, bytes32(PermissionId.unwrap(SAFE_ID)));
-        assertEq(spent, 0.05 ether);
+        assertEq(_spent(SAFE_ID), 0.05 ether + GAS_PER_OP);
     }
 
     function test_batch_everyLegIsJudged() public {
@@ -614,5 +699,97 @@ contract AgentPermissionTest is Test {
             _agentOpWith(AGENT, SAFE_ID, address(multiSend), 0, abi.encodeCall(MultiSendCallOnly.multiSend, (txs)))
         );
         assertEq(counter.count(), 0);
+    }
+
+    // --- audit 2026-10-20 fixes ---
+
+    /// F2: token amounts are capped per operation and per budget; an
+    /// allow-listed token selector without a token limit is refused.
+    function test_token_amountsAreCapped() public {
+        address to = makeAddr("recipient");
+        _send(_agentOp(address(token), 0, abi.encodeCall(MockToken.transfer, (to, 10 ether))));
+        assertEq(token.balanceOf(to), 10 ether);
+        // over the per-operation cap
+        _expectRefused(_agentOp(address(token), 0, abi.encodeCall(MockToken.transfer, (to, 11 ether))));
+        _send(_agentOp(address(token), 0, abi.encodeCall(MockToken.transfer, (to, 10 ether))));
+        // 20 of 25 spent: 10 more would exceed the token budget
+        _expectRefused(_agentOp(address(token), 0, abi.encodeCall(MockToken.transfer, (to, 10 ether))));
+        assertEq(policy.tokenLimit(acct, bytes32(PermissionId.unwrap(AGENT_ID)), address(token)).spent, 20 ether);
+    }
+
+    function test_token_unlimitedApproveIsRefused() public {
+        address spender = makeAddr("spender");
+        _expectRefused(_agentOp(address(token), 0, abi.encodeCall(MockToken.approve, (spender, type(uint256).max))));
+        _send(_agentOp(address(token), 0, abi.encodeCall(MockToken.approve, (spender, 5 ether))));
+        assertEq(token.allowance(acct, spender), 5 ether);
+    }
+
+    function test_token_selectorWithoutLimitIsRefused() public {
+        // (forbidden, transfer) is allow-listed, but no token limit exists for
+        // it: refused even for a zero amount — without a limit the policy
+        // does not know what that selector means on that contract
+        _expectRefused(_agentOp(address(forbidden), 0, abi.encodeCall(MockToken.transfer, (address(1), 0))));
+    }
+
+    /// F3: when the account pays its own gas, the maximum charge counts
+    /// against the budget.
+    function test_gas_selfPaidCountsAgainstBudget() public {
+        _send(_agentOp(address(counter), 0, abi.encodeWithSelector(Counter.increment.selector)));
+        assertEq(_spent(AGENT_ID), GAS_PER_OP);
+    }
+
+    /// F4: a Safe transaction outside the nonce-guarded pair is refused, and
+    /// a replay of a guarded one cannot execute twice.
+    function test_safe_unguardedIsRefused() public {
+        Safe safe = _withSafe();
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+        bytes memory exec = _safeExec(safe, address(counter), 0, inc, Enum.Operation.Call, 0);
+        // a single call, as before
+        _expectRefused(_agentOpWith(AGENT, SAFE_ID, address(safe), 0, exec));
+        // a batch without the assertion
+        Execution[] memory calls = new Execution[](1);
+        calls[0] = Execution(address(safe), 0, exec);
+        _expectRefused(_agentBatchWith(AGENT, SAFE_ID, calls));
+        // an assertion about another address
+        calls = new Execution[](2);
+        calls[0] = Execution(address(nonceAssert), 0, abi.encodeCall(SafeNonceAssert.check, (address(counter), 0)));
+        calls[1] = Execution(address(safe), 0, exec);
+        _expectRefused(_agentBatchWith(AGENT, SAFE_ID, calls));
+        assertEq(counter.count(), 0);
+    }
+
+    function test_safe_replayCannotExecuteTwice() public {
+        Safe safe = _withSafe();
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+        bytes memory exec = _safeExec(safe, address(counter), 0, inc, Enum.Operation.Call, 0);
+        Execution[] memory calls = new Execution[](2);
+        calls[0] = Execution(address(nonceAssert), 0, abi.encodeCall(SafeNonceAssert.check, (address(safe), safe.nonce())));
+        calls[1] = Execution(address(safe), 0, exec);
+        _send(_agentBatchWith(AGENT, SAFE_ID, calls));
+        assertEq(counter.count(), 1);
+        // the same pair again, as a host retry would send it: valid
+        // signature, admitted by the policy — and the assertion reverts it
+        _send(_agentBatchWith(AGENT, SAFE_ID, calls));
+        assertEq(counter.count(), 1);
+        assertEq(safe.nonce(), 1);
+    }
+
+    /// F6: 1–3 bytes of calldata run the fallback; not a value transfer.
+    function test_shortCalldataIsRefused() public {
+        _expectRefused(_agentOp(address(counter), 0, hex"0102"));
+        _send(_agentOp(address(counter), 0.01 ether, ""));
+    }
+
+    /// F7: a public key off the curve is rejected at install.
+    function test_offCurveKeyIsRejected() public {
+        (uint256 x, uint256 y) = vm.publicKeyP256(AGENT2);
+        bytes32 id = bytes32(PermissionId.unwrap(PermissionId.wrap(0x6f666663))); // "offc"
+        vm.expectRevert();
+        signer.onInstall(abi.encodePacked(id, bytes32(x), bytes32(y + 1)));
+        P256Validator fresh = new P256Validator();
+        vm.expectRevert();
+        fresh.onInstall(abi.encode(bytes32(x), bytes32(y ^ 1)));
+        // the real key installs
+        signer.onInstall(abi.encodePacked(id, bytes32(x), bytes32(y)));
     }
 }

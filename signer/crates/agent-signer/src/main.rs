@@ -156,6 +156,14 @@ enum PaymasterCmd {
     Sponsor {
         #[command(flatten)]
         agent: AgentArgs,
+        /// Gas budget for this account, in wei (charged per operation at its
+        /// maximum cost, no refunds).
+        #[arg(long, default_value = "0")]
+        budget: u128,
+        /// The most one operation may cost, in wei.
+        #[arg(long, default_value = "0")]
+        max_per_op: u128,
+        /// Delist the account (budget 0).
         #[arg(long)]
         revoke: bool,
     },
@@ -206,6 +214,11 @@ enum KeyCmd {
         /// while the measured boot state matches today's.
         #[arg(long, value_delimiter = ',')]
         pcrs: Vec<u8>,
+        /// TPM: protect the key with an authValue derived from this file's
+        /// contents — for an owner key sharing the chip with the agent, a
+        /// file only root can read (docs/KEY_POLICY.md, rule 3).
+        #[arg(long)]
+        auth_file: Option<PathBuf>,
     },
     /// Print the public key.
     Show {
@@ -268,6 +281,12 @@ enum OpCmd {
         /// can then never execute it twice.
         #[arg(long)]
         nonce: Option<String>,
+        /// For `Safe.execTransaction` calldata: the Safe nonce this
+        /// transaction is meant for. The operation becomes a batch that first
+        /// asserts it on-chain, so a replay reverts instead of executing again
+        /// (AgentPolicy admits Safe transactions only this way).
+        #[arg(long)]
+        safe_nonce: Option<String>,
     },
 }
 
@@ -357,14 +376,14 @@ fn print_key(key: String, pk: &PublicKey) -> Result<()> {
 }
 
 enum KeyOp {
-    Create { parent: u32, pcrs: Vec<u8> },
+    Create { parent: u32, pcrs: Vec<u8>, auth_file: Option<PathBuf> },
     Show,
     Evict,
 }
 
 fn run_key(cmd: KeyCmd) -> Result<()> {
     let (key, op) = match cmd {
-        KeyCmd::Create { key, parent, pcrs } => (key, KeyOp::Create { parent, pcrs }),
+        KeyCmd::Create { key, parent, pcrs, auth_file } => (key, KeyOp::Create { parent, pcrs, auth_file }),
         KeyCmd::Show { key } => (key, KeyOp::Show),
         KeyCmd::Evict { key } => (key, KeyOp::Evict),
     };
@@ -423,15 +442,27 @@ fn tpm_key(handle: u32, op: KeyOp) -> Result<()> {
     use hw_signer::tpm::TpmSigner;
     let name = format!("0x{handle:08x}");
     match op {
-        KeyOp::Create { parent, pcrs } => {
-            let mut signer = if pcrs.is_empty() {
-                TpmSigner::create_under(parent)?
-            } else {
-                TpmSigner::create_sealed_under(parent, &pcrs)?
+        KeyOp::Create { parent, pcrs, auth_file } => {
+            let mut signer = match (&auth_file, pcrs.is_empty()) {
+                (None, true) => TpmSigner::create_under(parent)?,
+                (None, false) => TpmSigner::create_sealed_under(parent, &pcrs)?,
+                (Some(file), true) => {
+                    let secret = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
+                    TpmSigner::create_protected_under(parent, &secret)?
+                }
+                (Some(_), false) => bail!("--auth-file and --pcrs do not combine"),
             };
             signer.persist(handle)?;
             if !pcrs.is_empty() {
                 eprintln!("sealed to PCRs {pcrs:?}: reference it as {{\"tpm\": {{\"handle\": \"{name}\", \"pcrs\": {pcrs:?}}}}}");
+            }
+            if let Some(file) = &auth_file {
+                eprintln!(
+                    "protected by the secret in {}: reference it as {{\"tpm\": {{\"handle\": \"{name}\", \"authFile\": \"{}\"}}}}; \
+                     keep that file root-only (0600)",
+                    file.display(),
+                    file.display()
+                );
             }
             print_key(name, &signer.public_key()?)
         }
@@ -473,6 +504,9 @@ async fn session(args: &AgentArgs) -> Result<Session> {
     let (cfg, base) = AgentConfig::load(&args.agent)?;
     Session::open(&env, cfg, &base).await
 }
+
+/// `Safe.execTransaction(...)` selector.
+const SAFE_EXEC_TRANSACTION: [u8; 4] = [0x6a, 0x76, 0x12, 0x02];
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -524,17 +558,29 @@ async fn main() -> Result<()> {
                 println!("account:  {}", s.account);
                 println!("factory:  {}", s.dep.kernel_factory);
                 println!("salt:     {}", s.cfg.salt()?);
-                println!("initData: {}", s.init_data);
-                println!("initCode: {}", kernel::init_code(s.dep.kernel_factory, &s.init_data, s.cfg.salt()?));
+                println!("initData: {}", s.init_data()?);
+                println!("initCode: {}", kernel::init_code(s.dep.kernel_factory, s.init_data()?, s.cfg.salt()?));
             }
         },
         Cmd::Op { cmd } => match cmd {
-            OpCmd::Send { agent, target, wei, data, root, sponsored, json, nonce } => {
+            OpCmd::Send { agent, target, wei, data, root, sponsored, json, nonce, safe_nonce } => {
                 let s = session(&agent).await?;
                 let value: U256 = wei.parse().context("--wei")?;
                 let data = Bytes::from(hex::decode(data.trim_start_matches("0x")).context("--data")?);
                 let nonce = nonce.map(|n| n.parse::<U256>()).transpose().context("--nonce")?;
-                let inc = s.send_op(target, value, data, root, sponsored, nonce).await?;
+                let safe_nonce = safe_nonce.map(|n| n.parse::<U256>()).transpose().context("--safe-nonce")?;
+                let is_safe_exec = data.len() >= 4 && data[..4] == SAFE_EXEC_TRANSACTION;
+                let inc = match safe_nonce {
+                    Some(n) if is_safe_exec => {
+                        s.send_safe_guarded(target, value, data, n, root, sponsored, nonce).await?
+                    }
+                    Some(_) => bail!("--safe-nonce applies to Safe.execTransaction calldata only"),
+                    None if is_safe_exec && !root => bail!(
+                        "a Safe transaction needs --safe-nonce <n>, the Safe nonce it is meant for: \
+                         the agent's mandate admits it only paired with an on-chain nonce assertion"
+                    ),
+                    None => s.send_op(target, value, data, root, sponsored, nonce).await?,
+                };
                 if json {
                     let out = serde_json::json!({
                         "account": s.account.to_string(),
@@ -580,10 +626,18 @@ async fn main() -> Result<()> {
                 let tx = s.paymaster_deposit(amount).await?;
                 println!("deposited {amount} wei for the paymaster: tx {tx}");
             }
-            PaymasterCmd::Sponsor { agent, revoke } => {
+            PaymasterCmd::Sponsor { agent, budget, max_per_op, revoke } => {
                 let s = session(&agent).await?;
-                let tx = s.sponsor(!revoke).await?;
-                println!("{} {}: tx {tx}", if revoke { "delisted" } else { "sponsored" }, s.account);
+                let (budget, max_per_op) = if revoke { (0, 0) } else { (budget, max_per_op) };
+                if !revoke && (budget == 0 || max_per_op == 0) {
+                    bail!("give --budget and --max-per-op in wei (or --revoke)");
+                }
+                let tx = s.sponsor(budget, max_per_op).await?;
+                if revoke {
+                    println!("delisted {}: tx {tx}", s.account);
+                } else {
+                    println!("sponsored {} (gas budget {budget} wei, max {max_per_op} wei per op): tx {tx}", s.account);
+                }
             }
             PaymasterCmd::Stake { agent, wei, unstake_delay_sec } => {
                 let s = session(&agent).await?;

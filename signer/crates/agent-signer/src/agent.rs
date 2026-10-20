@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 
 use alloy::primitives::{Address, FixedBytes, B256, U256};
 use anyhow::{Context, Result};
-use hw_signer::{software::SoftwareSigner, HardwareSigner};
+#[cfg(feature = "insecure-software-keys")]
+use hw_signer::software::SoftwareSigner;
+use hw_signer::{HardwareSigner, PublicKey};
 use serde::Deserialize;
 
 use crate::kernel::{PermissionId, PolicyParams};
@@ -27,15 +29,26 @@ pub struct Deployments {
     pub whitelist_paymaster: Option<Address>,
     #[serde(default)]
     pub paymaster_owner: Option<Address>,
+    /// The SafeNonceAssert AgentPolicy pairs every Safe transaction with.
+    #[serde(default)]
+    pub safe_nonce_assert: Option<Address>,
 }
 
-/// A TPM key: `"0x81010010"`, or `{"handle": "0x81010011", "pcrs": [0, 2, 4, 7]}`
-/// for a key sealed to those PCRs (the selection is not stored in the TPM).
+/// A TPM key: `"0x81010010"`; `{"handle": "0x81010011", "pcrs": [0, 2, 4, 7]}`
+/// for a key sealed to those PCRs (the selection is not stored in the TPM);
+/// or `{"handle": "0x81010013", "authFile": "/etc/tpm_sign/owner.auth"}` for a
+/// key protected by an authValue whose secret is that file — for the owner
+/// key on the agent's chip, a file only root can read (docs/KEY_POLICY.md).
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum TpmKey {
     Handle(String),
     Sealed { handle: String, pcrs: Vec<u8> },
+    Protected {
+        handle: String,
+        #[serde(rename = "authFile")]
+        auth_file: PathBuf,
+    },
 }
 
 /// Where a key lives.
@@ -52,9 +65,32 @@ pub enum KeySpec {
     WindowsTpm(String),
     /// Tropic Square TROPIC01 on its USB DevKit: serial port and ECC key slot.
     Tropic01 { port: String, slot: u16 },
-    /// 32-byte hex scalar. **Insecure** — for CI and machines without a
-    /// supported secure element only; never for a funded account.
+    /// 32-byte hex scalar in this file. **Insecure**: refused for the owner,
+    /// and for the agent unless built with `--features insecure-software-keys`
+    /// (tests only; docs/KEY_POLICY.md rule 5).
     Software(String),
+}
+
+/// Which role a key plays. The owner's key is never needed for the agent's
+/// operations and never opened by them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    Owner,
+    Agent,
+}
+
+/// Public key coordinates in a config (`{"x": "0x…", "y": "0x…"}`), as
+/// `key show` prints them.
+#[derive(Debug, Deserialize)]
+pub struct PublicKeyJson {
+    pub x: String,
+    pub y: String,
+}
+
+impl PublicKeyJson {
+    pub fn parse(&self) -> Result<PublicKey> {
+        Ok(PublicKey { x: parse32(&self.x)?, y: parse32(&self.y)? })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,6 +103,20 @@ pub struct PolicyConfig {
     pub budget: String,
     /// unix seconds
     pub valid_until: u64,
+    /// Per-token limits for ERC-20 `transfer` / `transferFrom` / `approve` /
+    /// `increaseAllowance`; an allow-listed token selector needs one.
+    #[serde(default)]
+    pub tokens: Vec<TokenEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenEntry {
+    pub token: Address,
+    /// token units, decimal string
+    pub max_per_op: String,
+    /// token units, decimal string
+    pub budget: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,6 +141,16 @@ pub struct AgentConfig {
     /// describe the *next* permission (rotation), not the account's address.
     #[serde(default)]
     pub account: Option<Address>,
+    /// The owner's public key, to derive the account address and its
+    /// initCode without opening the owner's key: the agent's operations must
+    /// work on a host that cannot reach it (docs/KEY_POLICY.md rule 3).
+    #[serde(default)]
+    pub owner_public_key: Option<PublicKeyJson>,
+    /// The agent's public key, so the owner can rotate to it from a host that
+    /// cannot reach the agent's chip. Without it the agent key is opened for
+    /// its public half.
+    #[serde(default)]
+    pub agent_public_key: Option<PublicKeyJson>,
     pub policy: PolicyConfig,
 }
 
@@ -147,6 +207,18 @@ impl AgentConfig {
             max_value_per_op: self.policy.max_value_per_op.parse().context("maxValuePerOp")?,
             budget: self.policy.budget.parse().context("budget")?,
             valid_until: self.policy.valid_until,
+            tokens: self
+                .policy
+                .tokens
+                .iter()
+                .map(|t| -> Result<(Address, u128, u128)> {
+                    Ok((
+                        t.token,
+                        t.max_per_op.parse().context("tokens.maxPerOp")?,
+                        t.budget.parse().context("tokens.budget")?,
+                    ))
+                })
+                .collect::<Result<_>>()?,
         })
     }
 }
@@ -162,9 +234,10 @@ pub fn parse32(s: &str) -> Result<[u8; 32]> {
         .map_err(|_| anyhow::anyhow!("expected 32 bytes, got {}", raw.len()))
 }
 
-/// Open the signer a [`KeySpec`] points at. The TPM variant needs the `tpm`
-/// feature; the software variant warns loudly.
-pub fn open_signer(spec: &KeySpec) -> Result<Box<dyn HardwareSigner>> {
+/// Open the signer a [`KeySpec`] points at, for `role`. The TPM variant needs
+/// the `tpm` feature. A software key is refused for the owner, and for the
+/// agent unless the build opted into `insecure-software-keys`.
+pub fn open_signer(spec: &KeySpec, role: Role) -> Result<Box<dyn HardwareSigner>> {
     match spec {
         KeySpec::Tpm(key) => {
             #[cfg(feature = "tpm")]
@@ -174,6 +247,12 @@ pub fn open_signer(spec: &KeySpec) -> Result<Box<dyn HardwareSigner>> {
                     TpmKey::Handle(handle) => Box::new(TpmSigner::open_persistent(parse_hex_u32(handle)?)?),
                     TpmKey::Sealed { handle, pcrs } => {
                         Box::new(TpmSigner::open_persistent_sealed(parse_hex_u32(handle)?, pcrs)?)
+                    }
+                    TpmKey::Protected { handle, auth_file } => {
+                        let secret = std::fs::read(auth_file).with_context(|| {
+                            format!("reading the authValue secret {} (owner operations run as root)", auth_file.display())
+                        })?;
+                        Box::new(TpmSigner::open_persistent_protected(parse_hex_u32(handle)?, &secret)?)
                     }
                 })
             }
@@ -213,8 +292,22 @@ pub fn open_signer(spec: &KeySpec) -> Result<Box<dyn HardwareSigner>> {
             }
         }
         KeySpec::Software(hex) => {
-            eprintln!("WARNING: using a software key — insecure, dev/CI only");
-            Ok(Box::new(SoftwareSigner::from_bytes(&parse32(hex)?)?))
+            if role == Role::Owner {
+                anyhow::bail!("refusing a software owner key: the root of the account would be a plaintext file");
+            }
+            #[cfg(feature = "insecure-software-keys")]
+            {
+                eprintln!("WARNING: using a software agent key — insecure, tests only");
+                Ok(Box::new(SoftwareSigner::from_bytes(&parse32(hex)?)?))
+            }
+            #[cfg(not(feature = "insecure-software-keys"))]
+            {
+                let _ = hex;
+                anyhow::bail!(
+                    "refusing a software agent key: a plaintext key file defeats the hardware \
+                     (tests only: build with --features insecure-software-keys)"
+                )
+            }
         }
     }
 }

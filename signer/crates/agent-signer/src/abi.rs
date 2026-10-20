@@ -89,10 +89,17 @@ sol! {
         function count() external view returns (uint256);
     }
 
+    /// Reverts unless `safe.nonce() == expected`.
+    interface ISafeNonceAssert {
+        function check(address safe, uint256 expected) external view;
+    }
+
     #[sol(rpc)]
     interface IWhitelistPaymaster {
-        function setSponsored(address account, bool allowed) external;
+        /// Gas budget and per-operation cap, in wei; a zero budget delists.
+        function setSponsored(address account, uint128 budget, uint128 maxPerOp) external;
         function sponsored(address account) external view returns (bool);
+        function sponsorships(address account) external view returns (uint128 remaining, uint128 maxPerOp);
         function deposit() external payable;
         function getDeposit() external view returns (uint256);
         /// Public bundlers only relay operations whose paymaster is staked

@@ -107,12 +107,20 @@ export function agentSignerSend(
      * ever included, and a retry after inclusion fails fast ("already used").
      */
     readonly nonce?: Hex;
+    /**
+     * For `Safe.execTransaction` calldata: the Safe nonce it is meant for.
+     * agent-signer sends it as a batch that asserts that nonce on-chain
+     * first — the only shape the agent's mandate admits — so a replay
+     * reverts instead of executing twice.
+     */
+    readonly safeNonce?: bigint;
   },
 ): Promise<AgentSignerResult> {
   const args = ["op", "send", "--agent", cfg.configPath, "--target", call.to, "--wei", call.value.toString(), "--data", call.data, "--json"];
   if (cfg.envFile) args.push("--env-file", cfg.envFile);
   if (cfg.sponsored) args.push("--sponsored");
   if (call.nonce) args.push("--nonce", call.nonce);
+  if (call.safeNonce !== undefined) args.push("--safe-nonce", call.safeNonce.toString());
 
   return new Promise((resolve, reject) => {
     const child = spawn(cfg.bin, args, { stdio: ["ignore", "pipe", "pipe"] });

@@ -11,11 +11,11 @@ use alloy::primitives::{Address, Bytes, B256, U256};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
-use alloy::sol_types::SolEvent;
+use alloy::sol_types::{SolCall, SolEvent};
 use anyhow::{bail, Context, Result};
 
-use crate::abi::{IDemoCounter, IEntryPoint, IKernel, IKernelFactory, IWhitelistPaymaster};
-use crate::agent::{open_signer, parse32, AgentConfig, Deployments};
+use crate::abi::{IDemoCounter, IEntryPoint, IKernel, IKernelFactory, ISafeNonceAssert, IWhitelistPaymaster};
+use crate::agent::{open_signer, parse32, AgentConfig, Deployments, Role};
 use crate::bundler::Bundler;
 use crate::kernel::{self, PermissionId};
 
@@ -45,6 +45,25 @@ impl Env {
     }
 }
 
+/// The permission the config describes and, when the owner's public key is
+/// configured, the account's `initialize` data. Only public keys are needed —
+/// and the owner's comes from the config, never from opening the owner's key:
+/// the agent's operations must run where that key cannot be reached
+/// (docs/KEY_POLICY.md rule 3). Root operations open it, in `send_raw_at`.
+pub fn account_material(cfg: &AgentConfig, dep: &Deployments) -> Result<(Bytes, Option<Bytes>)> {
+    let agent_key = match &cfg.agent_public_key {
+        Some(pk) => pk.parse()?,
+        None => open_signer(&cfg.agent, Role::Agent)?.public_key()?,
+    };
+    let perm = cfg.permission_id()?;
+    let permission_data = kernel::permission_data(dep.agent_policy, &cfg.policy_params()?, dep.p256_signer, &agent_key);
+    let init_data = match &cfg.owner_public_key {
+        Some(pk) => Some(kernel::init_data(dep.p256_validator, &pk.parse()?, perm, permission_data.clone())),
+        None => None,
+    };
+    Ok((permission_data, init_data))
+}
+
 pub struct Session {
     pub provider: DynProvider,
     pub gas_wallet: Address,
@@ -52,7 +71,10 @@ pub struct Session {
     pub bundler: Option<Bundler>,
     pub cfg: AgentConfig,
     pub dep: Deployments,
-    pub init_data: Bytes,
+    /// Kernel `initialize` data, known only when the config carries the
+    /// owner's public key. Needed to derive an unpinned account and to
+    /// deploy one; never obtained by opening the owner's key.
+    init_data: Option<Bytes>,
     /// The agent permission described by the config (installed at creation,
     /// or the next one for a rotation).
     pub permission_data: Bytes,
@@ -87,13 +109,7 @@ impl Session {
             None => None,
         };
 
-        // Only public keys are needed to derive the account.
-        let owner_key = open_signer(&cfg.owner)?.public_key()?;
-        let agent_key = open_signer(&cfg.agent)?.public_key()?;
-        let perm = cfg.permission_id()?;
-        let permission_data =
-            kernel::permission_data(dep.agent_policy, &cfg.policy_params()?, dep.p256_signer, &agent_key);
-        let init_data = kernel::init_data(dep.p256_validator, &owner_key, perm, permission_data.clone());
+        let (permission_data, init_data) = account_material(&cfg, &dep)?;
 
         let (account, pinned) = match cfg.account {
             Some(pinned) => {
@@ -103,12 +119,22 @@ impl Session {
                 (pinned, true)
             }
             None => {
+                let Some(init_data) = &init_data else {
+                    bail!("the config neither pins `account` nor gives `ownerPublicKey`: cannot derive the account");
+                };
                 let factory = IKernelFactory::new(dep.kernel_factory, provider.clone());
                 (factory.getAddress(init_data.clone(), cfg.salt()?).call().await?, false)
             }
         };
 
         Ok(Self { provider, gas_wallet, bundler, cfg, dep, init_data, permission_data, account, pinned })
+    }
+
+    /// Kernel `initialize` data for this account (needs `ownerPublicKey`).
+    pub fn init_data(&self) -> Result<&Bytes> {
+        self.init_data
+            .as_ref()
+            .context("deploying the account needs the owner's public key: set `ownerPublicKey` in the config")
     }
 
     pub async fn is_deployed(&self) -> Result<bool> {
@@ -128,9 +154,14 @@ impl Session {
         match self.dep.whitelist_paymaster {
             Some(pm) => {
                 let paymaster = IWhitelistPaymaster::new(pm, self.provider.clone());
+                // A paymaster deployed before per-account limits has no
+                // `sponsorships`; fall back to its plain whitelist flag.
+                let sponsorship = match paymaster.sponsorships(self.account).call().await {
+                    Ok(s) => format!("gas budget left = {} wei, max per op = {} wei", s.remaining, s.maxPerOp),
+                    Err(_) => format!("sponsored = {}, no per-account limits", paymaster.sponsored(self.account).call().await?),
+                };
                 println!(
-                    "paymaster:      {pm} (sponsored = {}, deposit = {} wei, owner = {})",
-                    paymaster.sponsored(self.account).call().await?,
+                    "paymaster:      {pm} ({sponsorship}, deposit = {} wei, owner = {})",
                     paymaster.getDeposit().call().await?,
                     self.dep.paymaster_owner.map(|o| o.to_string()).unwrap_or_else(|| "?".into())
                 );
@@ -156,9 +187,9 @@ impl Session {
 
     /// List (or delist) this account for sponsorship. Only the paymaster's
     /// owner — the gas wallet that deployed it — may do this.
-    pub async fn sponsor(&self, allowed: bool) -> Result<B256> {
+    pub async fn sponsor(&self, budget: u128, max_per_op: u128) -> Result<B256> {
         let paymaster = IWhitelistPaymaster::new(self.paymaster()?, self.provider.clone());
-        let receipt = paymaster.setSponsored(self.account, allowed).send().await?.get_receipt().await?;
+        let receipt = paymaster.setSponsored(self.account, budget, max_per_op).send().await?.get_receipt().await?;
         Ok(receipt.transaction_hash)
     }
 
@@ -196,7 +227,7 @@ impl Session {
         if !self.is_deployed().await? {
             let factory = IKernelFactory::new(self.dep.kernel_factory, self.provider.clone());
             let simulated = factory
-                .createAccount(self.init_data.clone(), self.cfg.salt()?)
+                .createAccount(self.init_data()?.clone(), self.cfg.salt()?)
                 .call()
                 .await
                 .context("createAccount simulation reverted; refusing to fund an address that cannot be deployed")?;
@@ -225,6 +256,29 @@ impl Session {
         pinned: Option<U256>,
     ) -> Result<Included> {
         self.send_raw_at(kernel::execute_calldata(target, value, &data), as_root, sponsored, pinned).await
+    }
+
+    /// A Safe transaction (`execTransaction` calldata for `safe`) as the only
+    /// shape AgentPolicy admits: a batch whose first call asserts that the
+    /// Safe's nonce is `safe_nonce`. A replay — a retry after the first copy
+    /// went through — then reverts on-chain instead of executing twice.
+    pub async fn send_safe_guarded(
+        &self,
+        safe: Address,
+        value: U256,
+        exec_transaction: Bytes,
+        safe_nonce: U256,
+        as_root: bool,
+        sponsored: bool,
+        pinned: Option<U256>,
+    ) -> Result<Included> {
+        let assert = self
+            .dep
+            .safe_nonce_assert
+            .context("no safeNonceAssert in deployments; run script/Deploy.s.sol")?;
+        let check: Bytes = ISafeNonceAssert::checkCall { safe, expected: safe_nonce }.abi_encode().into();
+        let calls = vec![(assert, U256::ZERO, check), (safe, value, exec_transaction)];
+        self.send_raw_at(kernel::execute_batch_calldata(calls), as_root, sponsored, pinned).await
     }
 
     /// Root operation signed by the owner key: remove the agent permission.
@@ -318,7 +372,7 @@ impl Session {
         let init_code = if deployed {
             Bytes::new()
         } else {
-            kernel::init_code(self.dep.kernel_factory, &self.init_data, self.cfg.salt()?)
+            kernel::init_code(self.dep.kernel_factory, self.init_data()?, self.cfg.salt()?)
         };
 
         let key = if as_root {
@@ -358,7 +412,13 @@ impl Session {
             signature: Bytes::new(),
         };
 
-        let signer = open_signer(if as_root { &self.cfg.owner } else { &self.cfg.agent })?;
+        // The only place the owner's key is opened: a root operation, run
+        // where that key lives.
+        let signer = if as_root {
+            open_signer(&self.cfg.owner, Role::Owner)?
+        } else {
+            open_signer(&self.cfg.agent, Role::Agent)?
+        };
         let frame = |sig: &hw_signer::Signature| {
             if as_root {
                 kernel::root_signature(sig)
@@ -470,4 +530,82 @@ pub struct Included {
     pub tx: B256,
     pub block: u64,
     pub gas_used: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DEPLOYMENTS: &str = r#"{
+        "chainId": 84532,
+        "entryPoint": "0x0000000071727De22E5E9d8BAf0edAc6f37da032",
+        "kernel": "0xd6CEDDe84be40893d153Be9d467CD6aD37875b28",
+        "kernelFactory": "0x2577507b78c2008Ff367261CB6285d44ba5eF2E9",
+        "p256Validator": "0x0000000000000000000000000000000000000001",
+        "p256Signer": "0x0000000000000000000000000000000000000002",
+        "agentPolicy": "0x0000000000000000000000000000000000000003",
+        "demoCounter": "0x0000000000000000000000000000000000000004"
+    }"#;
+
+    /// A valid P-256 point (the key of `vector`'s test scalar is not needed:
+    /// any on-curve coordinates do).
+    const X: &str = "0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296";
+    const Y: &str = "0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5";
+
+    fn config(owner: &str, extra: &str) -> AgentConfig {
+        serde_json::from_str(&format!(
+            r#"{{
+                "deployments": "unused.json",
+                "owner": {owner},
+                "agent": {{"tpm": "0x81010012"}},
+                "permissionId": "0x74727333",
+                "agentPublicKey": {{"x": "{X}", "y": "{Y}"}},
+                {extra}
+                "policy": {{"allow": [], "maxValuePerOp": "0", "budget": "0", "validUntil": 1}}
+            }}"#
+        ))
+        .unwrap()
+    }
+
+    /// The agent session's key material never opens the owner key. The owner
+    /// here is a software key, which `open_signer` refuses outright for the
+    /// owner role — so success proves it was not opened.
+    #[test]
+    fn agent_session_never_opens_the_owner_key() {
+        let dep: Deployments = serde_json::from_str(DEPLOYMENTS).unwrap();
+        let owner = r#"{"software": "0x0000000000000000000000000000000000000000000000000000000000000001"}"#;
+        let cfg = config(owner, &format!(r#""ownerPublicKey": {{"x": "{X}", "y": "{Y}"}},"#));
+        let (_, init_data) = account_material(&cfg, &dep).unwrap();
+        assert!(init_data.is_some(), "the owner's public key from the config derives initData");
+        assert!(open_signer(&cfg.owner, Role::Owner).is_err());
+
+        // without the owner's public key there is simply no initData — not a
+        // fallback to opening the owner's key
+        let cfg = config(owner, "");
+        let (_, init_data) = account_material(&cfg, &dep).unwrap();
+        assert!(init_data.is_none());
+    }
+
+    #[test]
+    fn software_keys_are_refused() {
+        let key = r#"{"software": "0x0000000000000000000000000000000000000000000000000000000000000001"}"#;
+        let spec: crate::agent::KeySpec = serde_json::from_str(key).unwrap();
+        assert!(open_signer(&spec, Role::Owner).is_err(), "never for the owner");
+        assert_eq!(
+            open_signer(&spec, Role::Agent).is_ok(),
+            cfg!(feature = "insecure-software-keys"),
+            "for the agent only in a build that opted in"
+        );
+    }
+
+    #[test]
+    fn protected_tpm_key_parses() {
+        let spec: crate::agent::KeySpec =
+            serde_json::from_str(r#"{"tpm": {"handle": "0x81010013", "authFile": "/etc/tpm_sign/owner.auth"}}"#).unwrap();
+        assert!(matches!(
+            spec,
+            crate::agent::KeySpec::Tpm(crate::agent::TpmKey::Protected { ref auth_file, .. })
+                if auth_file.to_str() == Some("/etc/tpm_sign/owner.auth")
+        ));
+    }
 }

@@ -90,7 +90,7 @@ contract PaymasterTest is Test {
     }
 
     function test_sponsoredAccountPaysNothing() public {
-        paymaster.setSponsored(acct, true);
+        paymaster.setSponsored(acct, 1 ether, 0.1 ether);
         uint256 depositBefore = paymaster.getDeposit();
 
         _send(_op(true));
@@ -117,6 +117,30 @@ contract PaymasterTest is Test {
     function test_onlyOwnerSponsors() public {
         vm.prank(makeAddr("stranger"));
         vm.expectRevert();
-        paymaster.setSponsored(acct, true);
+        paymaster.setSponsored(acct, 1 ether, 0.1 ether);
+    }
+
+    /// Audit F3: each operation is charged its maximum cost — here
+    /// (300k + 200k + 100k paymaster verification + 100k pre-verification)
+    /// gas at 1 gwei = 0.0007 ETH — against the account's own budget.
+    uint256 internal constant MAX_COST = 700_000 gwei;
+
+    function test_perOperationCapHolds() public {
+        paymaster.setSponsored(acct, 1 ether, uint128(MAX_COST - 1));
+        PackedUserOperation memory op = _op(true);
+        vm.expectRevert();
+        _send(op);
+        assertEq(counter.count(), 0);
+    }
+
+    function test_budgetRunsOut() public {
+        paymaster.setSponsored(acct, uint128(MAX_COST + MAX_COST / 2), uint128(MAX_COST));
+        _send(_op(true));
+        (uint128 remaining,) = paymaster.sponsorships(acct);
+        assertEq(remaining, MAX_COST / 2);
+        PackedUserOperation memory op = _op(true);
+        vm.expectRevert();
+        _send(op);
+        assertEq(counter.count(), 1);
     }
 }

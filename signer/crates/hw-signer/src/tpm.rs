@@ -9,6 +9,13 @@
 //! key only signs digests the TPM hashed itself (proved by a hash-check
 //! ticket), while we need it to sign a host-computed `userOpHash`.
 //!
+//! A key can instead be *protected by an authValue*: the TPM then signs only
+//! for a caller presenting it. That is how an owner key shares the chip with
+//! the agent key (docs/KEY_POLICY.md, rule 3): the secret lives in a file
+//! only root can read, so the agent's ordinary user cannot use the key. The
+//! authValue is SHA-256 of the file's contents (trailing whitespace trimmed),
+//! so any passphrase length fits the TPM's 32-byte limit.
+//!
 //! A key can additionally be *sealed to PCRs*: its auth policy is
 //! `TPM2_PolicyPCR` over a set of platform configuration registers, so the
 //! chip only signs while the measured boot state equals the one the key was
@@ -29,7 +36,7 @@ use tss_esapi::interface_types::ecc::EccCurve;
 use tss_esapi::interface_types::resource_handles::Provision;
 use tss_esapi::interface_types::session_handles::{AuthSession, PolicySession};
 use tss_esapi::structures::{
-    Digest, EccPoint, EccScheme, HashScheme, HashcheckTicket, KeyDerivationFunctionScheme,
+    Auth, Digest, EccPoint, EccScheme, HashScheme, HashcheckTicket, KeyDerivationFunctionScheme,
     PcrSelectionList, PcrSelectionListBuilder, PcrSlot, Public, PublicBuilder,
     PublicEccParametersBuilder, Signature as TpmSignature, SignatureScheme, SymmetricDefinition,
     SymmetricDefinitionObject,
@@ -55,6 +62,18 @@ pub struct TpmSigner {
     key: KeyHandle,
     persistent: bool,
     sealed_to: Option<PcrSelectionList>,
+    /// The authValue the key was created with, if any; re-applied whenever
+    /// the key's ESYS handle changes (persisting).
+    auth: Option<Auth>,
+}
+
+/// The authValue for a secret (a passphrase file's contents).
+fn auth_from_secret(secret: &[u8]) -> Result<Auth, SignerError> {
+    let trimmed = secret.trim_ascii_end();
+    if trimmed.is_empty() {
+        return Err(SignerError::Key("empty auth secret".into()));
+    }
+    Auth::try_from(Sha256::digest(trimmed).to_vec()).map_err(tss)
 }
 
 fn tss(e: tss_esapi::Error) -> SignerError {
@@ -245,7 +264,11 @@ impl TpmSigner {
         Ok(object.into())
     }
 
-    fn create(parent: u32, sealed_to: Option<&[u8]>) -> Result<Self, SignerError> {
+    fn create(parent: u32, sealed_to: Option<&[u8]>, secret: Option<&[u8]>) -> Result<Self, SignerError> {
+        if sealed_to.is_some() && secret.is_some() {
+            return Err(SignerError::Key("a key is either sealed to PCRs or protected by an authValue, not both".into()));
+        }
+        let auth = secret.map(auth_from_secret).transpose()?;
         let mut ctx = connect()?;
         let (policy, selection) = match sealed_to {
             None => (None, None),
@@ -258,32 +281,52 @@ impl TpmSigner {
         };
         let parent = Self::resolve(&mut ctx, parent)?;
         let created = ctx
-            .create(parent, p256_signing_template(policy)?, None, None, None, None)
+            .create(parent, p256_signing_template(policy)?, auth.clone(), None, None, None)
             .map_err(tss)?;
         let key = ctx
             .load(parent, created.out_private, created.out_public)
             .map_err(tss)?;
-        Ok(Self { ctx: Mutex::new(ctx), key, persistent: false, sealed_to: selection })
+        if let Some(auth) = &auth {
+            ctx.tr_set_auth(key.into(), auth.clone()).map_err(tss)?;
+        }
+        Ok(Self { ctx: Mutex::new(ctx), key, persistent: false, sealed_to: selection, auth })
     }
 
     /// Generate a fresh P-256 key inside the TPM under `parent` and load it.
     /// The key is transient: it is flushed when the signer is dropped unless
     /// [`persist`](Self::persist) is called.
     pub fn create_under(parent: u32) -> Result<Self, SignerError> {
-        Self::create(parent, None)
+        Self::create(parent, None, None)
+    }
+
+    /// Like [`create_under`](Self::create_under), but the TPM signs only for
+    /// a caller presenting the authValue derived from `secret`.
+    pub fn create_protected_under(parent: u32, secret: &[u8]) -> Result<Self, SignerError> {
+        Self::create(parent, None, Some(secret))
     }
 
     /// Like [`create_under`](Self::create_under), but the key only signs
     /// while the SHA-256 values of `pcrs` equal their values right now.
     pub fn create_sealed_under(parent: u32, pcrs: &[u8]) -> Result<Self, SignerError> {
-        Self::create(parent, Some(pcrs))
+        Self::create(parent, Some(pcrs), None)
     }
 
     /// Use a key previously persisted at `handle`.
     pub fn open_persistent(handle: u32) -> Result<Self, SignerError> {
         let mut ctx = connect()?;
         let key = Self::resolve(&mut ctx, handle)?;
-        Ok(Self { ctx: Mutex::new(ctx), key, persistent: true, sealed_to: None })
+        Ok(Self { ctx: Mutex::new(ctx), key, persistent: true, sealed_to: None, auth: None })
+    }
+
+    /// Use a persisted key protected by an authValue, presenting the one
+    /// derived from `secret`. A wrong secret is not detected here: the TPM
+    /// refuses to sign (and counts the failure against its lockout).
+    pub fn open_persistent_protected(handle: u32, secret: &[u8]) -> Result<Self, SignerError> {
+        let auth = auth_from_secret(secret)?;
+        let mut ctx = connect()?;
+        let key = Self::resolve(&mut ctx, handle)?;
+        ctx.tr_set_auth(key.into(), auth.clone()).map_err(tss)?;
+        Ok(Self { ctx: Mutex::new(ctx), key, persistent: true, sealed_to: None, auth: Some(auth) })
     }
 
     /// Use a persisted key that was sealed to `pcrs` (the TPM does not record
@@ -292,7 +335,7 @@ impl TpmSigner {
         let mut ctx = connect()?;
         let key = Self::resolve(&mut ctx, handle)?;
         let selection = pcr_selection(&normalize_pcrs(pcrs)?)?;
-        Ok(Self { ctx: Mutex::new(ctx), key, persistent: true, sealed_to: Some(selection) })
+        Ok(Self { ctx: Mutex::new(ctx), key, persistent: true, sealed_to: Some(selection), auth: None })
     }
 
     /// Persist the loaded key at `handle` (owner hierarchy) so it survives
@@ -306,6 +349,10 @@ impl TpmSigner {
                 .evict_control(Provision::Owner, key.into(), Persistent::Persistent(target))
                 .map_err(tss)?;
             let _ = ctx.flush_context(key.into());
+            // The persistent handle is a new ESYS object: give it the auth too.
+            if let Some(auth) = &self.auth {
+                ctx.tr_set_auth(persisted, auth.clone()).map_err(tss)?;
+            }
             persisted
         };
         self.key = persisted.into();
@@ -457,5 +504,34 @@ mod tests {
         signer.with_ctx(|ctx| ctx.pcr_reset(PcrHandle::Pcr16)).unwrap();
         let again = signer.sign_digest(&digest).unwrap();
         assert!(verify_p256(&digest, &again, &pk));
+    }
+
+    /// An authValue-protected key (the owner key sharing a chip with the
+    /// agent, docs/KEY_POLICY.md rule 3): the TPM signs with the right
+    /// secret and refuses without it. Each refusal counts against the TPM's
+    /// dictionary-attack lockout (31 failures, one recovered every 10 min
+    /// on Intel PTT), so the test spends exactly two.
+    #[test]
+    #[ignore = "requires TPM hardware"]
+    fn protected_key_signs_only_with_its_auth() {
+        let signer = TpmSigner::create_protected_under(DEFAULT_PARENT, b"correct horse battery\n").unwrap();
+        let pk = signer.public_key().unwrap();
+        let digest = [0x5au8; 32];
+        let sig = signer.sign_digest(&digest).unwrap();
+        assert!(verify_p256(&digest, &sig, &pk));
+
+        // a wrong secret: the TPM must refuse
+        let wrong = auth_from_secret(b"wrong horse").unwrap();
+        signer.with_ctx(|ctx| ctx.tr_set_auth(signer.key.into(), wrong)).unwrap();
+        assert!(signer.sign_digest(&digest).is_err(), "signed with a wrong authValue");
+
+        // no secret at all (the empty authValue an unprotected key uses)
+        signer.with_ctx(|ctx| ctx.tr_set_auth(signer.key.into(), Auth::default())).unwrap();
+        assert!(signer.sign_digest(&digest).is_err(), "signed with an empty authValue");
+
+        // trailing whitespace is not part of the secret
+        let right = auth_from_secret(b"correct horse battery").unwrap();
+        signer.with_ctx(|ctx| ctx.tr_set_auth(signer.key.into(), right)).unwrap();
+        assert!(verify_p256(&digest, &signer.sign_digest(&digest).unwrap(), &pk));
     }
 }

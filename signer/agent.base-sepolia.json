@@ -3,6 +3,10 @@
   "owner": {
     "tpm": "0x81010010"
   },
+  "ownerPublicKey": {
+    "x": "0xa6167e4e202449fb153735e02464f56b136e8e86d60c9ef083e7d3441387dc09",
+    "y": "0xebe5715052910fe678f525cd3420b7e1abeb0c7bc2b6a11a89b1c48f2f5bfa45"
+  },
   "agent": {
     "tpm": {
       "handle": "0x81010012",

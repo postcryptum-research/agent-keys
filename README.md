@@ -151,13 +151,22 @@ rejected during simulation, before any gas is spent.
 For programs driving the CLI, `op send --json` prints one JSON line
 (`account`, `userOpHash`, `nonce`, `tx`, `block`, `gasUsed`) and keeps progress
 on stderr; `--nonce` reuses the nonce of an earlier attempt, so retrying the
-same action can never execute it twice.
+same action can never execute it twice. A Safe transaction (`execTransaction`
+calldata) needs `--safe-nonce <n>`: it goes out as a batch that asserts the
+Safe's nonce on-chain first, so a replay reverts instead of running again.
+
+Keys: the agent's operations never open the owner key — the config carries
+the owner's public key (`ownerPublicKey`), and only root operations open the
+key itself. Where to keep it is a custody decision
+([`docs/KEY_POLICY.md`](docs/KEY_POLICY.md)); on one chip, a TPM owner key can
+be protected by a root-only secret (`key create --handle … --auth-file …`).
+Security review: [`docs/AUDIT-2026-10-20.md`](docs/AUDIT-2026-10-20.md).
 
 Gasless, and the owner's controls:
 
 ```sh
 $B paymaster deposit --agent $A --env-file $E --wei 3000000000000000
-$B paymaster sponsor --agent $A --env-file $E          # list the account
+$B paymaster sponsor --agent $A --env-file $E --budget 2000000000000000 --max-per-op 300000000000000   # gas budget and per-op cap, wei
 $B demo --agent $A --env-file $E --sponsored           # the paymaster pays
 
 $B demo --agent $A --env-file $E --bundler https://public.pimlico.io/v2/84532/rpc

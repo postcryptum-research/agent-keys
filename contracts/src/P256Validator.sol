@@ -11,6 +11,7 @@ import {
     ERC1271_MAGICVALUE,
     ERC1271_INVALID
 } from "kernel/src/types/Constants.sol";
+import {P256Point} from "./P256Point.sol";
 
 /// @title P256Validator
 /// @notice ERC-7579 validator for an account owned by a raw P-256 (secp256r1)
@@ -39,7 +40,7 @@ contract P256Validator is IValidator {
         if (_isInitialized(msg.sender)) revert AlreadyInitialized(msg.sender);
         if (data.length < 64) revert InvalidPublicKey();
         (bytes32 x, bytes32 y) = abi.decode(data[:64], (bytes32, bytes32));
-        if (x == 0 || y == 0) revert InvalidPublicKey();
+        if (!P256Point.isOnCurve(x, y)) revert InvalidPublicKey();
         publicKeys[msg.sender] = PublicKey(x, y);
         emit P256KeyRegistered(msg.sender, x, y);
     }

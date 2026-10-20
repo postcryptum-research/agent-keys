@@ -20,6 +20,9 @@ secure-enclave = ["hw-signer/secure-enclave"]
 windows-tpm = ["hw-signer/windows-tpm"]
 # Enable TROPIC01 keys over the USB DevKit.
 tropic01 = ["hw-signer/tropic01"]
+# Accept a software (plaintext) AGENT key from the config. Tests only; the
+# owner can never be a software key (docs/KEY_POLICY.md rule 5).
+insecure-software-keys = []
 
 [dependencies]
 hw-signer = { path = "../hw-signer" }

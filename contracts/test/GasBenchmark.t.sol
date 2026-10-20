@@ -6,6 +6,7 @@ import {Test, console} from "forge-std/Test.sol";
 import {P256Validator} from "../src/P256Validator.sol";
 import {P256Signer} from "../src/P256Signer.sol";
 import {AgentPolicy} from "../src/AgentPolicy.sol";
+import {SafeNonceAssert} from "../src/SafeNonceAssert.sol";
 import {WhitelistPaymaster} from "../src/WhitelistPaymaster.sol";
 import {Logger} from "../src/demo/Logger.sol";
 
@@ -70,7 +71,7 @@ contract GasBenchmarkTest is Test {
         paymaster = new WhitelistPaymaster(IAAEntryPoint(address(entryPoint)), address(this));
         paymaster.deposit{value: 10 ether}();
         acct = _deployAgentAccount();
-        paymaster.setSponsored(acct, true);
+        paymaster.setSponsored(acct, 1 ether, 0.1 ether);
 
         // warm up every path once, as the paper does, so storage-slot and
         // nonce initialization costs do not land on the first measurement
@@ -99,7 +100,7 @@ contract GasBenchmarkTest is Test {
     /// The agent's mandate: `Logger.log` only, no value.
     function _permissionData() internal returns (bytes memory) {
         P256Signer signer = new P256Signer();
-        AgentPolicy policy = new AgentPolicy();
+        AgentPolicy policy = new AgentPolicy(address(new SafeNonceAssert()));
         (uint256 ax, uint256 ay) = vm.publicKeyP256(AGENT);
         address[] memory targets = new address[](1);
         bytes4[] memory selectors = new bytes4[](1);
@@ -109,7 +110,9 @@ contract GasBenchmarkTest is Test {
         entries[0] = abi.encodePacked(
             bytes2(0),
             address(policy),
-            abi.encode(targets, selectors, uint128(0), uint128(0), uint48(block.timestamp + 365 days))
+            abi.encode(
+                targets, selectors, uint128(0), uint128(0), uint48(block.timestamp + 365 days), new AgentPolicy.TokenCap[](0)
+            )
         );
         entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(bytes32(ax), bytes32(ay)));
         return abi.encode(entries);

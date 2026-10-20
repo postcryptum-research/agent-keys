@@ -76,6 +76,16 @@ Safe 0xd0b972a8ee7D8AB91a2e3381Eb6F10550B80E52A owners=('0xEdB645B14e2f952C5784e
 7. keeper retry with the recorded nonce -> exit 1: nonce 0x27472733300…0002 is already used: an operation with it was included
 ```
 
+Since the audit fixes (AgentPolicy v4) the Safe transaction goes out as a
+batch with an on-chain nonce assertion (`--safe-nonce`), and step 7 retries
+*without* pinning the EntryPoint nonce — what a naive or compromised host
+would do (same Safe, nonce 7 → 8, tx
+`0x1a0f2fbb3eb34473415320a118946b9c41bdd763365ed12683f01ac71217b2c0`):
+
+```
+7. keeper retry, unpinned -> exit 1: … execution reverted, data: SafeNonceMismatch(safe, 7, 8)
+   Safe nonce still 8: the call ran once```
+
 What it shows:
 
 - Olas computes the same safe tx hash the Safe does, and the Safe accepts
@@ -88,9 +98,10 @@ What it shows:
   transport — the first upstream PR we would propose.
 - **Retries.** A `v = 1` signature does not commit to the Safe nonce, so an
   Olas keeper retry (timeout, late messages) could execute the inner call
-  twice if it simply resent. The keeper records the EntryPoint nonce of its
-  first attempt and resends only with `--nonce`: at most one copy can be
-  included, and a retry after inclusion fails fast.
+  twice. The agent's mandate admits a Safe transaction only together with
+  an on-chain assertion of the Safe nonce it was built for, so a retry of
+  one that landed reverts — whatever the host does. Pinning the EntryPoint
+  nonce (`--nonce`) additionally makes such a retry fail before sending.
 
 ## Integrating into open-autonomy and Pearl
 

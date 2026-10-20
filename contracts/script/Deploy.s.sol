@@ -6,6 +6,7 @@ import {Script, console} from "forge-std/Script.sol";
 import {P256Validator} from "../src/P256Validator.sol";
 import {P256Signer} from "../src/P256Signer.sol";
 import {AgentPolicy} from "../src/AgentPolicy.sol";
+import {SafeNonceAssert} from "../src/SafeNonceAssert.sol";
 import {WhitelistPaymaster} from "../src/WhitelistPaymaster.sol";
 import {DemoCounter} from "../src/demo/DemoCounter.sol";
 import {IEntryPoint} from "account-abstraction/interfaces/IEntryPoint.sol";
@@ -42,7 +43,11 @@ contract Deploy is Script {
         vm.startBroadcast();
         address validator = _reuseOrDeploy(recorded, "p256Validator", "P256Validator", type(P256Validator).creationCode);
         address signer = _reuseOrDeploy(recorded, "p256Signer", "P256Signer", type(P256Signer).creationCode);
-        address policy = _reuseOrDeploy(recorded, "agentPolicy", "AgentPolicy", type(AgentPolicy).creationCode);
+        address nonceAssert =
+            _reuseOrDeploy(recorded, "safeNonceAssert", "SafeNonceAssert", type(SafeNonceAssert).creationCode);
+        address policy = _reuseOrDeploy(
+            recorded, "agentPolicy", "AgentPolicy", abi.encodePacked(type(AgentPolicy).creationCode, abi.encode(nonceAssert))
+        );
         address counter = _reuseOrDeploy(recorded, "demoCounter", "DemoCounter", type(DemoCounter).creationCode);
         // The paymaster is owned by whoever runs this script (the sponsor);
         // its address therefore depends on the sponsor, unlike the modules.
@@ -63,6 +68,7 @@ contract Deploy is Script {
         vm.serializeAddress(json, "p256Validator", validator);
         vm.serializeAddress(json, "p256Signer", signer);
         vm.serializeAddress(json, "agentPolicy", policy);
+        vm.serializeAddress(json, "safeNonceAssert", nonceAssert);
         vm.serializeAddress(json, "whitelistPaymaster", paymaster);
         vm.serializeAddress(json, "paymasterOwner", sponsor);
         // Superseded module versions stay recorded: live permissions installed
@@ -74,7 +80,16 @@ contract Deploy is Script {
     }
 
     function _keepSuperseded(string memory json, string memory recorded) internal {
-        string[2] memory superseded = ["agentPolicyV1", "agentPolicyV2"];
+        // Superseded versions stay recorded: live permissions and accounts
+        // installed with them keep pointing there until the owner moves them.
+        string[6] memory superseded = [
+            "agentPolicyV1",
+            "agentPolicyV2",
+            "agentPolicyV3",
+            "p256SignerV1",
+            "p256ValidatorV1",
+            "whitelistPaymasterV1"
+        ];
         for (uint256 i; i < superseded.length; i++) {
             string memory k = string.concat(".", superseded[i]);
             if (bytes(recorded).length > 0 && vm.keyExistsJson(recorded, k)) {

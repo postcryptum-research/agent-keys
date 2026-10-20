@@ -46,6 +46,10 @@ With `(safe, execTransaction)` on the agent's allow-list, `AgentPolicy`
 - inner value within the per-operation cap and the budget;
 - `gasPrice == 0` (no refunds paid out of the Safe);
 - no nested Safe transaction;
+- the Safe transaction arrives as a batch whose first call asserts the
+  Safe's nonce (`SafeNonceAssert`), so a retry of one that already landed
+  reverts on-chain — the adapter fixes that nonce per `logicalTx` at the
+  first attempt;
 - `operation == CALL`, or DELEGATECALL into an allow-listed
   `MultiSendCallOnly.multiSend` whose every leg is a CALL that passes the
   allow-list (values summed).

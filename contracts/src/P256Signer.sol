@@ -11,6 +11,7 @@ import {
     ERC1271_MAGICVALUE,
     ERC1271_INVALID
 } from "kernel/src/types/Constants.sol";
+import {P256Point} from "./P256Point.sol";
 
 /// @title P256Signer
 /// @notice Kernel permission signer for a raw P-256 key held in hardware.
@@ -43,7 +44,7 @@ contract P256Signer is ISigner {
         if (publicKeys[id][msg.sender].x != 0) revert AlreadyInitialized(msg.sender);
         if (data.length < 96) revert InvalidPublicKey();
         (bytes32 x, bytes32 y) = abi.decode(data[32:96], (bytes32, bytes32));
-        if (x == 0 || y == 0) revert InvalidPublicKey();
+        if (!P256Point.isOnCurve(x, y)) revert InvalidPublicKey();
         publicKeys[id][msg.sender] = PublicKey(x, y);
         usedIds[msg.sender]++;
         emit P256SignerRegistered(msg.sender, id, x, y);
