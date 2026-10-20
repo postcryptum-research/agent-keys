@@ -23,8 +23,7 @@ pub mod tpm;
 pub mod secure_enclave;
 #[cfg(all(feature = "windows-tpm", target_os = "windows"))]
 pub mod windows_tpm;
-/// Tropic Square TROPIC01 over the USB DevKit. The module is not in tree
-/// yet; docs/TROPIC01.md states the interface the CLI expects from it.
+/// Tropic Square TROPIC01 over the USB DevKit (docs/TROPIC01.md).
 #[cfg(feature = "tropic01")]
 pub mod tropic01;
 

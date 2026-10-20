@@ -104,7 +104,7 @@ cargo features so a machine compiles only the one it has:
 | `tpm` | Linux | TPM 2.0 via `tss-esapi`; keys created under the SRK (`0x81000001`), transient or persisted | done |
 | `secure-enclave` | macOS | Secure Enclave via Security.framework (`kSecAttrTokenIDSecureEnclave`), keys by keychain label | written, type-checked for `aarch64-apple-darwin`; awaiting a run on Apple hardware — see `docs/SECURE_ENCLAVE.md` |
 | `windows-tpm` | Windows | TPM 2.0 via CNG's Platform Crypto Provider, keys by name | written, type-checked for `x86_64-pc-windows-msvc`; awaiting a run on Windows — see `docs/WINDOWS.md` |
-| *(candidate)* | any (USB) | Tropic Square TROPIC01 USB DevKit — an open-architecture secure element with ECDSA P-256; verified responsive with the vendor's Rust SDK (`tropicsquare/libtropic-rs`), whose USB-devkit example holds the transport and a full key-gen/sign flow | backend not yet in tree |
+| `tropic01` | any (USB) | Tropic Square TROPIC01 USB DevKit — an open-architecture secure element; P-256 keys generated in an ECC slot, one secure session per operation over the vendor's Rust SDK (`tropicsquare/libtropic-rs`) | done — hardware test, vector `p256_tropic01.json`, and an agent operation on Base Sepolia — see `docs/TROPIC01.md` |
 
 Signatures are normalized to low-s off-chip: `(r, n − s)` is equally valid,
 RIP-7212 accepts either, and the Solady verifier rejects high-s to kill
@@ -255,7 +255,13 @@ Lessons that cost real debugging time:
     drop, not forge or redirect. Pimlico's public testnet endpoint relayed
     from an unstaked paymaster; bundlers with default ERC-7562 reputation
     rules require a staked one (`paymaster stake`).
-  - *later:* Windows CNG backend's first run; a TROPIC01 backend.
+  - **TROPIC01 backend — done.** `hw-signer/src/tropic01.rs`; the owner
+    (TPM) rotated the agent permission `agn2 → trp1` onto the key in ECC
+    slot 1 of a TROPIC01 USB DevKit (tx
+    `0x44bb4d6625e5ff3548273fc2f3009eb4e30fde333da8a78ef6fa74d8809bb133`),
+    and the chip signed a sponsored agent operation under `AgentPolicy`
+    (tx `0x6c1060b43c1a40e3d123fe766adad914edccac8e9596cc1dc658617cf53622b5`).
+  - *later:* Windows CNG backend's first run.
 
   Lessons from 3.3: a fixed `callGasLimit` is a trap — an execution phase
   that runs out of gas reverts with *no data*, the outer `handleOps`

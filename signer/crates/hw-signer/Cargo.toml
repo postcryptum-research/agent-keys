@@ -18,8 +18,7 @@ tpm = ["dep:tss-esapi"]
 secure-enclave = ["dep:security-framework"]
 #   windows-tpm    Windows — TPM 2.0 via CNG's Platform Crypto Provider
 windows-tpm = ["dep:windows"]
-#   tropic01       any     — Tropic Square TROPIC01 USB DevKit (src/tropic01.rs,
-#                            see docs/TROPIC01.md for the interface it must expose)
+#   tropic01       any     — Tropic Square TROPIC01 USB DevKit (docs/TROPIC01.md)
 tropic01 = ["dep:tropic01", "dep:serialport", "dep:embedded-hal", "dep:x25519-dalek", "dep:dummy-pin"]
 
 [dependencies]
