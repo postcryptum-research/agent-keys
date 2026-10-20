@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {Script, console} from "forge-std/Script.sol";
 
 import {P256Validator} from "../src/P256Validator.sol";
+import {P256RecoveryValidator} from "../src/P256RecoveryValidator.sol";
 import {P256Signer} from "../src/P256Signer.sol";
 import {AgentPolicy} from "../src/AgentPolicy.sol";
 import {SafeNonceAssert} from "../src/SafeNonceAssert.sol";
@@ -42,6 +43,9 @@ contract Deploy is Script {
 
         vm.startBroadcast();
         address validator = _reuseOrDeploy(recorded, "p256Validator", "P256Validator", type(P256Validator).creationCode);
+        address recoveryValidator = _reuseOrDeploy(
+            recorded, "p256RecoveryValidator", "P256RecoveryValidator", type(P256RecoveryValidator).creationCode
+        );
         address signer = _reuseOrDeploy(recorded, "p256Signer", "P256Signer", type(P256Signer).creationCode);
         address nonceAssert =
             _reuseOrDeploy(recorded, "safeNonceAssert", "SafeNonceAssert", type(SafeNonceAssert).creationCode);
@@ -66,6 +70,7 @@ contract Deploy is Script {
         vm.serializeAddress(json, "kernel", KERNEL);
         vm.serializeAddress(json, "kernelFactory", KERNEL_FACTORY);
         vm.serializeAddress(json, "p256Validator", validator);
+        vm.serializeAddress(json, "p256RecoveryValidator", recoveryValidator);
         vm.serializeAddress(json, "p256Signer", signer);
         vm.serializeAddress(json, "agentPolicy", policy);
         vm.serializeAddress(json, "safeNonceAssert", nonceAssert);
@@ -82,13 +87,14 @@ contract Deploy is Script {
     function _keepSuperseded(string memory json, string memory recorded) internal {
         // Superseded versions stay recorded: live permissions and accounts
         // installed with them keep pointing there until the owner moves them.
-        string[6] memory superseded = [
+        string[7] memory superseded = [
             "agentPolicyV1",
             "agentPolicyV2",
             "agentPolicyV3",
             "p256SignerV1",
             "p256ValidatorV1",
-            "whitelistPaymasterV1"
+            "whitelistPaymasterV1",
+            "p256RecoveryValidatorV1"
         ];
         for (uint256 i; i < superseded.length; i++) {
             string memory k = string.concat(".", superseded[i]);

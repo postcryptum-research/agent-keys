@@ -3,6 +3,7 @@ mod agent;
 mod bundler;
 mod chain;
 mod kernel;
+mod keyfile;
 
 use std::path::PathBuf;
 
@@ -99,6 +100,11 @@ enum Cmd {
     Paymaster {
         #[command(subcommand)]
         cmd: PaymasterCmd,
+    },
+    /// The owner side: root validator and the cold recovery key.
+    Owner {
+        #[command(subcommand)]
+        cmd: OwnerCmd,
     },
     /// The agent permission, controlled by the owner key.
     Permission {
@@ -199,6 +205,56 @@ struct KeyRef {
     /// TROPIC01: ECC key slot (0..31).
     #[arg(long, default_value_t = 0)]
     slot: u16,
+    /// Encrypted key file (owner / recovery keys only, e.g. on a USB drive):
+    /// `create` asks for a passphrase and refuses to overwrite.
+    #[arg(long, conflicts_with_all = ["handle", "enclave", "cng", "tropic01"])]
+    keyfile: Option<PathBuf>,
+}
+
+#[derive(Subcommand)]
+enum OwnerCmd {
+    /// Root validator, and whether a recovery key is installed.
+    Status {
+        #[command(flatten)]
+        agent: AgentArgs,
+    },
+    /// Install the config's `recovery` key, allowed only to take over root
+    /// (owner operation, signed by the owner key).
+    AddRecovery {
+        #[command(flatten)]
+        agent: AgentArgs,
+        #[arg(long)]
+        sponsored: bool,
+    },
+    /// The owner key is lost: the recovery key makes itself root.
+    Recover {
+        #[command(flatten)]
+        agent: AgentArgs,
+        #[arg(long)]
+        sponsored: bool,
+    },
+    /// Hand root to a new owner key on a validator the account has not used
+    /// (signed by the current root: the owner key, or `--as-recovery`).
+    SetRoot {
+        #[command(flatten)]
+        agent: AgentArgs,
+        /// P256Validator instance not installed on this account yet.
+        #[arg(long)]
+        validator: Address,
+        /// The new owner public key: `x,y` (hex), as `key show` prints it.
+        #[arg(long)]
+        public_key: String,
+        /// The validator of the lost or replaced owner key: uninstalled in the
+        /// same operation, so its key signs nothing any more (required after
+        /// `recover`). May equal `--validator` to reuse that contract.
+        #[arg(long)]
+        retire: Option<Address>,
+        /// The recovery key is root now (after `owner recover`).
+        #[arg(long)]
+        as_recovery: bool,
+        #[arg(long)]
+        sponsored: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -229,6 +285,15 @@ enum KeyCmd {
     Evict {
         #[command(flatten)]
         key: KeyRef,
+    },
+    /// Health check: open the key, sign a random digest and verify it — no
+    /// transaction. For a key file this proves the passphrase still opens it.
+    Check {
+        #[command(flatten)]
+        key: KeyRef,
+        /// TPM: the key's auth file, for a key created with --auth-file.
+        #[arg(long)]
+        auth_file: Option<PathBuf>,
     },
 }
 
@@ -379,6 +444,21 @@ enum KeyOp {
     Create { parent: u32, pcrs: Vec<u8>, auth_file: Option<PathBuf> },
     Show,
     Evict,
+    Check { auth_file: Option<PathBuf> },
+}
+
+/// Sign a random digest with `signer` and verify it against its public key.
+fn check_signer(name: String, signer: &dyn HardwareSigner) -> Result<()> {
+    use rand_core::RngCore;
+    let mut digest = [0u8; 32];
+    rand_core::OsRng.fill_bytes(&mut digest);
+    let pk = signer.public_key()?;
+    let sig = signer.sign_digest(&digest)?;
+    if !verify_p256(&digest, &sig, &pk) {
+        bail!("{name}: the signature does not verify against the key's public half");
+    }
+    println!("OK: {name} signs (0x{}…)", hex::encode(&pk.x[..4]));
+    Ok(())
 }
 
 fn run_key(cmd: KeyCmd) -> Result<()> {
@@ -386,14 +466,18 @@ fn run_key(cmd: KeyCmd) -> Result<()> {
         KeyCmd::Create { key, parent, pcrs, auth_file } => (key, KeyOp::Create { parent, pcrs, auth_file }),
         KeyCmd::Show { key } => (key, KeyOp::Show),
         KeyCmd::Evict { key } => (key, KeyOp::Evict),
+        KeyCmd::Check { key, auth_file } => (key, KeyOp::Check { auth_file }),
     };
+    if let Some(path) = key.keyfile {
+        return keyfile_key(&path, op);
+    }
     match (key.handle, key.enclave, key.cng, key.tropic01) {
         (Some(handle), None, None, None) => tpm_key(handle, op),
         (None, Some(label), None, None) => enclave_key(&label, op),
         (None, None, Some(name), None) => cng_key(&name, op),
         (None, None, None, Some(port)) => tropic01_key(&port, key.slot, op),
         _ => bail!(
-            "give exactly one of --handle (TPM), --enclave <label> (Secure Enclave), --cng <name> (Windows TPM) or --tropic01 <port> (TROPIC01)"
+            "give exactly one of --handle (TPM), --enclave <label> (Secure Enclave), --cng <name> (Windows TPM), --tropic01 <port> (TROPIC01) or --keyfile <path>"
         ),
     }
 }
@@ -405,6 +489,7 @@ fn tropic01_key(port: &str, slot: u16, op: KeyOp) -> Result<()> {
     match op {
         KeyOp::Create { .. } => print_key(name, &Tropic01Signer::create(port, slot)?.public_key()?),
         KeyOp::Show => print_key(name, &Tropic01Signer::open(port, slot)?.public_key()?),
+        KeyOp::Check { .. } => check_signer(name, &Tropic01Signer::open(port, slot)?),
         KeyOp::Evict => {
             Tropic01Signer::open(port, slot)?.erase()?;
             println!("erased {name}");
@@ -424,6 +509,7 @@ fn cng_key(name: &str, op: KeyOp) -> Result<()> {
     match op {
         KeyOp::Create { .. } => print_key(name.into(), &CngSigner::create(name)?.public_key()?),
         KeyOp::Show => print_key(name.into(), &CngSigner::open(name)?.public_key()?),
+        KeyOp::Check { .. } => check_signer(name.into(), &CngSigner::open(name)?),
         KeyOp::Evict => {
             CngSigner::open(name)?.delete()?;
             println!("deleted {name}");
@@ -467,6 +553,13 @@ fn tpm_key(handle: u32, op: KeyOp) -> Result<()> {
             print_key(name, &signer.public_key()?)
         }
         KeyOp::Show => print_key(name, &TpmSigner::open_persistent(handle)?.public_key()?),
+        KeyOp::Check { auth_file } => match auth_file {
+            Some(file) => {
+                let secret = std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
+                check_signer(name, &TpmSigner::open_persistent_protected(handle, &secret)?)
+            }
+            None => check_signer(name, &TpmSigner::open_persistent(handle)?),
+        },
         KeyOp::Evict => {
             TpmSigner::evict(handle)?;
             println!("evicted {name}");
@@ -480,12 +573,34 @@ fn tpm_key(_: u32, _: KeyOp) -> Result<()> {
     bail!("TPM keys need the `tpm` feature: cargo build --features tpm")
 }
 
+/// An encrypted key file: created with a passphrase typed twice; its public
+/// key is readable without one. There is nothing to evict: delete the file.
+fn keyfile_key(path: &std::path::Path, op: KeyOp) -> Result<()> {
+    let name = path.display().to_string();
+    match op {
+        KeyOp::Create { .. } => {
+            eprintln!("creating {name}: choose a passphrase; it is never stored and cannot be recovered");
+            let passphrase = keyfile::prompt(true)?;
+            let pk = keyfile::create(path, passphrase.as_bytes())?;
+            eprintln!("reference it as {{\"keyfile\": \"{name}\"}}; keep a second copy on another medium");
+            print_key(name, &pk)
+        }
+        KeyOp::Show => print_key(name, &keyfile::public_key(path)?),
+        KeyOp::Check { .. } => {
+            let passphrase = keyfile::prompt(false)?;
+            check_signer(name, &keyfile::open(path, passphrase.as_bytes())?)
+        }
+        KeyOp::Evict => bail!("a key file is not stored in a device: delete {name} yourself if you mean to"),
+    }
+}
+
 #[cfg(all(feature = "secure-enclave", target_os = "macos"))]
 fn enclave_key(label: &str, op: KeyOp) -> Result<()> {
     use hw_signer::secure_enclave::SecureEnclaveSigner;
     match op {
         KeyOp::Create { .. } => print_key(label.into(), &SecureEnclaveSigner::create(label)?.public_key()?),
         KeyOp::Show => print_key(label.into(), &SecureEnclaveSigner::open(label)?.public_key()?),
+        KeyOp::Check { .. } => check_signer(label.into(), &SecureEnclaveSigner::open(label)?),
         KeyOp::Evict => {
             SecureEnclaveSigner::open(label)?.delete()?;
             println!("deleted {label}");
@@ -594,6 +709,31 @@ async fn main() -> Result<()> {
                 } else {
                     println!("included: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
                 }
+            }
+        },
+        Cmd::Owner { cmd } => match cmd {
+            OwnerCmd::Status { agent } => session(&agent).await?.owner_status().await?,
+            OwnerCmd::AddRecovery { agent, sponsored } => {
+                let s = session(&agent).await?;
+                let spec = s.cfg.recovery.as_ref().context("the config has no `recovery` key")?;
+                let key = match spec {
+                    agent::KeySpec::Keyfile(path) => keyfile::public_key(path)?,
+                    other => agent::open_signer(other, agent::Role::Recovery)?.public_key()?,
+                };
+                let inc = s.add_recovery(&key, sponsored).await?;
+                println!("recovery key installed: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
+            }
+            OwnerCmd::Recover { agent, sponsored } => {
+                let s = session(&agent).await?;
+                let inc = s.recover(sponsored).await?;
+                println!("the recovery key is root now: tx {}; next, `owner set-root --as-recovery` to a new owner device", inc.tx);
+            }
+            OwnerCmd::SetRoot { agent, validator, public_key, retire, as_recovery, sponsored } => {
+                let s = session(&agent).await?;
+                let (x, y) = public_key.split_once(',').context("--public-key x,y")?;
+                let key = hw_signer::PublicKey { x: agent::parse32(x.trim())?, y: agent::parse32(y.trim())? };
+                let inc = s.set_root(validator, &key, retire, as_recovery, sponsored).await?;
+                println!("root handed to {validator}: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
             }
         },
         Cmd::Permission { cmd } => match cmd {

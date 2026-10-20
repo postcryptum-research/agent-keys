@@ -162,6 +162,16 @@ key itself. Where to keep it is a custody decision
 be protected by a root-only secret (`key create --handle … --auth-file …`).
 Security review: [`docs/AUDIT-2026-10-20.md`](docs/AUDIT-2026-10-20.md).
 
+Losing a key: the agent's is replaced by the owner (`permission rotate`); for
+the owner's, a cold recovery key — e.g. an encrypted key file on a USB drive
+(`key create --keyfile …`) installed with `owner add-recovery` — may take
+root over and hand it to a new device (`owner recover`, `owner set-root
+--retire …`), and can do nothing else, not even sign a message.
+`key check` proves a key (or a key file's passphrase) still works without
+sending anything. Devices and failure modes:
+[`docs/OWNER_DEVICES.md`](docs/OWNER_DEVICES.md),
+[`docs/RESILIENCE.md`](docs/RESILIENCE.md).
+
 Gasless, and the owner's controls:
 
 ```sh

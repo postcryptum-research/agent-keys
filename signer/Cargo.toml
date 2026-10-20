@@ -10,3 +10,14 @@ repository = "https://github.com/77ph/TPM_sign"
 [profile.release]
 lto = true
 codegen-units = 1
+
+# scrypt at the strength KEY_POLICY.md requires (N = 2^18) takes minutes
+# unoptimized; build the key-derivation crates optimized even in dev builds.
+[profile.dev.package.scrypt]
+opt-level = 3
+[profile.dev.package.salsa20]
+opt-level = 3
+[profile.dev.package.pbkdf2]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3

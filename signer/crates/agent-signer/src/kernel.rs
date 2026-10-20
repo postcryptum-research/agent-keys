@@ -37,6 +37,69 @@ pub fn permission_nonce_key(id: PermissionId) -> U192 {
     U192::from_be_slice(&b)
 }
 
+/// A plain validator's nonce key: `0x00 ‖ 0x01 ‖ validator ‖ 0x0000`.
+pub fn validator_nonce_key(validator: Address) -> U192 {
+    let mut b = [0u8; 24];
+    b[1] = VALIDATION_TYPE_VALIDATOR;
+    b[2..22].copy_from_slice(validator.as_slice());
+    U192::from_be_slice(&b)
+}
+
+/// Owner (root) batch installing `validator` with `key` and granting it only
+/// `changeRootValidator` — the cold recovery key. `nonce` as for
+/// `install_permission_calldata`.
+pub fn add_recovery_calldata(account: Address, validator: Address, key: &PublicKey, nonce: u32) -> Bytes {
+    let vid = validator_id(validator);
+    let install = IKernel::installValidationsCall {
+        vIds: vec![vid],
+        configs: vec![IKernel::ValidationConfig { nonce, hook: Address::with_last_byte(1) }],
+        validationData: vec![encode_pubkey(key)],
+        hookData: vec![Bytes::new()],
+    }
+    .abi_encode();
+    let grant = IKernel::grantAccessCall {
+        vId: vid,
+        selector: IKernel::changeRootValidatorCall::SELECTOR.into(),
+        allow: true,
+    }
+    .abi_encode();
+    execute_batch_calldata(vec![(account, U256::ZERO, install.into()), (account, U256::ZERO, grant.into())])
+}
+
+/// `installValidations([validator], [{nonce, hook = address(1)}], [abi.encode(x, y)], [""])`.
+pub fn install_validator_call(vid: ValidationId, key: &PublicKey, nonce: u32) -> Bytes {
+    IKernel::installValidationsCall {
+        vIds: vec![vid],
+        configs: vec![IKernel::ValidationConfig { nonce, hook: Address::with_last_byte(1) }],
+        validationData: vec![encode_pubkey(key)],
+        hookData: vec![Bytes::new()],
+    }
+    .abi_encode()
+    .into()
+}
+
+/// `uninstallValidation(validatorId(validator), "", "")` — `onUninstall`
+/// clears the key the validator held for this account.
+pub fn uninstall_validator_call(validator: Address) -> Bytes {
+    IKernel::uninstallValidationCall { vId: validator_id(validator), deinitData: Bytes::new(), hookDeinitData: Bytes::new() }
+        .abi_encode()
+        .into()
+}
+
+/// `changeRootValidator(vId, hook = address(1), abi.encode(x, y), "")`.
+/// `key` is installed only if `validator` is not installed yet — callers
+/// must check that, or the old key silently stays.
+pub fn change_root_calldata(validator: Address, key: Option<&PublicKey>) -> Bytes {
+    IKernel::changeRootValidatorCall {
+        rootValidator: validator_id(validator),
+        hook: Address::with_last_byte(1),
+        validatorData: key.map(encode_pubkey).unwrap_or_default(),
+        hookData: Bytes::new(),
+    }
+    .abi_encode()
+    .into()
+}
+
 /// Key 0 routes to the root validator.
 pub fn root_nonce_key() -> U192 {
     U192::ZERO

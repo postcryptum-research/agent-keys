@@ -64,6 +64,29 @@ pub fn account_material(cfg: &AgentConfig, dep: &Deployments) -> Result<(Bytes, 
     Ok((permission_data, init_data))
 }
 
+/// Which key signs an operation, and on which validation path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignAs {
+    /// The agent key under its permission (the mandate applies).
+    Agent,
+    /// The owner key on the root path.
+    Owner,
+    /// The recovery key on its own validator: `changeRootValidator` only.
+    Recovery,
+    /// The recovery key on the root path, after it took root over.
+    RecoveryAsRoot,
+}
+
+impl SignAs {
+    fn from_root(as_root: bool) -> Self {
+        if as_root {
+            SignAs::Owner
+        } else {
+            SignAs::Agent
+        }
+    }
+}
+
 pub struct Session {
     pub provider: DynProvider,
     pub gas_wallet: Address,
@@ -255,7 +278,7 @@ impl Session {
         sponsored: bool,
         pinned: Option<U256>,
     ) -> Result<Included> {
-        self.send_raw_at(kernel::execute_calldata(target, value, &data), as_root, sponsored, pinned).await
+        self.send_raw_at(kernel::execute_calldata(target, value, &data), SignAs::from_root(as_root), sponsored, pinned).await
     }
 
     /// A Safe transaction (`execTransaction` calldata for `safe`) as the only
@@ -278,7 +301,114 @@ impl Session {
             .context("no safeNonceAssert in deployments; run script/Deploy.s.sol")?;
         let check: Bytes = ISafeNonceAssert::checkCall { safe, expected: safe_nonce }.abi_encode().into();
         let calls = vec![(assert, U256::ZERO, check), (safe, value, exec_transaction)];
-        self.send_raw_at(kernel::execute_batch_calldata(calls), as_root, sponsored, pinned).await
+        self.send_raw_at(kernel::execute_batch_calldata(calls), SignAs::from_root(as_root), sponsored, pinned).await
+    }
+
+    fn recovery_validator(&self) -> Result<Address> {
+        self.dep
+            .p256_recovery_validator
+            .context("no p256RecoveryValidator in deployments; run script/Deploy.s.sol")
+    }
+
+    /// Whether `validator` is installed on the account (Kernel keeps its
+    /// first key: re-pointing root at an installed validator keeps that key).
+    pub async fn is_installed(&self, validator: Address) -> Result<bool> {
+        let kernel = IKernel::new(self.account, self.provider.clone());
+        let cfg = kernel.validationConfig(kernel::validator_id(validator)).call().await?;
+        Ok(cfg.hook != Address::ZERO)
+    }
+
+    /// Owner operation: install the cold recovery key and grant it only
+    /// `changeRootValidator`.
+    pub async fn add_recovery(&self, key: &hw_signer::PublicKey, sponsored: bool) -> Result<Included> {
+        let validator = self.recovery_validator()?;
+        if self.is_installed(validator).await? {
+            bail!("a recovery key is already installed ({validator})");
+        }
+        let nonce = self.install_nonce_for(kernel::validator_id(validator)).await?;
+        let call = kernel::add_recovery_calldata(self.account, validator, key, nonce);
+        self.send_raw_at(call, SignAs::Owner, sponsored, None).await
+    }
+
+    /// Recovery operation: the recovery key makes itself root (the owner's
+    /// device is lost or broken).
+    pub async fn recover(&self, sponsored: bool) -> Result<Included> {
+        let call = kernel::change_root_calldata(self.recovery_validator()?, None);
+        self.send_raw_at(call, SignAs::Recovery, sponsored, None).await
+    }
+
+    /// Root operation: hand root to `validator` holding `key`, and retire
+    /// the validator of a lost (or replaced) owner key so it can sign
+    /// nothing any more — not even an ERC-1271 message. `validator` may be
+    /// the retired one itself: it is then uninstalled and reinstalled with
+    /// the new key. Signed by the current root: the owner key, or the
+    /// recovery key after `recover`.
+    pub async fn set_root(
+        &self,
+        validator: Address,
+        key: &hw_signer::PublicKey,
+        retire: Option<Address>,
+        signed_by_recovery: bool,
+        sponsored: bool,
+    ) -> Result<Included> {
+        let reinstall = retire == Some(validator);
+        if !reinstall && self.is_installed(validator).await? {
+            bail!(
+                "{validator} is already installed on this account: Kernel would keep its old key; \
+                 pick another validator, or `--retire {validator}` to replace its key"
+            );
+        }
+        if signed_by_recovery && retire.is_none() {
+            bail!("after a recovery, retire the lost owner's validator: --retire <its address>");
+        }
+        let vid = kernel::validator_id(validator);
+        // Kernel refuses an install under the nonce the id was installed with
+        // before; after an uninstall, the stored nonce is still there.
+        let nonce = self.install_nonce_for(vid).await?;
+        let install = kernel::install_validator_call(vid, key, nonce);
+        let change = kernel::change_root_calldata(validator, None);
+        let me = self.account;
+        let calls = match retire {
+            // the same contract: free it first, then install the new key
+            Some(old) if reinstall => vec![
+                (me, U256::ZERO, kernel::uninstall_validator_call(old)),
+                (me, U256::ZERO, install),
+                (me, U256::ZERO, change),
+            ],
+            // another contract: the old one can go once it is not root
+            Some(old) => vec![
+                (me, U256::ZERO, install),
+                (me, U256::ZERO, change),
+                (me, U256::ZERO, kernel::uninstall_validator_call(old)),
+            ],
+            None => vec![(me, U256::ZERO, install), (me, U256::ZERO, change)],
+        };
+        let sign_as = if signed_by_recovery { SignAs::RecoveryAsRoot } else { SignAs::Owner };
+        self.send_raw_at(kernel::execute_batch_calldata(calls), sign_as, sponsored, None).await
+    }
+
+    /// Root validator and recovery state, for `owner status`.
+    pub async fn owner_status(&self) -> Result<()> {
+        let kernel = IKernel::new(self.account, self.provider.clone());
+        let root = kernel.rootValidator().call().await?;
+        println!("account:        {}", self.account);
+        println!("root validator: 0x{} (type 0x{:02x})", hex::encode(&root[1..]), root[0]);
+        match self.dep.p256_recovery_validator {
+            Some(v) => {
+                let vid = kernel::validator_id(v);
+                let installed = self.is_installed(v).await?;
+                let may_take_root = kernel
+                    .isAllowedSelector(vid, IKernel::changeRootValidatorCall::SELECTOR.into())
+                    .call()
+                    .await?;
+                let is_root = root == vid;
+                println!(
+                    "recovery:       {v} (installed = {installed}, may take root = {may_take_root}, is root now = {is_root})"
+                );
+            }
+            None => println!("recovery:       (no p256RecoveryValidator in deployments)"),
+        }
+        Ok(())
     }
 
     /// Root operation signed by the owner key: remove the agent permission.
@@ -334,9 +464,13 @@ impl Session {
     /// `currentNonce()`, except that re-installing an id whose stored nonce
     /// already equals it bumps `currentNonce` first.
     async fn install_nonce(&self, perm: PermissionId) -> Result<u32> {
+        self.install_nonce_for(kernel::permission_vid(perm)).await
+    }
+
+    async fn install_nonce_for(&self, vid: kernel::ValidationId) -> Result<u32> {
         let account = IKernel::new(self.account, self.provider.clone());
         let current = account.currentNonce().call().await?;
-        let stored = account.validationConfig(kernel::permission_vid(perm)).call().await?.nonce;
+        let stored = account.validationConfig(vid).call().await?.nonce;
         Ok(if stored == current { current + 1 } else { current })
     }
 
@@ -344,13 +478,13 @@ impl Session {
     /// first operation carries `initCode` and deploys the account. With
     /// `sponsored`, the whitelist paymaster pays instead of the account.
     async fn send_raw(&self, call_data: Bytes, as_root: bool, sponsored: bool) -> Result<Included> {
-        self.send_raw_at(call_data, as_root, sponsored, None).await
+        self.send_raw_at(call_data, SignAs::from_root(as_root), sponsored, None).await
     }
 
     async fn send_raw_at(
         &self,
         call_data: Bytes,
-        as_root: bool,
+        sign_as: SignAs,
         sponsored: bool,
         pinned: Option<U256>,
     ) -> Result<Included> {
@@ -375,10 +509,10 @@ impl Session {
             kernel::init_code(self.dep.kernel_factory, self.init_data()?, self.cfg.salt()?)
         };
 
-        let key = if as_root {
-            kernel::root_nonce_key()
-        } else {
-            kernel::permission_nonce_key(self.cfg.permission_id()?)
+        let key = match sign_as {
+            SignAs::Owner | SignAs::RecoveryAsRoot => kernel::root_nonce_key(),
+            SignAs::Agent => kernel::permission_nonce_key(self.cfg.permission_id()?),
+            SignAs::Recovery => kernel::validator_nonce_key(self.recovery_validator()?),
         };
         let next = ep.getNonce(self.account, key).call().await?;
         // EntryPoint nonces are `key (192 bits) ‖ sequence (64 bits)`.
@@ -412,23 +546,31 @@ impl Session {
             signature: Bytes::new(),
         };
 
-        // The only place the owner's key is opened: a root operation, run
-        // where that key lives.
-        let signer = if as_root {
-            open_signer(&self.cfg.owner, Role::Owner)?
-        } else {
-            open_signer(&self.cfg.agent, Role::Agent)?
+        // The only place the owner's (or the recovery) key is opened: an
+        // owner operation, run where that key lives.
+        let signer = match sign_as {
+            SignAs::Owner => open_signer(&self.cfg.owner, Role::Owner)?,
+            SignAs::Agent => open_signer(&self.cfg.agent, Role::Agent)?,
+            SignAs::Recovery | SignAs::RecoveryAsRoot => open_signer(
+                self.cfg.recovery.as_ref().context("the config has no `recovery` key")?,
+                Role::Recovery,
+            )?,
         };
-        let frame = |sig: &hw_signer::Signature| {
-            if as_root {
-                kernel::root_signature(sig)
-            } else {
-                kernel::permission_signature(sig)
-            }
+        let frame = |sig: &hw_signer::Signature| match sign_as {
+            SignAs::Agent => kernel::permission_signature(sig),
+            _ => kernel::root_signature(sig),
         };
         let mut user_op_hash = ep.getUserOpHash(op.clone()).call().await?;
         op.signature = frame(&signer.sign_digest(&user_op_hash.0)?);
-        eprintln!("path:           {}", if as_root { "root (owner key)" } else { "permission (agent key)" });
+        eprintln!(
+            "path:           {}",
+            match sign_as {
+                SignAs::Owner => "root (owner key)",
+                SignAs::Agent => "permission (agent key)",
+                SignAs::Recovery => "recovery validator (changeRootValidator only)",
+                SignAs::RecoveryAsRoot => "root (recovery key)",
+            }
+        );
         eprintln!("gas paid by:    {}", if sponsored { "paymaster" } else { "the account" });
 
         if let Some(bundler) = &self.bundler {

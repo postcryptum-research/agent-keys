@@ -80,6 +80,11 @@ sol! {
             bytes[] calldata hookData
         ) external payable;
         function grantAccess(bytes21 vId, bytes4 selector, bool allow) external payable;
+        function isAllowedSelector(bytes21 vId, bytes4 selector) external view returns (bool);
+        function changeRootValidator(bytes21 rootValidator, address hook, bytes calldata validatorData, bytes calldata hookData)
+            external
+            payable;
+        function rootValidator() external view returns (bytes21);
         function execute(bytes32 execMode, bytes calldata executionCalldata) external payable;
     }
 

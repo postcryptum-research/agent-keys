@@ -32,6 +32,9 @@ pub struct Deployments {
     /// The SafeNonceAssert AgentPolicy pairs every Safe transaction with.
     #[serde(default)]
     pub safe_nonce_assert: Option<Address>,
+    /// The P256Validator instance that holds a cold recovery key.
+    #[serde(default)]
+    pub p256_recovery_validator: Option<Address>,
 }
 
 /// A TPM key: `"0x81010010"`; `{"handle": "0x81010011", "pcrs": [0, 2, 4, 7]}`
@@ -69,6 +72,9 @@ pub enum KeySpec {
     /// and for the agent unless built with `--features insecure-software-keys`
     /// (tests only; docs/KEY_POLICY.md rule 5).
     Software(String),
+    /// An encrypted key file on removable media (`crate::keyfile`), for the
+    /// owner or the recovery key only; the passphrase is asked at use.
+    Keyfile(PathBuf),
 }
 
 /// Which role a key plays. The owner's key is never needed for the agent's
@@ -77,6 +83,8 @@ pub enum KeySpec {
 pub enum Role {
     Owner,
     Agent,
+    /// The cold recovery key (P256RecoveryValidator): may only take over root.
+    Recovery,
 }
 
 /// Public key coordinates in a config (`{"x": "0x…", "y": "0x…"}`), as
@@ -151,6 +159,10 @@ pub struct AgentConfig {
     /// its public half.
     #[serde(default)]
     pub agent_public_key: Option<PublicKeyJson>,
+    /// The cold recovery key (docs/RESILIENCE.md), usually
+    /// `{"keyfile": "/media/…/recovery.json"}` on a USB drive.
+    #[serde(default)]
+    pub recovery: Option<KeySpec>,
     pub policy: PolicyConfig,
 }
 
@@ -291,9 +303,20 @@ pub fn open_signer(spec: &KeySpec, role: Role) -> Result<Box<dyn HardwareSigner>
                 anyhow::bail!("key in TROPIC01 slot {slot} on {port}: needs `--features tropic01`")
             }
         }
+        KeySpec::Keyfile(path) => {
+            if role == Role::Agent {
+                anyhow::bail!(
+                    "refusing a key file for the agent: an encrypted file is allowed for the owner and \
+                     recovery keys only (docs/KEY_POLICY.md rule 5)"
+                );
+            }
+            eprintln!("opening the key file {} (decrypted in memory for this operation only)", path.display());
+            let passphrase = crate::keyfile::prompt(false)?;
+            Ok(Box::new(crate::keyfile::open(path, passphrase.as_bytes())?))
+        }
         KeySpec::Software(hex) => {
-            if role == Role::Owner {
-                anyhow::bail!("refusing a software owner key: the root of the account would be a plaintext file");
+            if role != Role::Agent {
+                anyhow::bail!("refusing a software {role:?} key: the root of the account would be a plaintext file");
             }
             #[cfg(feature = "insecure-software-keys")]
             {

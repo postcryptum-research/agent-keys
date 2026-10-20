@@ -72,6 +72,7 @@ contract P256Validator is IValidator {
     function isValidSignatureWithSender(address, bytes32 hash, bytes calldata signature)
         external
         view
+        virtual
         override
         returns (bytes4)
     {

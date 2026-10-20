@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 
 import {P256Validator} from "../src/P256Validator.sol";
+import {P256RecoveryValidator} from "../src/P256RecoveryValidator.sol";
 import {P256Signer} from "../src/P256Signer.sol";
 import {AgentPolicy} from "../src/AgentPolicy.sol";
 import {SafeNonceAssert} from "../src/SafeNonceAssert.sol";
@@ -23,6 +24,7 @@ import {
     SIG_VALIDATION_FAILED_UINT,
     VALIDATION_MODE_DEFAULT,
     VALIDATION_TYPE_PERMISSION,
+    VALIDATION_TYPE_VALIDATOR,
     ValidationMode,
     ValidationType
 } from "kernel/src/types/Constants.sol";
@@ -791,5 +793,132 @@ contract AgentPermissionTest is Test {
         fresh.onInstall(abi.encode(bytes32(x), bytes32(y ^ 1)));
         // the real key installs
         signer.onInstall(abi.encodePacked(id, bytes32(x), bytes32(y)));
+    }
+
+    // --- cold recovery owner (docs/RESILIENCE.md, docs/KEY_POLICY.md rule 5) ---
+
+    uint256 internal constant RECOVERY = 0x0000000000000000000000000000000000000000000000000000000000000DD4;
+    uint256 internal constant NEW_OWNER = 0x0000000000000000000000000000000000000000000000000000000000000EE5;
+
+    /// The owner installs a second validator holding the recovery key and
+    /// grants it one selector: `changeRootValidator`.
+    function _withRecovery() internal returns (P256Validator recovery, ValidationId rVId) {
+        recovery = new P256RecoveryValidator();
+        rVId = ValidatorLib.validatorToIdentifier(IValidator(address(recovery)));
+        (uint256 x, uint256 y) = vm.publicKeyP256(RECOVERY);
+
+        ValidationId[] memory vIds = new ValidationId[](1);
+        vIds[0] = rVId;
+        ValidationManager.ValidationConfig[] memory cfgs = new ValidationManager.ValidationConfig[](1);
+        cfgs[0] = ValidationManager.ValidationConfig({nonce: Kernel(payable(acct)).currentNonce(), hook: IHook(address(1))});
+        bytes[] memory vData = new bytes[](1);
+        vData[0] = abi.encode(bytes32(x), bytes32(y));
+        bytes[] memory hData = new bytes[](1);
+
+        Execution[] memory batch = new Execution[](2);
+        batch[0] = Execution(acct, 0, abi.encodeCall(Kernel.installValidations, (vIds, cfgs, vData, hData)));
+        batch[1] = Execution(acct, 0, abi.encodeCall(Kernel.grantAccess, (rVId, Kernel.changeRootValidator.selector, true)));
+        _send(
+            _rootOp(
+                abi.encodeWithSelector(
+                    Kernel.execute.selector, ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))), ExecLib.encodeBatch(batch)
+                )
+            )
+        );
+    }
+
+    /// An operation validated by the recovery validator (not root).
+    function _recoveryOp(P256Validator recovery, bytes memory callData) internal view returns (PackedUserOperation memory op) {
+        uint192 key = ValidatorLib.encodeAsNonceKey(
+            ValidationMode.unwrap(VALIDATION_MODE_DEFAULT),
+            ValidationType.unwrap(VALIDATION_TYPE_VALIDATOR),
+            bytes20(address(recovery)),
+            0
+        );
+        op = _op(entryPoint.getNonce(acct, key), callData);
+        op.signature = _sign(RECOVERY, entryPoint.getUserOpHash(op));
+    }
+
+    /// A root operation signed by an arbitrary key (whoever is root now).
+    function _rootOpWith(uint256 priv, bytes memory callData) internal view returns (PackedUserOperation memory op) {
+        op = _op(entryPoint.getNonce(acct, 0), callData);
+        op.signature = _sign(priv, entryPoint.getUserOpHash(op));
+    }
+
+    function test_recovery_canOnlyTakeOverRoot() public {
+        (P256Validator recovery,) = _withRecovery();
+        // anything but changeRootValidator is refused for the recovery key
+        bytes memory inc = _singleCall(address(counter), 0, abi.encodeWithSelector(Counter.increment.selector));
+        _expectRefused(_recoveryOp(recovery, inc));
+        assertEq(counter.count(), 0);
+        // and the owner keeps working
+        _send(_rootOp(inc));
+        assertEq(counter.count(), 1);
+    }
+
+    function test_recovery_neverSignsMessages() public {
+        (P256Validator recovery,) = _withRecovery();
+        bytes32 h = keccak256("permit");
+        // a perfectly valid signature by the recovery key: still refused,
+        // because Kernel asks installed validators about ERC-1271 without
+        // looking at the selectors granted to them (called as the account,
+        // the way Kernel calls it)
+        vm.prank(acct);
+        assertEq(recovery.isValidSignatureWithSender(address(0), h, _sign(RECOVERY, h)), bytes4(0xffffffff));
+    }
+
+    function test_recovery_replacesALostOwner() public {
+        (P256Validator recovery, ValidationId rVId) = _withRecovery();
+        ValidationId ownerVId = ValidatorLib.validatorToIdentifier(IValidator(address(rootValidator)));
+
+        // the owner key is lost: the recovery key makes itself root ...
+        _send(_recoveryOp(recovery, abi.encodeCall(Kernel.changeRootValidator, (rVId, IHook(address(0)), "", ""))));
+        assertEq(ValidationId.unwrap(Kernel(payable(acct)).rootValidator()), ValidationId.unwrap(rVId));
+
+        // ... the old owner key no longer controls the account ...
+        bytes memory inc = _singleCall(address(counter), 0, abi.encodeWithSelector(Counter.increment.selector));
+        _expectRefused(_rootOpWith(OWNER, inc));
+
+        // ... and, as root, retires the lost key and installs the new owner
+        // key in the same validator, in one batch
+        (uint256 x, uint256 y) = vm.publicKeyP256(NEW_OWNER);
+        // Kernel refuses to reinstall a validator under the nonce it was
+        // installed with before: use the current nonce, or one more
+        uint32 current = Kernel(payable(acct)).currentNonce();
+        uint32 nonce = Kernel(payable(acct)).validationConfig(ownerVId).nonce == current ? current + 1 : current;
+        ValidationId[] memory vIds = new ValidationId[](1);
+        vIds[0] = ownerVId;
+        ValidationManager.ValidationConfig[] memory cfgs = new ValidationManager.ValidationConfig[](1);
+        cfgs[0] = ValidationManager.ValidationConfig({nonce: nonce, hook: IHook(address(1))});
+        bytes[] memory vData = new bytes[](1);
+        vData[0] = abi.encode(bytes32(x), bytes32(y));
+        bytes[] memory hData = new bytes[](1);
+        Execution[] memory batch = new Execution[](3);
+        batch[0] = Execution(acct, 0, abi.encodeCall(Kernel.uninstallValidation, (ownerVId, "", "")));
+        batch[1] = Execution(acct, 0, abi.encodeCall(Kernel.installValidations, (vIds, cfgs, vData, hData)));
+        batch[2] = Execution(acct, 0, abi.encodeCall(Kernel.changeRootValidator, (ownerVId, IHook(address(1)), "", "")));
+        _send(
+            _rootOpWith(
+                RECOVERY,
+                abi.encodeWithSelector(
+                    Kernel.execute.selector, ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))), ExecLib.encodeBatch(batch)
+                )
+            )
+        );
+        _send(_rootOpWith(NEW_OWNER, inc));
+        assertEq(counter.count(), 1);
+
+        // the lost key is gone for messages too: the validator holds the new key
+        bytes32 h = keccak256("anything");
+        vm.prank(acct);
+        assertEq(rootValidator.isValidSignatureWithSender(address(0), h, _sign(OWNER, h)), bytes4(0xffffffff));
+        vm.prank(acct);
+        assertEq(rootValidator.isValidSignatureWithSender(address(0), h, _sign(NEW_OWNER, h)), bytes4(0x1626ba7e));
+
+        // the recovery key is back to being recovery only
+        _expectRefused(_recoveryOp(recovery, inc));
+        // and the agent's mandate survived the whole exchange
+        _send(_agentOp(address(counter), 0, abi.encodeWithSelector(Counter.increment.selector)));
+        assertEq(counter.count(), 2);
     }
 }
