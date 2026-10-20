@@ -62,4 +62,12 @@ sol! {
         function increment() external;
         function count() external view returns (uint256);
     }
+
+    #[sol(rpc)]
+    interface IWhitelistPaymaster {
+        function setSponsored(address account, bool allowed) external;
+        function sponsored(address account) external view returns (bool);
+        function deposit() external payable;
+        function getDeposit() external view returns (uint256);
+    }
 }

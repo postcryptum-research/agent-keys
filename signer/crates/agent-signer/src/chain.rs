@@ -13,7 +13,7 @@ use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
 use anyhow::{bail, Context, Result};
 
-use crate::abi::{IDemoCounter, IEntryPoint, IKernelFactory};
+use crate::abi::{IDemoCounter, IEntryPoint, IKernelFactory, IWhitelistPaymaster};
 use crate::agent::{open_signer, parse32, AgentConfig, Deployments};
 use crate::kernel;
 
@@ -93,8 +93,41 @@ impl Session {
         println!("ep deposit:     {} wei", ep.balanceOf(self.account).call().await?);
         println!("gas wallet:     {}", self.gas_wallet);
         println!("gas balance:    {} wei", self.provider.get_balance(self.gas_wallet).await?);
+        match self.dep.whitelist_paymaster {
+            Some(pm) => {
+                let paymaster = IWhitelistPaymaster::new(pm, self.provider.clone());
+                println!(
+                    "paymaster:      {pm} (sponsored = {}, deposit = {} wei, owner = {})",
+                    paymaster.sponsored(self.account).call().await?,
+                    paymaster.getDeposit().call().await?,
+                    self.dep.paymaster_owner.map(|o| o.to_string()).unwrap_or_else(|| "?".into())
+                );
+            }
+            None => println!("paymaster:      (not in deployments)"),
+        }
         println!("demo counter:   {} (count = {})", self.dep.demo_counter, self.counter().await?);
         Ok(())
+    }
+
+    fn paymaster(&self) -> Result<Address> {
+        self.dep
+            .whitelist_paymaster
+            .context("no whitelistPaymaster in deployments; run script/Deploy.s.sol")
+    }
+
+    /// Top up the paymaster's EntryPoint deposit from the gas wallet.
+    pub async fn paymaster_deposit(&self, amount: U256) -> Result<B256> {
+        let paymaster = IWhitelistPaymaster::new(self.paymaster()?, self.provider.clone());
+        let receipt = paymaster.deposit().value(amount).send().await?.get_receipt().await?;
+        Ok(receipt.transaction_hash)
+    }
+
+    /// List (or delist) this account for sponsorship. Only the paymaster's
+    /// owner — the gas wallet that deployed it — may do this.
+    pub async fn sponsor(&self, allowed: bool) -> Result<B256> {
+        let paymaster = IWhitelistPaymaster::new(self.paymaster()?, self.provider.clone());
+        let receipt = paymaster.setSponsored(self.account, allowed).send().await?.get_receipt().await?;
+        Ok(receipt.transaction_hash)
     }
 
     pub async fn counter(&self) -> Result<U256> {
@@ -137,13 +170,31 @@ impl Session {
     }
 
     /// Build, sign in hardware, and submit one operation through `handleOps`.
-    /// The first operation carries `initCode` and deploys the account.
-    pub async fn send_op(&self, target: Address, value: U256, data: Bytes, as_root: bool) -> Result<Included> {
+    /// The first operation carries `initCode` and deploys the account. With
+    /// `sponsored`, the whitelist paymaster pays instead of the account.
+    pub async fn send_op(
+        &self,
+        target: Address,
+        value: U256,
+        data: Bytes,
+        as_root: bool,
+        sponsored: bool,
+    ) -> Result<Included> {
         let ep = IEntryPoint::new(self.dep.entry_point, self.provider.clone());
         let deployed = self.is_deployed().await?;
-        if !deployed && self.provider.get_balance(self.account).await?.is_zero() {
+        if !deployed && !sponsored && self.provider.get_balance(self.account).await?.is_zero() {
             bail!("account {} holds no ETH to pay for its deployment; run `account fund` first", self.account);
         }
+        // v0.7 layout: paymaster(20) ‖ verificationGasLimit(16) ‖ postOpGasLimit(16) ‖ data
+        let paymaster_and_data = if sponsored {
+            let mut b = Vec::with_capacity(52);
+            b.extend_from_slice(self.paymaster()?.as_slice());
+            b.extend_from_slice(&100_000u128.to_be_bytes());
+            b.extend_from_slice(&0u128.to_be_bytes());
+            Bytes::from(b)
+        } else {
+            Bytes::new()
+        };
         let init_code = if deployed {
             Bytes::new()
         } else {
@@ -167,7 +218,7 @@ impl Session {
             accountGasLimits: kernel::pack_gas(verification_gas, 200_000),
             preVerificationGas: U256::from(100_000u64),
             gasFees: kernel::pack_gas(fees.max_priority_fee_per_gas, fees.max_fee_per_gas),
-            paymasterAndData: Bytes::new(),
+            paymasterAndData: paymaster_and_data,
             signature: Bytes::new(),
         };
 
@@ -177,6 +228,7 @@ impl Session {
         op.signature = if as_root { kernel::root_signature(&sig) } else { kernel::permission_signature(&sig) };
         println!("userOpHash:     {user_op_hash}");
         println!("path:           {}", if as_root { "root (owner key)" } else { "permission (agent key)" });
+        println!("gas paid by:    {}", if sponsored { "paymaster" } else { "the account" });
 
         let pending = match ep.handleOps(vec![op], self.gas_wallet).send().await {
             Ok(p) => p,

@@ -22,6 +22,11 @@ tx [`0x785332…e669bb`](https://sepolia.basescan.org/tx/0x785332105fd8085d50e54
 - Phase 2 — `agent-signer` (Rust) derives the account, builds the
   UserOperation, signs its hash in the TPM and submits it through
   `EntryPoint.handleOps` itself.
+- Phase 3 — `WhitelistPaymaster` sponsors listed accounts, so an agent
+  account need not hold ETH at all (`demo --sponsored`,
+  tx [`0xae73b5…5f2106`](https://sepolia.basescan.org/tx/0xae73b53d17b74ad8c7b6d65f8cc98abd40c513a808b09764828dff8a3a5f2106));
+  a Secure Enclave backend awaits its first run on a Mac
+  ([`docs/SECURE_ENCLAVE.md`](docs/SECURE_ENCLAVE.md)).
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design and what
 remains (paymaster, rotation, PCR-sealed keys, Secure Enclave backend).

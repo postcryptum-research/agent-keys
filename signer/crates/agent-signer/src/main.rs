@@ -33,6 +33,8 @@ enum Backend {
     Software,
     /// TPM 2.0 via tss-esapi (build with `--features tpm`).
     Tpm,
+    /// Apple Secure Enclave, an existing key by label (macOS, `--features secure-enclave`).
+    Enclave,
 }
 
 #[derive(Args)]
@@ -57,6 +59,9 @@ enum Cmd {
         /// TPM storage parent for the new key (persistent handle, hex).
         #[arg(long, default_value = "0x81000001", value_parser = parse_hex_u32)]
         parent: u32,
+        /// Secure Enclave: keychain label of the key to sign with.
+        #[arg(long)]
+        label: Option<String>,
     },
     /// Verify a JSON test vector off-chain with the `p256` crate.
     Verify {
@@ -78,10 +83,36 @@ enum Cmd {
         #[command(subcommand)]
         cmd: OpCmd,
     },
+    /// The whitelist paymaster that can pay the account's gas.
+    Paymaster {
+        #[command(subcommand)]
+        cmd: PaymasterCmd,
+    },
     /// Demo: the agent increments the deployed counter.
     Demo {
         #[command(flatten)]
         agent: AgentArgs,
+        /// Let the paymaster pay instead of the account.
+        #[arg(long)]
+        sponsored: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum PaymasterCmd {
+    /// Top up the paymaster's EntryPoint deposit from the gas wallet.
+    Deposit {
+        #[command(flatten)]
+        agent: AgentArgs,
+        #[arg(long)]
+        wei: String,
+    },
+    /// List this account for sponsorship (owner only); --revoke delists it.
+    Sponsor {
+        #[command(flatten)]
+        agent: AgentArgs,
+        #[arg(long)]
+        revoke: bool,
     },
 }
 
@@ -156,6 +187,9 @@ enum OpCmd {
         /// Sign with the owner key on the root path instead of the agent permission.
         #[arg(long)]
         root: bool,
+        /// Let the paymaster pay instead of the account.
+        #[arg(long)]
+        sponsored: bool,
     },
 }
 
@@ -183,7 +217,7 @@ fn hex32(b: &[u8; 32]) -> String {
     format!("0x{}", hex::encode(b))
 }
 
-fn open_backend(backend: Backend, parent: u32) -> Result<Box<dyn HardwareSigner>> {
+fn open_backend(backend: Backend, parent: u32, label: Option<String>) -> Result<Box<dyn HardwareSigner>> {
     match backend {
         Backend::Software => Ok(Box::new(SoftwareSigner::random())),
         Backend::Tpm => {
@@ -195,6 +229,17 @@ fn open_backend(backend: Backend, parent: u32) -> Result<Box<dyn HardwareSigner>
             {
                 let _ = parent;
                 bail!("built without the `tpm` feature: cargo build --features tpm")
+            }
+        }
+        Backend::Enclave => {
+            let label = label.context("--backend enclave needs --label <keychain label>")?;
+            #[cfg(all(feature = "secure-enclave", target_os = "macos"))]
+            {
+                Ok(Box::new(hw_signer::secure_enclave::SecureEnclaveSigner::open(&label)?))
+            }
+            #[cfg(not(all(feature = "secure-enclave", target_os = "macos")))]
+            {
+                bail!("Secure Enclave key {label}: needs macOS and `--features secure-enclave`")
             }
         }
     }
@@ -276,8 +321,8 @@ async fn session(args: &AgentArgs) -> Result<Session> {
 #[tokio::main]
 async fn main() -> Result<()> {
     match Cli::parse().cmd {
-        Cmd::Vector { message, backend, parent } => {
-            let signer = open_backend(backend, parent)?;
+        Cmd::Vector { message, backend, parent, label } => {
+            let signer = open_backend(backend, parent, label)?;
             let digest: [u8; 32] = Sha256::digest(message.as_bytes()).into();
             let sig = signer.sign_digest(&digest)?;
             let pk = signer.public_key()?;
@@ -327,19 +372,32 @@ async fn main() -> Result<()> {
             }
         },
         Cmd::Op { cmd } => match cmd {
-            OpCmd::Send { agent, target, wei, data, root } => {
+            OpCmd::Send { agent, target, wei, data, root, sponsored } => {
                 let s = session(&agent).await?;
                 let value: U256 = wei.parse().context("--wei")?;
                 let data = Bytes::from(hex::decode(data.trim_start_matches("0x")).context("--data")?);
-                let inc = s.send_op(target, value, data, root).await?;
+                let inc = s.send_op(target, value, data, root, sponsored).await?;
                 println!("included: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
             }
         },
-        Cmd::Demo { agent } => {
+        Cmd::Paymaster { cmd } => match cmd {
+            PaymasterCmd::Deposit { agent, wei } => {
+                let s = session(&agent).await?;
+                let amount: U256 = wei.parse().context("--wei")?;
+                let tx = s.paymaster_deposit(amount).await?;
+                println!("deposited {amount} wei for the paymaster: tx {tx}");
+            }
+            PaymasterCmd::Sponsor { agent, revoke } => {
+                let s = session(&agent).await?;
+                let tx = s.sponsor(!revoke).await?;
+                println!("{} {}: tx {tx}", if revoke { "delisted" } else { "sponsored" }, s.account);
+            }
+        },
+        Cmd::Demo { agent, sponsored } => {
             let s = session(&agent).await?;
             let before = s.counter().await?;
             let data = Bytes::from(abi::IDemoCounter::incrementCall::SELECTOR.to_vec());
-            let inc = s.send_op(s.dep.demo_counter, U256::ZERO, data, false).await?;
+            let inc = s.send_op(s.dep.demo_counter, U256::ZERO, data, false, sponsored).await?;
             let after = s.counter_at(inc.block).await?;
             println!("included: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
             println!("counter:  {before} -> {after}");

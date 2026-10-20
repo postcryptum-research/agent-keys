@@ -22,6 +22,11 @@ pub struct Deployments {
     pub p256_signer: Address,
     pub agent_policy: Address,
     pub demo_counter: Address,
+    /// Present once `Deploy.s.sol` has deployed the paymaster for this chain.
+    #[serde(default)]
+    pub whitelist_paymaster: Option<Address>,
+    #[serde(default)]
+    pub paymaster_owner: Option<Address>,
 }
 
 /// Where a key lives.

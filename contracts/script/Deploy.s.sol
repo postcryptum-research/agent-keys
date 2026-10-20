@@ -6,7 +6,9 @@ import {Script, console} from "forge-std/Script.sol";
 import {P256Validator} from "../src/P256Validator.sol";
 import {P256Signer} from "../src/P256Signer.sol";
 import {AgentPolicy} from "../src/AgentPolicy.sol";
+import {WhitelistPaymaster} from "../src/WhitelistPaymaster.sol";
 import {DemoCounter} from "../src/demo/DemoCounter.sol";
+import {IEntryPoint} from "account-abstraction/interfaces/IEntryPoint.sol";
 
 /// Deploys the three modules and the demo target deterministically through
 /// the canonical CREATE2 deployer (salt 0), so addresses match on every
@@ -30,11 +32,27 @@ contract Deploy is Script {
         require(ENTRY_POINT.code.length > 0, "EntryPoint v0.7 missing on this chain");
         require(KERNEL_FACTORY.code.length > 0, "Kernel v3.3 factory missing on this chain");
 
+        // Addresses already recorded for this chain win over recomputed
+        // CREATE2 addresses: any change to compiler settings changes the
+        // creation code, and a redeploy would silently fork the deployment
+        // that live accounts reference.
+        string memory path = string.concat("deployments/", vm.toString(block.chainid), ".json");
+        string memory recorded = vm.exists(path) ? vm.readFile(path) : "";
+
         vm.startBroadcast();
-        address validator = _deploy("P256Validator", type(P256Validator).creationCode);
-        address signer = _deploy("P256Signer", type(P256Signer).creationCode);
-        address policy = _deploy("AgentPolicy", type(AgentPolicy).creationCode);
-        address counter = _deploy("DemoCounter", type(DemoCounter).creationCode);
+        address validator = _reuseOrDeploy(recorded, "p256Validator", "P256Validator", type(P256Validator).creationCode);
+        address signer = _reuseOrDeploy(recorded, "p256Signer", "P256Signer", type(P256Signer).creationCode);
+        address policy = _reuseOrDeploy(recorded, "agentPolicy", "AgentPolicy", type(AgentPolicy).creationCode);
+        address counter = _reuseOrDeploy(recorded, "demoCounter", "DemoCounter", type(DemoCounter).creationCode);
+        // The paymaster is owned by whoever runs this script (the sponsor);
+        // its address therefore depends on the sponsor, unlike the modules.
+        address sponsor = msg.sender;
+        address paymaster = _reuseOrDeploy(
+            recorded,
+            "whitelistPaymaster",
+            "WhitelistPaymaster",
+            abi.encodePacked(type(WhitelistPaymaster).creationCode, abi.encode(IEntryPoint(ENTRY_POINT), sponsor))
+        );
         vm.stopBroadcast();
 
         string memory json = "deployment";
@@ -45,10 +63,26 @@ contract Deploy is Script {
         vm.serializeAddress(json, "p256Validator", validator);
         vm.serializeAddress(json, "p256Signer", signer);
         vm.serializeAddress(json, "agentPolicy", policy);
+        vm.serializeAddress(json, "whitelistPaymaster", paymaster);
+        vm.serializeAddress(json, "paymasterOwner", sponsor);
         string memory out = vm.serializeAddress(json, "demoCounter", counter);
-        string memory path = string.concat("deployments/", vm.toString(block.chainid), ".json");
         vm.writeJson(out, path);
         console.log("wrote", path);
+    }
+
+    function _reuseOrDeploy(string memory recorded, string memory key, string memory name, bytes memory creationCode)
+        internal
+        returns (address addr)
+    {
+        string memory jsonKey = string.concat(".", key);
+        if (bytes(recorded).length > 0 && vm.keyExistsJson(recorded, jsonKey)) {
+            addr = vm.parseJsonAddress(recorded, jsonKey);
+            if (addr.code.length > 0) {
+                console.log(name, "recorded at", addr);
+                return addr;
+            }
+        }
+        return _deploy(name, creationCode);
     }
 
     function _deploy(string memory name, bytes memory creationCode) internal returns (address addr) {

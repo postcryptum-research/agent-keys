@@ -202,10 +202,29 @@ Lessons that cost real debugging time:
   replicas lag behind the one that returned the receipt, so post-inclusion
   reads are pinned to the receipt's block; simulate `createAccount` before
   funding a counterfactual address.
-- **Phase 3 — operations.** Whitelist paymaster (gasless agent), optional
-  bundler RPC as a drop-in for self-bundling, rotation and revocation of the
-  agent permission, PCR-sealed TPM keys so the chip only signs from a trusted
-  boot state, Secure Enclave and Windows CNG backends.
+- **Phase 3 — operations.**
+  - *3.1 Secure Enclave backend — written (2026-10-20), awaiting a run on
+    Apple hardware.* `docs/SECURE_ENCLAVE.md` is the build-and-test guide
+    for whoever has a Mac.
+  - *3.2 Paymaster — done (2026-10-20).* `contracts/src/WhitelistPaymaster.sol`
+    on eth-infinitism's `BasePaymaster` v0.7.0: the sponsor keeps a deposit
+    in the EntryPoint and lists the accounts it pays for; sponsorship and
+    authorization stay separate checks. Deployed on Base Sepolia at
+    `0xe314e95bef9b891c48429aD127D79e601240BB52`; a sponsored agent
+    operation (tx `0xae73b53d17b74ad8c7b6d65f8cc98abd40c513a808b09764828dff8a3a5f2106`)
+    left the account's balance untouched. `agent-signer paymaster
+    deposit|sponsor` and `--sponsored` on `op send` / `demo`.
+  - *3.3 next:* rotation and revocation of the agent permission by the owner
+    key; PCR-sealed TPM keys so the chip only signs from a trusted boot state.
+  - *3.4 later:* a bundler RPC as a drop-in for self-bundling; Windows CNG
+    backend.
+
+  Lesson from 3.2: solc's metadata hash embeds compiler settings, so adding
+  remappings changed every contract's creation code and the deploy script
+  minted a second, unused set of modules (`0xA3DF…`, `0x492E…`, `0xFA85…`,
+  `0x617D…`). Bytecode is now metadata-free (`bytecode_hash = "none"`,
+  `cbor_metadata = false`) and the script reuses addresses recorded in
+  `deployments/<chainid>.json` whenever they hold code.
 - **Phase 4 — gas benchmark** on Base Sepolia, mirroring the reference paper's
   measurements with a TPM in place of the ATECC608A.
 

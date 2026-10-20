@@ -6,6 +6,11 @@ test = "test"
 optimizer = true
 optimizer_runs = 200
 evm_version = "prague"
+# No metadata in bytecode: solc's metadata hash embeds compiler settings
+# (remappings included), so with it any config change would move every
+# CREATE2 address. Without it, addresses depend on source and solc only.
+bytecode_hash = "none"
+cbor_metadata = false
 # Dependency warnings (e.g. Solady's legacy `memory-safe-assembly` natspec on
 # newer solc) are not ours to fix.
 ignored_warnings_from = ["lib"]
@@ -21,6 +26,10 @@ remappings = [
     "solady/=lib/solady/src/",
     "kernel/=lib/kernel/",
     "kernel-plugins/=lib/kernel-7579-plugins/src/",
+    # eth-infinitism EntryPoint v0.7 sources (BasePaymaster); it expects
+    # OpenZeppelin v5 under the npm-style path.
+    "account-abstraction/=lib/account-abstraction/contracts/",
+    "lib/account-abstraction/:@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
     # Kernel v3.3 pins its own (older) solady and its tests import via `src/`.
     "lib/kernel/:solady/=lib/kernel/lib/solady/src/",
     "lib/kernel/:src/=lib/kernel/src/",
