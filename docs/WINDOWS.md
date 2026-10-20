@@ -3,7 +3,8 @@
 > **Кратко по-русски.** Нужен ПК с Windows 10/11 и включённым TPM 2.0 (у
 > Windows 11 он обязателен). Всё ПО бесплатное: Rust (`rustup`), Git,
 > Visual Studio Build Tools (только компилятор/линкер, без самой Visual
-> Studio), CMake и NASM через `winget`. Собираем `agent-signer` с фичей
+> Studio). CMake и NASM **не нужны**: C-библиотека AWS-LC собирается
+> компилятором MSVC, а ассемблерные объекты берутся готовыми. Собираем `agent-signer` с фичей
 > `windows-tpm`, запускаем тест, создаём ключ в TPM командой `key create
 > --cng`, присылаем вывод из раздела «What to report back». Приватный ключ
 > из TPM не извлекается.
@@ -41,17 +42,11 @@ Open **PowerShell** (not as administrator unless an installer asks).
 winget install --id Git.Git -e
 ```
 
-### CMake and NASM (one Rust dependency compiles a C library with them)
-
-```powershell
-winget install --id Kitware.CMake -e
-winget install --id NASM.NASM -e
-```
-
-After installing, close and reopen PowerShell so `cmake --version` and
-`nasm -v` work. If `nasm` is still not found, add
-`C:\Program Files\NASM` to your PATH (Settings → System → About →
-Advanced system settings → Environment Variables).
+No CMake and no NASM: one Rust dependency (`aws-lc-sys`, the TLS crypto
+under the HTTP client) compiles a C library, but on Windows x86_64 it does
+so with the MSVC compiler installed below, and the project enables its
+prebuilt assembly objects, so NASM is not needed. If you installed them
+already, they do no harm.
 
 ### Rust and the C++ build tools
 
@@ -70,8 +65,6 @@ Verify:
 rustc --version     # 1.85 or newer
 cargo --version
 git --version
-cmake --version
-nasm -v
 ```
 
 ## 3. Get the code
@@ -94,8 +87,7 @@ cargo test
 Expected at the end: `test result: ok. 1 passed`. The first build compiles
 a few hundred crates (5–15 minutes).
 
-If the build stops in `aws-lc-sys`, CMake or NASM is missing from PATH —
-see step 2.
+If the build stops in `aws-lc-sys`, see the troubleshooting table.
 
 ## 5. Build with the Windows TPM backend
 
@@ -157,7 +149,9 @@ the flow is the one in the README: `account status` → `account fund` →
 | Symptom | Likely cause | What to do |
 |---|---|---|
 | `error: linker 'link.exe' not found` | C++ build tools missing | rerun `rustup-init.exe` and accept the build-tools install, or install "Build Tools for Visual Studio" with the C++ workload |
-| `aws-lc-sys` build error mentioning cmake / nasm | tools missing from PATH | step 2; reopen PowerShell |
+| `aws-lc-sys` build error: `NASM command not found! Build cannot continue` | an old checkout without the prebuilt-objects setting | `git pull`; or for this shell `$env:AWS_LC_SYS_PREBUILT_NASM = "1"` and rebuild |
+| `aws-lc-sys` build error mentioning cmake | the C build fell back to CMake | `winget install --id Kitware.CMake -e`, reopen PowerShell, send the error |
+| `nasm` "not recognized" right after `winget install NASM.NASM` | the installer usually goes per-user (`%LOCALAPPDATA%\bin\NASM`) without admin rights and does not touch PATH | not needed for this project; if you want it: `$env:PATH += ";$env:LOCALAPPDATA\bin\NASM"` |
 | `error[E0433]` / `no function named ...` in `windows_tpm.rs` | `windows` crate API drift | send the full error |
 | `NTE_NOT_SUPPORTED` (`0x80090029`) or provider not found | TPM disabled or no Platform Crypto Provider | enable the TPM in firmware; check `tpm.msc` |
 | `NTE_EXISTS` (`0x8009000F`) on `key create` | a key with that name already exists | `key evict --cng <name>` or pick another name |

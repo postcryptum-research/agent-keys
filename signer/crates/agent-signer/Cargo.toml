@@ -32,3 +32,9 @@ sha2 = "0.10"
 alloy = { version = "2", features = ["providers", "signer-local", "sol-types", "contract", "rpc-types", "network", "reqwest"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 dotenvy = "0.15"
+
+# alloy's HTTP stack (reqwest → rustls → aws-lc-rs) builds AWS-LC from C and,
+# on Windows x86_64, assembles it with NASM. The crate ships those objects
+# prebuilt; using them makes NASM unnecessary on Windows.
+[target.'cfg(all(windows, target_arch = "x86_64"))'.dependencies]
+aws-lc-sys = { version = "0.46", features = ["prebuilt-nasm"] }
