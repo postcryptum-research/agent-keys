@@ -1074,6 +1074,11 @@ contract AgentPermissionTest is Test {
     function _withX402() internal {
         usdc = new MockUSDC();
         usdc.mint(acct, 100e6);
+        _installX402();
+    }
+
+    /// Install (or reinstall) the x402 permission over the existing mock USDC.
+    function _installX402() internal {
         address[] memory targets = new address[](3);
         bytes4[] memory selectors = new bytes4[](3);
         (targets[0], selectors[0]) = (address(policy), AgentPolicy.x402Authorize.selector);
@@ -1089,7 +1094,10 @@ contract AgentPermissionTest is Test {
         entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(agentX, agentY));
         ValidationId vId = ValidatorLib.permissionToIdentifier(PAY_ID);
         Execution[] memory batch = new Execution[](2);
-        batch[0] = Execution(acct, 0, _installCall(vId, Kernel(payable(acct)).currentNonce(), abi.encode(entries)));
+        // Kernel's reinstall rule: an id whose stored nonce equals currentNonce needs currentNonce + 1
+        uint32 current = Kernel(payable(acct)).currentNonce();
+        uint32 nonce = Kernel(payable(acct)).validationConfig(vId).nonce == current ? current + 1 : current;
+        batch[0] = Execution(acct, 0, _installCall(vId, nonce, abi.encode(entries)));
         batch[1] = Execution(acct, 0, abi.encodeCall(Kernel.grantAccess, (vId, Kernel.execute.selector, true)));
         _send(
             _rootOp(
@@ -1214,6 +1222,42 @@ contract AgentPermissionTest is Test {
         // the owner revokes the permission: every pending authorization dies
         _send(_rootOp(abi.encodeCall(Kernel.uninstallValidation, (ValidatorLib.permissionToIdentifier(PAY_ID), abi.encode(new bytes[](2)), ""))));
         assertFalse(_isValid(digest));
+    }
+
+    function test_x402_revokeKillsSignedAuthorizationsAndReinstallStartsClean() public {
+        _withX402();
+        uint256 before = block.timestamp + 1 hours;
+        bytes32 id = bytes32(PermissionId.unwrap(PAY_ID));
+        bytes32 digest = usdc.digestOf(acct, PAYEE, 500_000, 0, before, bytes32(uint256(11)));
+        _send(_agentOpWith(AGENT, PAY_ID, address(policy), 0, _authorizeCall(500_000, before, bytes32(uint256(11)))));
+        // a fully signed authorization, as the facilitator (or anyone who saw it) holds it
+        bytes memory sig = _agent1271(digest);
+        assertTrue(_isValid(digest));
+
+        // the owner revokes the permission
+        _send(_rootOp(abi.encodeCall(Kernel.uninstallValidation, (ValidatorLib.permissionToIdentifier(PAY_ID), abi.encode(new bytes[](2)), ""))));
+        // settlement at the token itself now reverts: it asks the account, the policy no longer vouches
+        vm.prank(makeAddr("facilitator"));
+        vm.expectRevert();
+        usdc.transferWithAuthorization(acct, PAYEE, 500_000, 0, before, bytes32(uint256(11)), sig);
+        assertEq(usdc.balanceOf(PAYEE), 0);
+
+        // the owner reinstalls the same permission: a new epoch, nothing carried over
+        _installX402();
+        assertEq(policy.tokenLimit(acct, id, address(usdc)).spent, 0);
+        assertEq(policy.x402Pending(acct, id, digest).value, 0);
+        assertFalse(_isValid(digest));
+        vm.prank(makeAddr("facilitator"));
+        vm.expectRevert();
+        usdc.transferWithAuthorization(acct, PAYEE, 500_000, 0, before, bytes32(uint256(11)), sig);
+        assertEq(usdc.balanceOf(PAYEE), 0);
+
+        // and the reinstalled permission works on its own terms
+        bytes32 fresh = usdc.digestOf(acct, PAYEE, 400_000, 0, before, bytes32(uint256(12)));
+        _send(_agentOpWith(AGENT, PAY_ID, address(policy), 0, _authorizeCall(400_000, before, bytes32(uint256(12)))));
+        vm.prank(makeAddr("facilitator"));
+        usdc.transferWithAuthorization(acct, PAYEE, 400_000, 0, before, bytes32(uint256(12)), _agent1271(fresh));
+        assertEq(usdc.balanceOf(PAYEE), 400_000);
     }
 
     function test_x402_reclaimReturnsBudgetOfExpiredUnused() public {

@@ -212,6 +212,8 @@ What it cannot do: sign messages for the account (no permits, no SIWE logins
 mandate's token budget), change the mandate, or act beyond it.
 What you do: revoke the agent with the owner key
 (`agent-signer permission revoke`) from another machine, then reinstall.
+The revoke takes effect in its block, including for x402 payments the agent
+had already signed: none of them can settle any more.
 
 ### Realistic failures — what breaks, and what happens then?
 
