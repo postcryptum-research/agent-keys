@@ -584,8 +584,29 @@ impl Session {
     async fn estimate_call_gas(&self, call_data: &Bytes, deployed: bool) -> Result<u128> {
         const FLOOR: u128 = 150_000;
         if !deployed {
-            // nothing to simulate against yet; the first call is the demo's
-            return Ok(FLOOR * 2);
+            // No account code to simulate `execute` against yet: estimate each
+            // inner call as sent from the account's address (an address without
+            // code is a valid `from`, and callees see the same msg.sender), plus
+            // Kernel's dispatch overhead per call.
+            const PER_CALL_OVERHEAD: u128 = 40_000;
+            let Some(calls) = kernel::decode_execute(call_data) else {
+                return Ok(FLOOR * 2);
+            };
+            let mut total: u128 = 0;
+            for (target, value, data) in calls {
+                let tx = TransactionRequest::default()
+                    .with_from(self.account)
+                    .with_to(target)
+                    .with_value(value)
+                    .with_input(data);
+                let estimate = self
+                    .provider
+                    .estimate_gas(tx)
+                    .await
+                    .context("estimating the first operation's calls (one of them reverts as sent from the account)")?;
+                total += estimate as u128 + PER_CALL_OVERHEAD;
+            }
+            return Ok((total * 13 / 10).max(FLOOR * 2));
         }
         let tx = TransactionRequest::default()
             .with_from(self.dep.entry_point)

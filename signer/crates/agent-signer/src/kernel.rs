@@ -230,6 +230,28 @@ pub fn execute_batch_calldata(calls: Vec<(Address, U256, Bytes)>) -> Bytes {
         .into()
 }
 
+/// The calls inside `execute` calldata built by [`execute_calldata`] /
+/// [`execute_batch_calldata`]; `None` for anything else.
+pub fn decode_execute(call_data: &[u8]) -> Option<Vec<(Address, U256, Bytes)>> {
+    let exec = IKernel::executeCall::abi_decode(call_data).ok()?;
+    match exec.execMode.0[0] {
+        0x00 => {
+            let raw = exec.executionCalldata;
+            if raw.len() < 52 {
+                return None;
+            }
+            let target = Address::from_slice(&raw[..20]);
+            let value = U256::from_be_slice(&raw[20..52]);
+            Some(vec![(target, value, Bytes::copy_from_slice(&raw[52..]))])
+        }
+        0x01 => {
+            let calls = <Vec<IKernel::Execution>>::abi_decode(&exec.executionCalldata).ok()?;
+            Some(calls.into_iter().map(|c| (c.target, c.value, c.callData)).collect())
+        }
+        _ => None,
+    }
+}
+
 /// ERC-4337 `initCode`: `factory ‖ createAccount(initData, salt)`.
 pub fn init_code(factory: Address, init_data: &Bytes, salt: B256) -> Bytes {
     let call = IKernelFactory::createAccountCall { data: init_data.clone(), salt }.abi_encode();
@@ -330,6 +352,15 @@ mod tests {
             kernel_wrapped_hash(A, 84532, N),
             b256!("a0c4e2fb6da7cfeb16f6f22278e127d1577af46d75234d79702d760db9922994")
         );
+    }
+
+    #[test]
+    fn execute_round_trips() {
+        let single = execute_calldata(A, U256::from(7), &[1, 2, 3]);
+        assert_eq!(decode_execute(&single), Some(vec![(A, U256::from(7), Bytes::from(vec![1, 2, 3]))]));
+        let calls = vec![(A, U256::ZERO, Bytes::from(vec![9])), (B, U256::from(1), Bytes::new())];
+        assert_eq!(decode_execute(&execute_batch_calldata(calls.clone())), Some(calls));
+        assert_eq!(decode_execute(&[0xde, 0xad]), None);
     }
 
     #[test]

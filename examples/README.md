@@ -15,7 +15,7 @@ attempt, so a retry can never execute it twice.
 |---|---|---|---|
 | [`agentkit/`](agentkit/) | Coinbase AgentKit (TS) + LangChain/Claude | a new `EvmWalletProvider` | smoke test verified on Base Sepolia |
 | [`claude-skill/`](claude-skill/) | Claude Code / OpenClaw skills | a `SKILL.md` that teaches the agent the CLI | ready |
-| [`jinn/`](jinn/) | Jinn operator (Olas ecosystem) | a Safe broadcaster with a Kernel owner (`v = 1`) | adapter + demo verified on Base Sepolia; integration plan; first patch series for `Jinn-Network/mono` (venue loop), run live |
+| [`jinn/`](jinn/) | Jinn operator (Olas ecosystem) | a Safe broadcaster with a Kernel owner (`v = 1`) | adapter + demo verified on Base Sepolia; integration plan; first patch series for `Jinn-Network/mono`: Jinn's full solution loop (claim → deliver → settle) passes on its hermetic Anvil snapshot with a Kernel-owned Safe and the agent key in TROPIC01 |
 | [`olas/`](olas/) | Olas / open-autonomy (Python) | Safe owner and keeper become the Kernel; consensus key stays, without funds | `transaction_settlement_abci` path verified on Base Sepolia; upstream plan |
 | [`elizaos/`](elizaos/) | ElizaOS 1.7 (TS, Bun) + Claude | a plugin with its own wallet service instead of `plugin-evm`; `PAY_FOR_URL` pays x402 | smoke test verified on Base Sepolia (call lands, outsider refused, x402 paid) |
 | [`x402/`](x402/) | x402 (HTTP 402 payments, USDC) | `agent-signer x402 fetch`: register under the mandate, then sign ERC-1271 | paid and settled on Base Sepolia (x402.org facilitator); reclaim verified |

@@ -23,7 +23,7 @@
 >   `addOwner` отклонён политикой (`README.md`, раздел Run).
 
 > **Первая серия патчей (2026-10-21):** пункты 1–5 фазы 1 (и транспорт из пункта 8) — три
-> коммита на `next` `151a464aa`: [`patches/`](patches/), описание в [`README.md`](README.md#integrating-into-jinn-the-patch-series-first-version).
+> коммита, плюс герметичный тест полного цикла решения с Safe во владении Kernel (патч 0004), на `next` `151a464aa`: [`patches/`](patches/), описание в [`README.md`](README.md#integrating-into-jinn-the-patch-series-first-version).
 > «Побочная находка» из §5 подтверждена и исправлена там же (патч 0001).
 
 ---

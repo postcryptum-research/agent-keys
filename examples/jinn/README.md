@@ -73,13 +73,14 @@ refused under both.
 ## Integrating into Jinn: the patch series (first version)
 
 [`patches/`](patches/) is a first version of `ADAPTATION.md` §5 Phase 1, as
-three commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
+four commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
 
 | Patch | What |
 |---|---|
 | `0001-fix-venue-base-DEFAULT_MULTISEND_ADDRESS…` | upstream bug: the MultiSendCallOnly v1.3.0 constant had 39 hex digits (the final `D` was missing); + a test that fails without the fix |
 | `0002-feat-venue-base-injectable-Safe-broadcaster…` | `createBaseVenue({ safeBroadcaster })`: a factory that receives the venue's own durable lock and submission ledger; `walletClient` optional when it is given |
 | `0003-feat-operator-hardware-signed-Kernel-owner…` | `operator/src/signer/`: the `agent-signer` CLI as a typed call, `KernelSafeBroadcaster`, a viem transport for direct calls; the optional `signer` config section; wiring `main.ts` → composition root → venue; boot refuses if the Kernel does not own the Safe |
+| `0004-test-operator-hermetic-solution-loop…` | `test/hermetic/full-loop-kernel-owner.test.ts`: Jinn's own hermetic solution loop with the service Safe owned by a Kernel account (below) |
 
 Apply and enable:
 
@@ -118,12 +119,37 @@ Verified:
   for the CLI) catch each of three mutations (no adoption, wrong `v = 1`
   owner, no Safe-nonce assertion); 302 existing config / composition-root
   tests pass;
+- **the full Jinn solution loop on Jinn's hermetic Anvil snapshot** (patch
+  0004, 2026-10-21): the real production daemon bootstraps a staked
+  operator, the test moves the service Safe's ownership from the agent EOA
+  to a Kernel account (`swapOwner`), and the daemon — with
+  `kernelSafeBroadcasterFactory` — discovers, **claims**
+  (`router.claimTask`), executes the deterministic harness, **delivers**
+  (`mech.deliver`) and **settles** (`router.claimSolutionDelivery`). Each of
+  the three is checked to be a UserOperation of the Kernel through the
+  EntryPoint (`UserOperationEvent.success`), signed by the agent key in
+  TROPIC01 and admitted by a mandate of exactly
+  `(Safe, execTransaction)` + those three calls; afterwards
+  `Safe.addOwnerWithThreshold` through the Kernel is refused
+  (`policy-denied`) and the Safe's owners are unchanged. The ERC-4337 side
+  is installed from a committed bytecode fixture (`anvil_setCode`), so the
+  run needs no live RPC; Jinn's baseline `full-loop.test.ts` still passes
+  next to it (two consecutive runs, ~77 s for both). Run it with
+  `TPM_SIGN_AGENT_SIGNER=…/agent-signer TPM_SIGN_KEYS=…/agent.json`
+  (skipped otherwise; Foundry `nightly-1c7c4beb…`, the version Jinn's CI
+  pins, is needed for the snapshot);
 - live, Base Sepolia, agent key in TROPIC01: the operator's
   `KernelSafeBroadcaster` on venue-base's ledger and lock ran a Safe
   transaction (counter 25 → 26, tx
   `0xb57ad3641c3c0fad1fb6e00c3dad3cb2b17db51e4ea97754b932cdae0673d7e7`, ledger
   row resolved, logs cut to our userOp) and got `addOwnerWithThreshold` on
   the Safe refused by AgentPolicy (`policy-denied` → `permanent`).
+
+Found by the Anvil run and fixed in agent-signer: the first operation of a
+not-yet-deployed account used a fixed 300k `callGasLimit` (nothing to
+simulate `execute` against), which starved Jinn's `claimTask` through the
+Safe (`GS013`). It now estimates each inner call from the account's address
+plus Kernel's overhead.
 
 Not in this version (the rest of `ADAPTATION.md` §5): the keystore agent EOA
 still exists and still signs off-chain documents (task.v1, `signCanonical`,
