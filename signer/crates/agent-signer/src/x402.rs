@@ -224,7 +224,15 @@ impl Session {
         let latest = self.provider.get_block_number().await?;
         let start = from_block.unwrap_or(latest.saturating_sub(50_000));
         let pending_sel = alloy::primitives::keccak256("x402Pending(address,bytes32,bytes32)");
-        let ts = now();
+        // Expiry is the contract's call (`block.timestamp >= validBefore`): judge
+        // it by the chain's clock, not this machine's.
+        let ts = self
+            .provider
+            .get_block_by_number(alloy::eips::BlockNumberOrTag::Latest)
+            .await?
+            .context("no latest block")?
+            .header
+            .timestamp;
         let mut done = Vec::new();
         let base = Filter::new()
             .address(policy)

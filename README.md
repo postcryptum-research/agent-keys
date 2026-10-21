@@ -128,6 +128,10 @@ Any platform, no hardware (software backend — dev/CI only):
 
 ```sh
 cd signer && cargo test
+# end to end on a local anvil: the real CLI against EntryPoint, Kernel, our
+# modules, a Safe, a paymaster, a fake bundler and an x402 server (software
+# keys, so only in this test-only build)
+cargo test -p agent-signer --features insecure-software-keys --test anvil_cli
 cd ../contracts && forge test      # RIP-7212 enabled locally via odyssey = true
 # forge 1.8+ dropped `odyssey`; there the precompile comes with the Osaka
 # EVM: forge test --evm-version osaka

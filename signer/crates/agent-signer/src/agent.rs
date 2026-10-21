@@ -68,9 +68,9 @@ pub enum KeySpec {
     WindowsTpm(String),
     /// Tropic Square TROPIC01 on its USB DevKit: serial port and ECC key slot.
     Tropic01 { port: String, slot: u16 },
-    /// 32-byte hex scalar in this file. **Insecure**: refused for the owner,
-    /// and for the agent unless built with `--features insecure-software-keys`
-    /// (tests only; docs/KEY_POLICY.md rule 5).
+    /// 32-byte hex scalar in this file. **Insecure**: refused in every role
+    /// unless built with `--features insecure-software-keys` (tests only;
+    /// docs/KEY_POLICY.md rule 5).
     Software(String),
     /// An encrypted key file on removable media (`crate::keyfile`), for the
     /// owner or the recovery key only; the passphrase is asked at use.
@@ -273,8 +273,8 @@ pub fn parse32(s: &str) -> Result<[u8; 32]> {
 }
 
 /// Open the signer a [`KeySpec`] points at, for `role`. The TPM variant needs
-/// the `tpm` feature. A software key is refused for the owner, and for the
-/// agent unless the build opted into `insecure-software-keys`.
+/// the `tpm` feature. A software key is refused in every role unless the
+/// build opted into `insecure-software-keys` (tests only).
 pub fn open_signer(spec: &KeySpec, role: Role) -> Result<Box<dyn HardwareSigner>> {
     match spec {
         KeySpec::Tpm(key) => {
@@ -341,17 +341,20 @@ pub fn open_signer(spec: &KeySpec, role: Role) -> Result<Box<dyn HardwareSigner>
             Ok(Box::new(crate::keyfile::open(path, passphrase.as_bytes())?))
         }
         KeySpec::Software(hex) => {
-            if role != Role::Agent {
-                anyhow::bail!("refusing a software {role:?} key: the root of the account would be a plaintext file");
-            }
+            // A test build (`insecure-software-keys`, never a release) may use
+            // software keys in every role -- the integration tests drive owner
+            // and recovery operations on a local chain. Any other build refuses.
             #[cfg(feature = "insecure-software-keys")]
             {
-                eprintln!("WARNING: using a software agent key — insecure, tests only");
+                eprintln!("WARNING: using a software {role:?} key — insecure, tests only");
                 Ok(Box::new(SoftwareSigner::from_bytes(&parse32(hex)?)?))
             }
             #[cfg(not(feature = "insecure-software-keys"))]
             {
                 let _ = hex;
+                if role != Role::Agent {
+                    anyhow::bail!("refusing a software {role:?} key: the root of the account would be a plaintext file");
+                }
                 anyhow::bail!(
                     "refusing a software agent key: a plaintext key file defeats the hardware \
                      (tests only: build with --features insecure-software-keys)"

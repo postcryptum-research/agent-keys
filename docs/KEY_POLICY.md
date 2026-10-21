@@ -132,6 +132,8 @@ If any item fails, the owner key is as reachable as the agent key.
   address), and that comes from the config. Root operations run where the
   owner key is (for the root/user placement: `sudo agent-signer permission …`).
 - A TPM owner key can carry an authValue read from a root-only file.
-- Selecting a software key must be an explicit test-only choice, never
-  available to the owner role. An encrypted key file (rule 5's exception)
+- Selecting a software key must be an explicit test-only choice: a build
+  feature (`insecure-software-keys`) that release builds never enable.
+  Without it a software key is refused in every role; with it — in the
+  integration tests on a local chain only — any role may use one. An encrypted key file (rule 5's exception)
   is accepted for owner and recovery operations only, never for the agent.

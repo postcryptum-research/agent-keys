@@ -108,7 +108,7 @@ Exactly one of:
 | `{"windows-tpm": "name"}` | Windows TPM through CNG | `--features windows-tpm`, Windows |
 | `{"tropic01": {"port": "/dev/ttyACM0", "slot": 1}}` | TROPIC01 USB devkit, ECC slot 0–31 | `--features tropic01` |
 | `{"keyfile": "/media/…/owner.json"}` | encrypted key file | **owner or recovery only**, refused for the agent; asks the passphrase at use |
-| `{"software": "0x…64 hex"}` | plaintext scalar | **tests only**: refused for owner and recovery always, for the agent unless built with `--features insecure-software-keys` |
+| `{"software": "0x…64 hex"}` | plaintext scalar | **tests only**: refused in every role unless built with `--features insecure-software-keys` (the integration tests' build; never a release) |
 
 ### `policy` — the mandate
 

@@ -878,7 +878,7 @@ mod tests {
 
     /// The agent session's key material never opens the owner key. The owner
     /// here is a software key, which `open_signer` refuses outright for the
-    /// owner role — so success proves it was not opened.
+    /// owner role in a normal build — so success proves it was not opened.
     #[test]
     fn agent_session_never_opens_the_owner_key() {
         let dep: Deployments = serde_json::from_str(DEPLOYMENTS).unwrap();
@@ -887,7 +887,7 @@ mod tests {
         let none = std::collections::HashMap::new();
         let (_, init_data) = account_material(&cfg, &dep, &none).unwrap();
         assert!(init_data.is_some(), "the owner's public key from the config derives initData");
-        assert!(open_signer(&cfg.owner, Role::Owner).is_err());
+        assert_eq!(open_signer(&cfg.owner, Role::Owner).is_err(), !cfg!(feature = "insecure-software-keys"));
 
         // without the owner's public key there is simply no initData — not a
         // fallback to opening the owner's key
@@ -900,12 +900,13 @@ mod tests {
     fn software_keys_are_refused() {
         let key = r#"{"software": "0x0000000000000000000000000000000000000000000000000000000000000001"}"#;
         let spec: crate::agent::KeySpec = serde_json::from_str(key).unwrap();
-        assert!(open_signer(&spec, Role::Owner).is_err(), "never for the owner");
-        assert_eq!(
-            open_signer(&spec, Role::Agent).is_ok(),
-            cfg!(feature = "insecure-software-keys"),
-            "for the agent only in a build that opted in"
-        );
+        for role in [Role::Owner, Role::Recovery, Role::Agent] {
+            assert_eq!(
+                open_signer(&spec, role).is_ok(),
+                cfg!(feature = "insecure-software-keys"),
+                "{role:?}: only in a test build that opted in"
+            );
+        }
     }
 
     #[test]
