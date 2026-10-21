@@ -43,9 +43,17 @@ tx [`0x785332…e669bb`](https://sepolia.basescan.org/tx/0x785332105fd8085d50e54
   (Olas / Jinn service Safes) and still judges the Safe transaction's
   *inner* call, or every leg of a MultiSend batch, against the mandate
   ([`docs/ERC1271.md`](docs/ERC1271.md)).
+- x402 payments — `AgentPolicy` v6 gives the agent a narrow ERC-1271: it
+  vouches only for USDC payment authorizations the agent registered first,
+  inside the mandate's token budget. An agent with its key in a TROPIC01
+  paid an x402 API through the public x402.org facilitator
+  (settlement tx [`0xd3535c…e06379`](https://sepolia.basescan.org/tx/0xd3535c28f33cc63de48733332e8c37c9ca9b2d559097b56b5d4b81e06379a31d))
+  ([`docs/ERC1271.md`](docs/ERC1271.md#x402--registered-authorizations-implemented-agentpolicy-v6)).
 - Existing agent frameworks on top — Coinbase AgentKit, a Claude Code /
-  OpenClaw skill, Jinn and Olas, each run on Base Sepolia (see
-  [Examples](#examples)).
+  OpenClaw skill, Jinn, Olas and ElizaOS, each run on Base Sepolia; the
+  ElizaOS agent also pays for APIs with x402
+  (tx [`0x344e94…6f1757`](https://sepolia.basescan.org/tx/0x344e94449df0a5fbb363136b8de4f02f4b78850992e7fc16352aaa10d46f1757);
+  see [Examples](#examples)).
 
 | Backend | Platform | Status |
 |---|---|---|
@@ -75,7 +83,8 @@ the smart account checks that signature itself.
 
 Open-source agent stacks with their wallet layer — a key file or a custodial
 wallet — replaced by a hardware-signed agent account. All of them go through
-one seam, `agent-signer op send --json`; details in
+one seam, `agent-signer op send --json` (x402 payments through
+`agent-signer x402 fetch`); details in
 [`examples/README.md`](examples/README.md).
 
 | Example | What changes | Shown on Base Sepolia |
@@ -100,7 +109,8 @@ contracts/   Foundry: P256Validator, P256Signer, AgentPolicy (ERC-7579 modules),
              and Safe v1.4.1; P-256 vectors signed in software, a Linux TPM,
              a Windows TPM and a TROPIC01
 examples/    AgentKit, Claude Code skill, Jinn, Olas, ElizaOS, x402
-docs/        architecture, benchmark, ERC-1271 and Safes, per-platform guides
+docs/        architecture, benchmark, ERC-1271 (Safes, x402), per-platform guides
+scripts/     testnet chores (testnet_usdc.py: gas-wallet ETH -> Base Sepolia USDC)
 legacy/      the original Python / tpm2-tools prototype, kept for reference
 ```
 
@@ -205,6 +215,11 @@ $B permission add --agent window-mon.json --env-file $E --sponsored
 
 $B key create --tropic01 /dev/ttyACM0 --slot 1         # a key inside a TROPIC01 (--features tropic01)
 # signer/agent.tropic01.base-sepolia.json: that key as the agent, a Safe in the mandate
+
+# x402: a permission that may pay in USDC ("x402": true in policy.tokens), then
+$B permission add --agent agent.x402.base-sepolia.json --env-file $E          # owner, once
+$B x402 fetch --agent agent.x402.base-sepolia.json --env-file $E <url>        # agent: pays on 402
+$B x402 reclaim --agent agent.x402.base-sepolia.json --env-file $E            # expired unused -> budget
 ```
 
 ## Reference
