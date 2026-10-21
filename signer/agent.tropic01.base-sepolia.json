@@ -13,6 +13,10 @@
       "slot": 1
     }
   },
+  "agentPublicKey": {
+    "x": "0xff669706b6664607803aaf7526bb05081657a3d0280fdb64f50bf55aac9287d3",
+    "y": "0x97b74442050780958f8a52864b5c707a61a8f8315277274b2ce1f8fb3e7ab88b"
+  },
   "permissionId": "0x74727334",
   "salt": "0x0",
   "policy": {

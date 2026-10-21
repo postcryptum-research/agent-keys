@@ -18,6 +18,10 @@
       ]
     }
   },
+  "agentPublicKey": {
+    "x": "0x9bf7bac2c38319c81c2177c7cf7de17836d25c9cc21814f8af95b6d98dae3e75",
+    "y": "0xf814e7367ca03caa2507fb8f0b9198ba0292f9673fa5e22a82971b83c4b7437c"
+  },
   "permissionId": "0x61676e32",
   "salt": "0x0",
   "policy": {
