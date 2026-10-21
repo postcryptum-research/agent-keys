@@ -19,3 +19,6 @@ node_modules/
 examples/**/dist/
 examples/olas/.venv/
 examples/olas/open-autonomy/
+
+# Local per-machine agent configs (e.g. with a recovery key file path). Never commit.
+signer/*.local.json

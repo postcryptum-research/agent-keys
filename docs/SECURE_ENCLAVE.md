@@ -5,7 +5,10 @@
 > change to the code, the enclave's signature is `p256_enclave.json` in the
 > Solidity tests, and an account whose owner and agent keys both live in the
 > enclave ran on Base Sepolia — the outputs are in [Run record](#12-run-record-2026-10-21-apple-m1)
-> at the end. The procedure stays as the guide for the next machine.
+> at the end; the same day that account also went through a public
+> bundler, a paymaster, an x402 payment, permission add/rotate/revoke and
+> a full owner-key recovery ([section 13](#13-the-rest-of-the-cli-on-the-same-account-2026-10-21)).
+> The procedure stays as the guide for the next machine.
 
 ## What you are testing
 
@@ -380,3 +383,165 @@ deleted tpm_sign-demo
 
 The owner and agent keys of the Base Sepolia account stay in that Mac's
 enclave.
+
+## 13. The rest of the CLI on the same account (2026-10-21)
+
+Everything `agent-signer` can do on-chain, run once on the enclave account
+from section 12 — all signatures from the enclave, nothing changed in the
+code. Same conventions: outputs pasted, noise cut, `…` for the env file.
+
+### Through a public bundler
+
+```
+$ $B demo --agent … --bundler https://public.pimlico.io/v2/84532/rpc
+path:           permission (agent key)
+gas paid by:    the account
+bundler est.:   preVerification 48207, verification 140687, call 17955
+delivery:       bundler accepted, waiting for inclusion
+included: tx 0x38cc6c7e8414c6be6d081d8e88bdf7275334af5557f6e2e5209f839701103ad9 (block 48414605, 163422 gas)
+counter:  28 -> 29
+```
+
+Pimlico's free endpoint ([tx](https://sepolia.basescan.org/tx/0x38cc6c7e8414c6be6d081d8e88bdf7275334af5557f6e2e5209f839701103ad9)).
+
+### Sponsored by a paymaster
+
+The paymaster recorded in `deployments/84532.json` is owned by the project's
+gas wallet, so only that key can list new accounts. For a run from another
+wallet, deploy your own — the constructor takes the sponsor — and give the
+config a deployments file that names it:
+
+```
+$ cd contracts && forge create --rpc-url $RPC --private-key … --broadcast \
+    src/WhitelistPaymaster.sol:WhitelistPaymaster \
+    --constructor-args 0x0000000071727De22E5E9d8BAf0edAc6f37da032 <your gas wallet>
+Deployed to: 0x05a97329397200dF8795A882da0b5b1aD894EB97
+Transaction hash: 0x9926c60d655280f88ab28127d23d4f0cb313b95ddedaf39b4971c4a9c7980299
+```
+
+`deployments/84532.enclave.json` is `84532.json` with `whitelistPaymaster`
+and `paymasterOwner` replaced by that paymaster and its owner; the enclave
+config points at it. Then:
+
+```
+$ $B paymaster deposit --agent … --wei 5000000000000000
+deposited 5000000000000000 wei for the paymaster: tx 0xf4919728f1e15de32ab58b6573e054887919f4233b965ccb1722915bde073019
+$ $B paymaster stake   --agent … --wei 10000000000000000        # public bundlers require it
+staked 10000000000000000 wei (unstake delay 86400s): tx 0x3d7d12546869537ec5296570a855222d6d02084c0078e4851761634c05972f5b
+$ $B paymaster sponsor --agent … --budget 3000000000000000 --max-per-op 500000000000000
+sponsored 0xD62Dd4afD4e77cDFA6f8eaD1D2655745cF5af628 (gas budget 3000000000000000 wei, max 500000000000000 wei per op): tx 0x3cbbaa75de150eb2a654df9cdd25ff5787de33019b4a353038dc1330ac9c4e61
+$ $B demo --agent … --sponsored
+gas paid by:    paymaster
+delivery:       self-bundled via handleOps
+included: tx 0x93bb3b1bf314e8f230022e8fc2ee385dbe3e21d315517c43514001fc5159dcbe (block 48414674, 169198 gas)
+counter:  29 -> 30
+$ $B demo --agent … --sponsored --bundler https://public.pimlico.io/v2/84532/rpc
+gas paid by:    paymaster
+delivery:       bundler accepted, waiting for inclusion
+included: tx 0x18c7c0ff7536f0bb83dca50acfbee67efdd0cc9b93b612df048250e2d16ab047 (block 48414678, 172709 gas)
+counter:  30 -> 31
+```
+
+Sponsored, self-bundled ([tx](https://sepolia.basescan.org/tx/0x93bb3b1bf314e8f230022e8fc2ee385dbe3e21d315517c43514001fc5159dcbe));
+sponsored through the bundler ([tx](https://sepolia.basescan.org/tx/0x18c7c0ff7536f0bb83dca50acfbee67efdd0cc9b93b612df048250e2d16ab047)).
+
+### A new mandate (`permission rotate`), then an x402 payment
+
+The config's policy gained the two `AgentPolicy` entries x402 needs and a
+USDC line (`tokens`, as in `agent.x402.base-sepolia.json`), under a new id;
+the owner key replaced the old permission with it in one root operation:
+
+```
+$ $B permission rotate --agent … --old-id 0x73653031
+rotated 0x73653031 -> 0x73653032: tx 0xb6c0e4aa79ca841abb1e8ed099bb7d152987858a5cda634db004041901696a1b (block 48414696, 541243 gas)
+$ $B permission show --agent …
+  ok agent key       chain 0xb0ec1a68… / config 0xb0ec1a68…
+  ok allow           0xD2Adc331B867435b82Ceba1D4f7f715eeF9FdbC1 0xd09de08a
+  ok allow           0x8347dBC3d7A71DAFDeED5975ce85638494865F73 0x4993d616
+  ok allow           0x8347dBC3d7A71DAFDeED5975ce85638494865F73 0xf3ea183e
+  ok token           0x036CbD53842c5426634e7929541eC2318f3dCF7e chain 100000/1000000 (spent 0) / config 100000/1000000
+```
+
+USDC for the account came from `scripts/testnet_usdc.py` (0.001 ETH of the
+gas wallet's → 3.658287 USDC on Uniswap, straight to the account). The paid
+endpoint is `examples/x402/` (`PAY_TO=<gas wallet> npm run server`, the
+public x402.org facilitator):
+
+```
+$ $B x402 fetch --agent … http://localhost:4021/quote
+x402:           pay 1000 of 0x036CbD53842c5426634e7929541eC2318f3dCF7e to 0x52370eE170c0E2767B32687166791973a0dE7966, valid until 1792597986
+path:           permission (agent key)
+registered:     tx 0x0e40c70d2b2fcbfd01ec66656c7eee5607df06fcc37875b80568f9884432b1c1 (block 48414700)
+status:         200
+settlement:     {"network":"eip155:84532","payer":"0xD62Dd4afD4e77cDFA6f8eaD1D2655745cF5af628","success":true,"transaction":"0x83fbb009abd8ba37bac001f34d15f3cfa6fd78133361d06f0c8e48387ab0f5a5"}
+{"quote":"The key never leaves the chip.","paidAt":"2026-10-21T15:48:14.086Z"}
+$ $B x402 reclaim --agent … --from-block 48414650
+reclaimed 0 expired authorization(s)
+```
+
+Registration ([tx](https://sepolia.basescan.org/tx/0x0e40c70d2b2fcbfd01ec66656c7eee5607df06fcc37875b80568f9884432b1c1))
+and the facilitator's settlement ([tx](https://sepolia.basescan.org/tx/0x83fbb009abd8ba37bac001f34d15f3cfa6fd78133361d06f0c8e48387ab0f5a5)).
+Note for the public RPC (`sepolia.base.org`): its `eth_getLogs` spans at most
+200 blocks, so `reclaim` needs `--from-block` there.
+
+### A scheduled window (`permission add` / `revoke`)
+
+A copy of the config with id `0x73653033`, the counter only, and
+`validAfter` / `validUntil` set to one hour in 2027:
+
+```
+$ $B permission add --agent agent.enclave-window.json
+added permission 0x73653033 (valid 1800000000 … 1800003600): tx 0xeac376a23ebd5a96d58fc4aab12a7478c68897d94f3dd3080a7e48b446bcb802 (block 48414704, 425745 gas)
+$ $B permission show --agent agent.enclave-window.json
+  ok validUntil      chain 1800003600 / config 1800003600
+  ok validAfter      chain 1800000000 / config 1800000000
+$ $B permission revoke --agent … --id 0x73653033
+revoked permission 0x73653033: tx 0xb27d9c4cfedb001839d3bd0de1c755bf53d931f6228b4a1f4b4271d9b2efb7b0 (block 48414708, 157748 gas)
+```
+
+### Losing the owner key: the recovery drill
+
+A cold recovery key as an encrypted file (`key create --keyfile`, scrypt +
+AES-GCM, passphrase typed at use; `key check --keyfile` printed `OK`),
+referenced from a local copy of the config (`"recovery": {"keyfile": …}`,
+not committed). Then the whole procedure from `docs/RESILIENCE.md`:
+
+```
+$ $B owner status --agent …
+root validator: 0xda4cd5c37a5b888826a7a9e09df6a9033a1550c2 (type 0x01)
+recovery:       0x63dd80Fc5E109A44fd179F85050487E02c5e6958 (installed = false, may take root = false, is root now = false)
+$ $B owner add-recovery --agent …                       # the enclave owner key signs
+recovery key installed: tx 0x7f84d9d709321ebc3b9f0686bdc1bf9e23e2dab610feb81b074f4b8738842c45 (block 48414834, 239115 gas)
+$ $B owner recover --agent …                            # the key file signs; "the owner key is lost"
+path:           recovery validator (changeRootValidator only)
+the recovery key is root now: tx 0x4cd09250b48adf81cff6f255153f7651627063357af57f0b76be7688935b276c; next, `owner set-root --as-recovery` to a new owner device
+$ $B owner set-root --agent … --as-recovery \
+    --validator 0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2 --retire 0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2 \
+    --public-key <x>,<y of a second enclave key, tpm_sign-owner2>
+path:           root (recovery key)
+root handed to 0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2: tx 0xa345eed28b1d55fce353e7f2156dd64c304f947cbefb3ceae58bedb590642c75 (block 48414854, 179994 gas)
+$ $B owner status --agent …                             # config now names tpm_sign-owner2
+root validator: 0xda4cd5c37a5b888826a7a9e09df6a9033a1550c2 (type 0x01)
+recovery:       0x63dd80Fc5E109A44fd179F85050487E02c5e6958 (installed = true, may take root = true, is root now = false)
+$ $B op send --agent … --root --target 0xD2Adc331B867435b82Ceba1D4f7f715eeF9FdbC1 --data 0xd09de08a   # new owner key
+included: tx 0xe0a1748d43153ff08180bbbd2209dcdf6ef8b370c4f10aab47c52fda583d6fa2 (block 48414870, 135736 gas)
+$ $B op send --agent <config still naming the old owner key> --root --target … --data 0xd09de08a
+Error: EntryPoint rejected the operation: AA24 signature error (op 0)
+$ $B demo --agent … --sponsored                         # the agent permission survived
+included: tx 0x1a02593eae81ad1c19fc4e0fb5928a236b8a9d427613458a575804dd94355e76 (block 48414874, 169198 gas)
+counter:  32 -> 33
+```
+
+Install ([tx](https://sepolia.basescan.org/tx/0x7f84d9d709321ebc3b9f0686bdc1bf9e23e2dab610feb81b074f4b8738842c45)),
+recover ([tx](https://sepolia.basescan.org/tx/0x4cd09250b48adf81cff6f255153f7651627063357af57f0b76be7688935b276c)),
+set-root ([tx](https://sepolia.basescan.org/tx/0xa345eed28b1d55fce353e7f2156dd64c304f947cbefb3ceae58bedb590642c75)),
+the new owner's first root operation ([tx](https://sepolia.basescan.org/tx/0xe0a1748d43153ff08180bbbd2209dcdf6ef8b370c4f10aab47c52fda583d6fa2)).
+The retired owner key (`tpm_sign-owner`, still in the enclave) signs
+nothing the account accepts any more; the committed config names
+`tpm_sign-owner2`.
+
+### Also run
+
+- `cargo test -p agent-signer --features secure-enclave`: 9 passed.
+- `cargo build --release -p agent-signer --features secure-enclave`: builds;
+  the release binary's `key check --enclave tpm_sign-agent` prints `OK`.
