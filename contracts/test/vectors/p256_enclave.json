@@ -1,0 +1,9 @@
+{
+  "backend": "enclave",
+  "message": "TPM_sign: digest signed inside an Apple Secure Enclave",
+  "digest": "0x6a046a0b54dbdb914760fa8beef4d775678d1f311f5d2869d69759384d3521f7",
+  "r": "0x3baf3024f45d6cde9814747e8e29e8bd3820ab4e825b7d605f6e9d616d405495",
+  "s": "0x1d64082c14b385f8ec170c7f3dd1bcdbc9d1ce94c9e70a19f07641819fadd8e3",
+  "x": "0x37b8e8aa2ca3bef1522e1b27d16c23454b3beae195562f67ac631952d95c2cd9",
+  "y": "0x3cc90d6478511e3007b6d28870ba854d9490ddf209a1ca8b455760ef17b177d3"
+}

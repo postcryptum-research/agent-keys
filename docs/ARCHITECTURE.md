@@ -102,7 +102,7 @@ cargo features so a machine compiles only the one it has:
 |---|---|---|---|
 | `software` | all | in-memory `p256` key — **dev/CI only**, never for a funded account | done |
 | `tpm` | Linux | TPM 2.0 via `tss-esapi`; keys created under the SRK (`0x81000001`), transient or persisted | done |
-| `secure-enclave` | macOS | Secure Enclave via CryptoKit (Swift shim); the enclave-wrapped key blob is kept in a file per label — no keychain entitlements needed | rewritten 2026-10-20, Rust side type-checked for `aarch64-apple-darwin`; awaiting a run on a Mac — see `docs/SECURE_ENCLAVE.md` |
+| `secure-enclave` | macOS | Secure Enclave via CryptoKit (Swift shim); the enclave-wrapped key blob is kept in a file per label — no keychain entitlements needed | done — run on an Apple M1 Mac (2026-10-21): hardware test, vector `p256_enclave.json` verified by the Solidity tests, and an account with both keys in the enclave on Base Sepolia — see `docs/SECURE_ENCLAVE.md` |
 | `windows-tpm` | Windows | TPM 2.0 via CNG's Platform Crypto Provider, keys by name | done — run on a Windows 11 PC: hardware test, key in the TPM, vector `p256_windows.json` verified by the Solidity tests — see `docs/WINDOWS.md` |
 | `tropic01` | any (USB) | Tropic Square TROPIC01 USB DevKit — an open-architecture secure element; P-256 keys generated in an ECC slot, one secure session per operation over the vendor's Rust SDK (`tropicsquare/libtropic-rs`) | done — hardware test, vector `p256_tropic01.json`, and an agent operation on Base Sepolia — see `docs/TROPIC01.md` |
 
@@ -204,9 +204,12 @@ Lessons that cost real debugging time:
   reads are pinned to the receipt's block; simulate `createAccount` before
   funding a counterfactual address.
 - **Phase 3 — operations.**
-  - *3.1 Secure Enclave backend — written (2026-10-20), awaiting a run on
-    Apple hardware.* `docs/SECURE_ENCLAVE.md` is the build-and-test guide
-    for whoever has a Mac.
+  - *3.1 Secure Enclave backend — done (2026-10-21).* Written on CryptoKit
+    (2026-10-20), then run on an Apple M1 Mac: the Swift shim built
+    unchanged, the hardware test passed, the enclave signed the vector
+    `p256_enclave.json`, and an account whose owner and agent keys both live
+    in the enclave executed an agent operation and a root operation on Base
+    Sepolia. `docs/SECURE_ENCLAVE.md` is the procedure plus the run record.
   - *3.2 Paymaster — done (2026-10-20).* `contracts/src/WhitelistPaymaster.sol`
     on eth-infinitism's `BasePaymaster` v0.7.0: the sponsor keeps a deposit
     in the EntryPoint and lists the accounts it pays for; sponsorship and

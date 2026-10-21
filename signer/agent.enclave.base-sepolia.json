@@ -1,0 +1,31 @@
+{
+  "deployments": "../contracts/deployments/84532.json",
+  "owner": {
+    "secure-enclave": "tpm_sign-owner"
+  },
+  "ownerPublicKey": {
+    "x": "0xfa990fbed501c795ecaae03573c69f1d957df2a8976195be8b3478a168a37c9f",
+    "y": "0x79e91bb677633ef9b93f9b3f167589d463e0a2182f372ef10db6ee041ceee364"
+  },
+  "agent": {
+    "secure-enclave": "tpm_sign-agent"
+  },
+  "agentPublicKey": {
+    "x": "0xb0ec1a6819dfdfc72179067fe96e61dd9ce99c8046470720382d3ded6a8ec5a8",
+    "y": "0x73243d56c5393556b59530341526a0506e611aa2c535a8bb92d791d04048c710"
+  },
+  "permissionId": "0x73653031",
+  "salt": "0x0",
+  "account": "0xD62Dd4afD4e77cDFA6f8eaD1D2655745cF5af628",
+  "policy": {
+    "allow": [
+      {
+        "target": "0xD2Adc331B867435b82Ceba1D4f7f715eeF9FdbC1",
+        "selector": "0xd09de08a"
+      }
+    ],
+    "maxValuePerOp": "0",
+    "budget": "1000000000000000",
+    "validUntil": 1795046400
+  }
+}
