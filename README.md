@@ -69,7 +69,7 @@ tx [`0x785332…e669bb`](https://sepolia.basescan.org/tx/0x785332105fd8085d50e54
 | `secure-enclave` | macOS, Secure Enclave via CryptoKit | run on an Apple M1 Mac: hardware test, vector in the tests, owner + agent keys on-chain ([`docs/SECURE_ENCLAVE.md`](docs/SECURE_ENCLAVE.md)) |
 | `software` | any | dev/CI only |
 
-New here? [`docs/FAQ.md`](docs/FAQ.md) walks through two setups (a Linux
+New here? Start with [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md) — the idea on one page. [`docs/FAQ.md`](docs/FAQ.md) walks through two setups (a Linux
 laptop with $100, a Mac with a scheduled $100k budget) and common questions;
 [`docs/AGENT_CONFIG.md`](docs/AGENT_CONFIG.md) specifies the agent config file
 and how it maps to what the contracts enforce.
