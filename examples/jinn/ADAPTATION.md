@@ -23,6 +23,10 @@ Legend: **[V]** — verified by reading the code (file:line), **[I]** — infere
 >   from a key in TROPIC01 under v3, a single call and a MultiSendCallOnly batch through the Safe went through,
 >   `addOwner` was rejected by the policy (`README.md`, Run section).
 
+> **First patch series (2026-10-21):** Phase 1 items 1–5 (and the transport of item 8) as three
+> commits on `next` `151a464aa` — [`patches/`](patches/), described in [`README.md`](README.md#integrating-into-jinn-the-patch-series-first-version).
+> The §5 "side finding" is confirmed and fixed there (patch 0001).
+
 ---
 
 ## 1. How Jinn holds and uses keys (summary)

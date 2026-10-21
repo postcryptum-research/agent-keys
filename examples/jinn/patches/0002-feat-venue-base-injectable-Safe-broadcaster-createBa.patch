@@ -1,0 +1,200 @@
+From 0052e8ac2ecb953b3a2f8a4bcd941b9f2fdb3c83 Mon Sep 17 00:00:00 2001
+From: 77ph <tk@itarragon.net>
+Date: Wed, 21 Oct 2026 14:56:10 +0300
+Subject: [PATCH 2/3] feat(venue-base): injectable Safe broadcaster
+ (createBaseVenue({ safeBroadcaster }))
+
+A host whose service Safe is not owned by an EOA it holds a WalletClient for
+(e.g. an ERC-4337 smart account with a hardware key, calling execTransaction
+itself with a pre-validated v = 1 signature) passes a factory. The factory
+receives the venue's own durable lock and submission ledger, so the
+single-broadcaster rule holds for it as for the built-in EOA broadcaster.
+walletClient becomes optional when a factory is given.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/marketplace/venue-base/src/config.ts | 32 +++++++++++++-
+ .../venue-base/src/create-base-venue.test.ts  | 42 ++++++++++++++++++-
+ .../venue-base/src/create-base-venue.ts       | 33 +++++++++------
+ packages/marketplace/venue-base/src/index.ts  |  2 +-
+ 4 files changed, 93 insertions(+), 16 deletions(-)
+
+diff --git a/packages/marketplace/venue-base/src/config.ts b/packages/marketplace/venue-base/src/config.ts
+index 11a3a083b..a1a92462c 100644
+--- a/packages/marketplace/venue-base/src/config.ts
++++ b/packages/marketplace/venue-base/src/config.ts
+@@ -5,7 +5,9 @@
+ // persistent artefact lives under the one host-supplied `stateDbPath` (never a home directory or
+ // environment-derived default).
+ import type { Address, PublicClient, WalletClient } from "viem";
+-import type { SafeBroadcastOptions } from "./broadcast/safe-broadcaster.js";
++import type { BaseVenueSafeBroadcaster, SafeBroadcastOptions } from "./broadcast/safe-broadcaster.js";
++import type { BroadcastLock } from "./broadcast/lock.js";
++import type { SubmissionLedger } from "./broadcast/ledger.js";
+ import type { ChainLogSourceOptions } from "./log-source/chain-log-source.js";
+ import type { IpfsPinPort, MarketplaceChainConfig, SettlementPorts } from "@jinn-network/marketplace-binding";
+ import type { ProtocolObservation } from "@jinn-network/task-execution-protocol";
+@@ -16,10 +18,36 @@ import type { ProtocolObservation } from "@jinn-network/task-execution-protocol"
+ export interface FinalityWaiterOptions {}
+ export interface DeliveryWaiterOptions {}
+ 
++/**
++ * What a host-supplied Safe broadcaster is built from: the venue's own durable lock and
++ * submission ledger, so the single-broadcaster rule (design §6.1) holds for it exactly as for
++ * the built-in EOA broadcaster.
++ */
++export interface SafeBroadcasterDeps {
++  readonly chainId: number;
++  readonly safeAddress: Address;
++  readonly publicClient: PublicClient;
++  readonly ledger: SubmissionLedger;
++  readonly lock: BroadcastLock;
++}
++
++/**
++ * Builds the venue's Safe broadcaster when the Safe's owner is not an EOA the host holds a
++ * `WalletClient` for — e.g. a smart account (ERC-4337) whose key lives in hardware and which
++ * calls `execTransaction` itself with a pre-validated (`v = 1`) signature.
++ */
++export type SafeBroadcasterFactory = (deps: SafeBroadcasterDeps) => BaseVenueSafeBroadcaster;
++
+ export interface BaseVenueConfig {
+   readonly chain: MarketplaceChainConfig;
+   readonly publicClient: PublicClient;
+-  readonly walletClient: WalletClient;
++  /**
++   * The Safe owner's signer for the built-in broadcaster. Required unless `safeBroadcaster` is
++   * given; ignored when it is.
++   */
++  readonly walletClient?: WalletClient;
++  /** Replaces the built-in EOA Safe broadcaster (signer injection at the broadcaster level). */
++  readonly safeBroadcaster?: SafeBroadcasterFactory;
+   readonly safeAddress: Address;
+   readonly stateDbPath: string;
+   readonly priorityMech: Address;
+diff --git a/packages/marketplace/venue-base/src/create-base-venue.test.ts b/packages/marketplace/venue-base/src/create-base-venue.test.ts
+index 2a8ff01c4..2a4df400b 100644
+--- a/packages/marketplace/venue-base/src/create-base-venue.test.ts
++++ b/packages/marketplace/venue-base/src/create-base-venue.test.ts
+@@ -17,7 +17,8 @@ import type {
+ import type { SafeBroadcastPort } from "@jinn-network/marketplace-binding";
+ import { buildScriptedChain } from "./broadcast/scripted-chain.fixture.js";
+ import { createBaseVenue, type BaseVenue } from "./create-base-venue.js";
+-import type { BaseVenueConfig } from "./config.js";
++import type { BaseVenueConfig, SafeBroadcasterDeps, SafeBroadcasterFactory } from "./config.js";
++import type { SafeBroadcastRequest } from "./broadcast/safe-broadcaster.js";
+ 
+ const SAFE = "0x5afe000000000000000000000000000000000000" as Address;
+ 
+@@ -250,4 +251,43 @@ describe("createBaseVenue (Task 17 -- the composition surface program §5 pins)"
+     const replacement = createBaseVenue(baseConfig(BASE_SEPOLIA_TODAY, chainB, { stateDbPath: dbPath }));
+     replacement.close();
+   });
++
++  test("an injected safeBroadcaster factory replaces the EOA broadcaster and shares the venue's lock and ledger", async () => {
++    const chainInstance = buildScriptedChain();
++    const seen: SafeBroadcasterDeps[] = [];
++    const executed: SafeBroadcastRequest[] = [];
++    const injected: SafeBroadcasterFactory = (deps) => {
++      seen.push(deps);
++      return {
++        classify: () => "permanent",
++        async execute(request) {
++          executed.push(request);
++          return { txHash: "0x01" as Hex, blockNumber: 1n, blockHash: "0x02" as Hex, logs: [], alreadySettled: false };
++        },
++        async broadcastCreateTask() {
++          throw new Error("not exercised");
++        },
++      };
++    };
++    // No walletClient at all: the factory is the only signer the venue gets.
++    const { walletClient: _unused, ...withoutWallet } = baseConfig(BASE_SEPOLIA_TODAY, chainInstance);
++    const venue = createBaseVenue({ ...withoutWallet, safeBroadcaster: injected });
++    try {
++      expect(seen).toHaveLength(1);
++      expect(seen[0]!.safeAddress).toBe(SAFE);
++      expect(seen[0]!.chainId).toBe(BASE_SEPOLIA_TODAY.chainId);
++      expect(seen[0]!.lock).toBe(venue.broadcastLock);
++      expect(typeof seen[0]!.ledger.record).toBe("function");
++      await venue.claim.claimTask({ taskId: 1n, priorityMech: venue.claim.priorityMech }).catch(() => {});
++      expect(executed.length).toBeGreaterThan(0);
++    } finally {
++      venue.close();
++    }
++  });
++
++  test("without a walletClient account and without a factory it refuses, naming signer injection", () => {
++    const chainInstance = buildScriptedChain();
++    const { walletClient: _unused, ...withoutWallet } = baseConfig(BASE_SEPOLIA_TODAY, chainInstance);
++    expect(() => createBaseVenue(withoutWallet)).toThrow(/signer-injection/);
++  });
+ });
+diff --git a/packages/marketplace/venue-base/src/create-base-venue.ts b/packages/marketplace/venue-base/src/create-base-venue.ts
+index 544229d18..b7a13d288 100644
+--- a/packages/marketplace/venue-base/src/create-base-venue.ts
++++ b/packages/marketplace/venue-base/src/create-base-venue.ts
+@@ -57,10 +57,10 @@ export interface BaseVenue {
+ }
+ 
+ export function createBaseVenue(config: BaseVenueConfig): BaseVenue {
+-  if (config.walletClient.account === undefined) {
++  if (config.safeBroadcaster === undefined && config.walletClient?.account === undefined) {
+     throw new Error(
+-      "createBaseVenue requires an injected WalletClient account: venue-base is signer-injection "
+-      + "only and never loads or derives key material",
++      "createBaseVenue requires an injected WalletClient account or a safeBroadcaster factory: "
++      + "venue-base is signer-injection only and never loads or derives key material",
+     );
+   }
+   const statePath = resolve(config.stateDbPath);
+@@ -77,15 +77,24 @@ export function createBaseVenue(config: BaseVenueConfig): BaseVenue {
+   const ownedState = state;
+   const ledger = createSubmissionLedger(state);
+   const lock = createBroadcastLock(state);
+-  const safe = createSafeBroadcaster({
+-    chainId: config.chain.chainId,
+-    safeAddress: config.safeAddress,
+-    publicClient: config.publicClient,
+-    walletClient: config.walletClient,
+-    ledger,
+-    lock,
+-    ...(config.broadcast === undefined ? {} : { options: config.broadcast }),
+-  });
++  const safe = config.safeBroadcaster !== undefined
++    ? config.safeBroadcaster({
++        chainId: config.chain.chainId,
++        safeAddress: config.safeAddress,
++        publicClient: config.publicClient,
++        ledger,
++        lock,
++      })
++    : createSafeBroadcaster({
++        chainId: config.chain.chainId,
++        safeAddress: config.safeAddress,
++        publicClient: config.publicClient,
++        // Checked at the top: without a factory the account is present.
++        walletClient: config.walletClient!,
++        ledger,
++        lock,
++        ...(config.broadcast === undefined ? {} : { options: config.broadcast }),
++      });
+   const logSource = createChainLogSource({
+     chain: config.chain,
+     publicClient: config.publicClient,
+diff --git a/packages/marketplace/venue-base/src/index.ts b/packages/marketplace/venue-base/src/index.ts
+index 1be52041f..c6ea3985d 100644
+--- a/packages/marketplace/venue-base/src/index.ts
++++ b/packages/marketplace/venue-base/src/index.ts
+@@ -5,7 +5,7 @@
+ // underneath it, kept public for hosts that need finer-grained composition.
+ export { createBaseVenue } from "./create-base-venue.js";
+ export type { BaseVenue } from "./create-base-venue.js";
+-export type { BaseVenueConfig } from "./config.js";
++export type { BaseVenueConfig, SafeBroadcasterDeps, SafeBroadcasterFactory } from "./config.js";
+ export { VENUE_STATE_SCHEMA_VERSION, VenueStateError, openVenueState } from "./state/database.js";
+ export type { VenueStateDatabase } from "./state/database.js";
+ export {
+-- 
+2.43.0
+

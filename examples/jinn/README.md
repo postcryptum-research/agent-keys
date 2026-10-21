@@ -70,23 +70,68 @@ Safe 0xd0b972a8ee7D8AB91a2e3381Eb6F10550B80E52A (owner: Kernel 0xEdB645B1…bC9E
 Under policy v2 (CALL only) the same batch was refused; the owner change is
 refused under both.
 
-## Integrating into Jinn
+## Integrating into Jinn: the patch series (first version)
 
-`ADAPTATION.md` §5 is the ordered plan. In short:
+[`patches/`](patches/) is a first version of `ADAPTATION.md` §5 Phase 1, as
+three commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
 
-1. `createBaseVenue` accepts an injected `safeBroadcaster` (their venue-base
-   is already "signer-injection only") — pass `createKernelSafeBroadcaster`
-   with their `BroadcastLock` and `classifyBroadcastError`.
-2. Direct agent calls (ERC-8004 `setMetadata`, validation) go through a viem
-   transport backed by `agent-signer` (sketch in `ADAPTATION.md` §6).
-3. Off-chain signatures (task.v1, `signCanonical`, ERC-8128) move to a
-   separate unfunded attestation key; the native-mode trust ceremony needs a
-   spec change (a transaction ceremony instead of EIP-191 by the Safe owner).
-4. Readers that decode a peer's outer transaction as `Safe.execTransaction`
-   (`venue-base/src/verdict.ts`, the settlement reader) must also accept
-   `EntryPoint.handleOps` — otherwise other operators reject our verdicts.
+| Patch | What |
+|---|---|
+| `0001-fix-venue-base-DEFAULT_MULTISEND_ADDRESS…` | upstream bug: the MultiSendCallOnly v1.3.0 constant had 39 hex digits (the final `D` was missing); + a test that fails without the fix |
+| `0002-feat-venue-base-injectable-Safe-broadcaster…` | `createBaseVenue({ safeBroadcaster })`: a factory that receives the venue's own durable lock and submission ledger; `walletClient` optional when it is given |
+| `0003-feat-operator-hardware-signed-Kernel-owner…` | `operator/src/signer/`: the `agent-signer` CLI as a typed call, `KernelSafeBroadcaster`, a viem transport for direct calls; the optional `signer` config section; wiring `main.ts` → composition root → venue; boot refuses if the Kernel does not own the Safe |
 
-Found on the way, worth an upstream fix: `DEFAULT_MULTISEND_ADDRESS` in
-`packages/marketplace/venue-base/src/writers/settlement.ts:33` has 39 hex
-digits — the final `D` of MultiSendCallOnly v1.3.0
-(`0x40A2aCCbd92BCA938b02010E17A5b8929b49130D`) is missing.
+Apply and enable:
+
+```sh
+cd mono && git checkout 151a464aa && git am /path/to/TPM_sign/examples/jinn/patches/*.patch
+```
+
+```jsonc
+// ~/.jinn-operator/config.json
+"signer": {
+  "kind": "agent-signer",
+  "bin": "/path/to/TPM_sign/signer/target/release/agent-signer",
+  "config": "/path/to/agent.json",          // its mandate allows (safe, execTransaction) + the router / mech calls
+  "account": "0x…Kernel",                     // must already own the service Safe
+  "envFile": "/path/to/.env",
+  "sponsored": true
+}
+```
+
+How `KernelSafeBroadcaster` keeps a Safe transaction from running twice (a
+`v = 1` signature does not commit to the Safe nonce): agent-signer asserts the
+Safe nonce on-chain in the same batch (`--safe-nonce`), and every attempt is
+written ahead to the venue's SQLite ledger, keyed by (chain, Kernel, Safe
+nonce), with its userOpHash. An attempt with an unknown outcome is never
+resent blindly (`permanent`); when its Safe nonce turns out consumed, the
+next `execute` adopts it from the EntryPoint's `UserOperationEvent` if it was
+ours.
+
+Verified:
+
+- `venue-base`: typecheck clean; its 204 unit tests + 3 new pass (the anvil
+  fork test needs `anvil` and is a separate CI job upstream);
+- operator: `tsc --noEmit` clean; Jinn's own test typecheck gate
+  (`check-test-typecheck`) "no regression"; 13 new tests (against
+  venue-base's real SQLite ledger and lock; a fake `agent-signer` binary
+  for the CLI) catch each of three mutations (no adoption, wrong `v = 1`
+  owner, no Safe-nonce assertion); 302 existing config / composition-root
+  tests pass;
+- live, Base Sepolia, agent key in TROPIC01: the operator's
+  `KernelSafeBroadcaster` on venue-base's ledger and lock ran a Safe
+  transaction (counter 25 → 26, tx
+  `0xb57ad3641c3c0fad1fb6e00c3dad3cb2b17db51e4ea97754b932cdae0673d7e7`, ledger
+  row resolved, logs cut to our userOp) and got `addOwnerWithThreshold` on
+  the Safe refused by AgentPolicy (`policy-denied` → `permanent`).
+
+Not in this version (the rest of `ADAPTATION.md` §5): the keystore agent EOA
+still exists and still signs off-chain documents (task.v1, `signCanonical`,
+ERC-8128 — item 10), direct EOA writes (ERC-8004, validation — the transport
+exists but is not wired, item 8), CLI verbs with their own Safe broadcaster
+(item 7), readers that decode a peer's outer transaction as
+`Safe.execTransaction` and must also accept `EntryPoint.handleOps` (item 9 —
+other operators would not bind our verdicts yet), bootstrap and the master
+role (Phase 2), native mode (Phase 3). Moving the Safe's ownership from the
+agent EOA to the Kernel (`swapOwner`) is a one-time owner step outside the
+patch.

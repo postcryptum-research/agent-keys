@@ -97,7 +97,9 @@ one seam, `agent-signer op send --json` (x402 payments through
 | [x402](examples/x402/) (HTTP 402 payments) | `agent-signer x402 fetch`: each payment registered under the mandate, then signed | a paid API answers 200 and the x402.org facilitator settles the USDC on-chain; expired unused registrations are reclaimed |
 
 The Jinn and Olas folders also hold an integration analysis with file:line
-references, a patch plan and proposals for upstream.
+references, a patch plan and proposals for upstream; for Jinn, a first patch
+series against `Jinn-Network/mono` (the venue loop on a Kernel-owned Safe,
+[`examples/jinn/patches/`](examples/jinn/patches/)).
 
 ## Layout
 

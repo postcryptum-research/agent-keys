@@ -1,0 +1,1075 @@
+From ac47589b1103d2a67546e832f92fb09d02f6c09c Mon Sep 17 00:00:00 2001
+From: 77ph <tk@itarragon.net>
+Date: Wed, 21 Oct 2026 14:56:10 +0300
+Subject: [PATCH 3/3] feat(operator): hardware-signed Kernel owner for the
+ service Safe (agent-signer)
+
+Optional config section signer: { kind: 'agent-signer', bin, config,
+account, envFile?, sponsored? }. With it, the venue's Safe transactions are
+sent by a TPM_sign Kernel account (ERC-4337) that owns the Safe: one
+UserOperation per Safe transaction, signed by an agent key inside a TPM /
+Secure Enclave / TROPIC01 through the agent-signer CLI, and judged on-chain
+by the account's AgentPolicy (inner call allow-list, value caps, no Safe
+self-administration).
+
+- src/signer/agent-signer-cli.ts: the CLI as a typed call, failure kinds
+- src/signer/kernel-safe-broadcaster.ts: BaseVenueSafeBroadcaster on top of
+  execTransaction(v = 1); Safe nonce asserted on-chain; attempts written
+  ahead to the venue ledger and reconciled by userOpHash, never re-executed
+- src/signer/agent-signer-transport.ts: viem transport for direct calls;
+  off-chain signing refused
+- boot refuses when signer.account is not an owner of the service Safe
+
+Without the section nothing changes. Scope: the venue loop (claim, deliver,
+settle, verdict, posting); off-chain signatures, direct EOA writes and
+bootstrap still use the keystore agent EOA.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ operator/src/config.ts                        |  10 +
+ operator/src/daemon/composition-root.ts       |   7 +
+ operator/src/main.ts                          |   6 +
+ operator/src/signer/agent-signer-cli.ts       | 168 +++++++++++
+ operator/src/signer/agent-signer-transport.ts |  42 +++
+ operator/src/signer/config.ts                 |  28 ++
+ operator/src/signer/index.ts                  |  51 ++++
+ .../src/signer/kernel-safe-broadcaster.ts     | 270 ++++++++++++++++++
+ operator/test/signer/agent-signer-cli.test.ts | 119 ++++++++
+ .../signer/kernel-safe-broadcaster.test.ts    | 228 +++++++++++++++
+ 10 files changed, 929 insertions(+)
+ create mode 100644 operator/src/signer/agent-signer-cli.ts
+ create mode 100644 operator/src/signer/agent-signer-transport.ts
+ create mode 100644 operator/src/signer/config.ts
+ create mode 100644 operator/src/signer/index.ts
+ create mode 100644 operator/src/signer/kernel-safe-broadcaster.ts
+ create mode 100644 operator/test/signer/agent-signer-cli.test.ts
+ create mode 100644 operator/test/signer/kernel-safe-broadcaster.test.ts
+
+diff --git a/operator/src/config.ts b/operator/src/config.ts
+index 9f68112e2..34d2a438f 100644
+--- a/operator/src/config.ts
++++ b/operator/src/config.ts
+@@ -17,6 +17,7 @@
+ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+ import { dirname, join } from 'node:path';
+ import { z } from 'zod/v3';
++import { SignerSectionSchema } from './signer/config.js';
+ import { NativeOperatorConfigSchema } from './daemon/native-product-config.js';
+ import { TaskSchema, parseTask } from './types/task.js';
+ import type { Task } from './types/task.js';
+@@ -777,6 +778,15 @@ export const JinnConfigSchema = z.object({
+    */
+   spendCaps: z.record(z.string(), z.number().positive()).optional(),
+ 
++  /**
++   * Optional hardware-signed agent account (TPM_sign). Absent: the agent EOA from the keystore
++   * owns the service Safe and signs, as before. `{ kind: 'agent-signer', ... }`: the Safe's
++   * owner is a Kernel (ERC-4337) account whose agent key lives in a TPM / Secure Enclave /
++   * TROPIC01, and the venue's Safe transactions go through `agent-signer`. File-managed only.
++   * See `src/signer/index.ts`.
++   */
++  signer: SignerSectionSchema.optional(),
++
+   /**
+    * Operator-local SolverPlugin trust state.
+    *
+diff --git a/operator/src/daemon/composition-root.ts b/operator/src/daemon/composition-root.ts
+index eda929e62..455dafc68 100644
+--- a/operator/src/daemon/composition-root.ts
++++ b/operator/src/daemon/composition-root.ts
+@@ -132,6 +132,7 @@ import {
+   type BaseVenue,
+   type BaseVenueSafeBroadcaster,
+   type ChainLogSource,
++  type SafeBroadcasterFactory,
+   type ChainLogSourceOptions,
+ } from '@jinn-network/marketplace-venue-base';
+ import type {
+@@ -383,6 +384,11 @@ export interface CompositionRootInput {
+   readonly config: JinnConfig;
+   readonly publicClient: PublicClient;
+   readonly walletClient: WalletClient;
++  /**
++   * Replaces the venue's EOA Safe broadcaster -- set when the service Safe is owned by a
++   * hardware-signed Kernel account (`config.signer`, `src/signer/index.ts`).
++   */
++  readonly safeBroadcaster?: SafeBroadcasterFactory;
+   readonly safeAddress: `0x${string}`;
+   readonly mechAddress: `0x${string}`;
+   readonly chain: MarketplaceChainConfig;
+@@ -2247,6 +2253,7 @@ export async function buildOperatorComposition(
+     chain: input.chain,
+     publicClient: input.publicClient as unknown as VenueClients['publicClient'],
+     walletClient: input.walletClient as unknown as VenueClients['walletClient'],
++    ...(input.safeBroadcaster === undefined ? {} : { safeBroadcaster: input.safeBroadcaster }),
+     safeAddress: input.safeAddress,
+     stateDbPath: input.venueStateDbPath,
+     priorityMech: input.mechAddress,
+diff --git a/operator/src/main.ts b/operator/src/main.ts
+index 241f6c0ed..e7cfe0215 100644
+--- a/operator/src/main.ts
++++ b/operator/src/main.ts
+@@ -2018,6 +2018,12 @@ export async function main(): Promise<DaemonStartupInfo | SetupHaltedInfo | void
+       // Service Safe is owned by the agent EOA (index N), not the master (index 0).
+       // Passing masterWallet here produces GS026 on every venue claim/Deliver/settle.
+       walletClient: agentClients.walletClient,
++      // ...unless `config.signer` puts a hardware-signed Kernel account in that place.
++      ...(config.signer === undefined ? {} : {
++        safeBroadcaster: await (await import('./signer/index.js')).agentSignerSafeBroadcaster(
++          config.signer, publicClient as never, safeAddress as `0x${string}`,
++        ),
++      }),
+       safeAddress,
+       mechAddress,
+       chain: BASE_SEPOLIA_TODAY,
+diff --git a/operator/src/signer/agent-signer-cli.ts b/operator/src/signer/agent-signer-cli.ts
+new file mode 100644
+index 000000000..4a09bb5e7
+--- /dev/null
++++ b/operator/src/signer/agent-signer-cli.ts
+@@ -0,0 +1,168 @@
++// SPDX-License-Identifier: MIT
++
++// `agent-signer op send --json` (TPM_sign) as a typed call. The CLI owns everything that touches
++// the agent key: it builds an ERC-4337 UserOperation for the agent's Kernel account, has the key
++// sign it inside a TPM / Secure Enclave / TROPIC01, and waits for inclusion. This process only
++// sees the result -- there is no key material here to load, derive or leak.
++//
++// On-chain, the account's AgentPolicy judges every call (and, for `Safe.execTransaction`, the
++// Safe transaction's inner call) against the mandate its owner installed.
++import { spawn } from 'node:child_process';
++import type { Address, Hex } from 'viem';
++
++export interface AgentSignerConfig {
++  /** Path to the `agent-signer` binary. */
++  readonly bin: string;
++  /** Agent account config (`--agent`): key location, permission id, pinned account. */
++  readonly configPath: string;
++  /** The Kernel account the config pins; every result is checked against it. */
++  readonly account: Address;
++  /** `.env` with the RPC / bundler URLs (`--env-file`). */
++  readonly envFile?: string;
++  /** Gas from the whitelist paymaster instead of the account's EntryPoint deposit. */
++  readonly sponsored?: boolean;
++  /** The CLI waits up to 120 s for inclusion by itself; keep this above that. */
++  readonly timeoutMs?: number;
++}
++
++export interface AgentSignerResult {
++  readonly account: Address;
++  readonly userOpHash: Hex;
++  /** EntryPoint nonce the operation used. */
++  readonly nonce: Hex;
++  readonly txHash: Hex;
++  readonly blockNumber: bigint;
++  readonly gasUsed: bigint;
++}
++
++export type AgentSignerErrorKind =
++  /** The account's AgentPolicy refused the operation (Kernel `PolicyFailed`): never retry. */
++  | 'policy-denied'
++  /** The permission's window is over (AA22). */
++  | 'policy-expired'
++  /** EntryPoint nonce race (AA25) or an already-used pinned nonce: reconcile, then retry. */
++  | 'nonce'
++  /** The bundler's simulation hit a revert of the call itself. */
++  | 'simulation-revert'
++  /** Included, but the call reverted (UserOperationEvent.success == false). */
++  | 'execution-revert'
++  /** Accepted by the bundler and not seen included: the outcome is UNKNOWN. */
++  | 'not-included'
++  /** TPM / Secure Enclave / TROPIC01 access. */
++  | 'hardware'
++  | 'config'
++  | 'unknown';
++
++/** Kernel's `PolicyFailed(uint256)` selector. */
++const POLICY_FAILED = '3e4983f6';
++const USER_OP_HASH_RE = /userOpHash:\s+(0x[0-9a-fA-F]{64})/;
++
++export class AgentSignerError extends Error {
++  override readonly name = 'AgentSignerError';
++  constructor(
++    readonly kind: AgentSignerErrorKind,
++    message: string,
++    readonly stderr: string,
++    readonly exitCode: number | null,
++    /** Set once the CLI computed it: the handle to reconcile an unknown outcome. */
++    readonly userOpHash: Hex | null,
++  ) {
++    super(message);
++  }
++}
++
++export function classifyAgentSignerFailure(stderr: string): AgentSignerErrorKind {
++  if (stderr.includes(POLICY_FAILED)) return 'policy-denied';
++  if (/AA22/.test(stderr)) return 'policy-expired';
++  if (/AA25|invalid account nonce|is already used/i.test(stderr)) return 'nonce';
++  if (/AA2\d|signature error/i.test(stderr)) return 'policy-denied';
++  if (/its execution reverted/.test(stderr)) return 'execution-revert';
++  if (/reverted during simulation|eth_estimateUserOperationGas/.test(stderr)) return 'simulation-revert';
++  if (/not included|timed out|waiting for/i.test(stderr)) return 'not-included';
++  if (/tpmrm0|ttyACM|TROPIC01|Secure Enclave|tcti/i.test(stderr)) return 'hardware';
++  if (/needs `--features|No such file|loading /i.test(stderr)) return 'config';
++  return 'unknown';
++}
++
++/** The CLI's `Error: ... Caused by: ...` report as one line. */
++function reason(stderr: string): string {
++  const at = stderr.lastIndexOf('Error: ');
++  return (at >= 0 ? stderr.slice(at + 7) : stderr)
++    .split('\n')
++    .filter((line) => !line.startsWith('ERROR:tcti'))
++    .map((line) => line.trim())
++    .filter(Boolean)
++    .join(' ')
++    .replace(/\s*Caused by:\s*/g, ': ');
++}
++
++export interface AgentSignerCall {
++  readonly to: Address;
++  readonly value: bigint;
++  readonly data: Hex;
++  /** Sign on the owner's root path instead of the agent permission (owner-key operations). */
++  readonly root?: boolean;
++  /**
++   * For `Safe.execTransaction` calldata: the Safe nonce it is meant for. agent-signer sends it
++   * as a batch that asserts that nonce on-chain first -- the only shape the agent's mandate
++   * admits -- so a replay reverts instead of executing twice.
++   */
++  readonly safeNonce?: bigint;
++  /** Pin the EntryPoint nonce (from an earlier attempt) instead of taking the next free one. */
++  readonly nonce?: Hex;
++}
++
++/** Send one call from the Kernel account, signed in hardware; resolves once it is included. */
++export function agentSignerSend(cfg: AgentSignerConfig, call: AgentSignerCall): Promise<AgentSignerResult> {
++  const args = [
++    'op', 'send', '--agent', cfg.configPath,
++    '--target', call.to, '--wei', call.value.toString(), '--data', call.data, '--json',
++  ];
++  if (cfg.envFile !== undefined) args.push('--env-file', cfg.envFile);
++  if (cfg.sponsored === true) args.push('--sponsored');
++  if (call.root === true) args.push('--root');
++  if (call.nonce !== undefined) args.push('--nonce', call.nonce);
++  if (call.safeNonce !== undefined) args.push('--safe-nonce', call.safeNonce.toString());
++
++  return new Promise((resolve, reject) => {
++    const child = spawn(cfg.bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
++    let stdout = '';
++    let stderr = '';
++    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
++    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
++    const timer = setTimeout(() => child.kill('SIGTERM'), cfg.timeoutMs ?? 180_000);
++
++    child.on('error', (err) => {
++      clearTimeout(timer);
++      reject(new AgentSignerError('config', `cannot run ${cfg.bin}: ${err.message}`, stderr, null, null));
++    });
++    child.on('close', (code) => {
++      clearTimeout(timer);
++      const opHash = (stderr.match(USER_OP_HASH_RE)?.[1] ?? null) as Hex | null;
++      if (code !== 0) {
++        // Killed by our timeout after the bundler accepted: the outcome is unknown.
++        const kind = code === null && opHash !== null ? 'not-included' : classifyAgentSignerFailure(stderr);
++        reject(new AgentSignerError(kind, reason(stderr) || `agent-signer exited with ${code}`, stderr, code, opHash));
++        return;
++      }
++      try {
++        const out = JSON.parse(stdout.trim().split('\n').at(-1)!) as {
++          account: string; userOpHash: string; nonce: string; tx: string; block: number; gasUsed: number;
++        };
++        if (out.account.toLowerCase() !== cfg.account.toLowerCase()) {
++          throw new Error(`agent-signer used account ${out.account}, expected ${cfg.account}`);
++        }
++        resolve({
++          account: out.account as Address,
++          userOpHash: out.userOpHash as Hex,
++          nonce: out.nonce as Hex,
++          txHash: out.tx as Hex,
++          blockNumber: BigInt(out.block),
++          gasUsed: BigInt(out.gasUsed),
++        });
++      } catch (e) {
++        reject(new AgentSignerError('unknown', `unexpected agent-signer output: ${String(e)}`, stderr, code, opHash));
++      }
++    });
++  });
++}
+diff --git a/operator/src/signer/agent-signer-transport.ts b/operator/src/signer/agent-signer-transport.ts
+new file mode 100644
+index 000000000..33c8bc21c
+--- /dev/null
++++ b/operator/src/signer/agent-signer-transport.ts
+@@ -0,0 +1,42 @@
++// SPDX-License-Identifier: MIT
++
++// A viem transport for calls the operator makes directly from the agent's account (not through
++// the Safe): ERC-8004 IdentityRegistry.setMetadata, ValidationRegistry requests. Transactions go
++// to agent-signer; every read goes to the RPC. Message and typed-data signing fail loudly: the
++// Kernel agent signs no off-chain messages (its AgentPolicy refuses ERC-1271).
++//
++//   const walletClient = createWalletClient({
++//     account: signer.account, chain: baseSepolia, transport: agentSignerTransport(rpcUrl, signer),
++//   });
++import { custom, http, type Address, type Hex } from 'viem';
++
++import { agentSignerSend, type AgentSignerCall, type AgentSignerConfig, type AgentSignerResult } from './agent-signer-cli.js';
++
++const SIGNING_METHODS = /^(personal_sign|eth_sign|eth_signTypedData(_v[34])?|eth_signTransaction)$/;
++
++export function agentSignerTransport(
++  rpcUrl: string,
++  cfg: AgentSignerConfig,
++  send: (cfg: AgentSignerConfig, call: AgentSignerCall) => Promise<AgentSignerResult> = agentSignerSend,
++) {
++  const rpc = http(rpcUrl)({});
++  return custom({
++    async request({ method, params }) {
++      if (method === 'eth_sendTransaction') {
++        const [tx] = params as [{ from?: Address; to?: Address; value?: Hex; data?: Hex }];
++        if (tx.from !== undefined && tx.from.toLowerCase() !== cfg.account.toLowerCase()) {
++          throw new Error(`eth_sendTransaction from ${tx.from}, but the agent account is ${cfg.account}`);
++        }
++        if (tx.to === undefined) throw new Error('contract deployment from the agent account is not supported');
++        const sent = await send(cfg, { to: tx.to, value: BigInt(tx.value ?? '0x0'), data: tx.data ?? '0x' });
++        // Included already: a following waitForTransactionReceipt returns at once.
++        return sent.txHash;
++      }
++      if (method === 'eth_accounts' || method === 'eth_requestAccounts') return [cfg.account];
++      if (SIGNING_METHODS.test(method)) {
++        throw new Error(`${method}: the Kernel agent account signs no off-chain messages (ERC-1271 is refused by its policy)`);
++      }
++      return rpc.request({ method, params } as never);
++    },
++  });
++}
+diff --git a/operator/src/signer/config.ts b/operator/src/signer/config.ts
+new file mode 100644
+index 000000000..ad28a0d5a
+--- /dev/null
++++ b/operator/src/signer/config.ts
+@@ -0,0 +1,28 @@
++// SPDX-License-Identifier: MIT
++
++// The `signer` section of the operator config, kept free of runtime imports: config.ts loads it
++// on every boot, the agent-signer code only when the section is present.
++import { z } from 'zod/v3';
++
++/**
++ * `"signer": { "kind": "agent-signer", ... }` -- the service Safe is owned by a Kernel account
++ * whose agent key lives in hardware; venue Safe transactions go through `agent-signer`.
++ */
++export const SignerSectionSchema = z
++  .object({
++    kind: z.literal('agent-signer'),
++    /** Path to the `agent-signer` binary (built with the backend this machine has). */
++    bin: z.string().min(1),
++    /** The agent config file `agent-signer --agent` reads (key location, permission, account). */
++    config: z.string().min(1),
++    /** The Kernel account: the service Safe's owner. Must match the agent config's `account`. */
++    account: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
++    /** `.env` with the RPC / bundler URLs for agent-signer. */
++    envFile: z.string().optional(),
++    /** Gas from the TPM_sign whitelist paymaster. */
++    sponsored: z.boolean().default(false),
++    timeoutMs: z.number().int().positive().optional(),
++  })
++  .strict();
++
++export type SignerSection = z.infer<typeof SignerSectionSchema>;
+diff --git a/operator/src/signer/index.ts b/operator/src/signer/index.ts
+new file mode 100644
+index 000000000..9dc612ab8
+--- /dev/null
++++ b/operator/src/signer/index.ts
+@@ -0,0 +1,51 @@
++// SPDX-License-Identifier: MIT
++
++// Hardware-signed agent account (TPM_sign): the optional `signer` section of the operator config
++// and what the daemon builds from it. Without the section nothing here is loaded and the daemon
++// keeps signing with the keystore's agent EOA.
++import { parseAbi, type Address, type PublicClient } from 'viem';
++import type { SafeBroadcasterFactory } from '@jinn-network/marketplace-venue-base';
++
++import type { AgentSignerConfig } from './agent-signer-cli.js';
++import type { SignerSection } from './config.js';
++import { kernelSafeBroadcasterFactory } from './kernel-safe-broadcaster.js';
++
++export { SignerSectionSchema, type SignerSection } from './config.js';
++export { agentSignerSend, AgentSignerError, type AgentSignerConfig } from './agent-signer-cli.js';
++export { agentSignerTransport } from './agent-signer-transport.js';
++export { createKernelSafeBroadcaster, kernelSafeBroadcasterFactory, userOpLogs } from './kernel-safe-broadcaster.js';
++
++export function agentSignerConfigOf(section: SignerSection): AgentSignerConfig {
++  return {
++    bin: section.bin,
++    configPath: section.config,
++    account: section.account as Address,
++    sponsored: section.sponsored,
++    ...(section.envFile === undefined ? {} : { envFile: section.envFile }),
++    ...(section.timeoutMs === undefined ? {} : { timeoutMs: section.timeoutMs }),
++  };
++}
++
++const SAFE_OWNER_ABI = parseAbi(['function isOwner(address owner) view returns (bool)']);
++
++/**
++ * The venue's Safe broadcaster for a `signer` section, after checking on-chain that the Kernel
++ * account owns the service Safe -- refusing at boot rather than at the first claim.
++ */
++export async function agentSignerSafeBroadcaster(
++  section: SignerSection,
++  publicClient: PublicClient,
++  safeAddress: Address,
++): Promise<SafeBroadcasterFactory> {
++  const signer = agentSignerConfigOf(section);
++  const owner = await publicClient.readContract({
++    address: safeAddress, abi: SAFE_OWNER_ABI, functionName: 'isOwner', args: [signer.account],
++  });
++  if (owner !== true) {
++    throw new Error(
++      `signer.account ${signer.account} is not an owner of the service Safe ${safeAddress}: `
++      + 'make the Kernel account the Safe owner (swapOwner from the agent EOA) before switching the signer',
++    );
++  }
++  return kernelSafeBroadcasterFactory(signer);
++}
+diff --git a/operator/src/signer/kernel-safe-broadcaster.ts b/operator/src/signer/kernel-safe-broadcaster.ts
+new file mode 100644
+index 000000000..4aac8521a
+--- /dev/null
++++ b/operator/src/signer/kernel-safe-broadcaster.ts
+@@ -0,0 +1,270 @@
++// SPDX-License-Identifier: MIT
++
++// The venue's Safe broadcaster when the Safe's owner is a TPM_sign Kernel account (ERC-4337)
++// instead of an agent EOA. Plugged into `createBaseVenue({ safeBroadcaster })`.
++//
++// The EOA broadcaster signs the Safe transaction hash with the agent's private key (eth_sign,
++// v + 4) and sends `execTransaction` from that EOA. Here the Kernel account itself calls
++// `execTransaction` with a pre-validated signature (r = owner, s = 0, v = 1), which the Safe
++// accepts because `msg.sender` is that owner: no off-chain signature and no ERC-1271. The call
++// is one UserOperation signed by the agent's hardware key, and on-chain the account's
++// AgentPolicy judges the Safe transaction's inner call (or every MultiSendCallOnly leg) against
++// the mandate the owner installed.
++//
++// Idempotency. A `v = 1` signature does not commit to the Safe nonce, so a blind resend after
++// an attempt that did land would execute the same call twice. Two guards:
++//   1. agent-signer sends each Safe transaction as a batch that first asserts the Safe nonce it
++//      is meant for (`--safe-nonce`): a replay reverts instead of executing again;
++//   2. every attempt is written ahead to the venue's durable submission ledger, keyed by
++//      (chainId, Kernel, Safe nonce), with the userOpHash once known. When the Safe nonce of an
++//      unresolved attempt has since been consumed, the attempt is reconciled from the
++//      EntryPoint's `UserOperationEvent` -- adopted if it is ours and succeeded, never re-sent
++//      at a fresh Safe nonce.
++// For rows with `from` = a Kernel account, the ledger's `nonce` is the Safe nonce and `txHash`
++// holds the userOpHash; the EOA broadcaster's rows (from = an EOA) are untouched by this.
++import {
++  JINN_ROUTER_V3_ABI,
++  SAFE_ABI,
++  SafeInnerRevertError,
++  decodeSafeInnerRevert,
++  formatDecodedRevert,
++  type PostingOutcome,
++} from '@jinn-network/marketplace-binding';
++import {
++  classifyBroadcastError,
++  encodePreValidatedSignature,
++  type BaseVenueSafeBroadcaster,
++  type SafeBroadcasterDeps,
++  type SafeBroadcasterFactory,
++  type SafeBroadcastReceipt,
++  type SafeBroadcastRequest,
++  type VenueRevertClassification,
++} from '@jinn-network/marketplace-venue-base';
++import {
++  decodeEventLog,
++  encodeFunctionData,
++  parseAbi,
++  parseAbiItem,
++  zeroAddress,
++  type Address,
++  type Hex,
++  type Log,
++} from 'viem';
++
++import {
++  agentSignerSend as defaultSend,
++  AgentSignerError,
++  type AgentSignerCall,
++  type AgentSignerConfig,
++  type AgentSignerResult,
++} from './agent-signer-cli.js';
++
++export const ENTRY_POINT_V07 = '0x0000000071727De22E5E9d8BAf0edAc6f37da032' as const;
++const USER_OPERATION_EVENT = parseAbiItem(
++  'event UserOperationEvent(bytes32 indexed userOpHash, address indexed sender, address indexed paymaster, uint256 nonce, bool success, uint256 actualGasCost, uint256 actualGasUsed)',
++);
++const SAFE_NONCE_ABI = parseAbi(['function nonce() view returns (uint256)']);
++
++/**
++ * One bundle can carry several UserOperations. Ours are the logs between the previous
++ * UserOperationEvent (or the start) and our own; without this cut, a `TaskCreated` from someone
++ * else's operation in the same bundle would look like ours.
++ */
++export function userOpLogs(logs: readonly Log[], userOpHash: Hex): Log[] {
++  let start = 0;
++  for (let i = 0; i < logs.length; i++) {
++    const log = logs[i]!;
++    if (log.address.toLowerCase() !== ENTRY_POINT_V07.toLowerCase()) continue;
++    try {
++      const ev = decodeEventLog({ abi: [USER_OPERATION_EVENT], data: log.data, topics: log.topics as [Hex, ...Hex[]] });
++      if (ev.args.userOpHash.toLowerCase() === userOpHash.toLowerCase()) {
++        return logs.slice(start, i).filter((l) => l.address.toLowerCase() !== ENTRY_POINT_V07.toLowerCase());
++      }
++      start = i + 1;
++    } catch {
++      // BeforeExecution, Deposited, ... -- not a boundary
++    }
++  }
++  throw new Error(`UserOperationEvent ${userOpHash} is not in the bundle receipt`);
++}
++
++/** The broadcaster's own reading of an agent-signer failure, in venue-base's three classes. */
++export function classifyKernelBroadcastError(error: unknown): VenueRevertClassification {
++  if (error instanceof AgentSignerError) {
++    switch (error.kind) {
++      case 'nonce':
++      case 'hardware':
++        return 'retryable';
++      // Never resend blindly: the earlier copy may still land (reconcile by userOpHash instead).
++      case 'not-included':
++      default:
++        return 'permanent';
++    }
++  }
++  return classifyBroadcastError(error);
++}
++
++export interface KernelSafeBroadcasterInput extends SafeBroadcasterDeps {
++  /** `signer.account` is the Kernel account, owner of the Safe. */
++  readonly signer: AgentSignerConfig;
++  /** Injectable for tests; defaults to spawning agent-signer. */
++  readonly send?: (cfg: AgentSignerConfig, call: AgentSignerCall) => Promise<AgentSignerResult>;
++  /** How far back to look for an unreconciled attempt's UserOperationEvent. */
++  readonly reconcileLookbackBlocks?: bigint;
++  readonly now?: () => number;
++}
++
++export function createKernelSafeBroadcaster(input: KernelSafeBroadcasterInput): BaseVenueSafeBroadcaster {
++  const kernel = input.signer.account;
++  const signature = encodePreValidatedSignature(kernel);
++  const send = input.send ?? defaultSend;
++  const now = input.now ?? (() => Date.now());
++  const lookback = input.reconcileLookbackBlocks ?? 50_000n;
++  const key = (nonce: number) => ({ chainId: input.chainId, from: kernel, nonce });
++
++  function execCalldata(request: SafeBroadcastRequest): Hex {
++    // No refund (gasPrice 0, no gas token, no refund receiver): AgentPolicy refuses anything else.
++    return encodeFunctionData({
++      abi: SAFE_ABI,
++      functionName: 'execTransaction',
++      args: [
++        request.to, request.value, request.data, request.operation ?? 0,
++        0n, 0n, 0n, zeroAddress, zeroAddress, signature,
++      ],
++    });
++  }
++
++  async function decodeInner(request: SafeBroadcastRequest, txHash: Hex | null): Promise<SafeInnerRevertError | undefined> {
++    // eth_call cannot reproduce a DELEGATECALL into MultiSend from outside the Safe.
++    if ((request.operation ?? 0) === 1) return undefined;
++    const inner = await decodeSafeInnerRevert(input.publicClient, {
++      safeAddress: input.safeAddress, to: request.to, value: request.value, data: request.data,
++    });
++    if (inner.decodedName === null && inner.innerSelector === null) return undefined;
++    return new SafeInnerRevertError(
++      `Safe execTransaction inner revert (${request.logicalTx}): ${
++        inner.decodedName !== null ? formatDecodedRevert(inner.decodedName, inner.decodedArgs) : `undecoded selector ${inner.innerSelector}`
++      }`,
++      inner.innerSelector, inner.innerData, inner.decodedName, inner.decodedArgs, txHash,
++    );
++  }
++
++  /** The UserOperationEvent of `userOpHash`, if it was included. */
++  async function findUserOp(userOpHash: Hex): Promise<{ log: Log; success: boolean } | undefined> {
++    const latest = await input.publicClient.getBlockNumber();
++    const logs = await input.publicClient.getLogs({
++      address: ENTRY_POINT_V07,
++      event: USER_OPERATION_EVENT,
++      args: { userOpHash, sender: kernel },
++      fromBlock: latest > lookback ? latest - lookback : 0n,
++      toBlock: latest,
++    });
++    const log = logs[0];
++    return log === undefined ? undefined : { log, success: log.args.success === true };
++  }
++
++  async function receiptOf(txHash: Hex, userOpHash: Hex, alreadySettled = false): Promise<SafeBroadcastReceipt> {
++    const receipt = await input.publicClient.getTransactionReceipt({ hash: txHash });
++    return {
++      txHash, blockNumber: receipt.blockNumber, blockHash: receipt.blockHash,
++      logs: userOpLogs(receipt.logs, userOpHash), alreadySettled,
++    };
++  }
++
++  /**
++   * Attempts of this logicalTx whose Safe nonce has since been consumed. Ours and successful:
++   * adopt it (the call already ran). Otherwise the nonce went to another transaction: close the
++   * row and continue with a fresh attempt.
++   */
++  async function reconcile(request: SafeBroadcastRequest, data: Hex, safeNonce: number): Promise<SafeBroadcastReceipt | undefined> {
++    const stale = input.ledger.unresolvedBetween(input.chainId, kernel, 0, safeNonce)
++      .filter((row) => row.logicalTx === request.logicalTx && row.data?.toLowerCase() === data.toLowerCase());
++    for (const row of stale) {
++      const found = row.txHash === undefined ? undefined : await findUserOp(row.txHash);
++      input.ledger.markResolved(key(row.nonce), now());
++      if (found?.success === true && found.log.transactionHash !== null) {
++        return receiptOf(found.log.transactionHash, row.txHash!);
++      }
++    }
++    return undefined;
++  }
++
++  async function executeInner(request: SafeBroadcastRequest): Promise<SafeBroadcastReceipt> {
++    const data = execCalldata(request);
++    const safeNonce = Number(await input.publicClient.readContract({
++      address: input.safeAddress, abi: SAFE_NONCE_ABI, functionName: 'nonce',
++    }));
++    const adopted = await reconcile(request, data, safeNonce);
++    if (adopted !== undefined) return adopted;
++
++    // Write-ahead: the attempt exists in the ledger before anything is signed.
++    const base = {
++      ...key(safeNonce), logicalTx: request.logicalTx, to: input.safeAddress, value: request.value, data,
++      fees: {}, submittedAtMs: now(),
++    };
++    input.ledger.record(base);
++    try {
++      // The Safe pays `request.value` from its own balance; the outer call carries none.
++      const sent = await send(input.signer, { to: input.safeAddress, value: 0n, data, safeNonce: BigInt(safeNonce) });
++      input.ledger.record({ ...base, txHash: sent.userOpHash, resolvedAtMs: now() });
++      return await receiptOf(sent.txHash, sent.userOpHash);
++    } catch (error) {
++      if (!(error instanceof AgentSignerError)) throw error;
++      if (error.userOpHash !== null) {
++        // Kept unresolved: if it lands after all, the next attempt adopts it via reconcile().
++        input.ledger.record({ ...base, txHash: error.userOpHash });
++      }
++      if (error.kind === 'simulation-revert' || error.kind === 'execution-revert') {
++        const inner = await decodeInner(request, null);
++        if (inner !== undefined) {
++          if (classifyBroadcastError(inner) === 'already-settled') {
++            input.ledger.markResolved(key(safeNonce), now());
++            return { txHash: '0x' as Hex, blockNumber: 0n, blockHash: '0x' as Hex, logs: [], alreadySettled: true };
++          }
++          throw inner;
++        }
++      }
++      if (error.kind === 'policy-denied' || error.kind === 'policy-expired' || error.kind === 'config') {
++        input.ledger.markResolved(key(safeNonce), now());
++      }
++      throw error;
++    }
++  }
++
++  return {
++    classify: classifyKernelBroadcastError,
++
++    async execute(request) {
++      return input.lock.withSender(input.chainId, kernel, () => executeInner(request));
++    },
++
++    async broadcastCreateTask(createTask): Promise<PostingOutcome> {
++      const receipt = await this.execute({
++        to: createTask.to, value: createTask.value, data: createTask.data, logicalTx: 'posting.createTask',
++      });
++      for (const log of receipt.logs) {
++        try {
++          const decoded = decodeEventLog({
++            abi: JINN_ROUTER_V3_ABI, data: log.data, topics: log.topics as [Hex, ...Hex[]], strict: true,
++          });
++          if (decoded.eventName === 'TaskCreated') {
++            return { taskId: (decoded.args as unknown as { taskId: bigint }).taskId, txHash: receipt.txHash };
++          }
++        } catch {
++          // Not a router event.
++        }
++      }
++      throw new Error(`no TaskCreated event in the posting receipt (txHash=${receipt.txHash})`);
++    },
++  };
++}
++
++/** `createBaseVenue({ safeBroadcaster: kernelSafeBroadcasterFactory(signer) })`. */
++export function kernelSafeBroadcasterFactory(
++  signer: AgentSignerConfig,
++  extra: Omit<KernelSafeBroadcasterInput, keyof SafeBroadcasterDeps | 'signer'> = {},
++): SafeBroadcasterFactory {
++  return (deps) => createKernelSafeBroadcaster({ ...deps, ...extra, signer });
++}
++
++export type { Address };
+diff --git a/operator/test/signer/agent-signer-cli.test.ts b/operator/test/signer/agent-signer-cli.test.ts
+new file mode 100644
+index 000000000..e588a6e3a
+--- /dev/null
++++ b/operator/test/signer/agent-signer-cli.test.ts
+@@ -0,0 +1,119 @@
++// agent-signer is replaced by a small Node script that records its argv and answers like the
++// real CLI: one JSON line on stdout on success; progress and `Error: ...` on stderr otherwise.
++import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { afterEach, beforeEach, describe, expect, it } from 'vitest';
++import { createWalletClient, type Address, type Hex } from 'viem';
++import { baseSepolia } from 'viem/chains';
++
++import { agentSignerSend, AgentSignerError, classifyAgentSignerFailure } from '../../src/signer/agent-signer-cli.js';
++import { agentSignerTransport } from '../../src/signer/agent-signer-transport.js';
++import { SignerSectionSchema } from '../../src/signer/config.js';
++
++const KERNEL = '0xEdB645B14e2f952C5784e34949b58F0826fBc9E9' as Address;
++const OP = `0x${'a1'.repeat(32)}`;
++const TX = `0x${'c3'.repeat(32)}`;
++
++let dir: string;
++let bin: string;
++
++function fakeCli(mode: 'ok' | 'policy' | 'other-account') {
++  writeFileSync(join(dir, 'mode'), mode);
++  writeFileSync(bin, `#!/usr/bin/env node
++const fs = require('fs');
++fs.writeFileSync(${JSON.stringify(join(dir, 'argv.json'))}, JSON.stringify(process.argv.slice(2)));
++const mode = fs.readFileSync(${JSON.stringify(join(dir, 'mode'))}, 'utf8');
++process.stderr.write('nonce:          0x1\\nuserOpHash:     ${OP}\\n');
++if (mode === 'policy') {
++  process.stderr.write('Error: bundler rejected the operation\\n\\nCaused by:\\n    0x3e4983f6000000\\n');
++  process.exit(1);
++}
++const account = mode === 'other-account' ? '0x000000000000000000000000000000000000dEaD' : '${KERNEL}';
++process.stdout.write(JSON.stringify({ account, userOpHash: '${OP}', nonce: '0x1', tx: '${TX}', block: 42, gasUsed: 123 }) + '\\n');
++`);
++  chmodSync(bin, 0o755);
++}
++
++const argv = () => JSON.parse(readFileSync(join(dir, 'argv.json'), 'utf8')) as string[];
++
++beforeEach(() => {
++  dir = mkdtempSync(join(tmpdir(), 'agent-signer-'));
++  bin = join(dir, 'agent-signer');
++});
++afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
++
++describe('agentSignerSend', () => {
++  it('passes the call, the Safe nonce and the options, and parses the JSON result', async () => {
++    fakeCli('ok');
++    const envFile = join(dir, 'agent.env');
++    writeFileSync(envFile, '');
++    const r = await agentSignerSend(
++      { bin, configPath: 'agent.json', account: KERNEL, envFile, sponsored: true },
++      { to: KERNEL, value: 5n, data: '0xabcd', safeNonce: 9n, nonce: '0x77' as Hex },
++    );
++    expect(argv()).toEqual([
++      'op', 'send', '--agent', 'agent.json', '--target', KERNEL, '--wei', '5', '--data', '0xabcd', '--json',
++      '--env-file', envFile, '--sponsored', '--nonce', '0x77', '--safe-nonce', '9',
++    ]);
++    expect(r).toEqual({ account: KERNEL, userOpHash: OP, nonce: '0x1', txHash: TX, blockNumber: 42n, gasUsed: 123n });
++  });
++
++  it('a mandate refusal becomes policy-denied, with the userOpHash for reconciliation', async () => {
++    fakeCli('policy');
++    const e = await agentSignerSend({ bin, configPath: 'a.json', account: KERNEL }, { to: KERNEL, value: 0n, data: '0x' })
++      .catch((x: unknown) => x);
++    expect(e).toBeInstanceOf(AgentSignerError);
++    expect((e as AgentSignerError).kind).toBe('policy-denied');
++    expect((e as AgentSignerError).userOpHash).toBe(OP);
++    expect((e as AgentSignerError).message).toMatch(/bundler rejected the operation: 0x3e4983f6/);
++  });
++
++  it('refuses a result for another account', async () => {
++    fakeCli('other-account');
++    await expect(agentSignerSend({ bin, configPath: 'a.json', account: KERNEL }, { to: KERNEL, value: 0n, data: '0x' }))
++      .rejects.toThrow(/expected/);
++  });
++
++  it('a missing binary is a config error', async () => {
++    const e = await agentSignerSend({ bin: join(dir, 'nope'), configPath: 'a.json', account: KERNEL }, { to: KERNEL, value: 0n, data: '0x' })
++      .catch((x: unknown) => x);
++    expect((e as AgentSignerError).kind).toBe('config');
++  });
++
++  it('classifies the CLI failure texts', () => {
++    expect(classifyAgentSignerFailure('AA22 expired or not due')).toBe('policy-expired');
++    expect(classifyAgentSignerFailure('nonce 0x5 is already used: an operation with it was included')).toBe('nonce');
++    expect(classifyAgentSignerFailure('the operation was included but its execution reverted')).toBe('execution-revert');
++    expect(classifyAgentSignerFailure('Failed to open specified TCTI device file /dev/tpmrm0')).toBe('hardware');
++  });
++});
++
++describe('agentSignerTransport', () => {
++  it('sends transactions through agent-signer and refuses off-chain signing', async () => {
++    fakeCli('ok');
++    const wallet = createWalletClient({
++      account: KERNEL, chain: baseSepolia,
++      transport: agentSignerTransport('http://127.0.0.1:1', { bin, configPath: 'agent.json', account: KERNEL }),
++    });
++    // The raw request viem's sendTransaction ends in for a json-rpc (address-only) account.
++    const hash = await wallet.request({ method: 'eth_sendTransaction', params: [{ from: KERNEL, to: KERNEL, data: '0x1234', value: '0x0' }] });
++    expect(hash).toBe(TX);
++    expect(argv()).toContain('0x1234');
++    await expect(wallet.signMessage({ message: 'hi' })).rejects.toThrow(/signs no off-chain messages/);
++    await expect(wallet.signTypedData({
++      domain: { name: 'x' }, types: { M: [{ name: 'a', type: 'uint256' }] }, primaryType: 'M', message: { a: 1n },
++    })).rejects.toThrow(/signs no off-chain messages/);
++  });
++});
++
++describe('the `signer` config section', () => {
++  it('accepts an agent-signer section and rejects typos', () => {
++    const ok = SignerSectionSchema.parse({ kind: 'agent-signer', bin: '/usr/bin/agent-signer', config: 'a.json', account: KERNEL });
++    expect(ok.sponsored).toBe(false);
++    expect(() => SignerSectionSchema.parse({ kind: 'agent-signer', bin: 'b', config: 'c', account: KERNEL, sponsor: true }))
++      .toThrow();
++    expect(() => SignerSectionSchema.parse({ kind: 'keystore', bin: 'b', config: 'c', account: KERNEL })).toThrow();
++    expect(() => SignerSectionSchema.parse({ kind: 'agent-signer', bin: 'b', config: 'c', account: '0x1234' })).toThrow();
++  });
++});
+diff --git a/operator/test/signer/kernel-safe-broadcaster.test.ts b/operator/test/signer/kernel-safe-broadcaster.test.ts
+new file mode 100644
+index 000000000..4d4bc8287
+--- /dev/null
++++ b/operator/test/signer/kernel-safe-broadcaster.test.ts
+@@ -0,0 +1,228 @@
++// The Kernel-owned Safe broadcaster against venue-base's REAL durable ledger and lock (SQLite in a
++// temp dir); the chain and agent-signer are scripted. What is pinned: the exact Safe call it
++// sends (pre-validated v = 1 signature from the Kernel, no refund, the Safe nonce asserted), the
++// write-ahead ledger row, adoption of an attempt that landed after an unknown outcome instead of
++// a second execution, and the error classes the venue retries on.
++import { mkdtempSync, rmSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
++import {
++  decodeFunctionData,
++  encodeAbiParameters,
++  encodeEventTopics,
++  parseAbi,
++  parseAbiItem,
++  type Address,
++  type Hex,
++  type Log,
++} from 'viem';
++import {
++  createBroadcastLock,
++  createSubmissionLedger,
++  openVenueState,
++  type SubmissionLedger,
++} from '@jinn-network/marketplace-venue-base';
++
++import { AgentSignerError, type AgentSignerCall, type AgentSignerResult } from '../../src/signer/agent-signer-cli.js';
++import {
++  ENTRY_POINT_V07,
++  createKernelSafeBroadcaster,
++  userOpLogs,
++} from '../../src/signer/kernel-safe-broadcaster.js';
++
++type BroadcasterInput = Parameters<typeof createKernelSafeBroadcaster>[0];
++
++const KERNEL = '0xEdB645B14e2f952C5784e34949b58F0826fBc9E9' as Address;
++const SAFE = '0xd0b972a8ee7D8AB91a2e3381Eb6F10550B80E52A' as Address;
++const ROUTER = '0x1111111111111111111111111111111111111111' as Address;
++const CHAIN_ID = 84532;
++const OP1 = `0x${'a1'.repeat(32)}` as Hex;
++const OP2 = `0x${'b2'.repeat(32)}` as Hex;
++const TX1 = `0x${'c3'.repeat(32)}` as Hex;
++const TX2 = `0x${'d4'.repeat(32)}` as Hex;
++
++const EXEC_ABI = parseAbi([
++  'function execTransaction(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, bytes signatures) payable returns (bool)',
++]);
++const USER_OPERATION_EVENT = parseAbiItem(
++  'event UserOperationEvent(bytes32 indexed userOpHash, address indexed sender, address indexed paymaster, uint256 nonce, bool success, uint256 actualGasCost, uint256 actualGasUsed)',
++);
++
++function userOpEvent(userOpHash: Hex, success: boolean, txHash: Hex = TX1): Log {
++  return {
++    address: ENTRY_POINT_V07,
++    topics: encodeEventTopics({
++      abi: [USER_OPERATION_EVENT], eventName: 'UserOperationEvent',
++      args: { userOpHash, sender: KERNEL, paymaster: '0x0000000000000000000000000000000000000000' },
++    }) as [Hex, ...Hex[]],
++    data: encodeAbiParameters(
++      [{ type: 'uint256' }, { type: 'bool' }, { type: 'uint256' }, { type: 'uint256' }],
++      [0n, success, 1n, 1n],
++    ),
++    transactionHash: txHash,
++    blockNumber: 10n, blockHash: `0x${'0e'.repeat(32)}`, logIndex: 0, transactionIndex: 0, removed: false,
++  } as unknown as Log;
++}
++
++function plainLog(address: Address, tag: string): Log {
++  return { address, topics: [`0x${tag.repeat(64).slice(0, 64)}`], data: '0x' } as unknown as Log;
++}
++
++/** A scripted chain: Safe nonce, receipts by tx hash, UserOperationEvents for getLogs. */
++function chain() {
++  const state = {
++    safeNonce: 7n,
++    receipts: new Map<Hex, readonly Log[]>(),
++    userOps: [] as Log[],
++  };
++  const client = {
++    async readContract(args: { functionName: string }) {
++      if (args.functionName === 'nonce') return state.safeNonce;
++      throw new Error(`unexpected read ${args.functionName}`);
++    },
++    async getTransactionReceipt({ hash }: { hash: Hex }) {
++      const logs = state.receipts.get(hash);
++      if (logs === undefined) throw new Error(`no receipt ${hash}`);
++      return { blockNumber: 10n, blockHash: `0x${'0e'.repeat(32)}`, logs, status: 'success' };
++    },
++    async getBlockNumber() { return 100n; },
++    async getLogs({ args }: { args: { userOpHash: Hex } }) {
++      return state.userOps
++        .filter((l) => l.topics[1]!.toLowerCase() === args.userOpHash.toLowerCase())
++        .map((l) => ({ ...l, args: { success: (l.data.slice(2 + 64, 2 + 128).endsWith('1')) } }));
++    },
++  };
++  // venue-base resolves its own copy of viem (finding E26 in composition-root.ts): name the
++  // exact type the broadcaster's deps expect rather than the operator's PublicClient.
++  return { state, publicClient: client as unknown as BroadcasterInput['publicClient'] };
++}
++
++let root: string;
++let ledger: SubmissionLedger;
++let lock: ReturnType<typeof createBroadcastLock>;
++let close: () => void;
++
++beforeEach(() => {
++  root = mkdtempSync(join(tmpdir(), 'kernel-safe-'));
++  const state = openVenueState(join(root, 'venue.db'));
++  ledger = createSubmissionLedger(state);
++  lock = createBroadcastLock(state);
++  close = () => state.close();
++});
++afterEach(() => {
++  close();
++  rmSync(root, { recursive: true, force: true });
++});
++
++const signer = { bin: 'agent-signer', configPath: 'agent.json', account: KERNEL };
++const request = { to: ROUTER, value: 0n, data: '0x12345678' as Hex, logicalTx: 'claim.task-1' };
++
++describe('createKernelSafeBroadcaster', () => {
++  it('sends execTransaction from the Kernel with a v = 1 signature, no refund, and the Safe nonce asserted', async () => {
++    const { state, publicClient } = chain();
++    state.receipts.set(TX1, [plainLog(ROUTER, 'aa'), userOpEvent(OP1, true)]);
++    const calls: AgentSignerCall[] = [];
++    const send = vi.fn(async (_cfg, call: AgentSignerCall): Promise<AgentSignerResult> => {
++      calls.push(call);
++      return { account: KERNEL, userOpHash: OP1, nonce: '0x1', txHash: TX1, blockNumber: 10n, gasUsed: 1n };
++    });
++    const b = createKernelSafeBroadcaster({ chainId: CHAIN_ID, safeAddress: SAFE, publicClient, ledger, lock, signer, send });
++
++    const receipt = await b.execute(request);
++
++    expect(calls).toHaveLength(1);
++    expect(calls[0]!.to).toBe(SAFE);
++    expect(calls[0]!.value).toBe(0n);
++    expect(calls[0]!.safeNonce).toBe(7n);
++    const exec = decodeFunctionData({ abi: EXEC_ABI, data: calls[0]!.data });
++    const [to, value, data, operation, safeTxGas, baseGas, gasPrice, gasToken, refundReceiver, sig] = exec.args;
++    expect([to, value, data, operation]).toEqual([ROUTER, 0n, '0x12345678', 0]);
++    expect([safeTxGas, baseGas, gasPrice]).toEqual([0n, 0n, 0n]);
++    expect([gasToken, refundReceiver]).toEqual(['0x0000000000000000000000000000000000000000', '0x0000000000000000000000000000000000000000']);
++    expect(sig).toBe(`0x${KERNEL.slice(2).toLowerCase().padStart(64, '0')}${'0'.repeat(64)}01`);
++
++    expect(receipt.txHash).toBe(TX1);
++    expect(receipt.alreadySettled).toBe(false);
++    expect(receipt.logs).toHaveLength(1); // only our userOp's logs, without the EntryPoint event
++    const row = ledger.get({ chainId: CHAIN_ID, from: KERNEL, nonce: 7 });
++    expect(row?.txHash).toBe(OP1);
++    expect(row?.logicalTx).toBe('claim.task-1');
++    expect(row?.resolvedAtMs).toBeDefined();
++  });
++
++  it('adopts an attempt that landed after an unknown outcome instead of executing it again', async () => {
++    const { state, publicClient } = chain();
++    let attempts = 0;
++    const send = vi.fn(async (): Promise<AgentSignerResult> => {
++      attempts += 1;
++      throw new AgentSignerError('not-included', 'not included within 120 s', 'userOpHash: ' + OP1, null, OP1);
++    });
++    const b = createKernelSafeBroadcaster({ chainId: CHAIN_ID, safeAddress: SAFE, publicClient, ledger, lock, signer, send });
++
++    const first = await b.execute(request).catch((e: unknown) => e);
++    expect(first).toBeInstanceOf(AgentSignerError);
++    expect(b.classify(first)).toBe('permanent'); // never resent blindly
++    const pending = ledger.get({ chainId: CHAIN_ID, from: KERNEL, nonce: 7 });
++    expect(pending?.txHash).toBe(OP1);
++    expect(pending?.resolvedAtMs).toBeUndefined();
++
++    // It landed after all: the Safe nonce moved on and the EntryPoint logged our userOp.
++    state.safeNonce = 8n;
++    state.userOps.push(userOpEvent(OP1, true));
++    state.receipts.set(TX1, [plainLog(ROUTER, 'aa'), userOpEvent(OP1, true)]);
++
++    const second = await b.execute(request);
++    expect(attempts).toBe(1);
++    expect(second.txHash).toBe(TX1);
++    expect(ledger.get({ chainId: CHAIN_ID, from: KERNEL, nonce: 7 })?.resolvedAtMs).toBeDefined();
++  });
++
++  it('when the Safe nonce went to another transaction, closes the stale row and sends at the new nonce', async () => {
++    const { state, publicClient } = chain();
++    const send = vi.fn()
++      .mockRejectedValueOnce(new AgentSignerError('not-included', 'not included', '', null, OP1))
++      .mockResolvedValueOnce({ account: KERNEL, userOpHash: OP2, nonce: '0x2', txHash: TX2, blockNumber: 11n, gasUsed: 1n });
++    state.receipts.set(TX2, [userOpEvent(OP2, true, TX2)]);
++    const b = createKernelSafeBroadcaster({ chainId: CHAIN_ID, safeAddress: SAFE, publicClient, ledger, lock, signer, send });
++
++    await b.execute(request).catch(() => {});
++    state.safeNonce = 8n; // consumed, but no UserOperationEvent of ours
++    const receipt = await b.execute(request);
++
++    expect(send).toHaveBeenCalledTimes(2);
++    expect((send.mock.calls[1]![1] as AgentSignerCall).safeNonce).toBe(8n);
++    expect(receipt.txHash).toBe(TX2);
++    expect(ledger.get({ chainId: CHAIN_ID, from: KERNEL, nonce: 7 })?.resolvedAtMs).toBeDefined();
++  });
++
++  it('a policy refusal is permanent and closes its ledger row', async () => {
++    const { publicClient } = chain();
++    const send = vi.fn().mockRejectedValue(new AgentSignerError('policy-denied', 'PolicyFailed', '3e4983f6', 1, OP1));
++    const b = createKernelSafeBroadcaster({ chainId: CHAIN_ID, safeAddress: SAFE, publicClient, ledger, lock, signer, send });
++
++    const error = await b.execute(request).catch((e: unknown) => e);
++    expect(b.classify(error)).toBe('permanent');
++    expect(ledger.get({ chainId: CHAIN_ID, from: KERNEL, nonce: 7 })?.resolvedAtMs).toBeDefined();
++  });
++
++  it('nonce races and hardware hiccups are retryable', () => {
++    const { publicClient } = chain();
++    const b = createKernelSafeBroadcaster({ chainId: CHAIN_ID, safeAddress: SAFE, publicClient, ledger, lock, signer });
++    expect(b.classify(new AgentSignerError('nonce', 'AA25', '', 1, null))).toBe('retryable');
++    expect(b.classify(new AgentSignerError('hardware', 'ttyACM0', '', 1, null))).toBe('retryable');
++    expect(b.classify(new Error('nonce too low'))).toBe('retryable'); // venue-base's own table otherwise
++  });
++});
++
++describe('userOpLogs', () => {
++  it('cuts the bundle receipt to the logs of one UserOperation', () => {
++    const logs = [
++      plainLog(ROUTER, 'aa'), userOpEvent(OP2, true),
++      plainLog(ROUTER, 'bb'), plainLog(SAFE, 'cc'), userOpEvent(OP1, true),
++    ];
++    const ours = userOpLogs(logs, OP1);
++    expect(ours.map((l) => l.topics[0]!.slice(2, 4))).toEqual(['bb', 'cc']);
++    expect(() => userOpLogs(logs, `0x${'ff'.repeat(32)}`)).toThrow(/not in the bundle/);
++  });
++});
+-- 
+2.43.0
+
