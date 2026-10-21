@@ -130,6 +130,10 @@ pub struct TokenEntry {
     pub max_per_op: String,
     /// token units, decimal string
     pub budget: String,
+    /// Allow x402 / EIP-3009 payments in this token (the CLI reads the
+    /// token's EIP-712 domain separator when installing the mandate).
+    #[serde(default)]
+    pub x402: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -209,7 +213,14 @@ impl AgentConfig {
         }
     }
 
-    pub fn policy_params(&self) -> Result<PolicyParams> {
+    /// Tokens whose x402 payments this mandate allows.
+    pub fn x402_tokens(&self) -> Vec<Address> {
+        self.policy.tokens.iter().filter(|t| t.x402).map(|t| t.token).collect()
+    }
+
+    /// The mandate as install parameters. `domains` holds the EIP-712 domain
+    /// separators of the `x402` tokens (read from the chain by the caller).
+    pub fn policy_params(&self, domains: &std::collections::HashMap<Address, alloy::primitives::B256>) -> Result<PolicyParams> {
         let mut targets = Vec::with_capacity(self.policy.allow.len());
         let mut selectors = Vec::with_capacity(self.policy.allow.len());
         for entry in &self.policy.allow {
@@ -232,11 +243,17 @@ impl AgentConfig {
                 .policy
                 .tokens
                 .iter()
-                .map(|t| -> Result<(Address, u128, u128)> {
+                .map(|t| -> Result<(Address, u128, u128, alloy::primitives::B256)> {
+                    let domain = if t.x402 {
+                        *domains.get(&t.token).with_context(|| format!("no domain separator read for x402 token {}", t.token))?
+                    } else {
+                        alloy::primitives::B256::ZERO
+                    };
                     Ok((
                         t.token,
                         t.max_per_op.parse().context("tokens.maxPerOp")?,
                         t.budget.parse().context("tokens.budget")?,
+                        domain,
                     ))
                 })
                 .collect::<Result<_>>()?,

@@ -56,12 +56,24 @@ import {SafeNonceAssert} from "./SafeNonceAssert.sol";
 /// One allow-list entry admits its call directly, through a Safe and as a
 /// batch leg alike; curate it with that in mind.
 ///
-/// ERC-1271 signatures are refused outright: an agent must not be able to
-/// sign off-chain approvals (permits, orders) that bypass the mandate.
-/// docs/ERC1271.md describes the caller-scoped variant kept in reserve.
+/// ERC-1271 signatures are refused — with one exception that keeps the
+/// mandate in charge: x402 payments. The agent first *registers* an EIP-3009
+/// `TransferWithAuthorization` with an ordinary operation calling
+/// `x402Authorize(...)`; the mandate judges it like a token transfer (per-op
+/// cap, the token's budget, shared with direct transfers) and records its
+/// EIP-712 digest. Afterwards `checkSignaturePolicy` vouches for exactly
+/// that digest — the hash USDC hands to `isValidSignature` — within the
+/// mandate's window and the authorization's `validBefore`. Every other hash
+/// (permits, Permit2, orders, other authorizations) is still refused. The
+/// token itself enforces one use per nonce; `x402Reclaim` returns the budget
+/// of an authorization that expired unused. docs/ERC1271.md.
 ///
 /// The chip guarantees nobody else can be this agent; this policy guarantees
 /// that even this agent, compromised, cannot exceed what it was allowed to do.
+interface IERC3009State {
+    function authorizationState(address authorizer, bytes32 nonce) external view returns (bool);
+}
+
 contract AgentPolicy is IPolicy {
     struct Config {
         uint48 validUntil; // 0 = not installed
@@ -72,11 +84,15 @@ contract AgentPolicy is IPolicy {
         uint48 validAfter; // 0 = from installation on
     }
 
-    /// Install-time limit for one ERC-20 token.
+    /// Install-time limit for one ERC-20 token. `domainSeparator` is the
+    /// token's EIP-712 domain (read off-chain at install), non-zero to allow
+    /// x402 / EIP-3009 payments in it — the policy cannot read the token's
+    /// storage during validation.
     struct TokenCap {
         address token;
         uint128 maxPerOp;
         uint128 budget;
+        bytes32 domainSeparator;
     }
 
     struct TokenLimit {
@@ -84,14 +100,37 @@ contract AgentPolicy is IPolicy {
         uint128 budget;
         uint128 spent;
         bool set;
+        bytes32 domainSeparator;
+    }
+
+    /// A registered x402 authorization, keyed by its EIP-712 digest.
+    struct Pending {
+        uint128 value;
+        uint48 validBefore;
+        address token;
     }
 
     struct Mandate {
         mapping(address target => mapping(bytes4 selector => bool)) allowed;
         mapping(address token => TokenLimit) tokens;
+        mapping(bytes32 digest => Pending) x402;
     }
 
     error InvalidConfig();
+    error X402NotRegistered();
+    error X402StillLive();
+    error X402Settled();
+
+    event X402Authorized(
+        address indexed account,
+        address indexed token,
+        address indexed to,
+        uint256 value,
+        uint256 validAfter,
+        uint256 validBefore,
+        bytes32 nonce
+    );
+    event X402Reclaimed(address indexed account, bytes32 indexed id, bytes32 digest, uint256 value);
 
     event AgentPolicySet(
         address indexed account, bytes32 indexed id, uint48 validUntil, uint128 maxValuePerOp, uint128 budget
@@ -108,6 +147,11 @@ contract AgentPolicy is IPolicy {
     bytes4 internal constant ERC20_TRANSFER_FROM = 0x23b872dd; // transferFrom(address,address,uint256)
     bytes4 internal constant ERC20_APPROVE = 0x095ea7b3; // approve(address,uint256)
     bytes4 internal constant ERC20_INCREASE_ALLOWANCE = 0x39509351; // increaseAllowance(address,uint256)
+
+    /// EIP-3009 `TransferWithAuthorization(address from,address to,uint256 value,
+    /// uint256 validAfter,uint256 validBefore,bytes32 nonce)` (== USDC's).
+    bytes32 public constant TRANSFER_WITH_AUTHORIZATION_TYPEHASH =
+        0x7c7c6cdb67a18743f49ec6fa9b35f50d52ed05cbed4cc592e13b44501c1a2267;
 
     /// Where a call sits: issued by the account, by the account right after
     /// a matching nonce assertion, by a Safe, or as a Safe batch leg.
@@ -153,7 +197,8 @@ contract AgentPolicy is IPolicy {
         }
         for (uint256 i; i < tokens.length; i++) {
             if (tokens[i].token == address(0) || m.tokens[tokens[i].token].set) revert InvalidConfig();
-            m.tokens[tokens[i].token] = TokenLimit(tokens[i].maxPerOp, tokens[i].budget, 0, true);
+            m.tokens[tokens[i].token] =
+                TokenLimit(tokens[i].maxPerOp, tokens[i].budget, 0, true, tokens[i].domainSeparator);
         }
         c.validUntil = validUntil;
         c.validAfter = validAfter;
@@ -217,14 +262,101 @@ contract AgentPolicy is IPolicy {
         return packValidationData(ValidAfter.wrap(c.validAfter), ValidUntil.wrap(c.validUntil));
     }
 
-    /// @dev Agents do not sign messages. See the contract notice.
-    function checkSignaturePolicy(bytes32, address, bytes32, bytes calldata)
+    /// @dev The only message an agent may "sign": a registered x402
+    /// authorization's digest — the hash the token passes to
+    /// `isValidSignature` (Kernel hands policies the unwrapped hash). The
+    /// caller is not checked: facilitators verify with `eth_call` from their
+    /// own address, and the digest is bound to the token's domain anyway.
+    function checkSignaturePolicy(bytes32 id, address, bytes32 hash, bytes calldata)
         external
-        pure
+        view
         override
         returns (uint256)
     {
-        return SIG_VALIDATION_FAILED_UINT;
+        Config storage c = configs[msg.sender][id];
+        if (c.validUntil == 0) return SIG_VALIDATION_FAILED_UINT;
+        Pending storage p = _mandates[msg.sender][id][c.epoch].x402[hash];
+        if (p.value == 0) return SIG_VALIDATION_FAILED_UINT;
+        uint48 until = p.validBefore < c.validUntil ? p.validBefore : c.validUntil;
+        return packValidationData(ValidAfter.wrap(c.validAfter), ValidUntil.wrap(until));
+    }
+
+    /// @notice Executed after validation registered the authorization: only
+    /// leaves a record for wallets and `x402 reclaim`.
+    function x402Authorize(
+        address token,
+        address, /* from: the account itself, checked in validation */
+        address to,
+        uint256 value,
+        uint256 validAfter,
+        uint256 validBefore,
+        bytes32 nonce
+    ) external {
+        emit X402Authorized(msg.sender, token, to, value, validAfter, validBefore, nonce);
+    }
+
+    /// @notice Return to the budget an authorization that can never settle
+    /// any more: past `validBefore` and unused at the token. Only the account
+    /// can, for its own records.
+    function x402Reclaim(
+        bytes32 id,
+        address token,
+        address to,
+        uint256 value,
+        uint256 validAfter,
+        uint256 validBefore,
+        bytes32 nonce
+    ) external {
+        Config storage c = configs[msg.sender][id];
+        Mandate storage m = _mandates[msg.sender][id][c.epoch];
+        TokenLimit storage t = m.tokens[token];
+        bytes32 digest = _x402Digest(t.domainSeparator, msg.sender, to, value, validAfter, validBefore, nonce);
+        Pending storage p = m.x402[digest];
+        if (p.value == 0) revert X402NotRegistered();
+        if (block.timestamp < validBefore) revert X402StillLive();
+        if (IERC3009State(token).authorizationState(msg.sender, nonce)) revert X402Settled();
+        t.spent -= p.value;
+        emit X402Reclaimed(msg.sender, id, digest, p.value);
+        delete m.x402[digest];
+    }
+
+    function x402Pending(address account, bytes32 id, bytes32 digest) external view returns (Pending memory) {
+        return _mandates[account][id][configs[account][id].epoch].x402[digest];
+    }
+
+    function _x402Digest(
+        bytes32 domainSeparator,
+        address from,
+        address to,
+        uint256 value,
+        uint256 validAfter,
+        uint256 validBefore,
+        bytes32 nonce
+    ) internal pure returns (bytes32) {
+        bytes32 structHash = keccak256(
+            abi.encode(TRANSFER_WITH_AUTHORIZATION_TYPEHASH, from, to, value, validAfter, validBefore, nonce)
+        );
+        return keccak256(abi.encodePacked(hex"1901", domainSeparator, structHash));
+    }
+
+    /// @dev Validation of `x402Authorize(...)`: judged like a transfer of the
+    /// token (per-op cap, shared budget), then the digest is recorded.
+    function _registerX402(Mandate storage m, bytes calldata d) internal returns (bool) {
+        if (d.length != 4 + 7 * 32) return false;
+        (address token, address from, address to, uint256 value, uint256 validAfter, uint256 validBefore, bytes32 nonce) =
+            abi.decode(d[4:], (address, address, address, uint256, uint256, uint256, bytes32));
+        if (from != msg.sender) return false; // the account checkUserOpPolicy runs for
+        TokenLimit storage t = m.tokens[token];
+        if (!t.set || t.domainSeparator == bytes32(0)) return false;
+        if (value == 0 || value > t.maxPerOp || validBefore > type(uint48).max) return false;
+        uint256 spent = t.spent + value;
+        if (spent > t.budget) return false;
+        bytes32 digest = _x402Digest(t.domainSeparator, from, to, value, validAfter, validBefore, nonce);
+        Pending storage p = m.x402[digest];
+        if (p.value != 0) return false;
+        t.spent = uint128(spent);
+        m.x402[digest] = Pending(uint128(value), uint48(validBefore), token);
+        return true;
     }
 
     /// @dev `(verificationGasLimit + callGasLimit + preVerificationGas) *
@@ -311,6 +443,10 @@ contract AgentPolicy is IPolicy {
         // any other way its legs would run as the batch contract.
         if (selector == MULTI_SEND) return (false, 0);
         if (selector == SAFE_EXEC_TRANSACTION) return _judgeSafe(m, value, data, from);
+        // x402: registering an authorization is the account's own call only
+        if (target == address(this) && selector == this.x402Authorize.selector) {
+            return (from == FROM_ACCOUNT && value == 0 && _registerX402(m, data)) ? (true, 0) : (false, 0);
+        }
         if (!_chargeToken(m, target, selector, data)) return (false, 0);
         return (true, value);
     }

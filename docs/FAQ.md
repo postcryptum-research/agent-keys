@@ -208,7 +208,8 @@ realistic case, and the project does not try to tell them apart
   for owner operations.
 
 What it cannot do: sign messages for the account (no permits, no SIWE logins
-— the policy refuses ERC-1271), change the mandate, or act beyond it.
+— the policy refuses ERC-1271, except x402 payments it registered within the
+mandate's token budget), change the mandate, or act beyond it.
 What you do: revoke the agent with the owner key
 (`agent-signer permission revoke`) from another machine, then reinstall.
 
@@ -313,6 +314,12 @@ Coinbase AgentKit, a Claude Code / OpenClaw skill, Jinn and Olas
 ([`examples/`](../examples/README.md)). Anything else that can run a command
 (`agent-signer op send --json`) or call a function that sends one transaction
 works the same way.
+
+It can also pay for HTTP APIs with x402 (USDC on Base): each payment is
+first registered on-chain against the mandate's token budget, then signed
+([`ERC1271.md`](ERC1271.md#x402--registered-authorizations-implemented-agentpolicy-v6),
+`agent-signer x402 fetch`). One registration costs one operation's gas, so
+x402 suits payments well above a cent.
 
 ### What does an operation cost, and how long does it take?
 

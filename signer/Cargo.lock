@@ -46,6 +46,7 @@ dependencies = [
  "alloy",
  "anyhow",
  "aws-lc-sys",
+ "base64 0.22.1",
  "clap",
  "dotenvy",
  "hex",

@@ -60,13 +60,18 @@ impl Env {
 /// and the owner's comes from the config, never from opening the owner's key:
 /// the agent's operations must run where that key cannot be reached
 /// (docs/KEY_POLICY.md rule 3). Root operations open it, in `send_raw_at`.
-pub fn account_material(cfg: &AgentConfig, dep: &Deployments) -> Result<(Bytes, Option<Bytes>)> {
+pub fn account_material(
+    cfg: &AgentConfig,
+    dep: &Deployments,
+    domains: &std::collections::HashMap<Address, B256>,
+) -> Result<(Bytes, Option<Bytes>)> {
     let agent_key = match &cfg.agent_public_key {
         Some(pk) => pk.parse()?,
         None => open_signer(&cfg.agent, Role::Agent)?.public_key()?,
     };
     let perm = cfg.permission_id()?;
-    let permission_data = kernel::permission_data(dep.agent_policy, &cfg.policy_params()?, dep.p256_signer, &agent_key);
+    let permission_data =
+        kernel::permission_data(dep.agent_policy, &cfg.policy_params(domains)?, dep.p256_signer, &agent_key);
     let init_data = match &cfg.owner_public_key {
         Some(pk) => Some(kernel::init_data(dep.p256_validator, &pk.parse()?, perm, permission_data.clone())),
         None => None,
@@ -115,6 +120,8 @@ pub struct Session {
     pub account: Address,
     /// `account` came from the config rather than from the factory.
     pub pinned: bool,
+    /// EIP-712 domain separators of the mandate's x402 tokens.
+    pub token_domains: std::collections::HashMap<Address, B256>,
 }
 
 impl Session {
@@ -145,7 +152,18 @@ impl Session {
             None => None,
         };
 
-        let (permission_data, init_data) = account_material(&cfg, &dep)?;
+        // EIP-712 domains of the tokens this mandate may pay x402 in: part of
+        // the mandate, read here because the policy cannot read them itself.
+        let mut token_domains = std::collections::HashMap::new();
+        for token in cfg.x402_tokens() {
+            let ds = crate::abi::IEip3009Token::new(token, provider.clone())
+                .DOMAIN_SEPARATOR()
+                .call()
+                .await
+                .with_context(|| format!("reading DOMAIN_SEPARATOR() of x402 token {token}"))?;
+            token_domains.insert(token, ds);
+        }
+        let (permission_data, init_data) = account_material(&cfg, &dep, &token_domains)?;
 
         let (account, pinned) = match cfg.account {
             Some(pinned) => {
@@ -163,7 +181,7 @@ impl Session {
             }
         };
 
-        Ok(Self { provider, gas_wallet, bundler, cfg, dep, init_data, permission_data, account, pinned })
+        Ok(Self { provider, gas_wallet, bundler, cfg, dep, init_data, permission_data, account, pinned, token_domains })
     }
 
     /// Kernel `initialize` data for this account (needs `ownerPublicKey`).
@@ -463,12 +481,12 @@ impl Session {
             println!("{}budget          chain {budget} / config {}", mark(budget.to_string() == p.budget), p.budget);
             println!("      spent           chain {spent}");
             let view = IAgentPolicyView::new(policy, self.provider.clone());
-            let params = self.cfg.policy_params()?;
+            let params = self.cfg.policy_params(&self.token_domains)?;
             for (target, selector) in params.targets.iter().zip(&params.selectors) {
                 let allowed = view.isAllowed(self.account, id32, *target, *selector).call().await?;
                 println!("{}allow           {target} {selector}{}", mark(allowed), if allowed { "" } else { "  — in the config, NOT allowed on chain" });
             }
-            for (token, max, budget) in &params.tokens {
+            for (token, max, budget, _) in &params.tokens {
                 let limit = view.tokenLimit(self.account, id32, *token).call().await;
                 match limit {
                     Ok(l) => println!(
@@ -845,14 +863,15 @@ mod tests {
         let dep: Deployments = serde_json::from_str(DEPLOYMENTS).unwrap();
         let owner = r#"{"software": "0x0000000000000000000000000000000000000000000000000000000000000001"}"#;
         let cfg = config(owner, &format!(r#""ownerPublicKey": {{"x": "{X}", "y": "{Y}"}},"#));
-        let (_, init_data) = account_material(&cfg, &dep).unwrap();
+        let none = std::collections::HashMap::new();
+        let (_, init_data) = account_material(&cfg, &dep, &none).unwrap();
         assert!(init_data.is_some(), "the owner's public key from the config derives initData");
         assert!(open_signer(&cfg.owner, Role::Owner).is_err());
 
         // without the owner's public key there is simply no initData — not a
         // fallback to opening the owner's key
         let cfg = config(owner, "");
-        let (_, init_data) = account_material(&cfg, &dep).unwrap();
+        let (_, init_data) = account_material(&cfg, &dep, &none).unwrap();
         assert!(init_data.is_none());
     }
 

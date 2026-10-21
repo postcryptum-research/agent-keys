@@ -17,10 +17,11 @@ attempt, so a retry can never execute it twice.
 | [`claude-skill/`](claude-skill/) | Claude Code / OpenClaw skills | a `SKILL.md` that teaches the agent the CLI | ready |
 | [`jinn/`](jinn/) | Jinn operator (Olas ecosystem) | a Safe broadcaster with a Kernel owner (`v = 1`) | adapter + demo verified on Base Sepolia; integration plan |
 | [`olas/`](olas/) | Olas / open-autonomy (Python) | Safe owner and keeper become the Kernel; consensus key stays, without funds | `transaction_settlement_abci` path verified on Base Sepolia; upstream plan |
+| [`x402/`](x402/) | x402 (HTTP 402 payments, USDC) | `agent-signer x402 fetch`: register under the mandate, then sign ERC-1271 | registration, facilitator ERC-1271 check and reclaim verified on Base Sepolia; settlement pending USDC |
 
-Background: `docs/ERC1271.md` — why the agent signs no off-chain messages,
-and how Safes (Olas, Jinn) work anyway through `AgentPolicy`'s Safe
-pass-through.
+Background: `docs/ERC1271.md` — why the agent signs no general off-chain
+messages, how Safes (Olas, Jinn) work anyway through `AgentPolicy`'s Safe
+pass-through, and how x402 payments get a narrow ERC-1271 by registration.
 
 ## Common setup
 

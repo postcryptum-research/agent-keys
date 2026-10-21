@@ -119,7 +119,7 @@ Exactly one of:
 | `budget` | yes | decimal string, wei | total native value over the permission's life, **plus** the maximum gas cost of each operation the account pays for itself |
 | `validUntil` | yes | integer, Unix seconds, > 0 | end of the window: after it the EntryPoint refuses the agent's operations |
 | `validAfter` | no, default 0 | integer, Unix seconds, < `validUntil` | start of the window (0 = at once); several permissions with their own windows make a schedule |
-| `tokens` | no | list of `{"token": address, "maxPerOp": decimal string, "budget": decimal string}` | per-token limits in the token's base units (USDC: 6 decimals, so `"20000000"` = 20 USDC). Required for every token whose `transfer` / `transferFrom` / `approve` / `increaseAllowance` is in `allow` — without one the call is refused. One entry per token |
+| `tokens` | no | list of `{"token": address, "maxPerOp": decimal string, "budget": decimal string, "x402": bool}` | per-token limits in the token's base units (USDC: 6 decimals, so `"20000000"` = 20 USDC). Required for every token whose `transfer` / `transferFrom` / `approve` / `increaseAllowance` is in `allow` — without one the call is refused. One entry per token. `x402` (default `false`): the agent may also pay x402 in this token (EIP-3009, e.g. USDC) from the same budget; the CLI reads the token's `DOMAIN_SEPARATOR()` and installs it with the limit ([`ERC1271.md`](ERC1271.md)) |
 
 Special `allow` entries:
 
@@ -127,6 +127,8 @@ Special `allow` entries:
 |---|---|
 | `(safe, 0x6a761202)` — `Safe.execTransaction` | the account may drive that Safe (which it owns); the call *inside* each Safe transaction is judged against the same `allow`, value cap, budget and token limits; refunds, nested Safes and Safe self-administration are refused; each Safe transaction must come with an on-chain nonce assertion (`op send --safe-nonce`) |
 | `(multiSendCallOnly, 0x8d80ff0a)` — `multiSend` | Safe transactions may delegatecall this batcher; every leg must be a CALL that passes the mandate |
+| `(agentPolicy, 0x4993d616)` — `x402Authorize` | the agent may register x402 payments in its `x402` tokens; each is held to the token's `maxPerOp` and budget, and only registered ones get an ERC-1271 yes |
+| `(agentPolicy, 0xf3ea183e)` — `x402Reclaim` | the agent may return expired, unused registrations to the budget (`x402 reclaim`) |
 
 ## From file to contracts
 
@@ -139,7 +141,7 @@ Where each field ends up, and which signed operation puts it there:
 | `permissionId` | the Kernel permission `0x02 ‖ id`, with its signer and policy (`permissionConfig(id)`) and its EntryPoint nonce space | same |
 | `policy.allow` | `AgentPolicy.isAllowed(account, id, target, selector)` | same |
 | `policy.maxValuePerOp`, `budget`, `validUntil`, `validAfter` | `AgentPolicy.configs(account, id)` (with `spent`, which the chain updates) | same |
-| `policy.tokens` | `AgentPolicy.tokenLimit(account, id, token)` (with its `spent`) | same |
+| `policy.tokens` | `AgentPolicy.tokenLimit(account, id, token)` (with its `spent`; for `x402` tokens also the token's EIP-712 domain) | same |
 | `recovery` | `P256RecoveryValidator.publicKeys(account)` + Kernel `isAllowedSelector(recovery, changeRootValidator)` | `owner add-recovery` (owner) |
 | `account`, `salt` | the account's address (`salt` only before deployment) | — (identifies the account) |
 | `deployments` | — | — (which module addresses the CLI uses for *new* installs) |
@@ -156,6 +158,7 @@ its module until then; `permission show` names it.
 | Command | Reads from the file | Changes on-chain | Signed by |
 |---|---|---|---|
 | `op send`, `demo` | `agent`, `permissionId`, `account` (or derivation fields) | executes the call — **only within the installed mandate** | agent key |
+| `x402 fetch`, `x402 reclaim` | same, + `policy.tokens` (which are `x402`) | registers / reclaims an x402 payment — within the mandate | agent key |
 | `account status`, `owner status`, `permission show` | everything | nothing | — |
 | `permission rotate` / `add` | `agent`, `permissionId`, `policy`, `account`, `deployments` | installs this file's permission (rotate: and removes `--old-id`) | owner key |
 | `permission revoke --id` | `account` | removes a permission | owner key |

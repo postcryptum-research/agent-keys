@@ -65,6 +65,75 @@ contract MockToken {
     }
 }
 
+interface IERC1271Like {
+    function isValidSignature(bytes32 hash, bytes calldata signature) external view returns (bytes4);
+}
+
+/// The EIP-3009 path of USDC FiatToken v2.2, reduced to what x402 uses:
+/// an EIP-712 digest in the token's domain, ERC-1271 for contract wallets,
+/// one use per (authorizer, nonce), the [validAfter, validBefore) window.
+contract MockUSDC {
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(bytes32 => bool)) public authorizationState;
+    bytes32 public immutable DOMAIN_SEPARATOR;
+    bytes32 public constant TRANSFER_WITH_AUTHORIZATION_TYPEHASH =
+        0x7c7c6cdb67a18743f49ec6fa9b35f50d52ed05cbed4cc592e13b44501c1a2267;
+
+    constructor() {
+        DOMAIN_SEPARATOR = keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256("USDC"),
+                keccak256("2"),
+                block.chainid,
+                address(this)
+            )
+        );
+    }
+
+    function mint(address to, uint256 amount) external {
+        balanceOf[to] += amount;
+    }
+
+    function transfer(address to, uint256 amount) external returns (bool) {
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += amount;
+        return true;
+    }
+
+    function transferWithAuthorization(
+        address from,
+        address to,
+        uint256 value,
+        uint256 validAfter,
+        uint256 validBefore,
+        bytes32 nonce,
+        bytes calldata signature
+    ) external {
+        require(block.timestamp > validAfter && block.timestamp < validBefore, "FiatTokenV2: authorization window");
+        require(!authorizationState[from][nonce], "FiatTokenV2: authorization is used or canceled");
+        bytes32 structHash =
+            keccak256(abi.encode(TRANSFER_WITH_AUTHORIZATION_TYPEHASH, from, to, value, validAfter, validBefore, nonce));
+        bytes32 digest = keccak256(abi.encodePacked(hex"1901", DOMAIN_SEPARATOR, structHash));
+        (bool ok, bytes memory ret) =
+            from.staticcall(abi.encodeCall(IERC1271Like.isValidSignature, (digest, signature)));
+        require(ok && ret.length == 32 && abi.decode(ret, (bytes4)) == 0x1626ba7e, "FiatTokenV2: invalid signature");
+        authorizationState[from][nonce] = true;
+        balanceOf[from] -= value;
+        balanceOf[to] += value;
+    }
+
+    function digestOf(address from, address to, uint256 value, uint256 validAfter, uint256 validBefore, bytes32 nonce)
+        external
+        view
+        returns (bytes32)
+    {
+        bytes32 structHash =
+            keccak256(abi.encode(TRANSFER_WITH_AUTHORIZATION_TYPEHASH, from, to, value, validAfter, validBefore, nonce));
+        return keccak256(abi.encodePacked(hex"1901", DOMAIN_SEPARATOR, structHash));
+    }
+}
+
 contract Counter {
     uint256 public count;
 
@@ -174,7 +243,7 @@ contract AgentPermissionTest is Test {
 
     function _tokenCaps() internal view returns (AgentPolicy.TokenCap[] memory caps) {
         caps = new AgentPolicy.TokenCap[](1);
-        caps[0] = AgentPolicy.TokenCap(address(token), TOKEN_MAX, TOKEN_BUDGET);
+        caps[0] = AgentPolicy.TokenCap(address(token), TOKEN_MAX, TOKEN_BUDGET, bytes32(0));
     }
 
     function _policyEntry(address[] memory targets, bytes4[] memory selectors, AgentPolicy.TokenCap[] memory caps)
@@ -992,5 +1061,249 @@ contract AgentPermissionTest is Test {
         );
         vm.expectRevert(AgentPolicy.InvalidConfig.selector);
         policy.onInstall(install);
+    }
+
+    // --- x402: pre-registered EIP-3009 authorizations, scoped ERC-1271 ---
+
+    PermissionId internal constant PAY_ID = PermissionId.wrap(0x70617931); // "pay1"
+    MockUSDC internal usdc;
+    address internal constant PAYEE = address(0xBEEF);
+
+    /// A permission that may pay in mock USDC through x402: at most 1 USDC per
+    /// payment, 2.5 USDC in total, direct transfers sharing the budget.
+    function _withX402() internal {
+        usdc = new MockUSDC();
+        usdc.mint(acct, 100e6);
+        address[] memory targets = new address[](3);
+        bytes4[] memory selectors = new bytes4[](3);
+        (targets[0], selectors[0]) = (address(policy), AgentPolicy.x402Authorize.selector);
+        (targets[1], selectors[1]) = (address(policy), AgentPolicy.x402Reclaim.selector);
+        (targets[2], selectors[2]) = (address(usdc), MockToken.transfer.selector);
+        AgentPolicy.TokenCap[] memory caps = new AgentPolicy.TokenCap[](2);
+        caps[0] = AgentPolicy.TokenCap(address(usdc), 1e6, 2_500_000, usdc.DOMAIN_SEPARATOR());
+        caps[1] = AgentPolicy.TokenCap(address(token), 1e6, 2_500_000, bytes32(0)); // limits, but no x402
+        bytes[] memory entries = new bytes[](2);
+        entries[0] = abi.encodePacked(
+            bytes2(0), address(policy), abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0))
+        );
+        entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(agentX, agentY));
+        ValidationId vId = ValidatorLib.permissionToIdentifier(PAY_ID);
+        Execution[] memory batch = new Execution[](2);
+        batch[0] = Execution(acct, 0, _installCall(vId, Kernel(payable(acct)).currentNonce(), abi.encode(entries)));
+        batch[1] = Execution(acct, 0, abi.encodeCall(Kernel.grantAccess, (vId, Kernel.execute.selector, true)));
+        _send(
+            _rootOp(
+                abi.encodeWithSelector(
+                    Kernel.execute.selector, ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))), ExecLib.encodeBatch(batch)
+                )
+            )
+        );
+    }
+
+    function _authorizeCall(uint256 value, uint256 validBefore, bytes32 nonce) internal view returns (bytes memory) {
+        return abi.encodeCall(AgentPolicy.x402Authorize, (address(usdc), acct, PAYEE, value, 0, validBefore, nonce));
+    }
+
+    /// Kernel's ERC-1271 wrapper: the agent signs this for a raw `hash`.
+    function _kernelWrapped(bytes32 hash) internal view returns (bytes32) {
+        (, string memory name, string memory version, uint256 chainId, address verifying,,) =
+            Kernel(payable(acct)).eip712Domain();
+        bytes32 domain = keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256(bytes(name)),
+                keccak256(bytes(version)),
+                chainId,
+                verifying
+            )
+        );
+        bytes32 structHash = keccak256(abi.encode(bytes32(0x1547321c374afde8a591d972a084b071c594c275e36724931ff96c25f2999c83), hash));
+        return keccak256(abi.encodePacked(hex"1901", domain, structHash));
+    }
+
+    /// The agent's ERC-1271 signature: 0x02 ‖ permission id ‖ 0xff ‖ r ‖ s.
+    function _agent1271(bytes32 hash) internal view returns (bytes memory) {
+        return abi.encodePacked(bytes1(0x02), PermissionId.unwrap(PAY_ID), bytes1(0xff), _sign(AGENT, _kernelWrapped(hash)));
+    }
+
+    function _isValid(bytes32 hash) internal view returns (bool) {
+        try Kernel(payable(acct)).isValidSignature(hash, _agent1271(hash)) returns (bytes4 r) {
+            return r == 0x1626ba7e;
+        } catch {
+            return false;
+        }
+    }
+
+    function test_x402_registeredAuthorizationSettles() public {
+        _withX402();
+        uint256 before = block.timestamp + 1 hours;
+        bytes32 digest = usdc.digestOf(acct, PAYEE, 500_000, 0, before, bytes32(uint256(1)));
+        // not registered yet: no signature for it
+        assertFalse(_isValid(digest));
+        _send(_agentOpWith(AGENT, PAY_ID, address(policy), 0, _authorizeCall(500_000, before, bytes32(uint256(1)))));
+        assertTrue(_isValid(digest));
+        assertEq(policy.tokenLimit(acct, bytes32(PermissionId.unwrap(PAY_ID)), address(usdc)).spent, 500_000);
+
+        // the facilitator (any EOA) settles it
+        bytes memory sig = _agent1271(digest);
+        vm.prank(makeAddr("facilitator"));
+        usdc.transferWithAuthorization(acct, PAYEE, 500_000, 0, before, bytes32(uint256(1)), sig);
+        assertEq(usdc.balanceOf(PAYEE), 500_000);
+        // and cannot replay it: the token's nonce is used
+        vm.expectRevert();
+        usdc.transferWithAuthorization(acct, PAYEE, 500_000, 0, before, bytes32(uint256(1)), sig);
+    }
+
+    function test_x402_onlyRegisteredDigestsAreVouchedFor() public {
+        _withX402();
+        uint256 before = block.timestamp + 1 hours;
+        _send(_agentOpWith(AGENT, PAY_ID, address(policy), 0, _authorizeCall(500_000, before, bytes32(uint256(1)))));
+        // the same payment to another payee, another amount, another nonce: refused
+        assertFalse(_isValid(usdc.digestOf(acct, address(0xBAD), 500_000, 0, before, bytes32(uint256(1)))));
+        assertFalse(_isValid(usdc.digestOf(acct, PAYEE, 900_000, 0, before, bytes32(uint256(1)))));
+        assertFalse(_isValid(usdc.digestOf(acct, PAYEE, 500_000, 0, before, bytes32(uint256(2)))));
+        // any other message (a permit, an order): refused
+        assertFalse(_isValid(keccak256("permit everything")));
+    }
+
+    function test_x402_registrationIsHeldToTheMandate() public {
+        _withX402();
+        uint256 before = block.timestamp + 1 hours;
+        // over the per-payment cap
+        _expectRefused(_agentOpWith(AGENT, PAY_ID, address(policy), 0, _authorizeCall(1_000_001, before, bytes32(uint256(1)))));
+        // from someone else
+        _expectRefused(
+            _agentOpWith(
+                AGENT,
+                PAY_ID,
+                address(policy),
+                0,
+                abi.encodeCall(AgentPolicy.x402Authorize, (address(usdc), address(0xA11CE), PAYEE, 1, 0, before, bytes32(0)))
+            )
+        );
+        // a token without x402 (the agent mandate's MockToken has no domain separator)
+        _expectRefused(
+            _agentOpWith(
+                AGENT,
+                PAY_ID,
+                address(policy),
+                0,
+                abi.encodeCall(AgentPolicy.x402Authorize, (address(token), acct, PAYEE, 1, 0, before, bytes32(0)))
+            )
+        );
+        // the budget is shared with direct transfers: 1 + 1 transferred, 0.5 left
+        _send(_agentOpWith(AGENT, PAY_ID, address(usdc), 0, abi.encodeCall(MockToken.transfer, (PAYEE, 1e6))));
+        _send(_agentOpWith(AGENT, PAY_ID, address(usdc), 0, abi.encodeCall(MockToken.transfer, (PAYEE, 1e6))));
+        _expectRefused(_agentOpWith(AGENT, PAY_ID, address(policy), 0, _authorizeCall(600_000, before, bytes32(uint256(3)))));
+        _send(_agentOpWith(AGENT, PAY_ID, address(policy), 0, _authorizeCall(500_000, before, bytes32(uint256(3)))));
+        // the same registration twice is refused
+        _expectRefused(_agentOpWith(AGENT, PAY_ID, address(policy), 0, _authorizeCall(500_000, before, bytes32(uint256(3)))));
+    }
+
+    function test_x402_windowAndRevocation() public {
+        _withX402();
+        uint256 before = block.timestamp + 1 hours;
+        bytes32 digest = usdc.digestOf(acct, PAYEE, 500_000, 0, before, bytes32(uint256(7)));
+        _send(_agentOpWith(AGENT, PAY_ID, address(policy), 0, _authorizeCall(500_000, before, bytes32(uint256(7)))));
+        assertTrue(_isValid(digest));
+        // past validBefore: no longer vouched for
+        vm.warp(before + 1);
+        assertFalse(_isValid(digest));
+        vm.warp(before - 10);
+        assertTrue(_isValid(digest));
+        // the owner revokes the permission: every pending authorization dies
+        _send(_rootOp(abi.encodeCall(Kernel.uninstallValidation, (ValidatorLib.permissionToIdentifier(PAY_ID), abi.encode(new bytes[](2)), ""))));
+        assertFalse(_isValid(digest));
+    }
+
+    function test_x402_reclaimReturnsBudgetOfExpiredUnused() public {
+        _withX402();
+        uint256 before = block.timestamp + 1 hours;
+        bytes32 id = bytes32(PermissionId.unwrap(PAY_ID));
+        bytes memory auth = _authorizeCall(800_000, before, bytes32(uint256(9)));
+        _send(_agentOpWith(AGENT, PAY_ID, address(policy), 0, auth));
+        assertEq(policy.tokenLimit(acct, id, address(usdc)).spent, 800_000);
+        bytes memory reclaim =
+            abi.encodeCall(AgentPolicy.x402Reclaim, (id, address(usdc), PAYEE, 800_000, 0, before, bytes32(uint256(9))));
+        // still live: the reclaim reverts in execution, nothing changes
+        _send(_agentOpWith(AGENT, PAY_ID, address(policy), 0, reclaim));
+        assertEq(policy.tokenLimit(acct, id, address(usdc)).spent, 800_000);
+        // expired and never settled: the budget comes back
+        vm.warp(before + 1);
+        _send(_agentOpWith(AGENT, PAY_ID, address(policy), 0, reclaim));
+        assertEq(policy.tokenLimit(acct, id, address(usdc)).spent, 0);
+    }
+
+    function test_x402_settledCannotBeReclaimed() public {
+        _withX402();
+        uint256 before = block.timestamp + 1 hours;
+        bytes32 id = bytes32(PermissionId.unwrap(PAY_ID));
+        bytes32 digest = usdc.digestOf(acct, PAYEE, 500_000, 0, before, bytes32(uint256(5)));
+        _send(_agentOpWith(AGENT, PAY_ID, address(policy), 0, _authorizeCall(500_000, before, bytes32(uint256(5)))));
+        bytes memory sig = _agent1271(digest);
+        usdc.transferWithAuthorization(acct, PAYEE, 500_000, 0, before, bytes32(uint256(5)), sig);
+        vm.warp(before + 1);
+        vm.prank(acct);
+        vm.expectRevert(AgentPolicy.X402Settled.selector);
+        policy.x402Reclaim(id, address(usdc), PAYEE, 500_000, 0, before, bytes32(uint256(5)));
+    }
+
+    function test_x402_tokenWithoutDomainIsRefused() public {
+        _withX402();
+        // `token` has limits in this mandate but no domain separator: no x402
+        _expectRefused(
+            _agentOpWith(
+                AGENT,
+                PAY_ID,
+                address(policy),
+                0,
+                abi.encodeCall(AgentPolicy.x402Authorize, (address(token), acct, PAYEE, 1, 0, block.timestamp + 1 hours, bytes32(0)))
+            )
+        );
+    }
+
+    function test_x402_sameAuthorizationRegistersOnce() public {
+        _withX402();
+        uint256 before = block.timestamp + 1 hours;
+        _send(_agentOpWith(AGENT, PAY_ID, address(policy), 0, _authorizeCall(100_000, before, bytes32(uint256(4)))));
+        _expectRefused(_agentOpWith(AGENT, PAY_ID, address(policy), 0, _authorizeCall(100_000, before, bytes32(uint256(4)))));
+        assertEq(policy.tokenLimit(acct, bytes32(PermissionId.unwrap(PAY_ID)), address(usdc)).spent, 100_000);
+    }
+
+    function test_x402_notFromInsideASafe() public {
+        Safe safe = _withSafe();
+        _withX402();
+        // a permission that may drive the Safe AND register x402 payments
+        PermissionId both = PermissionId.wrap(0x62746831); // "bth1"
+        address[] memory targets = new address[](2);
+        bytes4[] memory selectors = new bytes4[](2);
+        (targets[0], selectors[0]) = (address(safe), Safe.execTransaction.selector);
+        (targets[1], selectors[1]) = (address(policy), AgentPolicy.x402Authorize.selector);
+        AgentPolicy.TokenCap[] memory caps = new AgentPolicy.TokenCap[](1);
+        caps[0] = AgentPolicy.TokenCap(address(usdc), 1e6, 2_500_000, usdc.DOMAIN_SEPARATOR());
+        bytes[] memory entries = new bytes[](2);
+        entries[0] = abi.encodePacked(
+            bytes2(0), address(policy), abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0))
+        );
+        entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(agentX, agentY));
+        ValidationId vId = ValidatorLib.permissionToIdentifier(both);
+        Execution[] memory batch = new Execution[](2);
+        batch[0] = Execution(acct, 0, _installCall(vId, Kernel(payable(acct)).currentNonce(), abi.encode(entries)));
+        batch[1] = Execution(acct, 0, abi.encodeCall(Kernel.grantAccess, (vId, Kernel.execute.selector, true)));
+        _send(
+            _rootOp(
+                abi.encodeWithSelector(
+                    Kernel.execute.selector, ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))), ExecLib.encodeBatch(batch)
+                )
+            )
+        );
+        // registering through the Safe (inner call) is refused
+        bytes memory inner = _authorizeCall(100_000, block.timestamp + 1 hours, bytes32(uint256(8)));
+        Execution[] memory calls = new Execution[](2);
+        calls[0] = Execution(address(nonceAssert), 0, abi.encodeCall(SafeNonceAssert.check, (address(safe), safe.nonce())));
+        calls[1] = Execution(address(safe), 0, _safeExec(safe, address(policy), 0, inner, Enum.Operation.Call, 0));
+        _expectRefused(_agentBatchWith(AGENT, both, calls));
+        // the same registration directly from the account works
+        _send(_agentOpWith(AGENT, both, address(policy), 0, inner));
     }
 }

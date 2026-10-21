@@ -1,0 +1,46 @@
+{
+  "deployments": "../contracts/deployments/84532.json",
+  "owner": {
+    "tpm": "0x81010010"
+  },
+  "ownerPublicKey": {
+    "x": "0xa6167e4e202449fb153735e02464f56b136e8e86d60c9ef083e7d3441387dc09",
+    "y": "0xebe5715052910fe678f525cd3420b7e1abeb0c7bc2b6a11a89b1c48f2f5bfa45"
+  },
+  "agent": {
+    "tropic01": {
+      "port": "/dev/ttyACM0",
+      "slot": 1
+    }
+  },
+  "agentPublicKey": {
+    "x": "0xff669706b6664607803aaf7526bb05081657a3d0280fdb64f50bf55aac9287d3",
+    "y": "0x97b74442050780958f8a52864b5c707a61a8f8315277274b2ce1f8fb3e7ab88b"
+  },
+  "permissionId": "0x78347031",
+  "salt": "0x0",
+  "account": "0xEdB645B14e2f952C5784e34949b58F0826fBc9E9",
+  "policy": {
+    "allow": [
+      {
+        "target": "0x8347dBC3d7A71DAFDeED5975ce85638494865F73",
+        "selector": "0x4993d616"
+      },
+      {
+        "target": "0x8347dBC3d7A71DAFDeED5975ce85638494865F73",
+        "selector": "0xf3ea183e"
+      }
+    ],
+    "maxValuePerOp": "1000000000000000",
+    "budget": "3000000000000000",
+    "validUntil": 1795046400,
+    "tokens": [
+      {
+        "token": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        "maxPerOp": "100000",
+        "budget": "1000000",
+        "x402": true
+      }
+    ]
+  }
+}

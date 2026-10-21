@@ -105,6 +105,53 @@ sol! {
             returns (uint128 maxPerOp, uint128 budget, uint128 spent, bool set);
     }
 
+    /// The EIP-3009 side of a token (USDC FiatToken v2.2).
+    #[sol(rpc)]
+    interface IEip3009Token {
+        function DOMAIN_SEPARATOR() external view returns (bytes32);
+        function authorizationState(address authorizer, bytes32 nonce) external view returns (bool);
+        function balanceOf(address account) external view returns (uint256);
+    }
+
+    /// AgentPolicy's x402 entry points.
+    interface IAgentPolicyX402 {
+        function x402Authorize(
+            address token,
+            address from,
+            address to,
+            uint256 value,
+            uint256 validAfter,
+            uint256 validBefore,
+            bytes32 nonce
+        ) external;
+        function x402Reclaim(
+            bytes32 id,
+            address token,
+            address to,
+            uint256 value,
+            uint256 validAfter,
+            uint256 validBefore,
+            bytes32 nonce
+        ) external;
+    }
+
+    interface X402Events {
+        event X402Authorized(
+            address indexed account,
+            address indexed token,
+            address indexed to,
+            uint256 value,
+            uint256 validAfter,
+            uint256 validBefore,
+            bytes32 nonce
+        );
+    }
+
+    #[sol(rpc)]
+    interface IErc1271 {
+        function isValidSignature(bytes32 hash, bytes calldata signature) external view returns (bytes4);
+    }
+
     #[sol(rpc)]
     interface IP256SignerView {
         function publicKeys(bytes32 id, address account) external view returns (bytes32 x, bytes32 y);

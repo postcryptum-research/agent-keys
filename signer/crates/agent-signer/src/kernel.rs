@@ -116,8 +116,8 @@ pub struct PolicyParams {
     pub max_value_per_op: u128,
     pub budget: u128,
     pub valid_until: u64,
-    /// `(token, maxPerOp, budget)`
-    pub tokens: Vec<(Address, u128, u128)>,
+    /// `(token, maxPerOp, budget, EIP-712 domain separator or 0)`
+    pub tokens: Vec<(Address, u128, u128, B256)>,
     pub valid_after: u64,
 }
 
@@ -143,7 +143,7 @@ pub fn permission_data(
         params
             .tokens
             .iter()
-            .map(|&(token, max, budget)| (token, U256::from(max), U256::from(budget)))
+            .map(|&(token, max, budget, domain)| (token, U256::from(max), U256::from(budget), domain))
             .collect::<Vec<_>>(),
         U256::from(params.valid_after),
     )
@@ -252,6 +252,43 @@ pub fn pack_gas(high: u128, low: u128) -> B256 {
     B256::from(b)
 }
 
+/// Kernel's ERC-1271 wrapper: what the signer actually signs for a hash a
+/// verifier passes to `isValidSignature` — EIP-712 in the account's own
+/// domain ("Kernel", "0.3.3"), struct `Kernel(bytes32 hash)`.
+pub fn kernel_wrapped_hash(account: Address, chain_id: u64, hash: B256) -> B256 {
+    use alloy::primitives::keccak256;
+    let domain_typehash = keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+    let domain = keccak256(
+        (domain_typehash, keccak256("Kernel"), keccak256("0.3.3"), U256::from(chain_id), account).abi_encode(),
+    );
+    let wrapper_typehash = keccak256("Kernel(bytes32 hash)");
+    let struct_hash = keccak256((wrapper_typehash, hash).abi_encode());
+    keccak256([&[0x19u8, 0x01][..], domain.as_slice(), struct_hash.as_slice()].concat())
+}
+
+/// An ERC-1271 signature under a permission: `0x02 ‖ permission id ‖ 0xff ‖ r ‖ s`.
+pub fn permission_1271_signature(perm: PermissionId, sig: &Signature) -> Bytes {
+    [&[0x02u8][..], perm.as_slice(), &[0xffu8][..], &sig.r[..], &sig.s[..]].concat().into()
+}
+
+/// EIP-3009 `TransferWithAuthorization` digest in a token's domain.
+pub fn transfer_with_authorization_digest(
+    domain_separator: B256,
+    from: Address,
+    to: Address,
+    value: U256,
+    valid_after: U256,
+    valid_before: U256,
+    nonce: B256,
+) -> B256 {
+    use alloy::primitives::keccak256;
+    let typehash = keccak256(
+        "TransferWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)",
+    );
+    let struct_hash = keccak256((typehash, from, to, value, valid_after, valid_before, nonce).abi_encode());
+    keccak256([&[0x19u8, 0x01][..], domain_separator.as_slice(), struct_hash.as_slice()].concat())
+}
+
 /// Permission path: no policy segments, `0xff` introduces the signer bytes.
 pub fn permission_signature(sig: &Signature) -> Bytes {
     [&[0xffu8][..], &sig.r, &sig.s].concat().into()
@@ -260,4 +297,46 @@ pub fn permission_signature(sig: &Signature) -> Bytes {
 /// Root path: the bare pair.
 pub fn root_signature(sig: &Signature) -> Bytes {
     [&sig.r[..], &sig.s[..]].concat().into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::{address, b256};
+
+    // Reference values computed independently with `cast` (abi-encode + keccak).
+    const A: Address = address!("1111111111111111111111111111111111111111");
+    const B: Address = address!("2222222222222222222222222222222222222222");
+    const N: B256 = b256!("3333333333333333333333333333333333333333333333333333333333333333");
+
+    #[test]
+    fn usdc_authorization_digest() {
+        let usdc_domain = b256!("71f17a3b2ff373b803d70a5a07c046c1a2bc8e89c09ef722fcb047abe94c9818");
+        let d = transfer_with_authorization_digest(
+            usdc_domain,
+            A,
+            B,
+            U256::from(1000),
+            U256::ZERO,
+            U256::from(1_800_000_000u64),
+            N,
+        );
+        assert_eq!(d, b256!("ef65c4162bdc50eebf36f55ef5535cbe66f39950f41dff21d9cde9d02e02ce2b"));
+    }
+
+    #[test]
+    fn kernel_1271_wrapper() {
+        assert_eq!(
+            kernel_wrapped_hash(A, 84532, N),
+            b256!("a0c4e2fb6da7cfeb16f6f22278e127d1577af46d75234d79702d760db9922994")
+        );
+    }
+
+    #[test]
+    fn permission_1271_layout() {
+        let sig = Signature { r: [0xaa; 32], s: [0xbb; 32] };
+        let b = permission_1271_signature(FixedBytes([1, 2, 3, 4]), &sig);
+        assert_eq!(b.len(), 1 + 4 + 1 + 64);
+        assert_eq!(&b[..6], &[0x02, 1, 2, 3, 4, 0xff]);
+    }
 }

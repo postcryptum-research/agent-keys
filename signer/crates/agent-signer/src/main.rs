@@ -4,6 +4,7 @@ mod bundler;
 mod chain;
 mod kernel;
 mod keyfile;
+mod x402;
 
 use std::path::PathBuf;
 
@@ -111,11 +112,44 @@ enum Cmd {
         #[command(subcommand)]
         cmd: PermissionCmd,
     },
+    /// Pay for HTTP resources with x402, within the mandate's token limits.
+    X402 {
+        #[command(subcommand)]
+        cmd: X402Cmd,
+    },
     /// Demo: the agent increments the deployed counter.
     Demo {
         #[command(flatten)]
         agent: AgentArgs,
         /// Let the paymaster pay instead of the account.
+        #[arg(long)]
+        sponsored: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum X402Cmd {
+    /// GET a URL; on 402, register an authorization under the mandate, sign
+    /// it with the agent key and retry with the payment.
+    Fetch {
+        #[command(flatten)]
+        agent: AgentArgs,
+        url: String,
+        /// Refuse to pay more than this many base units (on top of the
+        /// mandate's own per-op cap).
+        #[arg(long)]
+        max_amount: Option<String>,
+        /// Let the paymaster pay the registration's gas.
+        #[arg(long)]
+        sponsored: bool,
+    },
+    /// Return to the budget the authorizations that expired unused.
+    Reclaim {
+        #[command(flatten)]
+        agent: AgentArgs,
+        /// Look for registrations from this block (default: the last 50,000).
+        #[arg(long)]
+        from_block: Option<u64>,
         #[arg(long)]
         sponsored: bool,
     },
@@ -824,6 +858,29 @@ async fn main() -> Result<()> {
                 let amount: U256 = wei.parse().context("--wei")?;
                 let tx = s.paymaster_stake(amount, unstake_delay_sec).await?;
                 println!("staked {amount} wei (unstake delay {unstake_delay_sec}s): tx {tx}");
+            }
+        },
+        Cmd::X402 { cmd } => match cmd {
+            X402Cmd::Fetch { agent, url, max_amount, sponsored } => {
+                let s = session(&agent).await?;
+                let max = max_amount.map(|m| m.parse::<U256>()).transpose().context("--max-amount")?;
+                let paid = s.x402_fetch(&url, max, sponsored).await?;
+                eprintln!("status:         {}", paid.status);
+                if let Some(a) = &paid.authorization {
+                    eprintln!("authorization:  nonce {} (valid before {})", a.nonce, a.valid_before);
+                }
+                if let Some(r) = &paid.settlement {
+                    eprintln!("settlement:     {r}");
+                }
+                println!("{}", paid.body);
+                if paid.status >= 400 {
+                    std::process::exit(1);
+                }
+            }
+            X402Cmd::Reclaim { agent, from_block, sponsored } => {
+                let s = session(&agent).await?;
+                let done = s.x402_reclaim(from_block, sponsored).await?;
+                println!("reclaimed {} expired authorization(s)", done.len());
             }
         },
         Cmd::Demo { agent, sponsored } => {
