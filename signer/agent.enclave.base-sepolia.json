@@ -1,11 +1,11 @@
 {
-  "deployments": "../contracts/deployments/84532.json",
+  "deployments": "../contracts/deployments/84532.enclave.json",
   "owner": {
-    "secure-enclave": "tpm_sign-owner"
+    "secure-enclave": "tpm_sign-owner2"
   },
   "ownerPublicKey": {
-    "x": "0xfa990fbed501c795ecaae03573c69f1d957df2a8976195be8b3478a168a37c9f",
-    "y": "0x79e91bb677633ef9b93f9b3f167589d463e0a2182f372ef10db6ee041ceee364"
+    "x": "0x6b12ddff426f46e98ede8323d1a5ea32171c107647cce025c81aedad607c293c",
+    "y": "0x200835b1a8dbb33ebac5ec4656ce95154961a90599e24d6cb801e6787af91c6f"
   },
   "agent": {
     "secure-enclave": "tpm_sign-agent"
@@ -14,7 +14,7 @@
     "x": "0xb0ec1a6819dfdfc72179067fe96e61dd9ce99c8046470720382d3ded6a8ec5a8",
     "y": "0x73243d56c5393556b59530341526a0506e611aa2c535a8bb92d791d04048c710"
   },
-  "permissionId": "0x73653031",
+  "permissionId": "0x73653032",
   "salt": "0x0",
   "account": "0xD62Dd4afD4e77cDFA6f8eaD1D2655745cF5af628",
   "policy": {
@@ -22,10 +22,26 @@
       {
         "target": "0xD2Adc331B867435b82Ceba1D4f7f715eeF9FdbC1",
         "selector": "0xd09de08a"
+      },
+      {
+        "target": "0x8347dBC3d7A71DAFDeED5975ce85638494865F73",
+        "selector": "0x4993d616"
+      },
+      {
+        "target": "0x8347dBC3d7A71DAFDeED5975ce85638494865F73",
+        "selector": "0xf3ea183e"
       }
     ],
     "maxValuePerOp": "0",
     "budget": "1000000000000000",
-    "validUntil": 1795046400
+    "validUntil": 1795046400,
+    "tokens": [
+      {
+        "token": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        "maxPerOp": "100000",
+        "budget": "1000000",
+        "x402": true
+      }
+    ]
   }
 }

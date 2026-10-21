@@ -66,7 +66,7 @@ tx [`0x785332…e669bb`](https://sepolia.basescan.org/tx/0x785332105fd8085d50e54
 | `tpm` | Linux, TPM 2.0 (tss-esapi) | on-chain since phase 0; PCR-sealed keys |
 | `windows-tpm` | Windows, TPM 2.0 via CNG | run on Windows 11; vector in the tests ([`docs/WINDOWS.md`](docs/WINDOWS.md)) |
 | `tropic01` | any, TROPIC01 USB DevKit | on-chain agent key ([`docs/TROPIC01.md`](docs/TROPIC01.md)) |
-| `secure-enclave` | macOS, Secure Enclave via CryptoKit | run on an Apple M1 Mac: hardware test, vector in the tests, owner + agent keys on-chain ([`docs/SECURE_ENCLAVE.md`](docs/SECURE_ENCLAVE.md)) |
+| `secure-enclave` | macOS, Secure Enclave via CryptoKit | run on an Apple M1 Mac: hardware test, vector in the tests, owner + agent keys on-chain — sponsored, via a bundler, x402, recovery drill ([`docs/SECURE_ENCLAVE.md`](docs/SECURE_ENCLAVE.md)) |
 | `software` | any | dev/CI only |
 
 New here? Start with [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md) — the idea on one page. [`docs/FAQ.md`](docs/FAQ.md) walks through two setups (a Linux
