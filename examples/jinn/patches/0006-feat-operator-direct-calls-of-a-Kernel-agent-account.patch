@@ -1,7 +1,7 @@
 From a4e82fbc61afb4042cc9c3d33247ba2eb5c8792f Mon Sep 17 00:00:00 2001
 From: 77ph <tk@itarragon.net>
 Date: Wed, 21 Oct 2026 16:45:53 +0300
-Subject: [PATCH 6/7] feat(operator): direct calls of a Kernel agent account
+Subject: [PATCH 6/8] feat(operator): direct calls of a Kernel agent account
  through agent-signer
 
 ADAPTATION item 8: the agent's direct (non-Safe) calls -- ERC-8004

@@ -73,7 +73,7 @@ refused under both.
 ## Integrating into Jinn: the patch series (first version)
 
 [`patches/`](patches/) is a first version of `ADAPTATION.md` §5 Phase 1, as
-seven commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
+eight commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
 
 | Patch | What |
 |---|---|
@@ -84,6 +84,7 @@ seven commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
 | `0005-feat-bind-Safe-executions-inside-EntryPoint.handleOps…` | `ADAPTATION.md` §5 item 9: readers that bind an event to the Safe call behind it (`venue-base` `readVerdictSettlement`, the operator's solution-settlement binding) now also find that call inside `EntryPoint.handleOps` — so other operators recover our verdicts and our settlements are not marked orphaned |
 | `0006-feat-operator-direct-calls-of-a-Kernel-agent-account…` | `ADAPTATION.md` §5 item 8: the agent's direct (non-Safe) calls — ERC-8004 `setMetadata` from `IdentityPublisher` and the SolverNet publisher — go through the Kernel via agent-signer; `tx-retry` sends a "user-operation wallet" once under the account's lock, without the EOA nonce / fee-bump / eviction / resend machinery |
 | `0007-feat-operator-CLI-verbs-on-a-Kernel-owned-Safe…` | `ADAPTATION.md` §5 item 7: one-shot CLI verbs (`jinn tasks submit`, `jinn solver-plugins publish / revoke / block / feedback`) use the Kernel when `config.signer` is set — a `KernelSafeBroadcaster` on the daemon's own venue state (cross-process lock, shared ledger), no keystore decrypted |
+| `0008-feat-operator-the-keystore-agent-EOA-as-a-pure-attes…` | `ADAPTATION.md` §5 item 10 (§4 option 2): the keystore agent EOA keeps signing Jinn's off-chain documents but must hold no on-chain authority — the daemon refuses to boot while it still owns the Safe or the agent NFT — and the Kernel publishes it as the agent's `jinn.attestationKey` |
 
 Apply and enable:
 
@@ -201,10 +202,28 @@ approval); then the plugin record is written Safe-routed through the
 Kernel and read back. `jinn tasks submit` is switched the same way but only
 covered by the existing unit tests and the typecheck, not run live.
 
-Not in this version (the rest of `ADAPTATION.md` §5): the keystore agent EOA
-still exists and still signs off-chain documents (task.v1, `signCanonical`,
-ERC-8128 — item 10; the `MetadataPublisher` port and `tasks submit` still
-carry it); `ValidationRegistryClient`, used only outside the daemon;
-bootstrap and the master role (Phase 2); native mode (Phase 3). Moving the Safe's ownership from the
-agent EOA to the Kernel (`swapOwner`) is a one-time owner step outside the
-patch.
+Off-chain signatures (patch 0008). Jinn's documents — task.v1, execution
+envelopes, captures, the legacy bridge — are raw secp256k1 signatures that
+verifiers check against the address inside the document; a P-256 key in
+hardware cannot produce them, and no verifier calls ERC-1271. So the agent
+EOA keeps signing them, but as a **pure attestation key**: with
+`config.signer` the daemon refuses to boot while that EOA still owns the
+service Safe or the agent NFT, and the Kernel publishes
+`jinn.attestationKey = <EOA>` under the agent's ERC-8004 identity (once;
+`readAttestationKey` reads it back for a verifier). Its compromise forges
+attestations — a reputational risk — but moves no funds and no rights;
+those sit behind the hardware key and the mandate. Verified in the Anvil
+loop: the check refuses before the Safe / NFT move and passes after, and
+the binding is published through agent-signer once, then left alone. The
+stronger form — P-256 as a second `signature.algo` in Jinn's documents,
+signed by a separate hardware key — changes Jinn's verifiers and is a
+proposal for their team (`ADAPTATION.md` §4 option 4). Leftover ETH on the
+old EOA is the operator's to sweep.
+
+Not in this version (the rest of `ADAPTATION.md` §5): verifiers that use
+`jinn.attestationKey` (Jinn's side — today they trust the address inside
+the document); `ValidationRegistryClient`, used only outside the daemon;
+bootstrap and the master role (Phase 2) — so the migration of an existing
+operator (Safe `swapOwner`, agent NFT transfer, `setApprovalForAll` for the
+Safe) is a one-time manual step; native mode and its trust ceremony
+(Phase 3, needs a Jinn spec change).
