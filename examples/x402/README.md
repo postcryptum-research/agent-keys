@@ -23,7 +23,9 @@ PAY_TO=0x<your address> npm run server
 cd signer
 agent-signer permission add --agent agent.x402.base-sepolia.json --env-file ../../.env
 
-# 3. the account needs Base Sepolia USDC: https://faucet.circle.com
+# 3. the account needs Base Sepolia USDC: https://faucet.circle.com, or swap
+#    a little of the gas wallet's ETH on Uniswap straight to the account:
+python3 scripts/testnet_usdc.py --to 0x<account> --eth 0.0005
 
 # 4. the agent pays
 agent-signer x402 fetch --agent agent.x402.base-sepolia.json --env-file ../../.env \
@@ -31,15 +33,15 @@ agent-signer x402 fetch --agent agent.x402.base-sepolia.json --env-file ../../.e
 ```
 
 `x402 fetch` prints the progress on stderr and the paid response on stdout
-(shape of a successful run):
+(a real run on Base Sepolia, 2026-10-21, agent key in TROPIC01):
 
 ```
-x402:           pay 1000 of 0x036C…CF7e to 0xDf52…CC22, valid until …
+x402:           pay 1000 of 0x036CbD53842c5426634e7929541eC2318f3dCF7e to 0xDf52800CfeBc64951816F958c4E12fD68E4dCC22, valid until 1792582472
 path:           permission (agent key)
-registered:     tx 0x8f57…ea08 (block 48406232)
+registered:     tx 0x0ef44083b82fa7e5a9796cc8ef35a5904218575eaac9d624040501a4681c520a (block 48406947)
 status:         200
-settlement:     {"success":true,"transaction":"0x…",…}
-{"quote":"The key never leaves the chip.",…}
+settlement:     {"network":"eip155:84532","payer":"0xEdB645B14e2f952C5784e34949b58F0826fBc9E9","success":true,"transaction":"0xd3535c28f33cc63de48733332e8c37c9ca9b2d559097b56b5d4b81e06379a31d"}
+{"quote":"The key never leaves the chip.","paidAt":"2026-10-21T11:29:46.809Z"}
 ```
 
 What the mandate in `signer/agent.x402.base-sepolia.json` allows: two calls

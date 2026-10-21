@@ -17,8 +17,8 @@ attempt, so a retry can never execute it twice.
 | [`claude-skill/`](claude-skill/) | Claude Code / OpenClaw skills | a `SKILL.md` that teaches the agent the CLI | ready |
 | [`jinn/`](jinn/) | Jinn operator (Olas ecosystem) | a Safe broadcaster with a Kernel owner (`v = 1`) | adapter + demo verified on Base Sepolia; integration plan |
 | [`olas/`](olas/) | Olas / open-autonomy (Python) | Safe owner and keeper become the Kernel; consensus key stays, without funds | `transaction_settlement_abci` path verified on Base Sepolia; upstream plan |
-| [`elizaos/`](elizaos/) | ElizaOS 1.7 (TS, Bun) + Claude | a plugin with its own wallet service instead of `plugin-evm`; `PAY_FOR_URL` pays x402 | smoke test verified on Base Sepolia (call lands, outsider refused, x402 registered) |
-| [`x402/`](x402/) | x402 (HTTP 402 payments, USDC) | `agent-signer x402 fetch`: register under the mandate, then sign ERC-1271 | registration, facilitator ERC-1271 check and reclaim verified on Base Sepolia; settlement pending USDC |
+| [`elizaos/`](elizaos/) | ElizaOS 1.7 (TS, Bun) + Claude | a plugin with its own wallet service instead of `plugin-evm`; `PAY_FOR_URL` pays x402 | smoke test verified on Base Sepolia (call lands, outsider refused, x402 paid) |
+| [`x402/`](x402/) | x402 (HTTP 402 payments, USDC) | `agent-signer x402 fetch`: register under the mandate, then sign ERC-1271 | paid and settled on Base Sepolia (x402.org facilitator); reclaim verified |
 
 Background: `docs/ERC1271.md` — why the agent signs no general off-chain
 messages, how Safes (Olas, Jinn) work anyway through `AgentPolicy`'s Safe

@@ -85,7 +85,7 @@ one seam, `agent-signer op send --json`; details in
 | [Jinn](examples/jinn/) (Olas-based operator) | a Safe broadcaster whose Safe owner is the Kernel account | a claim-like call and a settlement-like MultiSend batch through the Safe execute; the Safe adding an owner is refused |
 | [Olas](examples/olas/) (open-autonomy, Python) | Safe owner and keeper become the Kernel account; the consensus key stays, without funds | a 1-agent service's `transaction_settlement_abci` path, built with open-autonomy's own code, settles through the Kernel; a keeper retry cannot execute twice |
 | [ElizaOS](examples/elizaos/) (1.7, Claude) | a plugin (`plugin-tpm-sign`) instead of `plugin-evm`'s private key | an allowed call lands, a transfer to an outsider is refused; `PAY_FOR_URL` pays an x402 API from the mandate's USDC budget |
-| [x402](examples/x402/) (HTTP 402 payments) | `agent-signer x402 fetch`: each payment registered under the mandate, then signed | the bundler takes the registration, the x402.org facilitator's ERC-1271 check passes, expired registrations are reclaimed |
+| [x402](examples/x402/) (HTTP 402 payments) | `agent-signer x402 fetch`: each payment registered under the mandate, then signed | a paid API answers 200 and the x402.org facilitator settles the USDC on-chain; expired unused registrations are reclaimed |
 
 The Jinn and Olas folders also hold an integration analysis with file:line
 references, a patch plan and proposals for upstream.
