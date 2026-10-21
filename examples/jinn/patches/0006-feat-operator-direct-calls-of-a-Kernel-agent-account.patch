@@ -1,0 +1,377 @@
+From a4e82fbc61afb4042cc9c3d33247ba2eb5c8792f Mon Sep 17 00:00:00 2001
+From: 77ph <tk@itarragon.net>
+Date: Wed, 21 Oct 2026 16:45:53 +0300
+Subject: [PATCH 6/6] feat(operator): direct calls of a Kernel agent account
+ through agent-signer
+
+ADAPTATION item 8: the agent's direct (non-Safe) calls -- ERC-8004
+setMetadata from IdentityPublisher and the SolverNet metadata publisher --
+go through the hardware-signed Kernel account when config.signer is set.
+
+- tx-retry: markUserOperationWallet / isUserOperationWallet. A marked wallet
+  is sent once under the account's broadcast lock (the venue's lock when one
+  is installed, shared with the Kernel's Safe transactions), with no EOA
+  nonce ledger, fee bumps, stuck-nonce eviction or resends: the signer owns
+  nonce, fees and inclusion, and only it can tell whether an unknown outcome
+  landed. Unmarked wallets keep the EOA path unchanged.
+- signer: createAgentSignerWalletClient -- the Kernel's json-rpc account over
+  the agent-signer transport, marked.
+- main.ts: with config.signer, IdentityPublisher and the SolverNet publisher
+  use it. The Kernel must own the agent NFT (a one-time transfer).
+- tests: the tx-retry path (single send without nonce/fee fields, no resend,
+  serialization, no RPC use) and the wallet; the Kernel-owner hermetic loop
+  now moves the agent NFT to the Kernel and publishes ERC-8004 metadata
+  through the daemon's publisher via agent-signer, read back from the
+  registry.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ operator/src/main.ts                          |  15 ++-
+ operator/src/signer/agent-signer-transport.ts |  22 +++-
+ operator/src/signer/index.ts                  |   2 +-
+ operator/src/tx-retry.ts                      |  33 ++++++
+ .../hermetic/full-loop-kernel-owner.test.ts   |  49 ++++++++-
+ .../test/signer/user-operation-wallet.test.ts | 101 ++++++++++++++++++
+ 6 files changed, 217 insertions(+), 5 deletions(-)
+ create mode 100644 operator/test/signer/user-operation-wallet.test.ts
+
+diff --git a/operator/src/main.ts b/operator/src/main.ts
+index e7cfe0215..4349f86f0 100644
+--- a/operator/src/main.ts
++++ b/operator/src/main.ts
+@@ -1438,6 +1438,17 @@ export async function main(): Promise<DaemonStartupInfo | SetupHaltedInfo | void
+     ? viemChains.baseSepolia
+     : viemChains.base;
+   const agentClients = createClients(config.rpcUrls, agentPrivateKey, agentChain);
++  // Direct (non-Safe) calls of the agent's account -- ERC-8004 setMetadata from the identity and
++  // SolverNet publishers: the keystore EOA, or, with `config.signer`, the hardware-signed Kernel
++  // account through agent-signer (which must then own the agent NFT).
++  const directAgentWallet = config.signer === undefined
++    ? agentClients.walletClient
++    : await (async () => {
++        const { createAgentSignerWalletClient, agentSignerConfigOf } = await import('./signer/index.js');
++        return createAgentSignerWalletClient({
++          rpcUrl: config.rpcUrl, chain: agentChain, signer: agentSignerConfigOf(config.signer!),
++        }) as unknown as typeof agentClients.walletClient;
++      })();
+ 
+   // ── Harness registry ─────────────────────────────────────────────────────────
+ 
+@@ -1718,7 +1729,7 @@ export async function main(): Promise<DaemonStartupInfo | SetupHaltedInfo | void
+     identityPublisher = new IdentityPublisher({
+       identityRegistryAddress,
+       agentId: BigInt(agentId),
+-      walletClient: agentClients.walletClient,
++      walletClient: directAgentWallet,
+       publicClient: agentClients.publicClient,
+     });
+     console.log(
+@@ -1781,7 +1792,7 @@ export async function main(): Promise<DaemonStartupInfo | SetupHaltedInfo | void
+     });
+     const solverNetPublisher = createMetadataPublisherFromViem({
+       identityRegistryAddress,
+-      walletClient: agentClients.walletClient,
++      walletClient: directAgentWallet,
+       publicClient: agentClients.publicClient,
+     });
+ 
+diff --git a/operator/src/signer/agent-signer-transport.ts b/operator/src/signer/agent-signer-transport.ts
+index 33c8bc21c..710fd2d0a 100644
+--- a/operator/src/signer/agent-signer-transport.ts
++++ b/operator/src/signer/agent-signer-transport.ts
+@@ -8,7 +8,9 @@
+ //   const walletClient = createWalletClient({
+ //     account: signer.account, chain: baseSepolia, transport: agentSignerTransport(rpcUrl, signer),
+ //   });
+-import { custom, http, type Address, type Hex } from 'viem';
++import { createWalletClient, custom, http, type Address, type Chain, type Hex, type WalletClient } from 'viem';
++
++import { markUserOperationWallet } from '../tx-retry.js';
+ 
+ import { agentSignerSend, type AgentSignerCall, type AgentSignerConfig, type AgentSignerResult } from './agent-signer-cli.js';
+ 
+@@ -40,3 +42,21 @@ export function agentSignerTransport(
+     },
+   });
+ }
++
++/**
++ * A WalletClient for the agent's Kernel account: `account` is the Kernel's address (a json-rpc
++ * account), transactions go through agent-signer, and the client is marked so `tx-retry` sends
++ * each one exactly once under the account's broadcast lock (no EOA nonce, fee bump or eviction).
++ */
++export function createAgentSignerWalletClient(input: {
++  readonly rpcUrl: string;
++  readonly chain: Chain;
++  readonly signer: AgentSignerConfig;
++  readonly send?: (cfg: AgentSignerConfig, call: AgentSignerCall) => Promise<AgentSignerResult>;
++}): WalletClient {
++  return markUserOperationWallet(createWalletClient({
++    account: input.signer.account,
++    chain: input.chain,
++    transport: agentSignerTransport(input.rpcUrl, input.signer, input.send),
++  }));
++}
+diff --git a/operator/src/signer/index.ts b/operator/src/signer/index.ts
+index 9dc612ab8..8fea49822 100644
+--- a/operator/src/signer/index.ts
++++ b/operator/src/signer/index.ts
+@@ -12,7 +12,7 @@ import { kernelSafeBroadcasterFactory } from './kernel-safe-broadcaster.js';
+ 
+ export { SignerSectionSchema, type SignerSection } from './config.js';
+ export { agentSignerSend, AgentSignerError, type AgentSignerConfig } from './agent-signer-cli.js';
+-export { agentSignerTransport } from './agent-signer-transport.js';
++export { agentSignerTransport, createAgentSignerWalletClient } from './agent-signer-transport.js';
+ export { createKernelSafeBroadcaster, kernelSafeBroadcasterFactory, userOpLogs } from './kernel-safe-broadcaster.js';
+ 
+ export function agentSignerConfigOf(section: SignerSection): AgentSignerConfig {
+diff --git a/operator/src/tx-retry.ts b/operator/src/tx-retry.ts
+index e7361edd3..df61bd149 100644
+--- a/operator/src/tx-retry.ts
++++ b/operator/src/tx-retry.ts
+@@ -1031,12 +1031,45 @@ export async function recoverStuckNonceIfNeeded(args: {
+   return null;
+ }
+ 
++/**
++ * Wallets whose `sendTransaction` is not an EOA transaction but a UserOperation of a smart
++ * account, sent and waited for by an external signer (e.g. `src/signer/` over TPM_sign's
++ * agent-signer). For them an EOA nonce, a fee bump or a stuck-nonce eviction means nothing, and
++ * a blind resend after an unknown outcome could execute the call twice.
++ */
++const userOperationWallets = new WeakSet<object>();
++
++/** Mark `walletClient` as sending UserOperations (see `viemSendTransactionWithRetry`). */
++export function markUserOperationWallet<T extends object>(walletClient: T): T {
++  userOperationWallets.add(walletClient);
++  return walletClient;
++}
++
++export function isUserOperationWallet(walletClient: unknown): boolean {
++  return typeof walletClient === 'object' && walletClient !== null && userOperationWallets.has(walletClient);
++}
++
+ export async function viemSendTransactionWithRetry(
+   walletClient: TxRetryWalletClient,
+   publicClient: PublicClient,
+   txRequest: TxRetryTransactionRequest,
+   options: TxRetryOptions = {},
+ ): Promise<Hex> {
++  if (isUserOperationWallet(walletClient)) {
++    // One attempt, serialized with every other broadcast of the same account (the venue's Safe
++    // transactions included, through the installed default lock): the signer owns nonce, fees
++    // and inclusion, and only it can tell whether an unknown outcome landed.
++    const account = txRequest.account ?? walletClient.account;
++    const from = typeof account === 'string' ? (account as Address) : accountAddress(account);
++    if (from === undefined) throw new Error('user-operation wallet: the transaction has no account address');
++    const { nonce: _nonce, gas: _gas, gasPrice: _gasPrice, maxFeePerGas: _max, maxPriorityFeePerGas: _prio, ...req } =
++      txRequest as TxRetryTransactionRequest & { gasPrice?: unknown; maxFeePerGas?: unknown; maxPriorityFeePerGas?: unknown };
++    return withEoaBroadcastLock(from, async () => {
++      const hash = await walletClient.sendTransaction(req as TxRetryTransactionRequest);
++      options.onBroadcast?.(hash);
++      return hash;
++    });
++  }
+   const maxAttempts = options.maxAttempts ?? TX_RETRY_DEFAULTS.maxAttempts;
+   const baseDelayMs = options.baseDelayMs ?? TX_RETRY_DEFAULTS.baseDelayMs;
+   const maxDelayMs = options.maxDelayMs ?? TX_RETRY_DEFAULTS.maxDelayMs;
+diff --git a/operator/test/hermetic/full-loop-kernel-owner.test.ts b/operator/test/hermetic/full-loop-kernel-owner.test.ts
+index 1183434d6..a002fe452 100644
+--- a/operator/test/hermetic/full-loop-kernel-owner.test.ts
++++ b/operator/test/hermetic/full-loop-kernel-owner.test.ts
+@@ -68,6 +68,8 @@ import {
+   ENTRY_POINT_V07,
+ } from '../../src/signer/kernel-safe-broadcaster.js';
+ import { AgentSignerError, type AgentSignerConfig } from '../../src/signer/agent-signer-cli.js';
++import { createAgentSignerWalletClient } from '../../src/signer/agent-signer-transport.js';
++import { createMetadataPublisherFromViem } from '../../src/solvernets/daemon-init.js';
+ 
+ const TEST_DIR = dirname(fileURLToPath(import.meta.url));
+ const SNAPSHOT_STATE = resolve(TEST_DIR, '..', '_support', 'fixtures', 'anvil-base-v3-state', 'state.json');
+@@ -95,9 +97,21 @@ const USER_OPERATION_EVENT = parseAbiItem(
+   'event UserOperationEvent(bytes32 indexed userOpHash, address indexed sender, address indexed paymaster, uint256 nonce, bool success, uint256 actualGasCost, uint256 actualGasUsed)',
+ );
+ const SENTINEL_OWNERS = '0x0000000000000000000000000000000000000001' as Address;
++// ERC-8004 IdentityRegistry on the snapshot (the operator's agent NFT lives here).
++const IDENTITY_REGISTRY = '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432' as Address;
++const IDENTITY_ABI = parseAbi([
++  'event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)',
++  'function ownerOf(uint256 tokenId) view returns (address)',
++  'function transferFrom(address from, address to, uint256 tokenId)',
++  'function getMetadata(uint256 agentId, string metadataKey) view returns (bytes)',
++]);
+ // The three Safe calls of one solution cycle (router.claimTask, mech.deliver,
+ // router.claimSolutionDelivery) -- the whole mandate besides Safe.execTransaction itself.
+-const SEL = { execTransaction: '0x6a761202', claimTask: '0xb0ea3103', deliver: '0x6f6885bb', claimSolutionDelivery: '0xc47dda39' };
++const SEL = {
++  execTransaction: '0x6a761202', claimTask: '0xb0ea3103', deliver: '0x6f6885bb', claimSolutionDelivery: '0xc47dda39',
++  // a direct call of the account (not through the Safe): ERC-8004 setMetadata(uint256,string,bytes)
++  setMetadata: '0x466648da',
++};
+ 
+ interface AaCode { contracts: Record<string, { address: Address; code: Hex }> }
+ 
+@@ -172,6 +186,7 @@ describeMaybe('hermetic daemon solution loop, Safe owned by a hardware-signed Ke
+               { target: v3Env.routerAddress, selector: SEL.claimTask },
+               { target: v3Env.mockMechAddress, selector: SEL.deliver },
+               { target: v3Env.routerAddress, selector: SEL.claimSolutionDelivery },
++              { target: IDENTITY_REGISTRY, selector: SEL.setMetadata },
+             ],
+             maxValuePerOp: '1',
+             budget: '1000000000000000000', // gas of the account's own operations
+@@ -191,6 +206,19 @@ describeMaybe('hermetic daemon solution loop, Safe owned by a hardware-signed Ke
+         const owners = await fixture.publicClient.readContract({ address: operator.safeAddress, abi: SAFE_ABI, functionName: 'getOwners' });
+         expect(owners).toEqual([kernel]);
+ 
++        // ...and so does the operator's agent NFT, which ERC-8004 setMetadata is authorized by.
++        const minted = await fixture.publicClient.getLogs({
++          address: IDENTITY_REGISTRY, event: IDENTITY_ABI[0], args: { to: operator.agentAddress }, fromBlock: 0n,
++        });
++        const agentId = minted.at(-1)!.args.tokenId!;
++        const agentEoaWallet = createWalletClient({ account: privateKeyToAccount(operator.agentPrivateKey), chain: base, transport: http(fixture.anvil.rpcUrl) });
++        const nftHash = await agentEoaWallet.writeContract({
++          address: IDENTITY_REGISTRY, abi: IDENTITY_ABI, functionName: 'transferFrom', args: [operator.agentAddress, kernel, agentId],
++        });
++        expect((await fixture.publicClient.waitForTransactionReceipt({ hash: nftHash })).status).toBe('success');
++        expect(await fixture.publicClient.readContract({ address: IDENTITY_REGISTRY, abi: IDENTITY_ABI, functionName: 'ownerOf', args: [agentId] }))
++          .toBe(kernel);
++
+         const signer: AgentSignerConfig = {
+           bin: AGENT_SIGNER!, configPath, account: kernel, envFile: join(work, '.env'), timeoutMs: 240_000,
+         };
+@@ -232,6 +260,25 @@ describeMaybe('hermetic daemon solution loop, Safe owned by a hardware-signed Ke
+         expect(settled.functionName).toBe('claimSolutionDelivery');
+         expect(String(settled.args[0]).toLowerCase()).toBe(claim.requestId.toLowerCase());
+ 
++        // ── A direct call of the account (ADAPTATION item 8): ERC-8004 setMetadata ──
++        // Through the daemon's own publisher, on the agent-signer wallet main.ts builds for
++        // `config.signer`: tx-retry sends it once under the account's lock.
++        const direct = createAgentSignerWalletClient({ rpcUrl: fixture.anvil.rpcUrl, chain: base, signer });
++        const publisher = createMetadataPublisherFromViem({
++          identityRegistryAddress: IDENTITY_REGISTRY, walletClient: direct as never, publicClient: fixture.publicClient as never,
++        });
++        const value = new TextEncoder().encode('signed in hardware');
++        // The MetadataPublisher port still carries the EOA signer (agentEoaPrivateKey) for
++        // off-chain uses; the viem publisher never reads it, and there is no key to give here.
++        const keyless = { agentEoaAddress: kernel, agentId: agentId.toString() } as never;
++        const published = await publisher.setMetadata({ signer: keyless, agentId: agentId.toString(), key: 'tpm-sign.e2e', value });
++        const stored = await fixture.publicClient.readContract({
++          address: IDENTITY_REGISTRY, abi: IDENTITY_ABI, functionName: 'getMetadata', args: [agentId, 'tpm-sign.e2e'],
++        });
++        expect(stored).toBe(`0x${Buffer.from(value).toString('hex')}`);
++        const metadataTx = await fixture.publicClient.getTransaction({ hash: published.txHash as Hex });
++        expect(metadataTx.to?.toLowerCase()).toBe(ENTRY_POINT_V07.toLowerCase());
++
+         // ── A compromised agent host: the mandate refuses Safe self-administration ──
+         const state = openVenueState(join(work, 'probe-venue.db'));
+         try {
+diff --git a/operator/test/signer/user-operation-wallet.test.ts b/operator/test/signer/user-operation-wallet.test.ts
+new file mode 100644
+index 000000000..cee544148
+--- /dev/null
++++ b/operator/test/signer/user-operation-wallet.test.ts
+@@ -0,0 +1,101 @@
++// Direct (non-Safe) calls from a Kernel account: `tx-retry` must send them once, under the
++// account's broadcast lock, without the EOA machinery (nonce ledger, fee bumps, stuck-nonce
++// eviction, blind resends) -- agent-signer owns nonce, fees and inclusion.
++import { createServer } from 'node:http';
++import type { AddressInfo } from 'node:net';
++import { describe, expect, it, vi } from 'vitest';
++import type { Address, Hex, PublicClient } from 'viem';
++import { baseSepolia } from 'viem/chains';
++
++import { isUserOperationWallet, markUserOperationWallet, viemSendTransactionWithRetry } from '../../src/tx-retry.js';
++import { createAgentSignerWalletClient } from '../../src/signer/agent-signer-transport.js';
++import type { AgentSignerCall, AgentSignerResult } from '../../src/signer/agent-signer-cli.js';
++
++const KERNEL = '0xEdB645B14e2f952C5784e34949b58F0826fBc9E9' as Address;
++const REGISTRY = '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432' as Address;
++const TX = `0x${'c3'.repeat(32)}` as Hex;
++
++/** Any RPC use would be the EOA machinery at work: fail loudly. */
++const untouchable = new Proxy({}, {
++  get: (_target, property) => () => { throw new Error(`publicClient.${String(property)} must not be called`); },
++}) as unknown as PublicClient;
++
++describe('viemSendTransactionWithRetry with a user-operation wallet', () => {
++  it('sends once, without nonce or fee fields, and never reads the chain', async () => {
++    const sendTransaction = vi.fn(async () => TX);
++    const wallet = markUserOperationWallet({ account: { address: KERNEL, type: 'json-rpc' }, sendTransaction });
++    const onBroadcast = vi.fn();
++    const hash = await viemSendTransactionWithRetry(wallet, untouchable, {
++      account: wallet.account, to: REGISTRY, data: '0x1234', value: 0n,
++      nonce: 7, gas: 1n, maxFeePerGas: 2n, maxPriorityFeePerGas: 3n,
++    }, { logicalTx: 'erc8004.setMetadata', onBroadcast });
++    expect(hash).toBe(TX);
++    expect(sendTransaction).toHaveBeenCalledTimes(1);
++    expect(sendTransaction).toHaveBeenCalledWith({ account: wallet.account, to: REGISTRY, data: '0x1234', value: 0n });
++    expect(onBroadcast).toHaveBeenCalledWith(TX);
++  });
++
++  it('does not resend after a failure whose outcome it cannot know', async () => {
++    const sendTransaction = vi.fn(async () => { throw new Error('nonce too low'); }); // "recoverable" for an EOA
++    const wallet = markUserOperationWallet({ account: { address: KERNEL }, sendTransaction });
++    await expect(viemSendTransactionWithRetry(wallet, untouchable, { account: wallet.account, to: REGISTRY, data: '0x' }))
++      .rejects.toThrow(/nonce too low/);
++    expect(sendTransaction).toHaveBeenCalledTimes(1);
++  });
++
++  it('serializes concurrent sends of the same account', async () => {
++    let inFlight = 0;
++    let maxInFlight = 0;
++    const sendTransaction = vi.fn(async () => {
++      inFlight += 1;
++      maxInFlight = Math.max(maxInFlight, inFlight);
++      await new Promise((r) => setTimeout(r, 20));
++      inFlight -= 1;
++      return TX;
++    });
++    const wallet = markUserOperationWallet({ account: { address: KERNEL }, sendTransaction });
++    await Promise.all([1, 2, 3].map(() =>
++      viemSendTransactionWithRetry(wallet, untouchable, { account: wallet.account, to: REGISTRY, data: '0x' })));
++    expect(sendTransaction).toHaveBeenCalledTimes(3);
++    expect(maxInFlight).toBe(1);
++  });
++
++  it('an unmarked wallet keeps the EOA path', () => {
++    expect(isUserOperationWallet({ account: { address: KERNEL }, sendTransaction: async () => TX })).toBe(false);
++  });
++});
++
++describe('createAgentSignerWalletClient', () => {
++  it('is a marked wallet of the Kernel account whose transactions go to agent-signer', async () => {
++    const calls: AgentSignerCall[] = [];
++    const send = async (_cfg: unknown, call: AgentSignerCall): Promise<AgentSignerResult> => {
++      calls.push(call);
++      return { account: KERNEL, userOpHash: TX, nonce: '0x1', txHash: TX, blockNumber: 1n, gasUsed: 1n };
++    };
++    // The RPC answers only the chain check viem makes before sending; anything else would fail.
++    const rpc = createServer((req, res) => {
++      let body = '';
++      req.on('data', (c) => { body += c; });
++      req.on('end', () => {
++        const { id, method } = JSON.parse(body) as { id: number; method: string };
++        res.setHeader('content-type', 'application/json');
++        res.end(JSON.stringify(method === 'eth_chainId'
++          ? { jsonrpc: '2.0', id, result: `0x${baseSepolia.id.toString(16)}` }
++          : { jsonrpc: '2.0', id, error: { code: -32601, message: `unexpected ${method}` } }));
++      });
++    });
++    await new Promise<void>((r) => rpc.listen(0, '127.0.0.1', r));
++    const wallet = createAgentSignerWalletClient({
++      rpcUrl: `http://127.0.0.1:${(rpc.address() as AddressInfo).port}`, chain: baseSepolia,
++      signer: { bin: 'agent-signer', configPath: 'agent.json', account: KERNEL }, send,
++    });
++    expect(isUserOperationWallet(wallet)).toBe(true);
++    expect(wallet.account?.address).toBe(KERNEL);
++    const hash = await viemSendTransactionWithRetry(wallet as never, untouchable, {
++      account: wallet.account, to: REGISTRY, data: '0xabcdef', value: 0n,
++    });
++    expect(hash).toBe(TX);
++    expect(calls).toEqual([{ to: REGISTRY, value: 0n, data: '0xabcdef' }]);
++    rpc.close();
++  });
++});
+-- 
+2.43.0
+

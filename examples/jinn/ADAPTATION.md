@@ -24,7 +24,7 @@ Legend: **[V]** — verified by reading the code (file:line), **[I]** — infere
 >   `addOwner` was rejected by the policy (`README.md`, Run section).
 
 > **First patch series (2026-10-21):** Phase 1 items 1–5 (and the transport of item 8) as three
-> commits, plus a hermetic test that runs the full solution loop with a Kernel-owned Safe (patch 0004) and item 9, readers that bind Safe calls inside `EntryPoint.handleOps` (patch 0005), on `next` `151a464aa` — [`patches/`](patches/), described in [`README.md`](README.md#integrating-into-jinn-the-patch-series-first-version).
+> commits, plus a hermetic test that runs the full solution loop with a Kernel-owned Safe (patch 0004) item 9, readers that bind Safe calls inside `EntryPoint.handleOps` (patch 0005), and item 8, the agent's direct ERC-8004 calls through agent-signer (patch 0006), on `next` `151a464aa` — [`patches/`](patches/), described in [`README.md`](README.md#integrating-into-jinn-the-patch-series-first-version).
 > The §5 "side finding" is confirmed and fixed there (patch 0001).
 
 ---

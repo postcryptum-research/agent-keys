@@ -73,7 +73,7 @@ refused under both.
 ## Integrating into Jinn: the patch series (first version)
 
 [`patches/`](patches/) is a first version of `ADAPTATION.md` §5 Phase 1, as
-five commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
+six commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
 
 | Patch | What |
 |---|---|
@@ -82,6 +82,7 @@ five commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
 | `0003-feat-operator-hardware-signed-Kernel-owner…` | `operator/src/signer/`: the `agent-signer` CLI as a typed call, `KernelSafeBroadcaster`, a viem transport for direct calls; the optional `signer` config section; wiring `main.ts` → composition root → venue; boot refuses if the Kernel does not own the Safe |
 | `0004-test-operator-hermetic-solution-loop…` | `test/hermetic/full-loop-kernel-owner.test.ts`: Jinn's own hermetic solution loop with the service Safe owned by a Kernel account (below) |
 | `0005-feat-bind-Safe-executions-inside-EntryPoint.handleOps…` | `ADAPTATION.md` §5 item 9: readers that bind an event to the Safe call behind it (`venue-base` `readVerdictSettlement`, the operator's solution-settlement binding) now also find that call inside `EntryPoint.handleOps` — so other operators recover our verdicts and our settlements are not marked orphaned |
+| `0006-feat-operator-direct-calls-of-a-Kernel-agent-account…` | `ADAPTATION.md` §5 item 8: the agent's direct (non-Safe) calls — ERC-8004 `setMetadata` from `IdentityPublisher` and the SolverNet publisher — go through the Kernel via agent-signer; `tx-retry` sends a "user-operation wallet" once under the account's lock, without the EOA nonce / fee-bump / eviction / resend machinery |
 
 Apply and enable:
 
@@ -167,11 +168,27 @@ readers); and on real bytes, the Anvil loop's settlement transaction is
 bound to `router.claimSolutionDelivery(requestId)`, run by the Safe, from
 the Kernel.
 
+Direct calls (patch 0006): with `config.signer`, `main.ts` gives the
+identity and SolverNet publishers `createAgentSignerWalletClient` — the
+Kernel's address as a json-rpc account over the agent-signer transport,
+marked for `tx-retry`. `tx-retry` then sends each transaction exactly once,
+under the same broadcast lock as the Kernel's Safe transactions (no EOA
+nonce ledger, fee bump, stuck-nonce eviction or resend after an unknown
+outcome); unmarked wallets keep the EOA path. ERC-8004 authorizes
+`setMetadata` by the agent NFT's owner, so the NFT moves from the agent EOA
+to the Kernel once (`transferFrom`), and the mandate lists
+`(IdentityRegistry, setMetadata)`. Verified in the Anvil loop: after the NFT
+transfer the solution loop still runs, then the daemon's publisher writes
+ERC-8004 metadata through agent-signer (TROPIC01), read back from the
+registry, sent as a `handleOps` of the Kernel. Not checked: whether the
+registry keeps the Safe's `agentWallet` binding across the NFT transfer
+(the solution loop does not depend on it).
+
 Not in this version (the rest of `ADAPTATION.md` §5): the keystore agent EOA
 still exists and still signs off-chain documents (task.v1, `signCanonical`,
-ERC-8128 — item 10), direct EOA writes (ERC-8004, validation — the transport
-exists but is not wired, item 8), CLI verbs with their own Safe broadcaster
-(item 7), bootstrap and the master
-role (Phase 2), native mode (Phase 3). Moving the Safe's ownership from the
+ERC-8128 — item 10; the `MetadataPublisher` port still carries it); CLI
+verbs, which build their own wallets and Safe broadcaster (item 7, and
+`ValidationRegistryClient`, used only outside the daemon); bootstrap and the
+master role (Phase 2); native mode (Phase 3). Moving the Safe's ownership from the
 agent EOA to the Kernel (`swapOwner`) is a one-time owner step outside the
 patch.
