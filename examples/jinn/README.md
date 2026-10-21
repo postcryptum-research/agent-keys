@@ -73,7 +73,7 @@ refused under both.
 ## Integrating into Jinn: the patch series (first version)
 
 [`patches/`](patches/) is a first version of `ADAPTATION.md` §5 Phase 1, as
-six commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
+seven commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
 
 | Patch | What |
 |---|---|
@@ -83,6 +83,7 @@ six commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
 | `0004-test-operator-hermetic-solution-loop…` | `test/hermetic/full-loop-kernel-owner.test.ts`: Jinn's own hermetic solution loop with the service Safe owned by a Kernel account (below) |
 | `0005-feat-bind-Safe-executions-inside-EntryPoint.handleOps…` | `ADAPTATION.md` §5 item 9: readers that bind an event to the Safe call behind it (`venue-base` `readVerdictSettlement`, the operator's solution-settlement binding) now also find that call inside `EntryPoint.handleOps` — so other operators recover our verdicts and our settlements are not marked orphaned |
 | `0006-feat-operator-direct-calls-of-a-Kernel-agent-account…` | `ADAPTATION.md` §5 item 8: the agent's direct (non-Safe) calls — ERC-8004 `setMetadata` from `IdentityPublisher` and the SolverNet publisher — go through the Kernel via agent-signer; `tx-retry` sends a "user-operation wallet" once under the account's lock, without the EOA nonce / fee-bump / eviction / resend machinery |
+| `0007-feat-operator-CLI-verbs-on-a-Kernel-owned-Safe…` | `ADAPTATION.md` §5 item 7: one-shot CLI verbs (`jinn tasks submit`, `jinn solver-plugins publish / revoke / block / feedback`) use the Kernel when `config.signer` is set — a `KernelSafeBroadcaster` on the daemon's own venue state (cross-process lock, shared ledger), no keystore decrypted |
 
 Apply and enable:
 
@@ -180,15 +181,30 @@ to the Kernel once (`transferFrom`), and the mandate lists
 `(IdentityRegistry, setMetadata)`. Verified in the Anvil loop: after the NFT
 transfer the solution loop still runs, then the daemon's publisher writes
 ERC-8004 metadata through agent-signer (TROPIC01), read back from the
-registry, sent as a `handleOps` of the Kernel. Not checked: whether the
-registry keeps the Safe's `agentWallet` binding across the NFT transfer
-(the solution loop does not depend on it).
+registry, sent as a `handleOps` of the Kernel. After the transfer the Safe
+needs the Kernel's approval to write the agent's records (patch 0007); the
+solution loop itself does not depend on it.
+
+CLI verbs (patch 0007): a verb's Safe broadcaster is
+`openCliKernelSafeBroadcaster` — the same `KernelSafeBroadcaster`, opened on
+the daemon's venue state (`<earningDir>/../venue/venue.db`), whose
+`BroadcastLock` is cross-process: a verb and a daemon serialize on the
+Kernel (the verbs also keep refusing to run beside a live daemon), and the
+ledger reconciles an attempt either of them left with an unknown outcome.
+It refuses when the Kernel does not own the Safe. With a signer the
+`solver-plugins` factories decrypt no keystore. Verified in the Anvil loop
+with the production `solver-plugins` publisher: once the agent NFT belongs
+to the Kernel, the Safe can write the agent's ERC-8004 records only after
+the Kernel approves it (`setApprovalForAll(Safe, true)`, a direct call
+through agent-signer — not `approve`, which the policy treats as an ERC-20
+approval); then the plugin record is written Safe-routed through the
+Kernel and read back. `jinn tasks submit` is switched the same way but only
+covered by the existing unit tests and the typecheck, not run live.
 
 Not in this version (the rest of `ADAPTATION.md` §5): the keystore agent EOA
 still exists and still signs off-chain documents (task.v1, `signCanonical`,
-ERC-8128 — item 10; the `MetadataPublisher` port still carries it); CLI
-verbs, which build their own wallets and Safe broadcaster (item 7, and
-`ValidationRegistryClient`, used only outside the daemon); bootstrap and the
-master role (Phase 2); native mode (Phase 3). Moving the Safe's ownership from the
+ERC-8128 — item 10; the `MetadataPublisher` port and `tasks submit` still
+carry it); `ValidationRegistryClient`, used only outside the daemon;
+bootstrap and the master role (Phase 2); native mode (Phase 3). Moving the Safe's ownership from the
 agent EOA to the Kernel (`swapOwner`) is a one-time owner step outside the
 patch.

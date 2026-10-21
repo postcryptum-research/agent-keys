@@ -1,0 +1,468 @@
+From febace670cd6cd746e6e8afda95c75ae2050d548 Mon Sep 17 00:00:00 2001
+From: 77ph <tk@itarragon.net>
+Date: Wed, 21 Oct 2026 16:59:29 +0300
+Subject: [PATCH 7/7] feat(operator): CLI verbs on a Kernel-owned Safe through
+ agent-signer
+
+ADAPTATION item 7: one-shot verbs that build their own Safe broadcaster and
+wallet -- `jinn tasks submit` (execution-context) and `jinn solver-plugins
+publish|revoke|block|feedback` (PluginRegistryPublisher,
+ReputationRegistryClient) -- use the hardware-signed Kernel account when
+config.signer is set.
+
+- signer: openCliKernelSafeBroadcaster -- KernelSafeBroadcaster on the
+  daemon's own venue state (<earningDir>/../venue/venue.db): its broadcast
+  lock is cross-process, so a verb and a daemon serialize on the Kernel, and
+  the ledger reconciles what either left with an unknown outcome; refuses
+  when the Kernel does not own the Safe.
+- solver-plugins factories take `signer`; with it no keystore is decrypted
+  (the reputation factory no longer needs a password for writes) and direct
+  writes use createAgentSignerWalletClient.
+- tests: the CLI broadcaster (ownership refusal, ledger in the daemon venue
+  state); the Kernel-owner hermetic loop now runs the production
+  solver-plugins publisher with a signer: after the Kernel (the agent NFT's
+  owner) approves its Safe (setApprovalForAll), the ERC-8004 plugin record
+  is written Safe-routed via agent-signer and read back.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../src/cli/commands/solver-plugins-block.ts  |  1 +
+ .../cli/commands/solver-plugins-feedback.ts   |  2 +
+ .../cli/commands/solver-plugins-publish.ts    |  1 +
+ .../src/cli/commands/solver-plugins-revoke.ts |  1 +
+ operator/src/cli/commands/solver-plugins.ts   | 53 ++++++++++--
+ operator/src/cli/execution-context.ts         | 20 +++--
+ operator/src/signer/index.ts                  | 31 +++++++
+ .../hermetic/full-loop-kernel-owner.test.ts   | 49 ++++++++++-
+ operator/test/signer/cli-broadcaster.test.ts  | 85 +++++++++++++++++++
+ 9 files changed, 232 insertions(+), 11 deletions(-)
+ create mode 100644 operator/test/signer/cli-broadcaster.test.ts
+
+diff --git a/operator/src/cli/commands/solver-plugins-block.ts b/operator/src/cli/commands/solver-plugins-block.ts
+index 2296729ad..0c85a012f 100644
+--- a/operator/src/cli/commands/solver-plugins-block.ts
++++ b/operator/src/cli/commands/solver-plugins-block.ts
+@@ -56,6 +56,7 @@ export async function blockHandler(
+     rpcUrl: prep.config.rpcUrl,
+     network: prep.config.network === 'testnet' ? 'base-sepolia' : 'base',
+     earningDir: prep.config.earningDir,
++      ...(prep.config.signer === undefined ? {} : { signer: prep.config.signer }),
+     password: prep.password,
+   });
+   try {
+diff --git a/operator/src/cli/commands/solver-plugins-feedback.ts b/operator/src/cli/commands/solver-plugins-feedback.ts
+index 71625d55f..312e2be55 100644
+--- a/operator/src/cli/commands/solver-plugins-feedback.ts
++++ b/operator/src/cli/commands/solver-plugins-feedback.ts
+@@ -241,6 +241,7 @@ async function submitFeedbackAndEmit(
+     rpcUrl: prep.config.rpcUrl,
+     network: prep.config.network === 'testnet' ? 'base-sepolia' : 'base',
+     earningDir: prep.config.earningDir,
++      ...(prep.config.signer === undefined ? {} : { signer: prep.config.signer }),
+     password: prep.password,
+   });
+   try {
+@@ -345,6 +346,7 @@ export async function respondHandler(
+     rpcUrl: prep.config.rpcUrl,
+     network: prep.config.network === 'testnet' ? 'base-sepolia' : 'base',
+     earningDir: prep.config.earningDir,
++      ...(prep.config.signer === undefined ? {} : { signer: prep.config.signer }),
+     password: prep.password,
+   });
+   try {
+diff --git a/operator/src/cli/commands/solver-plugins-publish.ts b/operator/src/cli/commands/solver-plugins-publish.ts
+index 51fb90185..a831d89f9 100644
+--- a/operator/src/cli/commands/solver-plugins-publish.ts
++++ b/operator/src/cli/commands/solver-plugins-publish.ts
+@@ -162,6 +162,7 @@ export async function publishHandler(
+       rpcUrl: config.rpcUrl,
+       network: config.network === 'testnet' ? 'base-sepolia' : 'base',
+       earningDir: config.earningDir,
++      ...(config.signer === undefined ? {} : { signer: config.signer }),
+       password,
+     });
+ 
+diff --git a/operator/src/cli/commands/solver-plugins-revoke.ts b/operator/src/cli/commands/solver-plugins-revoke.ts
+index 78000dcef..d3ef34bf6 100644
+--- a/operator/src/cli/commands/solver-plugins-revoke.ts
++++ b/operator/src/cli/commands/solver-plugins-revoke.ts
+@@ -82,6 +82,7 @@ export async function revokeHandler(
+       rpcUrl: config.rpcUrl,
+       network: config.network === 'testnet' ? 'base-sepolia' : 'base',
+       earningDir: config.earningDir,
++      ...(config.signer === undefined ? {} : { signer: config.signer }),
+       password,
+     });
+ 
+diff --git a/operator/src/cli/commands/solver-plugins.ts b/operator/src/cli/commands/solver-plugins.ts
+index fafcc429f..c0b777076 100644
+--- a/operator/src/cli/commands/solver-plugins.ts
++++ b/operator/src/cli/commands/solver-plugins.ts
+@@ -29,6 +29,7 @@ import {
+ import { FleetBootstrapper } from '../../earning/bootstrap.js';
+ import { PluginRegistryPublisher } from '../../erc8004/plugin-registry.js';
+ import { createDirectSafeBroadcaster } from '../../adapters/mech/direct-safe-broadcaster.js';
++import type { SignerSection } from '../../signer/config.js';
+ import { pinFileToIpfs as defaultPinFileToIpfs } from '../../adapters/mech/ipfs-pinfile.js';
+ import { fetchFromIpfs as defaultFetchFromIpfs } from '../../adapters/mech/ipfs.js';
+ import { resolveCliPassword as defaultResolveCliPassword } from '../password.js';
+@@ -80,6 +81,8 @@ export interface PublisherFactoryArgs {
+   network: JinnOnchainNetwork;
+   earningDir: string;
+   password: string;
++  /** `config.signer`: the Safe's owner is a hardware-signed Kernel account (`src/signer/`). */
++  signer?: SignerSection;
+ }
+ 
+ /**
+@@ -98,6 +101,8 @@ export interface ReputationClientFactoryArgs {
+   network: JinnOnchainNetwork;
+   earningDir: string;
+   password: string | undefined;
++  /** `config.signer`: writes go through the hardware-signed Kernel account (`src/signer/`). */
++  signer?: SignerSection;
+ }
+ 
+ export type ReputationClientHandle = Pick<
+@@ -204,6 +209,17 @@ export const PRODUCTION_DEPS: SolverPluginsDeps = {
+     // We wrap with a lazy proxy to keep the factory synchronous.
+     let walClientPromise: Promise<ReturnType<typeof createJinnWalletClient>> | undefined;
+     const getWalletClient = async () => {
++      if (!walClientPromise && args.signer !== undefined) {
++        const section = args.signer;
++        // No keystore: the Kernel account signs through agent-signer.
++        walClientPromise = (async () => {
++          assertNoLiveDaemon(args.earningDir);
++          const { agentSignerConfigOf, createAgentSignerWalletClient } = await import('../../signer/index.js');
++          return createAgentSignerWalletClient({
++            rpcUrl: args.rpcUrl, chain: pubClient.chain!, signer: agentSignerConfigOf(section),
++          }) as unknown as ReturnType<typeof createJinnWalletClient>;
++        })();
++      }
+       if (!walClientPromise) {
+         walClientPromise = (async () => {
+           // D0a P3 (#525/#562/#897): `publish`/`revoke` sign via
+@@ -224,7 +240,7 @@ export const PRODUCTION_DEPS: SolverPluginsDeps = {
+     let publisherPromise: Promise<PluginRegistryPublisher> | undefined;
+     const getPublisher = async () => {
+       if (!publisherPromise) {
+-        publisherPromise = getWalletClient().then((walClient) =>
++        publisherPromise = getWalletClient().then(async (walClient) =>
+           new PluginRegistryPublisher({
+             identityRegistryAddress: args.identityRegistryAddress,
+             builderAgentId: args.builderAgentId,
+@@ -235,7 +251,12 @@ export const PRODUCTION_DEPS: SolverPluginsDeps = {
+             // one-shot process with no composition root to borrow a broadcaster from, so it
+             // constructs its own — bound to the fleet identity Safe, signed by the same agent key
+             // `walClient` already resolved above.
+-            broadcaster: createDirectSafeBroadcaster(pubClient, walClient, args.safeAddress),
++            broadcaster: args.signer === undefined
++              ? createDirectSafeBroadcaster(pubClient, walClient, args.safeAddress)
++              : await (await import('../../signer/index.js')).openCliKernelSafeBroadcaster({
++                  section: args.signer, earningDir: args.earningDir, chainId: pubClient.chain!.id,
++                  publicClient: pubClient as never, safeAddress: args.safeAddress,
++                }),
+           }),
+         );
+       }
+@@ -272,16 +293,38 @@ export const PRODUCTION_DEPS: SolverPluginsDeps = {
+     };
+ 
+     const getWriteClient = async () => {
+-      if (args.password === undefined) {
++      if (args.password === undefined && args.signer === undefined) {
+         // The read-only client's write methods throw a clean
+         // 'walletClient required' error — the canonical signal for callers
+         // that omitted the password.
+         return getReadOnly();
+       }
+       if (!writeClientPromise) {
+-        const password = args.password;
++        // Reached only without a signer, where the early return above guarantees a password.
++        const password = args.password as string;
+         const store = new FleetStateStore(args.earningDir);
+-        writeClientPromise = (async () => {
++        writeClientPromise = args.signer !== undefined ? (async () => {
++          // The Kernel account writes through agent-signer: no keystore to decrypt.
++          assertNoLiveDaemon(args.earningDir);
++          const section = args.signer!;
++          const signerModule = await import('../../signer/index.js');
++          const walClient = signerModule.createAgentSignerWalletClient({
++            rpcUrl: args.rpcUrl, chain: pubClient.chain!, signer: signerModule.agentSignerConfigOf(section),
++          }) as unknown as ReturnType<typeof createJinnWalletClient>;
++          const broadcaster = args.safeAddress
++            ? await signerModule.openCliKernelSafeBroadcaster({
++                section, earningDir: args.earningDir, chainId: pubClient.chain!.id,
++                publicClient: pubClient as never, safeAddress: args.safeAddress,
++              })
++            : undefined;
++          return new ReputationRegistryClient({
++            reputationRegistryAddress: args.reputationRegistryAddress,
++            publicClient: pubClient,
++            walletClient: walClient,
++            ...(args.safeAddress ? { safeAddress: args.safeAddress } : {}),
++            ...(broadcaster ? { broadcaster } : {}),
++          });
++        })() : (async () => {
+           // D0a P3 (#525/#562/#897): writes below sign via
+           // `createDirectSafeBroadcaster` (when routed through a Safe) with
+           // this same agent EOA a running daemon uses, with no cross-process
+diff --git a/operator/src/cli/execution-context.ts b/operator/src/cli/execution-context.ts
+index b53ac52a0..56c379ec1 100644
+--- a/operator/src/cli/execution-context.ts
++++ b/operator/src/cli/execution-context.ts
+@@ -274,11 +274,21 @@ export async function createCliExecutionContext(
+     agentEoaPrivateKey as `0x${string}`,
+     broadcasterChain,
+   );
+-  const broadcaster = createDirectSafeBroadcaster(
+-    broadcasterClients.publicClient,
+-    broadcasterClients.walletClient,
+-    primaryService.safe_address as `0x${string}`,
+-  );
++  // With `config.signer` the Safe's owner is a hardware-signed Kernel account: the verb's Safe
++  // writes go through agent-signer, on the daemon's venue ledger and cross-process lock.
++  const broadcaster = config.signer === undefined
++    ? createDirectSafeBroadcaster(
++        broadcasterClients.publicClient,
++        broadcasterClients.walletClient,
++        primaryService.safe_address as `0x${string}`,
++      )
++    : await (await import('../signer/index.js')).openCliKernelSafeBroadcaster({
++        section: config.signer,
++        earningDir: config.earningDir,
++        chainId: broadcasterChain.id,
++        publicClient: broadcasterClients.publicClient as never,
++        safeAddress: primaryService.safe_address as `0x${string}`,
++      });
+ 
+   const adapter = new MechRequesterAdapter({
+     rpcUrl: config.rpcUrl,
+diff --git a/operator/src/signer/index.ts b/operator/src/signer/index.ts
+index 8fea49822..df8624241 100644
+--- a/operator/src/signer/index.ts
++++ b/operator/src/signer/index.ts
+@@ -49,3 +49,34 @@ export async function agentSignerSafeBroadcaster(
+   }
+   return kernelSafeBroadcasterFactory(signer);
+ }
++
++/**
++ * A one-shot CLI verb's Safe broadcaster for a Kernel-owned Safe. Built on the daemon's own
++ * venue state (`<earningDir>/../venue/venue.db`): its broadcast lock is cross-process, so the
++ * verb and a daemon serialize on the Kernel account, and the submission ledger reconciles an
++ * attempt the verb or the daemon left with an unknown outcome.
++ */
++export async function openCliKernelSafeBroadcaster(input: {
++  readonly section: SignerSection;
++  readonly earningDir: string;
++  readonly chainId: number;
++  readonly publicClient: PublicClient;
++  readonly safeAddress: Address;
++}): Promise<{ readonly safeAddress: Address; execute: ReturnType<SafeBroadcasterFactory>['execute'] }> {
++  const { mkdirSync } = await import('node:fs');
++  const { dirname, join } = await import('node:path');
++  const { createBroadcastLock, createSubmissionLedger, openVenueState } = await import('@jinn-network/marketplace-venue-base');
++  const factory = await agentSignerSafeBroadcaster(input.section, input.publicClient, input.safeAddress);
++  const statePath = join(input.earningDir, '..', 'venue', 'venue.db');
++  mkdirSync(dirname(statePath), { recursive: true });
++  const state = openVenueState(statePath);
++  const broadcaster = factory({
++    chainId: input.chainId,
++    safeAddress: input.safeAddress,
++    // venue-base resolves its own copy of viem (finding E26 in composition-root.ts).
++    publicClient: input.publicClient as never,
++    ledger: createSubmissionLedger(state),
++    lock: createBroadcastLock(state),
++  });
++  return { safeAddress: input.safeAddress, execute: (request) => broadcaster.execute(request) };
++}
+diff --git a/operator/test/hermetic/full-loop-kernel-owner.test.ts b/operator/test/hermetic/full-loop-kernel-owner.test.ts
+index a002fe452..d1b8e9641 100644
+--- a/operator/test/hermetic/full-loop-kernel-owner.test.ts
++++ b/operator/test/hermetic/full-loop-kernel-owner.test.ts
+@@ -21,7 +21,7 @@
+  * With a TROPIC01 / TPM agent key the process needs access to that device.
+  */
+ 
+-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
++import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+ import { tmpdir } from 'node:os';
+ import { dirname, join, resolve } from 'node:path';
+ import { fileURLToPath } from 'node:url';
+@@ -70,6 +70,8 @@ import {
+ import { AgentSignerError, type AgentSignerConfig } from '../../src/signer/agent-signer-cli.js';
+ import { createAgentSignerWalletClient } from '../../src/signer/agent-signer-transport.js';
+ import { createMetadataPublisherFromViem } from '../../src/solvernets/daemon-init.js';
++import { PRODUCTION_DEPS } from '../../src/cli/commands/solver-plugins.js';
++import { buildPluginMetadataKey } from '../../src/erc8004/plugin-registry.js';
+ 
+ const TEST_DIR = dirname(fileURLToPath(import.meta.url));
+ const SNAPSHOT_STATE = resolve(TEST_DIR, '..', '_support', 'fixtures', 'anvil-base-v3-state', 'state.json');
+@@ -104,6 +106,8 @@ const IDENTITY_ABI = parseAbi([
+   'function ownerOf(uint256 tokenId) view returns (address)',
+   'function transferFrom(address from, address to, uint256 tokenId)',
+   'function getMetadata(uint256 agentId, string metadataKey) view returns (bytes)',
++  'function setApprovalForAll(address operator, bool approved)',
++  'function isApprovedForAll(address owner, address operator) view returns (bool)',
+ ]);
+ // The three Safe calls of one solution cycle (router.claimTask, mech.deliver,
+ // router.claimSolutionDelivery) -- the whole mandate besides Safe.execTransaction itself.
+@@ -111,6 +115,9 @@ const SEL = {
+   execTransaction: '0x6a761202', claimTask: '0xb0ea3103', deliver: '0x6f6885bb', claimSolutionDelivery: '0xc47dda39',
+   // a direct call of the account (not through the Safe): ERC-8004 setMetadata(uint256,string,bytes)
+   setMetadata: '0x466648da',
++  // ERC-721 setApprovalForAll(address,bool): the NFT's owner (the Kernel) lets its Safe write the
++  // agent's metadata (Safe-routed CLI verbs). Not `approve`, which the policy treats as ERC-20.
++  setApprovalForAll: '0xa22cb465',
+ };
+ 
+ interface AaCode { contracts: Record<string, { address: Address; code: Hex }> }
+@@ -187,6 +194,7 @@ describeMaybe('hermetic daemon solution loop, Safe owned by a hardware-signed Ke
+               { target: v3Env.mockMechAddress, selector: SEL.deliver },
+               { target: v3Env.routerAddress, selector: SEL.claimSolutionDelivery },
+               { target: IDENTITY_REGISTRY, selector: SEL.setMetadata },
++              { target: IDENTITY_REGISTRY, selector: SEL.setApprovalForAll },
+             ],
+             maxValuePerOp: '1',
+             budget: '1000000000000000000', // gas of the account's own operations
+@@ -279,6 +287,45 @@ describeMaybe('hermetic daemon solution loop, Safe owned by a hardware-signed Ke
+         const metadataTx = await fixture.publicClient.getTransaction({ hash: published.txHash as Hex });
+         expect(metadataTx.to?.toLowerCase()).toBe(ENTRY_POINT_V07.toLowerCase());
+ 
++        // ── A CLI verb (ADAPTATION item 7): `jinn solver-plugins publish` with `config.signer` ──
++        // The production publisher factory, as the verb builds it: no keystore is opened; the
++        // ERC-8004 record is written through the Safe, by the Kernel, via agent-signer, on the
++        // daemon's venue state. CLI verbs refuse to run beside a live daemon: stop it first.
++        await running.stop();
++        running = undefined;
++        // The NFT moved to the Kernel, so the Safe acts for it only once the Kernel approves it
++        // (a direct call of the account, through agent-signer).
++        const approvalHash = await direct.writeContract({
++          address: IDENTITY_REGISTRY, abi: IDENTITY_ABI, functionName: 'setApprovalForAll',
++          args: [operator.safeAddress, true], account: kernel, chain: base,
++        });
++        expect((await fixture.publicClient.getTransactionReceipt({ hash: approvalHash })).status).toBe('success');
++        expect(await fixture.publicClient.readContract({
++          address: IDENTITY_REGISTRY, abi: IDENTITY_ABI, functionName: 'isApprovedForAll', args: [kernel, operator.safeAddress],
++        })).toBe(true);
++        const earningDir = join(work, 'earning');
++        mkdirSync(earningDir, { recursive: true });
++        const cliPublisher = PRODUCTION_DEPS.publisherFactory({
++          identityRegistryAddress: IDENTITY_REGISTRY, builderAgentId: agentId, safeAddress: operator.safeAddress,
++          rpcUrl: fixture.anvil.rpcUrl, network: 'base', earningDir, password: 'not-used-with-a-signer',
++          signer: { kind: 'agent-signer', bin: AGENT_SIGNER!, config: configPath, account: kernel, envFile: join(work, '.env'), sponsored: false },
++        });
++        const pluginCid = 'bafkreitpmsignkernelownerhermeticloop';
++        const pluginTx = await cliPublisher.publish({
++          pluginCid,
++          payload: {
++            version: 1, pluginName: '@tpm-sign/hermetic', pluginVersion: '0.1.0',
++            pluginSha256: `0x${'cd'.repeat(32)}`, supports: ['prediction.v1'], publishedAt: 1_800_000_000,
++          },
++        });
++        const pluginExecutions = await safeExecutionsOf(fixture.publicClient, pluginTx);
++        expect(pluginExecutions).toHaveLength(1);
++        expect(pluginExecutions[0]).toMatchObject({ safe: getAddress(operator.safeAddress), via: 'user-operation', account: getAddress(kernel) });
++        const pluginRecord = await fixture.publicClient.readContract({
++          address: IDENTITY_REGISTRY, abi: IDENTITY_ABI, functionName: 'getMetadata', args: [agentId, buildPluginMetadataKey(pluginCid)],
++        });
++        expect(pluginRecord.length).toBeGreaterThan(2);
++
+         // ── A compromised agent host: the mandate refuses Safe self-administration ──
+         const state = openVenueState(join(work, 'probe-venue.db'));
+         try {
+diff --git a/operator/test/signer/cli-broadcaster.test.ts b/operator/test/signer/cli-broadcaster.test.ts
+new file mode 100644
+index 000000000..09a123f64
+--- /dev/null
++++ b/operator/test/signer/cli-broadcaster.test.ts
+@@ -0,0 +1,85 @@
++// The CLI verbs' Safe broadcaster for a Kernel-owned Safe: refuses at once when the Kernel does
++// not own the Safe, and keeps its ledger in the daemon's venue state (`<earningDir>/../venue`),
++// so a verb and a daemon share the lock and the reconciliation record.
++import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { afterEach, beforeEach, describe, expect, it } from 'vitest';
++import { encodeAbiParameters, encodeEventTopics, parseAbiItem, type Address, type Hex } from 'viem';
++import { createSubmissionLedger, openVenueState } from '@jinn-network/marketplace-venue-base';
++
++import { openCliKernelSafeBroadcaster } from '../../src/signer/index.js';
++import { ENTRY_POINT_V07 } from '../../src/signer/kernel-safe-broadcaster.js';
++
++const KERNEL = '0xEdB645B14e2f952C5784e34949b58F0826fBc9E9' as Address;
++const SAFE = '0xd0b972a8ee7D8AB91a2e3381Eb6F10550B80E52A' as Address;
++const REGISTRY = '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432' as Address;
++const OP = `0x${'a1'.repeat(32)}` as Hex;
++const TX = `0x${'c3'.repeat(32)}` as Hex;
++
++let dir: string;
++beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'cli-kernel-')); });
++afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
++
++function fakeAgentSigner(): string {
++  const bin = join(dir, 'agent-signer');
++  writeFileSync(bin, `#!/usr/bin/env node
++process.stderr.write('userOpHash:     ${OP}\\n');
++process.stdout.write(JSON.stringify({ account: '${KERNEL}', userOpHash: '${OP}', nonce: '0x1', tx: '${TX}', block: 9, gasUsed: 1 }) + '\\n');
++`);
++  chmodSync(bin, 0o755);
++  return bin;
++}
++
++function chain(isOwner: boolean) {
++  const event = parseAbiItem('event UserOperationEvent(bytes32 indexed userOpHash, address indexed sender, address indexed paymaster, uint256 nonce, bool success, uint256 actualGasCost, uint256 actualGasUsed)');
++  return {
++    async readContract(args: { functionName: string }) {
++      if (args.functionName === 'isOwner') return isOwner;
++      if (args.functionName === 'nonce') return 4n;
++      throw new Error(`unexpected read ${args.functionName}`);
++    },
++    async getTransactionReceipt() {
++      return {
++        blockNumber: 9n, blockHash: `0x${'0e'.repeat(32)}`, status: 'success',
++        logs: [{
++          address: ENTRY_POINT_V07,
++          topics: encodeEventTopics({ abi: [event], eventName: 'UserOperationEvent', args: { userOpHash: OP, sender: KERNEL, paymaster: '0x0000000000000000000000000000000000000000' } }),
++          data: encodeAbiParameters([{ type: 'uint256' }, { type: 'bool' }, { type: 'uint256' }, { type: 'uint256' }], [0n, true, 1n, 1n]),
++        }],
++      };
++    },
++  };
++}
++
++const section = (bin: string) => ({ kind: 'agent-signer' as const, bin, config: 'agent.json', account: KERNEL, sponsored: false });
++
++describe('openCliKernelSafeBroadcaster', () => {
++  it('refuses when the Kernel does not own the Safe', async () => {
++    const earningDir = join(dir, 'earning');
++    await expect(openCliKernelSafeBroadcaster({
++      section: section(fakeAgentSigner()), earningDir, chainId: 84532, publicClient: chain(false) as never, safeAddress: SAFE,
++    })).rejects.toThrow(/is not an owner of the service Safe/);
++    expect(existsSync(join(dir, 'venue', 'venue.db'))).toBe(false);
++  });
++
++  it('sends through agent-signer and records the attempt in the daemon venue state', async () => {
++    const earningDir = join(dir, 'earning');
++    mkdirSync(earningDir);
++    const broadcaster = await openCliKernelSafeBroadcaster({
++      section: section(fakeAgentSigner()), earningDir, chainId: 84532, publicClient: chain(true) as never, safeAddress: SAFE,
++    });
++    expect(broadcaster.safeAddress).toBe(SAFE);
++    const receipt = await broadcaster.execute({ to: REGISTRY, value: 0n, data: '0x466648da', logicalTx: 'solver-plugins.publish' });
++    expect(receipt.txHash).toBe(TX);
++
++    const state = openVenueState(join(dir, 'venue', 'venue.db'));
++    try {
++      const row = createSubmissionLedger(state).get({ chainId: 84532, from: KERNEL, nonce: 4 });
++      expect(row).toMatchObject({ txHash: OP, logicalTx: 'solver-plugins.publish' });
++      expect(row?.resolvedAtMs).toBeDefined();
++    } finally {
++      state.close();
++    }
++  });
++});
+-- 
+2.43.0
+
