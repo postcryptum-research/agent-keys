@@ -112,3 +112,59 @@ function explain(stderr: string): string {
   const report = (at >= 0 ? stderr.slice(at + 7) : stderr).split("\n").filter((l) => !l.startsWith("ERROR:tcti"));
   return report.map((l) => l.trim()).filter(Boolean).join(" ").replace(/\s*Caused by:\s*/g, ": ") || "agent-signer failed";
 }
+
+export interface PaidResponse {
+  /** HTTP status of the final response (200 when the payment went through). */
+  status: number;
+  /** Response body. */
+  body: string;
+  /** The facilitator's settlement (`PAYMENT-RESPONSE`), when the server sent one. */
+  settlement?: { success?: boolean; transaction?: string; [k: string]: unknown };
+  /** Why the server refused the payment, when it did (e.g. `invalid_exact_evm_insufficient_balance`). */
+  refused?: string;
+}
+
+/**
+ * GET `url`, paying with x402 if the server asks (`agent-signer x402 fetch`):
+ * the payment is registered on-chain under the mandate's token budget, then
+ * signed in hardware. `opts.agentConfig` must be a config whose mandate pays
+ * x402 (see signer/agent.x402.base-sepolia.json).
+ */
+export function x402Fetch(opts: AgentSignerOptions, url: string, maxAmount?: bigint): Promise<PaidResponse> {
+  const args = ["x402", "fetch", "--agent", opts.agentConfig, url];
+  if (maxAmount !== undefined) args.push("--max-amount", maxAmount.toString());
+  if (opts.envFile) args.push("--env-file", opts.envFile);
+  if (opts.sponsored) args.push("--sponsored");
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(opts.bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (b) => (stdout += b));
+    child.stderr.on("data", (b) => (stderr += b));
+
+    const timer = setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs ?? 180_000);
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      reject(new AgentSignerError(`cannot run ${opts.bin}: ${e.message}`, ""));
+    });
+    child.on("close", () => {
+      clearTimeout(timer);
+      // The CLI prints `status:` once it has an HTTP answer; without one it failed before paying.
+      const field = (name: string) => stderr.match(new RegExp(`^${name}:\\s+(.*)$`, "m"))?.[1];
+      const status = field("status");
+      if (status === undefined) {
+        reject(new AgentSignerError(explain(stderr), stderr));
+        return;
+      }
+      const settlement = field("settlement");
+      const refused = field("refused");
+      resolve({
+        status: Number(status),
+        body: stdout.trimEnd(),
+        settlement: settlement ? JSON.parse(settlement) : undefined,
+        refused: refused ? JSON.parse(refused) : undefined,
+      });
+    });
+  });
+}

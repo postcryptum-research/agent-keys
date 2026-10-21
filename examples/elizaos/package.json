@@ -1,0 +1,27 @@
+{
+  "name": "tpm-sign-elizaos-example",
+  "private": true,
+  "type": "module",
+  "description": "ElizaOS agent acting on-chain through a hardware-signed ERC-4337 account (TPM_sign)",
+  "license": "MIT",
+  "scripts": {
+    "smoke": "bun src/smoke.ts",
+    "smoke:dry": "bun src/smoke.ts --dry",
+    "chat": "bun src/chat.ts",
+    "start:ui": "elizaos start",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@elizaos/core": "1.7.2",
+    "@elizaos/plugin-anthropic": "1.5.12",
+    "@elizaos/plugin-bootstrap": "1.7.2",
+    "@elizaos/plugin-sql": "1.7.2",
+    "dotenv": "16.4.7",
+    "viem": "2.38.3"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.3",
+    "@types/node": "22",
+    "typescript": "5.9.3"
+  }
+}

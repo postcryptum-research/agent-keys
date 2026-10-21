@@ -84,6 +84,8 @@ one seam, `agent-signer op send --json`; details in
 | [Claude Code / OpenClaw skill](examples/claude-skill/) | a `SKILL.md` that teaches the agent the CLI | — |
 | [Jinn](examples/jinn/) (Olas-based operator) | a Safe broadcaster whose Safe owner is the Kernel account | a claim-like call and a settlement-like MultiSend batch through the Safe execute; the Safe adding an owner is refused |
 | [Olas](examples/olas/) (open-autonomy, Python) | Safe owner and keeper become the Kernel account; the consensus key stays, without funds | a 1-agent service's `transaction_settlement_abci` path, built with open-autonomy's own code, settles through the Kernel; a keeper retry cannot execute twice |
+| [ElizaOS](examples/elizaos/) (1.7, Claude) | a plugin (`plugin-tpm-sign`) instead of `plugin-evm`'s private key | an allowed call lands, a transfer to an outsider is refused; `PAY_FOR_URL` pays an x402 API from the mandate's USDC budget |
+| [x402](examples/x402/) (HTTP 402 payments) | `agent-signer x402 fetch`: each payment registered under the mandate, then signed | the bundler takes the registration, the x402.org facilitator's ERC-1271 check passes, expired registrations are reclaimed |
 
 The Jinn and Olas folders also hold an integration analysis with file:line
 references, a patch plan and proposals for upstream.
@@ -97,7 +99,7 @@ contracts/   Foundry: P256Validator, P256Signer, AgentPolicy (ERC-7579 modules),
              WhitelistPaymaster + tests against Kernel v3.3, EntryPoint v0.7
              and Safe v1.4.1; P-256 vectors signed in software, a Linux TPM,
              a Windows TPM and a TROPIC01
-examples/    AgentKit, Claude Code skill, Jinn, Olas
+examples/    AgentKit, Claude Code skill, Jinn, Olas, ElizaOS, x402
 docs/        architecture, benchmark, ERC-1271 and Safes, per-platform guides
 legacy/      the original Python / tpm2-tools prototype, kept for reference
 ```
