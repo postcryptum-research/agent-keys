@@ -1,7 +1,7 @@
 From 8b3165ce374ebc386329072ae76764414344581f Mon Sep 17 00:00:00 2001
 From: 77ph <tk@itarragon.net>
 Date: Wed, 21 Oct 2026 16:34:38 +0300
-Subject: [PATCH 5/8] feat: bind Safe executions inside EntryPoint.handleOps
+Subject: [PATCH 5/9] feat: bind Safe executions inside EntryPoint.handleOps
  (smart-account owners)
 
 Readers that recover a router call from the transaction behind an event

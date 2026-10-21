@@ -1,0 +1,678 @@
+From 9f7fe2a89457a9799e3cc6c0ddfb437468798947 Mon Sep 17 00:00:00 2001
+From: 77ph <tk@itarragon.net>
+Date: Wed, 21 Oct 2026 17:20:23 +0300
+Subject: [PATCH 9/9] feat(operator): `jinn signer-migrate` -- one-step
+ handover to the Kernel owner
+
+Moves a bootstrapped operator to its hardware-signed Kernel account
+(config.signer) in one idempotent command; every step reads the chain first
+and is skipped when already done.
+
+  1. kernel-approves-safe  the Kernel signs IdentityRegistry
+                           setApprovalForAll(Safe, true) via agent-signer --
+                           deploying itself if needed and proving the
+                           hardware key can sign before it receives anything
+  2. mandate-admits-safe   its AgentPolicy must admit (Safe, execTransaction)
+  3. safe-owner            the agent EOA swaps itself out for the Kernel
+  4. agent-nft             the agent EOA transfers the ERC-8004 NFT
+  5. attestation-key       the Kernel publishes the EOA as jinn.attestationKey
+  6. eoa-has-no-authority  final check
+
+The service Safe and, when separate, the fleet identity Safe are migrated.
+--dry-run prints the plan from the chain; --yes confirms.
+
+- src/signer/migrate.ts (migrateToKernelOwner), src/cli/commands/
+  signer-migrate.ts, registered in src/cli/index.ts.
+- tests: unit (no handover to a Kernel whose mandate does not admit the Safe
+  or that is not deployed -- mutation-checked; 1/1 Safes only; a dry run
+  sends nothing); the Kernel-owner hermetic loop now migrates with it --
+  dry run, run, idempotent re-run -- before the daemon's solution loop.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ operator/src/cli/commands/signer-migrate.ts   | 160 +++++++++++++
+ operator/src/cli/index.ts                     |   2 +
+ operator/src/signer/migrate.ts                | 218 ++++++++++++++++++
+ .../hermetic/full-loop-kernel-owner.test.ts   |  88 +++----
+ operator/test/signer/migrate.test.ts          |  70 ++++++
+ 5 files changed, 486 insertions(+), 52 deletions(-)
+ create mode 100644 operator/src/cli/commands/signer-migrate.ts
+ create mode 100644 operator/src/signer/migrate.ts
+ create mode 100644 operator/test/signer/migrate.test.ts
+
+diff --git a/operator/src/cli/commands/signer-migrate.ts b/operator/src/cli/commands/signer-migrate.ts
+new file mode 100644
+index 000000000..cf1ddfcab
+--- /dev/null
++++ b/operator/src/cli/commands/signer-migrate.ts
+@@ -0,0 +1,160 @@
++/**
++ * `jinn signer-migrate` -- hand a bootstrapped operator over to its hardware-signed Kernel
++ * account (`config.signer`, src/signer/) in one idempotent step: the Kernel proves it can sign
++ * and that its mandate admits the Safe, then the service Safe (and the fleet identity Safe, if
++ * separate) and the ERC-8004 agent NFT move from the agent EOA to the Kernel, and the EOA is
++ * published as the agent's attestation key. See src/signer/migrate.ts for the step order.
++ */
++import { readFileSync } from 'node:fs';
++import { parseArgs } from 'node:util';
++import { getAddress, type Address, type Hex } from 'viem';
++import { privateKeyToAccount } from 'viem/accounts';
++
++import { COMMON_FLAGS, type CommandContext, type CommandModule } from '../command.js';
++import { emitResult } from '../output.js';
++import { emitEnvelope } from '../../errors/envelope.js';
++import { ensureConfirmed } from '../action.js';
++import { createCliSignerContext, pickPrimaryMechService } from '../execution-context.js';
++import { walletPrivateKeyAtIndex } from '../../earning/wallet.js';
++import { createJinnWalletClient } from '../../earning/viem-clients.js';
++import { agentSignerConfigOf, createAgentSignerWalletClient } from '../../signer/index.js';
++import { migrateToKernelOwner, type MigrationStep } from '../../signer/migrate.js';
++
++const EXAMPLE = 'jinn signer-migrate --dry-run';
++
++async function run(ctx: CommandContext): Promise<void> {
++  let parsed;
++  try {
++    parsed = parseArgs({
++      args: ctx.argv,
++      options: {
++        ...COMMON_FLAGS,
++        'dry-run': { type: 'boolean', default: false },
++        yes: { type: 'boolean', default: false },
++      },
++      allowPositionals: false,
++    });
++  } catch (err) {
++    emitEnvelope(
++      { code: 'invalid_invocation', message: err instanceof Error ? err.message : String(err), exampleCli: EXAMPLE, details: { field: 'flags' } },
++      { writer: ctx.writer, exit: ctx.exit },
++    );
++    return;
++  }
++  const dryRun = parsed.values['dry-run'] as boolean;
++  if (!dryRun && !ensureConfirmed(ctx, { yes: parsed.values.yes as boolean, dryRun: false })) return;
++
++  const built = await createCliSignerContext({ argv: ctx.argv, env: ctx.env });
++  if (!built.ok) {
++    emitEnvelope(built.envelope, { writer: ctx.writer, exit: ctx.exit });
++    return;
++  }
++  const { config, networkChain, fleetState, mnemonic, publicClient } = built.ctx;
++  if (config.signer === undefined) {
++    emitEnvelope(
++      {
++        code: 'invalid_invocation',
++        message: 'No `signer` section in the config: there is no Kernel account to migrate to.',
++        hint: 'Add "signer": { "kind": "agent-signer", "bin", "config", "account" } to the config (src/signer/config.ts).',
++        exampleCli: EXAMPLE,
++        details: { field: 'signer' },
++      },
++      { writer: ctx.writer, exit: ctx.exit },
++    );
++    return;
++  }
++  const service = pickPrimaryMechService(fleetState.services);
++  if (service?.safe_address == null) {
++    emitEnvelope(
++      { code: 'bootstrap_incomplete', message: 'No complete service with a Safe to migrate.', exampleCli: 'jinn bootstrap --json', details: { field: 'fleet' } },
++      { writer: ctx.writer, exit: ctx.exit },
++    );
++    return;
++  }
++
++  try {
++    const agentConfig = JSON.parse(readFileSync(config.signer.config, 'utf8')) as { permissionId?: string };
++    if (typeof agentConfig.permissionId !== 'string') throw new Error(`${config.signer.config} has no permissionId`);
++    const agentEoaWallet = createJinnWalletClient(config.rpcUrl, networkChain,
++      privateKeyToAccount(walletPrivateKeyAtIndex(mnemonic, service.index) as Hex));
++    const kernelWallet = createAgentSignerWalletClient({
++      rpcUrl: config.rpcUrl, chain: publicClient.chain!, signer: agentSignerConfigOf(config.signer),
++    });
++    const kernel = getAddress(config.signer.account);
++
++    // The service Safe, then the fleet identity Safe when it is a different one (same agent EOA).
++    const targets: { label: string; safe: Address; agentId: string | null; registry: string | null }[] = [
++      { label: 'service', safe: getAddress(service.safe_address), agentId: service.agent_id ?? null, registry: service.identity_registry_address ?? null },
++    ];
++    const fleetSafe = fleetState.fleet_safe_address;
++    if (fleetSafe != null && getAddress(fleetSafe) !== targets[0]!.safe) {
++      targets.push({ label: 'fleet identity', safe: getAddress(fleetSafe), agentId: fleetState.fleet_agent_id ?? null, registry: fleetState.fleet_identity_registry ?? null });
++    }
++
++    const results: { label: string; safe: Address; steps: readonly MigrationStep[] }[] = [];
++    for (const target of targets) {
++      const steps = await migrateToKernelOwner({
++        publicClient: publicClient as never,
++        agentEoaWallet: agentEoaWallet as never,
++        kernelWallet,
++        kernel,
++        permissionId: agentConfig.permissionId as Hex,
++        safeAddress: target.safe,
++        ...(target.agentId !== null && target.registry !== null
++          ? { identityRegistry: getAddress(target.registry), agentId: BigInt(target.agentId) }
++          : {}),
++        dryRun,
++      });
++      results.push({ label: target.label, safe: target.safe, steps });
++    }
++
++    const payload = { schemaVersion: 1 as const, dryRun, kernel, agentEoa: agentEoaWallet.account.address, safes: results };
++    emitResult(
++      payload,
++      () => [
++        `${dryRun ? 'Migration plan' : 'Migrated'}: agent EOA ${payload.agentEoa} -> Kernel ${kernel}`,
++        ...results.flatMap((r) => [
++          `  ${r.label} Safe ${r.safe}`,
++          ...r.steps.map((s) => `    ${s.step.padEnd(22)} ${s.status}${s.txHash ? `  ${s.txHash}` : ''}${s.detail ? `  (${s.detail})` : ''}`),
++        ]),
++      ].join('\n'),
++      { json: Boolean(parsed.values.json), human: Boolean(parsed.values.human), writer: ctx.writer, stdoutIsTty: ctx.stdoutIsTty, noColor: Boolean(ctx.env['NO_COLOR']) },
++    );
++    ctx.exit(0);
++  } catch (e) {
++    emitEnvelope(
++      {
++        code: 'fatal',
++        message: e instanceof Error ? e.message : String(e),
++        hint: 'Every step checks the chain first: fix the cause and re-run; completed steps are skipped.',
++        exampleCli: EXAMPLE,
++        details: { cause: e instanceof Error ? e.message : String(e) },
++      },
++      { writer: ctx.writer, exit: ctx.exit },
++    );
++  }
++}
++
++const command: CommandModule = {
++  name: 'signer-migrate',
++  summary: 'Hand the operator over to its hardware-signed Kernel account (config.signer)',
++  helpText: `Usage: jinn signer-migrate [--dry-run] [--yes] [--json|--human] [--config <path>] [--password-fd <fd>]
++
++Moves the service Safe (and the fleet identity Safe, if separate) and the
++ERC-8004 agent NFT from the keystore agent EOA to the Kernel account named in
++the config's \`signer\` section, after the Kernel has signed once through
++agent-signer and its mandate is checked to admit the Safe. The agent EOA
++stays as the agent's attestation key (off-chain documents only) and is
++published as \`jinn.attestationKey\`.
++
++Idempotent: every step reads the chain first; re-run after an interruption.
++Run with the daemon stopped. The agent EOA pays the gas of the two handover
++transactions; the Kernel pays its own.
++
++Examples:
++  jinn signer-migrate --dry-run --human
++  jinn signer-migrate --yes
++`,
++  run,
++};
++export default command;
+diff --git a/operator/src/cli/index.ts b/operator/src/cli/index.ts
+index de0d77d0e..44ae83c96 100644
+--- a/operator/src/cli/index.ts
++++ b/operator/src/cli/index.ts
+@@ -37,6 +37,7 @@ import keysCommand from './commands/keys-backup.js';
+ import updateCommand from './commands/update.js';
+ import mcpCommand from './commands/mcp.js';
+ import migrateAgentIdCommand from './commands/migrate-agent-id.js';
++import signerMigrateCommand from './commands/signer-migrate.js';
+ import conformanceCommand from './commands/conformance.js';
+ import evidenceCommand from './commands/evidence.js';
+ import createCommand from './commands/create.js';
+@@ -86,6 +87,7 @@ const COMMANDS: CommandModule[] = [
+   updateCommand,
+   mcpCommand,
+   migrateAgentIdCommand,
++  signerMigrateCommand,
+   conformanceCommand,
+   evidenceCommand,
+   createCommand,
+diff --git a/operator/src/signer/migrate.ts b/operator/src/signer/migrate.ts
+new file mode 100644
+index 000000000..d974b9374
+--- /dev/null
++++ b/operator/src/signer/migrate.ts
+@@ -0,0 +1,218 @@
++// SPDX-License-Identifier: MIT
++
++// One-step migration of a bootstrapped operator to a hardware-signed Kernel owner
++// (`jinn signer-migrate`). Every step reads the chain first and is skipped when already done, so
++// the command is safe to re-run after an interruption.
++//
++//   1. kernel-approves-safe   the Kernel calls IdentityRegistry.setApprovalForAll(Safe, true)
++//                             through agent-signer -- deploying the account if needed and, above
++//                             all, PROVING that the hardware key can sign for it under its
++//                             mandate before anything is handed over to it;
++//   2. mandate-admits-safe    the Kernel's AgentPolicy admits (Safe, execTransaction): without it
++//                             the agent could not drive the Safe after the swap;
++//   3. safe-owner             the agent EOA swaps itself out of the Safe for the Kernel
++//                             (Safe.execTransaction(swapOwner) with a pre-validated signature);
++//   4. agent-nft              the agent EOA transfers the ERC-8004 agent NFT to the Kernel;
++//   5. attestation-key        the Kernel publishes the EOA as jinn.attestationKey;
++//   6. eoa-has-no-authority   final check: the EOA owns neither the Safe nor the NFT.
++//
++// Steps 1-2 precede the swap on purpose: the Safe is never handed to an address that cannot
++// operate it.
++import {
++  encodeFunctionData,
++  getAddress,
++  parseAbi,
++  zeroAddress,
++  type Address,
++  type Hex,
++  type PublicClient,
++  type WalletClient,
++} from 'viem';
++
++import { viemSendTransactionWithRetry, type TxRetryWalletClient } from '../tx-retry.js';
++import { assertAgentEoaHasNoAuthority, ensureAttestationKeyBinding, readAttestationKey } from './attestation.js';
++
++const SENTINEL_OWNERS = '0x0000000000000000000000000000000000000001' as Address;
++const EXEC_TRANSACTION_SELECTOR = '0x6a761202' as Hex;
++
++const SAFE_ABI = parseAbi([
++  'function getOwners() view returns (address[])',
++  'function getThreshold() view returns (uint256)',
++  'function swapOwner(address prevOwner, address oldOwner, address newOwner)',
++  'function execTransaction(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, bytes signatures) payable returns (bool)',
++]);
++const REGISTRY_ABI = parseAbi([
++  'function ownerOf(uint256 tokenId) view returns (address)',
++  'function transferFrom(address from, address to, uint256 tokenId)',
++  'function setApprovalForAll(address operator, bool approved)',
++  'function isApprovedForAll(address owner, address operator) view returns (bool)',
++]);
++const KERNEL_ABI = parseAbi([
++  'function permissionConfig(bytes4 pId) view returns ((bytes2 permissionFlag, address signer, bytes22[] policyData))',
++]);
++const POLICY_ABI = parseAbi([
++  'function isAllowed(address account, bytes32 id, address target, bytes4 selector) view returns (bool)',
++]);
++
++export type MigrationStepName =
++  | 'kernel-approves-safe'
++  | 'mandate-admits-safe'
++  | 'safe-owner'
++  | 'agent-nft'
++  | 'attestation-key'
++  | 'eoa-has-no-authority';
++
++export interface MigrationStep {
++  readonly step: MigrationStepName;
++  /** done: this run changed it; already: it was so; would: --dry-run; checked: a pure check passed. */
++  readonly status: 'done' | 'already' | 'would' | 'checked' | 'not-applicable';
++  readonly txHash?: Hex;
++  readonly detail?: string;
++}
++
++export interface MigrationInput {
++  readonly publicClient: PublicClient;
++  /** The agent EOA (keystore) -- the Safe's and the NFT's current owner. */
++  readonly agentEoaWallet: WalletClient;
++  /** The Kernel account through agent-signer (`createAgentSignerWalletClient`). */
++  readonly kernelWallet: WalletClient;
++  readonly kernel: Address;
++  /** The agent permission the Kernel's agent key signs under (`permissionId` of its config). */
++  readonly permissionId: Hex;
++  readonly safeAddress: Address;
++  /** The ERC-8004 identity; without it steps 1, 4 and 5 do not apply. */
++  readonly identityRegistry?: Address;
++  readonly agentId?: bigint;
++  readonly dryRun?: boolean;
++}
++
++async function send(wallet: WalletClient, publicClient: PublicClient, to: Address, data: Hex, logicalTx: string): Promise<Hex> {
++  const account = wallet.account;
++  if (account === undefined) throw new Error(`${logicalTx}: the wallet has no account`);
++  const hash = await viemSendTransactionWithRetry(
++    wallet as unknown as TxRetryWalletClient,
++    publicClient,
++    { account, to, data, value: 0n, chain: wallet.chain },
++    { logicalTx },
++  );
++  const receipt = await publicClient.waitForTransactionReceipt({ hash });
++  if (receipt.status !== 'success') throw new Error(`${logicalTx} reverted (tx ${hash})`);
++  return hash;
++}
++
++export async function migrateToKernelOwner(input: MigrationInput): Promise<readonly MigrationStep[]> {
++  const pc = input.publicClient;
++  const eoa = getAddress(input.agentEoaWallet.account!.address);
++  const kernel = getAddress(input.kernel);
++  const safe = getAddress(input.safeAddress);
++  const identity = input.identityRegistry !== undefined && input.agentId !== undefined
++    ? { registry: getAddress(input.identityRegistry), agentId: input.agentId }
++    : undefined;
++  const steps: MigrationStep[] = [];
++
++  // Preconditions: a 1/1 Safe owned by the EOA (or already by the Kernel).
++  const owners = (await pc.readContract({ address: safe, abi: SAFE_ABI, functionName: 'getOwners' })).map((o) => getAddress(o));
++  const threshold = await pc.readContract({ address: safe, abi: SAFE_ABI, functionName: 'getThreshold' });
++  if (!owners.includes(eoa) && !owners.includes(kernel)) {
++    throw new Error(`the Safe ${safe} is owned by neither the agent EOA ${eoa} nor the Kernel ${kernel}: ${owners.join(', ')}`);
++  }
++  if (threshold !== 1n) throw new Error(`the Safe ${safe} has threshold ${threshold}; this migration handles 1/1 Safes only`);
++
++  // 1. The Kernel signs once, before it receives anything.
++  if (identity === undefined) {
++    steps.push({ step: 'kernel-approves-safe', status: 'not-applicable', detail: 'no ERC-8004 identity' });
++  } else if (await pc.readContract({ address: identity.registry, abi: REGISTRY_ABI, functionName: 'isApprovedForAll', args: [kernel, safe] })) {
++    steps.push({ step: 'kernel-approves-safe', status: 'already' });
++  } else if (input.dryRun) {
++    steps.push({ step: 'kernel-approves-safe', status: 'would' });
++  } else {
++    const txHash = await send(input.kernelWallet, pc, identity.registry,
++      encodeFunctionData({ abi: REGISTRY_ABI, functionName: 'setApprovalForAll', args: [safe, true] }), 'signer-migrate.approve-safe');
++    steps.push({ step: 'kernel-approves-safe', status: 'done', txHash });
++  }
++
++  // 2. The mandate must let the agent drive the Safe once it owns it.
++  const code = await pc.getCode({ address: kernel });
++  if (code === undefined || code === '0x') {
++    if (!input.dryRun) {
++      throw new Error(`the Kernel ${kernel} is not deployed: its first operation (step 1) deploys it; without an ERC-8004 identity, send any agent operation first`);
++    }
++    steps.push({ step: 'mandate-admits-safe', status: 'would', detail: 'the Kernel is not deployed yet' });
++  } else {
++    const config = await pc.readContract({ address: kernel, abi: KERNEL_ABI, functionName: 'permissionConfig', args: [input.permissionId] });
++    const policyData = config.policyData[0];
++    if (config.signer === zeroAddress || policyData === undefined) {
++      throw new Error(`permission ${input.permissionId} is not installed on the Kernel ${kernel}`);
++    }
++    const policy = getAddress(`0x${policyData.slice(-40)}`);
++    const id32 = `${input.permissionId}${'0'.repeat(56)}` as Hex;
++    const admits = await pc.readContract({
++      address: policy, abi: POLICY_ABI, functionName: 'isAllowed', args: [kernel, id32, safe, EXEC_TRANSACTION_SELECTOR],
++    });
++    if (!admits) {
++      throw new Error(`the Kernel's mandate (permission ${input.permissionId}, policy ${policy}) does not admit ${safe}.execTransaction: install one that does before handing the Safe over`);
++    }
++    steps.push({ step: 'mandate-admits-safe', status: 'checked' });
++  }
++
++  // 3. Hand the Safe over.
++  if (owners.includes(kernel) && !owners.includes(eoa)) {
++    steps.push({ step: 'safe-owner', status: 'already' });
++  } else if (input.dryRun) {
++    steps.push({ step: 'safe-owner', status: 'would' });
++  } else {
++    const at = owners.indexOf(eoa);
++    const prevOwner = at === 0 ? SENTINEL_OWNERS : owners[at - 1]!;
++    const swap = encodeFunctionData({ abi: SAFE_ABI, functionName: 'swapOwner', args: [prevOwner, eoa, kernel] });
++    // Pre-validated signature: r = owner, s = 0, v = 1 -- valid because msg.sender is that owner.
++    const signature = `0x${eoa.slice(2).toLowerCase().padStart(64, '0')}${'0'.repeat(64)}01` as Hex;
++    const txHash = await send(input.agentEoaWallet, pc, safe, encodeFunctionData({
++      abi: SAFE_ABI, functionName: 'execTransaction',
++      args: [safe, 0n, swap, 0, 0n, 0n, 0n, zeroAddress, zeroAddress, signature],
++    }), 'signer-migrate.swap-owner');
++    steps.push({ step: 'safe-owner', status: 'done', txHash });
++  }
++
++  // 4. Hand the agent NFT over.
++  if (identity === undefined) {
++    steps.push({ step: 'agent-nft', status: 'not-applicable', detail: 'no ERC-8004 identity' });
++  } else {
++    const nftOwner = getAddress(await pc.readContract({ address: identity.registry, abi: REGISTRY_ABI, functionName: 'ownerOf', args: [identity.agentId] }));
++    if (nftOwner === kernel) {
++      steps.push({ step: 'agent-nft', status: 'already' });
++    } else if (nftOwner !== eoa) {
++      throw new Error(`agent NFT ${identity.agentId} belongs to ${nftOwner}, neither the agent EOA nor the Kernel`);
++    } else if (input.dryRun) {
++      steps.push({ step: 'agent-nft', status: 'would' });
++    } else {
++      const txHash = await send(input.agentEoaWallet, pc, identity.registry,
++        encodeFunctionData({ abi: REGISTRY_ABI, functionName: 'transferFrom', args: [eoa, kernel, identity.agentId] }), 'signer-migrate.agent-nft');
++      steps.push({ step: 'agent-nft', status: 'done', txHash });
++    }
++  }
++
++  // 5. Publish the EOA as the agent's attestation key.
++  if (identity === undefined) {
++    steps.push({ step: 'attestation-key', status: 'not-applicable', detail: 'no ERC-8004 identity' });
++  } else if (input.dryRun) {
++    const current = await readAttestationKey({ publicClient: pc, identityRegistry: identity.registry, agentId: identity.agentId });
++    steps.push({ step: 'attestation-key', status: current === eoa ? 'already' : 'would' });
++  } else {
++    const binding = await ensureAttestationKeyBinding({
++      publicClient: pc, wallet: input.kernelWallet, identityRegistry: identity.registry, agentId: identity.agentId, attestationAddress: eoa,
++    });
++    steps.push(binding.status === 'published'
++      ? { step: 'attestation-key', status: 'done', txHash: binding.txHash }
++      : { step: 'attestation-key', status: 'already' });
++  }
++
++  // 6. Nothing left with the EOA but document signing.
++  if (!input.dryRun) {
++    await assertAgentEoaHasNoAuthority({
++      publicClient: pc, agentEoa: eoa, safeAddress: safe,
++      ...(identity === undefined ? {} : { identityRegistry: identity.registry, agentId: identity.agentId }),
++    });
++    steps.push({ step: 'eoa-has-no-authority', status: 'checked' });
++  }
++  return steps;
++}
+diff --git a/operator/test/hermetic/full-loop-kernel-owner.test.ts b/operator/test/hermetic/full-loop-kernel-owner.test.ts
+index d1ab14487..1d5633383 100644
+--- a/operator/test/hermetic/full-loop-kernel-owner.test.ts
++++ b/operator/test/hermetic/full-loop-kernel-owner.test.ts
+@@ -69,7 +69,8 @@ import {
+ } from '../../src/signer/kernel-safe-broadcaster.js';
+ import { AgentSignerError, type AgentSignerConfig } from '../../src/signer/agent-signer-cli.js';
+ import { createAgentSignerWalletClient } from '../../src/signer/agent-signer-transport.js';
+-import { assertAgentEoaHasNoAuthority, ensureAttestationKeyBinding, readAttestationKey } from '../../src/signer/attestation.js';
++import { assertAgentEoaHasNoAuthority, readAttestationKey } from '../../src/signer/attestation.js';
++import { migrateToKernelOwner } from '../../src/signer/migrate.js';
+ import { createMetadataPublisherFromViem } from '../../src/solvernets/daemon-init.js';
+ import { PRODUCTION_DEPS } from '../../src/cli/commands/solver-plugins.js';
+ import { buildPluginMetadataKey } from '../../src/erc8004/plugin-registry.js';
+@@ -133,22 +134,6 @@ async function installAccountAbstraction(rpcUrl: string): Promise<Record<string,
+   return addresses;
+ }
+ 
+-/** Ask the Safe's current EOA owner to hand ownership to `newOwner` (pre-validated v = 1). */
+-async function moveSafeOwnership(
+-  publicClient: PublicClient, rpcUrl: string, safe: Address, ownerKey: Hex, newOwner: Address,
+-): Promise<void> {
+-  const owner = privateKeyToAccount(ownerKey);
+-  const wallet = createWalletClient({ account: owner, chain: base, transport: http(rpcUrl) });
+-  const swap = encodeFunctionData({ abi: SAFE_ABI, functionName: 'swapOwner', args: [SENTINEL_OWNERS, owner.address, newOwner] });
+-  const signature = `0x${owner.address.slice(2).toLowerCase().padStart(64, '0')}${'0'.repeat(64)}01` as Hex;
+-  const hash = await wallet.writeContract({
+-    address: safe, abi: SAFE_ABI, functionName: 'execTransaction',
+-    args: [safe, 0n, swap, 0, 0n, 0n, 0n, '0x0000000000000000000000000000000000000000', '0x0000000000000000000000000000000000000000', signature],
+-  });
+-  const receipt = await publicClient.waitForTransactionReceipt({ hash });
+-  if (receipt.status !== 'success') throw new Error(`swapOwner to ${newOwner} reverted (tx ${hash})`);
+-}
+-
+ describeMaybe('hermetic daemon solution loop, Safe owned by a hardware-signed Kernel account', () => {
+   it(
+     'claim -> deliver -> solution settlement go through agent-signer; the mandate refuses Safe self-administration',
+@@ -210,36 +195,51 @@ describeMaybe('hermetic daemon solution loop, Safe owned by a hardware-signed Ke
+         const kernel = initData.match(/^account:\s+(0x[0-9a-fA-F]{40})/m)![1] as Address;
+         await anvilJsonRpc(fixture.anvil.rpcUrl, 'anvil_setBalance', [kernel, '0x8ac7230489e80000']); // 10 ETH
+ 
+-        // ── The Safe changes hands: agent EOA -> Kernel ──────────────────────
++        // ── The operator changes hands: `jinn signer-migrate` (src/signer/migrate.ts) ──────
+         // Before the migration the daemon refuses a signer: the EOA still owns the Safe.
+         await expect(assertAgentEoaHasNoAuthority({
+           publicClient: fixture.publicClient, agentEoa: operator.agentAddress, safeAddress: operator.safeAddress,
+         })).rejects.toThrow(/still an owner of the service Safe/);
+-        await moveSafeOwnership(fixture.publicClient as never, fixture.anvil.rpcUrl, operator.safeAddress, operator.agentPrivateKey, kernel);
+-        const owners = await fixture.publicClient.readContract({ address: operator.safeAddress, abi: SAFE_ABI, functionName: 'getOwners' });
+-        expect(owners).toEqual([kernel]);
+-
+-        // ...and so does the operator's agent NFT, which ERC-8004 setMetadata is authorized by.
+         const minted = await fixture.publicClient.getLogs({
+           address: IDENTITY_REGISTRY, event: IDENTITY_ABI[0], args: { to: operator.agentAddress }, fromBlock: 0n,
+         });
+         const agentId = minted.at(-1)!.args.tokenId!;
+-        const agentEoaWallet = createWalletClient({ account: privateKeyToAccount(operator.agentPrivateKey), chain: base, transport: http(fixture.anvil.rpcUrl) });
+-        const nftHash = await agentEoaWallet.writeContract({
+-          address: IDENTITY_REGISTRY, abi: IDENTITY_ABI, functionName: 'transferFrom', args: [operator.agentAddress, kernel, agentId],
++        const signer: AgentSignerConfig = {
++          bin: AGENT_SIGNER!, configPath, account: kernel, envFile: join(work, '.env'), timeoutMs: 240_000,
++        };
++        const direct = createAgentSignerWalletClient({ rpcUrl: fixture.anvil.rpcUrl, chain: base, signer });
++        const migration = {
++          publicClient: fixture.publicClient as never,
++          agentEoaWallet: createWalletClient({ account: privateKeyToAccount(operator.agentPrivateKey), chain: base, transport: http(fixture.anvil.rpcUrl) }) as never,
++          kernelWallet: direct,
++          kernel,
++          permissionId: '0x6a696e6e' as Hex,
++          safeAddress: operator.safeAddress,
++          identityRegistry: IDENTITY_REGISTRY,
++          agentId,
++        };
++        const statusOf = (steps: readonly { step: string; status: string }[]) => Object.fromEntries(steps.map((s) => [s.step, s.status]));
++        // --dry-run: a plan from the chain, nothing sent.
++        expect(statusOf(await migrateToKernelOwner({ ...migration, dryRun: true }))).toEqual({
++          'kernel-approves-safe': 'would', 'mandate-admits-safe': 'would', 'safe-owner': 'would', 'agent-nft': 'would', 'attestation-key': 'would',
+         });
+-        expect((await fixture.publicClient.waitForTransactionReceipt({ hash: nftHash })).status).toBe('success');
++        expect(await fixture.publicClient.readContract({ address: operator.safeAddress, abi: SAFE_ABI, functionName: 'getOwners' }))
++          .toEqual([getAddress(operator.agentAddress)]);
++        // The migration: the Kernel signs first (deploying itself), then receives the Safe and the NFT.
++        expect(statusOf(await migrateToKernelOwner(migration))).toEqual({
++          'kernel-approves-safe': 'done', 'mandate-admits-safe': 'checked', 'safe-owner': 'done', 'agent-nft': 'done',
++          'attestation-key': 'done', 'eoa-has-no-authority': 'checked',
++        });
++        expect(await fixture.publicClient.readContract({ address: operator.safeAddress, abi: SAFE_ABI, functionName: 'getOwners' }))
++          .toEqual([kernel]);
+         expect(await fixture.publicClient.readContract({ address: IDENTITY_REGISTRY, abi: IDENTITY_ABI, functionName: 'ownerOf', args: [agentId] }))
+           .toBe(kernel);
+-        // Now the EOA holds no on-chain authority: it may only sign off-chain documents.
+-        await assertAgentEoaHasNoAuthority({
+-          publicClient: fixture.publicClient, agentEoa: operator.agentAddress, safeAddress: operator.safeAddress,
+-          identityRegistry: IDENTITY_REGISTRY, agentId,
++        // Idempotent: a re-run changes nothing.
++        expect(statusOf(await migrateToKernelOwner(migration))).toEqual({
++          'kernel-approves-safe': 'already', 'mandate-admits-safe': 'checked', 'safe-owner': 'already', 'agent-nft': 'already',
++          'attestation-key': 'already', 'eoa-has-no-authority': 'checked',
+         });
+ 
+-        const signer: AgentSignerConfig = {
+-          bin: AGENT_SIGNER!, configPath, account: kernel, envFile: join(work, '.env'), timeoutMs: 240_000,
+-        };
+         running = await startDaemon(fixture, operator, HARNESS, mockIpfs.baseUrl, v3Env, mockIpfs.baseUrl, {
+           enableComposition: true,
+           safeBroadcaster: kernelSafeBroadcasterFactory(signer),
+@@ -281,7 +281,6 @@ describeMaybe('hermetic daemon solution loop, Safe owned by a hardware-signed Ke
+         // ── A direct call of the account (ADAPTATION item 8): ERC-8004 setMetadata ──
+         // Through the daemon's own publisher, on the agent-signer wallet main.ts builds for
+         // `config.signer`: tx-retry sends it once under the account's lock.
+-        const direct = createAgentSignerWalletClient({ rpcUrl: fixture.anvil.rpcUrl, chain: base, signer });
+         const publisher = createMetadataPublisherFromViem({
+           identityRegistryAddress: IDENTITY_REGISTRY, walletClient: direct as never, publicClient: fixture.publicClient as never,
+         });
+@@ -297,16 +296,7 @@ describeMaybe('hermetic daemon solution loop, Safe owned by a hardware-signed Ke
+         const metadataTx = await fixture.publicClient.getTransaction({ hash: published.txHash as Hex });
+         expect(metadataTx.to?.toLowerCase()).toBe(ENTRY_POINT_V07.toLowerCase());
+ 
+-        // ── Off-chain signatures (ADAPTATION item 10): the EOA is the agent's attestation key ──
+-        const bound = await ensureAttestationKeyBinding({
+-          publicClient: fixture.publicClient, wallet: direct as never, identityRegistry: IDENTITY_REGISTRY, agentId,
+-          attestationAddress: operator.agentAddress,
+-        });
+-        expect(bound.status).toBe('published');
+-        expect(await ensureAttestationKeyBinding({
+-          publicClient: fixture.publicClient, wallet: direct as never, identityRegistry: IDENTITY_REGISTRY, agentId,
+-          attestationAddress: operator.agentAddress,
+-        })).toEqual({ status: 'already-bound' });
++        // ── Off-chain signatures (ADAPTATION item 10): the migration published the EOA ──
+         expect(await readAttestationKey({ publicClient: fixture.publicClient, identityRegistry: IDENTITY_REGISTRY, agentId }))
+           .toBe(getAddress(operator.agentAddress));
+ 
+@@ -316,13 +306,7 @@ describeMaybe('hermetic daemon solution loop, Safe owned by a hardware-signed Ke
+         // daemon's venue state. CLI verbs refuse to run beside a live daemon: stop it first.
+         await running.stop();
+         running = undefined;
+-        // The NFT moved to the Kernel, so the Safe acts for it only once the Kernel approves it
+-        // (a direct call of the account, through agent-signer).
+-        const approvalHash = await direct.writeContract({
+-          address: IDENTITY_REGISTRY, abi: IDENTITY_ABI, functionName: 'setApprovalForAll',
+-          args: [operator.safeAddress, true], account: kernel, chain: base,
+-        });
+-        expect((await fixture.publicClient.getTransactionReceipt({ hash: approvalHash })).status).toBe('success');
++        // The migration's first step let the Safe act for the Kernel-owned NFT.
+         expect(await fixture.publicClient.readContract({
+           address: IDENTITY_REGISTRY, abi: IDENTITY_ABI, functionName: 'isApprovedForAll', args: [kernel, operator.safeAddress],
+         })).toBe(true);
+diff --git a/operator/test/signer/migrate.test.ts b/operator/test/signer/migrate.test.ts
+new file mode 100644
+index 000000000..536b8c910
+--- /dev/null
++++ b/operator/test/signer/migrate.test.ts
+@@ -0,0 +1,70 @@
++// The migration's safety order: the Safe is never handed to a Kernel that cannot operate it.
++import { describe, expect, it, vi } from 'vitest';
++import type { Address, Hex } from 'viem';
++
++import { migrateToKernelOwner } from '../../src/signer/migrate.js';
++import { markUserOperationWallet } from '../../src/tx-retry.js';
++
++const EOA = '0x7471bE25Ec54354c8D70491Ae10bd86705fAD030' as Address;
++const KERNEL = '0xEdB645B14e2f952C5784e34949b58F0826fBc9E9' as Address;
++const SAFE = '0xd0b972a8ee7D8AB91a2e3381Eb6F10550B80E52A' as Address;
++const POLICY = '0x8347dBC3d7A71DAFDeED5975ce85638494865F73' as Address;
++const TX = `0x${'c3'.repeat(32)}` as Hex;
++
++function setup(chain: { kernelCode: Hex; admits: boolean; threshold?: bigint; owners?: Address[] }) {
++  const publicClient = {
++    async readContract(args: { functionName: string }) {
++      switch (args.functionName) {
++        case 'getOwners': return chain.owners ?? [EOA];
++        case 'getThreshold': return chain.threshold ?? 1n;
++        case 'permissionConfig': return { permissionFlag: '0x0000', signer: KERNEL, policyData: [`0x0000${POLICY.slice(2)}`] };
++        case 'isAllowed': return chain.admits;
++        default: throw new Error(`unexpected ${args.functionName}`);
++      }
++    },
++    async getCode() { return chain.kernelCode; },
++    async waitForTransactionReceipt() { return { status: 'success' }; },
++  };
++  const eoaSend = vi.fn(async () => TX);
++  const kernelSend = vi.fn(async () => TX);
++  const input = {
++    publicClient: publicClient as never,
++    agentEoaWallet: { account: { address: EOA }, chain: undefined, sendTransaction: eoaSend } as never,
++    kernelWallet: markUserOperationWallet({ account: { address: KERNEL, type: 'json-rpc' }, sendTransaction: kernelSend }) as never,
++    kernel: KERNEL,
++    permissionId: '0x6a696e6e' as Hex,
++    safeAddress: SAFE,
++  };
++  return { input, eoaSend, kernelSend };
++}
++
++describe('migrateToKernelOwner', () => {
++  it('does not hand the Safe over when the Kernel mandate does not admit it', async () => {
++    const { input, eoaSend } = setup({ kernelCode: '0x6001', admits: false });
++    await expect(migrateToKernelOwner(input)).rejects.toThrow(/does not admit .*execTransaction/);
++    expect(eoaSend).not.toHaveBeenCalled();
++  });
++
++  it('does not hand the Safe over to a Kernel that is not deployed', async () => {
++    const { input, eoaSend } = setup({ kernelCode: '0x', admits: true });
++    await expect(migrateToKernelOwner(input)).rejects.toThrow(/is not deployed/);
++    expect(eoaSend).not.toHaveBeenCalled();
++  });
++
++  it('handles 1/1 Safes only, and only Safes the EOA or the Kernel owns', async () => {
++    await expect(migrateToKernelOwner(setup({ kernelCode: '0x6001', admits: true, threshold: 2n }).input)).rejects.toThrow(/threshold 2/);
++    await expect(migrateToKernelOwner(setup({ kernelCode: '0x6001', admits: true, owners: [POLICY] }).input))
++      .rejects.toThrow(/owned by neither/);
++  });
++
++  it('a dry run sends nothing', async () => {
++    const { input, eoaSend, kernelSend } = setup({ kernelCode: '0x6001', admits: true });
++    const steps = await migrateToKernelOwner({ ...input, dryRun: true });
++    expect(steps.map((s) => [s.step, s.status])).toEqual([
++      ['kernel-approves-safe', 'not-applicable'], ['mandate-admits-safe', 'checked'], ['safe-owner', 'would'],
++      ['agent-nft', 'not-applicable'], ['attestation-key', 'not-applicable'],
++    ]);
++    expect(eoaSend).not.toHaveBeenCalled();
++    expect(kernelSend).not.toHaveBeenCalled();
++  });
++});
+-- 
+2.43.0
+

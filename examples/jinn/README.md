@@ -73,7 +73,7 @@ refused under both.
 ## Integrating into Jinn: the patch series (first version)
 
 [`patches/`](patches/) is a first version of `ADAPTATION.md` §5 Phase 1, as
-eight commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
+nine commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
 
 | Patch | What |
 |---|---|
@@ -85,6 +85,7 @@ eight commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
 | `0006-feat-operator-direct-calls-of-a-Kernel-agent-account…` | `ADAPTATION.md` §5 item 8: the agent's direct (non-Safe) calls — ERC-8004 `setMetadata` from `IdentityPublisher` and the SolverNet publisher — go through the Kernel via agent-signer; `tx-retry` sends a "user-operation wallet" once under the account's lock, without the EOA nonce / fee-bump / eviction / resend machinery |
 | `0007-feat-operator-CLI-verbs-on-a-Kernel-owned-Safe…` | `ADAPTATION.md` §5 item 7: one-shot CLI verbs (`jinn tasks submit`, `jinn solver-plugins publish / revoke / block / feedback`) use the Kernel when `config.signer` is set — a `KernelSafeBroadcaster` on the daemon's own venue state (cross-process lock, shared ledger), no keystore decrypted |
 | `0008-feat-operator-the-keystore-agent-EOA-as-a-pure-attes…` | `ADAPTATION.md` §5 item 10 (§4 option 2): the keystore agent EOA keeps signing Jinn's off-chain documents but must hold no on-chain authority — the daemon refuses to boot while it still owns the Safe or the agent NFT — and the Kernel publishes it as the agent's `jinn.attestationKey` |
+| `0009-feat-operator-jinn-signer-migrate-one-step-handover…` | `jinn signer-migrate`: hands a bootstrapped operator over to the Kernel in one idempotent command — the Kernel signs first and its mandate is checked, then the Safe(s) and the agent NFT move, and the attestation key is published; `--dry-run` shows the plan from the chain |
 
 Apply and enable:
 
@@ -98,11 +99,37 @@ cd mono && git checkout 151a464aa && git am /path/to/TPM_sign/examples/jinn/patc
   "kind": "agent-signer",
   "bin": "/path/to/TPM_sign/signer/target/release/agent-signer",
   "config": "/path/to/agent.json",          // its mandate allows (safe, execTransaction) + the router / mech calls
-  "account": "0x…Kernel",                     // must already own the service Safe
+  "account": "0x…Kernel",                     // the agent's Kernel account (agent-signer derives / deploys it)
   "envFile": "/path/to/.env",
   "sponsored": true
 }
 ```
+
+Then, with the daemon stopped, hand the operator over once:
+
+```sh
+jinn signer-migrate --dry-run --human   # the plan, read from the chain
+jinn signer-migrate --yes               # the handover; safe to re-run
+```
+
+```
+Migrated: agent EOA 0x7471…D030 -> Kernel 0x86A6…CB1a
+  service Safe 0xD4a2…f86B
+    kernel-approves-safe   done     0x…   (the Kernel signs first: deployed, key proven)
+    mandate-admits-safe    checked        (AgentPolicy admits Safe.execTransaction)
+    safe-owner             done     0x…   (swapOwner: EOA -> Kernel)
+    agent-nft              done     0x…   (ERC-8004 NFT -> Kernel)
+    attestation-key        done     0x…   (jinn.attestationKey = the EOA)
+    eoa-has-no-authority   checked
+```
+
+(shape of the output; the steps and their order are what the Anvil test
+asserts.) The Kernel signs and its mandate is checked *before* the Safe
+changes hands, so the Safe is never handed to an address that cannot
+operate it; a 1/1 Safe is required. The agent mandate must list
+`(Safe, execTransaction)`, the Safe-routed calls the operator makes, and
+`(IdentityRegistry, setApprovalForAll)` / `setMetadata`. A separate fleet
+identity Safe is migrated in the same run.
 
 How `KernelSafeBroadcaster` keeps a Safe transaction from running twice (a
 `v = 1` signature does not commit to the Safe nonce): agent-signer asserts the
@@ -223,7 +250,6 @@ old EOA is the operator's to sweep.
 Not in this version (the rest of `ADAPTATION.md` §5): verifiers that use
 `jinn.attestationKey` (Jinn's side — today they trust the address inside
 the document); `ValidationRegistryClient`, used only outside the daemon;
-bootstrap and the master role (Phase 2) — so the migration of an existing
-operator (Safe `swapOwner`, agent NFT transfer, `setApprovalForAll` for the
-Safe) is a one-time manual step; native mode and its trust ceremony
-(Phase 3, needs a Jinn spec change).
+bootstrapping a new operator directly onto a Kernel and the master role
+(Phase 2 — an existing one migrates with `jinn signer-migrate`); native
+mode and its trust ceremony (Phase 3, needs a Jinn spec change).

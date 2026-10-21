@@ -1,7 +1,7 @@
 From febace670cd6cd746e6e8afda95c75ae2050d548 Mon Sep 17 00:00:00 2001
 From: 77ph <tk@itarragon.net>
 Date: Wed, 21 Oct 2026 16:59:29 +0300
-Subject: [PATCH 7/8] feat(operator): CLI verbs on a Kernel-owned Safe through
+Subject: [PATCH 7/9] feat(operator): CLI verbs on a Kernel-owned Safe through
  agent-signer
 
 ADAPTATION item 7: one-shot verbs that build their own Safe broadcaster and
