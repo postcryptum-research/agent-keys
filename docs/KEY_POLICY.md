@@ -135,5 +135,10 @@ If any item fails, the owner key is as reachable as the agent key.
 - Selecting a software key must be an explicit test-only choice: a build
   feature (`insecure-software-keys`) that release builds never enable.
   Without it a software key is refused in every role; with it — in the
-  integration tests on a local chain only — any role may use one. An encrypted key file (rule 5's exception)
+  integration tests on a local chain only — any role may use one. Keep the
+  flag on the command line only: never in a manifest dependency, a default,
+  a cargo alias or config, or a release/deploy pipeline (Cargo unifies
+  features across a build, so any of those would leak it into a shipped
+  binary); a deploy pipeline should assert that the shipped binary refuses
+  a software owner key. An encrypted key file (rule 5's exception)
   is accepted for owner and recovery operations only, never for the agent.
