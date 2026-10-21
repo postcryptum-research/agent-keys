@@ -482,7 +482,10 @@ reclaimed 0 expired authorization(s)
 Registration ([tx](https://sepolia.basescan.org/tx/0x0e40c70d2b2fcbfd01ec66656c7eee5607df06fcc37875b80568f9884432b1c1))
 and the facilitator's settlement ([tx](https://sepolia.basescan.org/tx/0x83fbb009abd8ba37bac001f34d15f3cfa6fd78133361d06f0c8e48387ab0f5a5)).
 Note for the public RPC (`sepolia.base.org`): its `eth_getLogs` spans at most
-200 blocks, so `reclaim` needs `--from-block` there.
+200 blocks. This run needed `--from-block` for that; since then `reclaim`
+shrinks its scan chunks on its own when the RPC refuses a range, so the
+default (the last 50,000 blocks) works there too, only slower — about a
+minute; `--from-block` still shortens it.
 
 ### A scheduled window (`permission add` / `revoke`)
 

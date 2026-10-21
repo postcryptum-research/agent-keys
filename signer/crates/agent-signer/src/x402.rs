@@ -226,16 +226,17 @@ impl Session {
         let pending_sel = alloy::primitives::keccak256("x402Pending(address,bytes32,bytes32)");
         let ts = now();
         let mut done = Vec::new();
-        let mut lo = start;
-        while lo <= latest {
-            let hi = (lo + 9_999).min(latest);
-            let filter = Filter::new()
-                .address(policy)
-                .event_signature(X402Events::X402Authorized::SIGNATURE_HASH)
-                .topic1(B256::left_padding_from(self.account.as_slice()))
-                .from_block(lo)
-                .to_block(hi);
-            for log in self.provider.get_logs(&filter).await? {
+        let base = Filter::new()
+            .address(policy)
+            .event_signature(X402Events::X402Authorized::SIGNATURE_HASH)
+            .topic1(B256::left_padding_from(self.account.as_slice()));
+        let logs = scan_in_chunks(start, latest, |lo, hi| {
+            let filter = base.clone().from_block(lo).to_block(hi);
+            async move { Ok(self.provider.get_logs(&filter).await?) }
+        })
+        .await?;
+        {
+            for log in logs {
                 let ev = X402Events::X402Authorized::decode_log_data(log.data())?;
                 let auth = Authorization {
                     token: ev.token,
@@ -291,8 +292,88 @@ impl Session {
                 eprintln!("reclaimed:      {} of {} — tx {}", auth.value, auth.token, inc.tx);
                 done.push((auth, inc.tx));
             }
-            lo = hi + 1;
         }
         Ok(done)
+    }
+}
+
+/// `eth_getLogs` over `[start, end]` in chunks. Public RPCs cap the block
+/// range of one request (Base Sepolia's: 200 blocks), so a refused chunk is
+/// halved and retried; the size that worked is kept for the next chunks.
+/// Below `MIN_CHUNK` the RPC's own error is returned.
+pub async fn scan_in_chunks<T, F, Fut>(start: u64, end: u64, mut fetch: F) -> Result<Vec<T>>
+where
+    F: FnMut(u64, u64) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<T>>>,
+{
+    const FIRST_CHUNK: u64 = 10_000;
+    const MIN_CHUNK: u64 = 50;
+    let mut out = Vec::new();
+    let mut chunk = FIRST_CHUNK;
+    let mut lo = start;
+    while lo <= end {
+        let hi = (lo + chunk - 1).min(end);
+        match fetch(lo, hi).await {
+            Ok(mut logs) => {
+                out.append(&mut logs);
+                lo = hi + 1;
+            }
+            Err(e) if chunk > MIN_CHUNK => {
+                chunk = (chunk / 2).max(MIN_CHUNK);
+                eprintln!("eth_getLogs refused {} blocks ({e:#}); retrying in chunks of {chunk}", hi - lo + 1);
+            }
+            Err(e) => return Err(e.context(format!("eth_getLogs over blocks {lo}..{hi}"))),
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(f)
+    }
+
+    #[test]
+    fn shrinks_to_what_the_rpc_accepts_and_covers_every_block() {
+        // A public-RPC-like cap: at most 200 blocks per request.
+        let calls = RefCell::new(Vec::new());
+        let blocks = block_on(scan_in_chunks(1_000, 3_499, |lo, hi| {
+            calls.borrow_mut().push((lo, hi));
+            async move {
+                if hi - lo + 1 > 200 {
+                    bail!("block range too large");
+                }
+                Ok((lo..=hi).collect::<Vec<u64>>())
+            }
+        }))
+        .unwrap();
+        assert_eq!(blocks, (1_000..=3_499).collect::<Vec<u64>>(), "every block once, in order");
+        let accepted: Vec<_> = calls.borrow().iter().copied().filter(|(lo, hi)| hi - lo + 1 <= 200).collect();
+        assert!(accepted.iter().all(|(lo, hi)| hi - lo + 1 <= 200));
+        // after shrinking it stays shrunk: no request above the cap once one was accepted
+        let first_ok = calls.borrow().iter().position(|(lo, hi)| hi - lo + 1 <= 200).unwrap();
+        assert!(calls.borrow()[first_ok..].iter().all(|(lo, hi)| hi - lo + 1 <= 200));
+    }
+
+    #[test]
+    fn a_permanent_failure_is_reported() {
+        let err = block_on(scan_in_chunks::<u64, _, _>(0, 100, |_, _| async { bail!("rpc down") })).unwrap_err();
+        assert!(format!("{err:#}").contains("rpc down"));
+    }
+
+    #[test]
+    fn an_unrestricted_rpc_takes_one_request_per_10k() {
+        let calls = RefCell::new(0);
+        let n = block_on(scan_in_chunks(0, 24_999, |lo, hi| {
+            *calls.borrow_mut() += 1;
+            async move { Ok(vec![(lo, hi)]) }
+        }))
+        .unwrap()
+        .len();
+        assert_eq!((n, *calls.borrow()), (3, 3));
     }
 }
