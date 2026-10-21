@@ -127,7 +127,7 @@ is the target setup, and which parts are missing.
 
 | Role | Where | Status |
 |---|---|---|
-| agent key | the Mac's Secure Enclave | written, **not yet run on a Mac** ([`SECURE_ENCLAVE.md`](SECURE_ENCLAVE.md)) |
+| agent key | the Mac's Secure Enclave | **works today** — run on an Apple M1, keys on-chain ([`SECURE_ENCLAVE.md`](SECURE_ENCLAVE.md)) |
 | owner key | a separate device with a button: YubiKey 5 / Nitrokey 3 (PIV, P-256) or a Trezor | **not yet supported** — the PIV/OpenPGP backend is planned ([`OWNER_DEVICES.md`](OWNER_DEVICES.md)) |
 | recovery key | an encrypted file on two USB drives in different places, or a seed-backed Trezor | file: works today; behind a time lock: planned ([`RESILIENCE.md`](RESILIENCE.md)) |
 | money | most of it **not** on the agent's account — in an owner-controlled vault; the agent's account is topped up per period | operational, works today |
@@ -241,8 +241,7 @@ the agent key: they want a button press per signature.)
 ### Which machines and which networks?
 
 **Machines** for the agent key: Linux with a TPM 2.0, Windows with a TPM 2.0,
-a TROPIC01 USB devkit (all three verified), a Mac's Secure Enclave (written,
-awaiting its first run).
+a TROPIC01 USB devkit and a Mac's Secure Enclave (all four verified).
 
 **Networks:** every EVM network that has the contracts it needs — the
 ERC-4337 EntryPoint v0.7, ZeroDev Kernel v3.3 and its factory, a P-256

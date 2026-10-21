@@ -38,7 +38,13 @@ tx [`0x785332…e669bb`](https://sepolia.basescan.org/tx/0x785332105fd8085d50e54
   sponsored operation
   (tx [`0x6c1060…3622b5`](https://sepolia.basescan.org/tx/0x6c1060b43c1a40e3d123fe766adad914edccac8e9596cc1dc658617cf53622b5));
   the **Windows TPM** backend (CNG) ran on a Windows 11 PC and its signature
-  is one of the test vectors.
+  is one of the test vectors; the **Apple Secure Enclave** backend ran on an
+  M1 Mac — an account whose owner and agent keys both live in the enclave
+  executed an agent operation
+  (tx [`0xc431ba…01300c`](https://sepolia.basescan.org/tx/0xc431bafe3588431c82b96aac7318c3c4340e16be784322bba5d801f3a401300c))
+  and a root operation
+  (tx [`0x547e4f…4da40c`](https://sepolia.basescan.org/tx/0x547e4fa8caf1b5725f9043ece7df13f3e713c98107f1b1726ac24139674da40c)),
+  and its signature is one of the test vectors.
 - Safes — `AgentPolicy` v3 lets the agent drive a Safe its account owns
   (Olas / Jinn service Safes) and still judges the Safe transaction's
   *inner* call, or every leg of a MultiSend batch, against the mandate
@@ -60,7 +66,7 @@ tx [`0x785332…e669bb`](https://sepolia.basescan.org/tx/0x785332105fd8085d50e54
 | `tpm` | Linux, TPM 2.0 (tss-esapi) | on-chain since phase 0; PCR-sealed keys |
 | `windows-tpm` | Windows, TPM 2.0 via CNG | run on Windows 11; vector in the tests ([`docs/WINDOWS.md`](docs/WINDOWS.md)) |
 | `tropic01` | any, TROPIC01 USB DevKit | on-chain agent key ([`docs/TROPIC01.md`](docs/TROPIC01.md)) |
-| `secure-enclave` | macOS, Secure Enclave via CryptoKit | Rust side type-checked; awaiting a run on a Mac ([`docs/SECURE_ENCLAVE.md`](docs/SECURE_ENCLAVE.md)) |
+| `secure-enclave` | macOS, Secure Enclave via CryptoKit | run on an Apple M1 Mac: hardware test, vector in the tests, owner + agent keys on-chain ([`docs/SECURE_ENCLAVE.md`](docs/SECURE_ENCLAVE.md)) |
 | `software` | any | dev/CI only |
 
 New here? [`docs/FAQ.md`](docs/FAQ.md) walks through two setups (a Linux
@@ -109,7 +115,7 @@ signer/      Rust: hw-signer (HardwareSigner trait; tpm, windows-tpm,
 contracts/   Foundry: P256Validator, P256Signer, AgentPolicy (ERC-7579 modules),
              WhitelistPaymaster + tests against Kernel v3.3, EntryPoint v0.7
              and Safe v1.4.1; P-256 vectors signed in software, a Linux TPM,
-             a Windows TPM and a TROPIC01
+             a Windows TPM, a TROPIC01 and an Apple Secure Enclave
 examples/    AgentKit, Claude Code skill, Jinn, Olas, ElizaOS, x402
 docs/        architecture, benchmark, ERC-1271 (Safes, x402), per-platform guides
 scripts/     testnet chores (testnet_usdc.py: gas-wallet ETH -> Base Sepolia USDC)
@@ -123,6 +129,8 @@ Any platform, no hardware (software backend — dev/CI only):
 ```sh
 cd signer && cargo test
 cd ../contracts && forge test      # RIP-7212 enabled locally via odyssey = true
+# forge 1.8+ dropped `odyssey`; there the precompile comes with the Osaka
+# EVM: forge test --evm-version osaka
 ```
 
 Linux with a TPM 2.0:
@@ -137,7 +145,7 @@ cargo run -p agent-signer --features tpm -- vector --backend tpm --message hello
 
 The `vector` command prints a JSON `(digest, r, s, x, y)` record; the Solidity
 tests verify every file under `contracts/test/vectors/` — signed inside an
-Intel PTT, a Windows TPM and a TROPIC01. Windows: [`docs/WINDOWS.md`](docs/WINDOWS.md)
+Intel PTT, a Windows TPM, a TROPIC01 and an Apple Secure Enclave. Windows: [`docs/WINDOWS.md`](docs/WINDOWS.md)
 (free toolchain only); TROPIC01: `--features tropic01`, [`docs/TROPIC01.md`](docs/TROPIC01.md).
 
 ## Run an agent account on Base Sepolia
