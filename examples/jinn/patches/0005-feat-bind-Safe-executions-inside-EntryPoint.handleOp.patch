@@ -1,0 +1,688 @@
+From 8b3165ce374ebc386329072ae76764414344581f Mon Sep 17 00:00:00 2001
+From: 77ph <tk@itarragon.net>
+Date: Wed, 21 Oct 2026 16:34:38 +0300
+Subject: [PATCH 5/5] feat: bind Safe executions inside EntryPoint.handleOps
+ (smart-account owners)
+
+Readers that recover a router call from the transaction behind an event
+decoded the transaction input strictly as Safe.execTransaction. When the
+Safe's owner is a smart account, that transaction is EntryPoint.handleOps:
+other operators could not recover our verdict digests, and our own
+settlement binding would mark such settlements orphaned.
+
+- marketplace-binding: safeExecutionsOf(publicClient, txHash) returns the
+  Safe executions a transaction actually ran: the transaction itself (owner
+  EOA), or the Safe calls inside the ERC-7579 execute (single or batch) of
+  each UserOperation of an EntryPoint v0.7 handleOps bundle whose
+  UserOperationEvent (emitted by that EntryPoint) reports success.
+- venue-base verdict.ts (readVerdictSettlement) and operator
+  native-base-sepolia-infrastructure.ts (solution settlement binding) use it;
+  the direct path keeps its exact behaviour and messages, and more than one
+  matching verdict call in one transaction is refused.
+- tests: the helper (direct, bundle with a reverted foreign operation,
+  EntryPoint-spoofed event, call types); both readers on a handleOps bundle
+  (bound when the UserOperation succeeded, refused when it failed); the
+  Kernel-owner hermetic loop now also binds its real settlement transaction.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../native-base-sepolia-infrastructure.ts     |  26 ++--
+ ...native-base-sepolia-infrastructure.test.ts |  59 +++++++-
+ .../hermetic/full-loop-kernel-owner.test.ts   |  13 ++
+ packages/marketplace/binding/src/index.ts     |   2 +
+ .../binding/src/venue/safe-executions.test.ts | 137 ++++++++++++++++++
+ .../binding/src/venue/safe-executions.ts      | 133 +++++++++++++++++
+ .../venue-base/src/verdict.test.ts            |  77 +++++++++-
+ .../marketplace/venue-base/src/verdict.ts     |  55 ++++---
+ 8 files changed, 471 insertions(+), 31 deletions(-)
+ create mode 100644 packages/marketplace/binding/src/venue/safe-executions.test.ts
+ create mode 100644 packages/marketplace/binding/src/venue/safe-executions.ts
+
+diff --git a/operator/src/daemon/native-base-sepolia-infrastructure.ts b/operator/src/daemon/native-base-sepolia-infrastructure.ts
+index 073ce5666..9152087bb 100644
+--- a/operator/src/daemon/native-base-sepolia-infrastructure.ts
++++ b/operator/src/daemon/native-base-sepolia-infrastructure.ts
+@@ -14,6 +14,7 @@ import {
+   executeSafeTransaction,
+   makeMarketplaceBackend,
+   rawCodecCidFromSha256Digest,
++  safeExecutionsOf,
+   type MarketplaceChainConfig,
+   type MarketplaceObservePort,
+   type PostingIntentStore,
+@@ -1375,17 +1376,22 @@ export function createSolverReads(input: {
+       if (!canonical.canonical) {
+         return { kind: 'orphaned', txHash: event.transactionHash, reason: 'solution settlement event block is non-canonical' };
+       }
+-      // Bind the Safe outer transaction to the expected inner router request identity.
+-      const transaction = await input.publicClient.getTransaction({ hash: event.transactionHash });
++      // Bind the Safe execution behind the event to the expected inner router request identity:
++      // the transaction itself (owner EOA), or a Safe call inside a successful UserOperation of
++      // an EntryPoint.handleOps bundle (smart-account owner).
++      const requestId = engagement.requestId;
+       try {
+-        const outer = decodeFunctionData({ abi: SAFE_ABI, data: transaction.input });
+-        if (outer.functionName !== 'execTransaction') throw new Error('not a Safe execution');
+-        const innerData = outer.args[2] as Hex;
+-        const inner = decodeFunctionData({ abi: JINN_ROUTER_V3_ABI, data: innerData });
+-        if (inner.functionName !== 'claimSolutionDelivery'
+-          || !sameHex(String(inner.args[0]), engagement.requestId)) {
+-          throw new Error('wrong solution request identity');
+-        }
++        const executions = await safeExecutionsOf(input.publicClient, event.transactionHash);
++        const bound = executions.some((execution) => {
++          try {
++            const inner = decodeFunctionData({ abi: JINN_ROUTER_V3_ABI, data: execution.data });
++            return inner.functionName === 'claimSolutionDelivery'
++              && sameHex(String(inner.args[0]), requestId);
++          } catch {
++            return false;
++          }
++        });
++        if (!bound) throw new Error('wrong solution request identity');
+       } catch {
+         return { kind: 'orphaned', txHash: event.transactionHash, reason: 'solution settlement calldata is not bound to the request' };
+       }
+diff --git a/operator/test/daemon/native-base-sepolia-infrastructure.test.ts b/operator/test/daemon/native-base-sepolia-infrastructure.test.ts
+index b1d6c814a..73f072007 100644
+--- a/operator/test/daemon/native-base-sepolia-infrastructure.test.ts
++++ b/operator/test/daemon/native-base-sepolia-infrastructure.test.ts
+@@ -1,7 +1,7 @@
+ import { createHash } from 'node:crypto';
+ import { describe, expect, it, vi } from 'vitest';
+ import { JINN_ROUTER_V3_ABI, SAFE_ABI } from '@jinn-network/marketplace-binding';
+-import { encodeFunctionData, zeroAddress } from 'viem';
++import { encodeAbiParameters, encodeEventTopics, encodeFunctionData, parseAbi, parseAbiParameters, zeroAddress } from 'viem';
+ import {
+   createBaseSepoliaFinalizedAnchorClient,
+   createBaseSepoliaEvaluatorReads,
+@@ -1141,9 +1141,45 @@ describe('first-party Base Sepolia solver settlement Delivery re-fetch', () => {
+     updatedAt: '2026-08-10T19:00:00.000Z',
+   } as unknown as NativeEngagementRow;
+ 
++  /**
++   * The same settlement sent by a smart account owning the Safe (TPM_sign Kernel): an
++   * EntryPoint.handleOps bundle whose UserOperation batches SafeNonceAssert.check with the Safe's
++   * execTransaction; `success` is that UserOperation's UserOperationEvent.success.
++   */
++  function viaUserOperation(success: boolean) {
++    const entryPoint = '0x0000000071727De22E5E9d8BAf0edAc6f37da032' as const;
++    const kernel = '0x00000000000000000000000000000000000000d4' as const;
++    const epAbi = parseAbi([
++      'function handleOps((address sender, uint256 nonce, bytes initCode, bytes callData, bytes32 accountGasLimits, uint256 preVerificationGas, bytes32 gasFees, bytes paymasterAndData, bytes signature)[] ops, address beneficiary)',
++      'event UserOperationEvent(bytes32 indexed userOpHash, address indexed sender, address indexed paymaster, uint256 nonce, bool success, uint256 actualGasCost, uint256 actualGasUsed)',
++    ]);
++    const callData = encodeFunctionData({
++      abi: parseAbi(['function execute(bytes32 mode, bytes executionCalldata)']),
++      functionName: 'execute',
++      args: [`0x01${'00'.repeat(31)}`, encodeAbiParameters(parseAbiParameters('(address target, uint256 value, bytes callData)[]'), [[
++        { target: '0x00000000000000000000000000000000000000e5', value: 0n, callData: '0x12345678' },
++        { target: SAFE, value: 0n, callData: settlementInput },
++      ]])],
++    });
++    const input = encodeFunctionData({
++      abi: epAbi, functionName: 'handleOps',
++      args: [[{
++        sender: kernel, nonce: 2n, initCode: '0x', callData, accountGasLimits: `0x${'00'.repeat(32)}`,
++        preVerificationGas: 0n, gasFees: `0x${'00'.repeat(32)}`, paymasterAndData: '0x', signature: '0x',
++      }], zeroAddress],
++    });
++    const log = {
++      address: entryPoint,
++      topics: encodeEventTopics({ abi: epAbi, eventName: 'UserOperationEvent', args: { userOpHash: `0x${'44'.repeat(32)}`, sender: kernel, paymaster: zeroAddress } }),
++      data: encodeAbiParameters(parseAbiParameters('uint256, bool, uint256, uint256'), [2n, success, 1n, 1n]),
++    };
++    return { transaction: { to: entryPoint, input }, logs: [log] };
++  }
++
+   function fixture(options: {
+     readonly httpBytes?: Uint8Array;
+     readonly correspondenceTransactionHash?: `0x${string}`;
++    readonly settlementTransaction?: ReturnType<typeof viaUserOperation>;
+   } = {}) {
+     // The IPFS plane always misses — the native delivery record was never pinned there.
+     const byDigest = vi.fn(async () => { throw new Error('block was not found locally'); });
+@@ -1159,7 +1195,8 @@ describe('first-party Base Sepolia solver settlement Delivery re-fetch', () => {
+     };
+     const publicClient = {
+       async getBlockNumber() { return 100n; },
+-      async getTransaction() { return { input: settlementInput }; },
++      async getTransaction() { return options.settlementTransaction?.transaction ?? { input: settlementInput }; },
++      async getTransactionReceipt() { return { logs: options.settlementTransaction?.logs ?? [] }; },
+       async readContract(input: { functionName: string }) {
+         if (input.functionName === 'mapRequestIdInfos') {
+           return [deliveryMech, deliveryMech, operator, 60n, 1n, `0x${'00'.repeat(32)}`] as const;
+@@ -1225,6 +1262,24 @@ describe('first-party Base Sepolia solver settlement Delivery re-fetch', () => {
+     expect(byDigest).not.toHaveBeenCalled();
+   });
+ 
++  it('binds a settlement the Safe executed inside a successful UserOperation (smart-account owner)', async () => {
++    const { reads } = fixture({ httpBytes: deliveryBytes, settlementTransaction: viaUserOperation(true) });
++    await expect(reads.solutionSettlementCanonical({
++      operation,
++      engagement,
++      deliveryPublicLocations: [deliveryLocation],
++    })).resolves.toMatchObject({ kind: 'finalized', txHash: transactionHash, blockNumber: 90n });
++  });
++
++  it('does not bind the same calldata from a UserOperation whose execution failed', async () => {
++    const { reads } = fixture({ httpBytes: deliveryBytes, settlementTransaction: viaUserOperation(false) });
++    await expect(reads.solutionSettlementCanonical({
++      operation,
++      engagement,
++      deliveryPublicLocations: [deliveryLocation],
++    })).resolves.toMatchObject({ kind: 'orphaned', reason: 'solution settlement calldata is not bound to the request' });
++  });
++
+   it('does not complete settlement on forged HTTP Delivery bytes off the anchored digest', async () => {
+     const forged = new TextEncoder().encode('{"delivery":"forged"}');
+     const { reads, byLocation } = fixture({ httpBytes: forged });
+diff --git a/operator/test/hermetic/full-loop-kernel-owner.test.ts b/operator/test/hermetic/full-loop-kernel-owner.test.ts
+index 1e23f501d..1183434d6 100644
+--- a/operator/test/hermetic/full-loop-kernel-owner.test.ts
++++ b/operator/test/hermetic/full-loop-kernel-owner.test.ts
+@@ -32,6 +32,8 @@ import { base } from 'viem/chains';
+ import {
+   createWalletClient,
+   decodeEventLog,
++  decodeFunctionData,
++  getAddress,
+   encodeFunctionData,
+   http,
+   parseAbi,
+@@ -54,6 +56,7 @@ import {
+   type HarnessSelector,
+ } from '../e2e/_daemon-harness-helpers.js';
+ import { jsonRpc as anvilJsonRpc } from '../_support/chain/anvil.js';
++import { JINN_ROUTER_V3_ABI, safeExecutionsOf } from '@jinn-network/marketplace-binding';
+ import {
+   createBroadcastLock,
+   createSubmissionLedger,
+@@ -219,6 +222,16 @@ describeMaybe('hermetic daemon solution loop, Safe owned by a hardware-signed Ke
+           expect(ops.some((op) => op.args.sender.toLowerCase() === kernel.toLowerCase() && op.args.success)).toBe(true);
+         }
+ 
++        // A peer reading our settlement binds it through handleOps to the exact router call
++        // (the readers in venue-base/verdict.ts and native-base-sepolia-infrastructure.ts).
++        const executions = await safeExecutionsOf(fixture.publicClient, settlement.txHash);
++        expect(executions).toHaveLength(1);
++        expect(executions[0]).toMatchObject({ safe: getAddress(operator.safeAddress), via: 'user-operation', account: getAddress(kernel), operation: 0 });
++        expect(executions[0]!.to.toLowerCase()).toBe(v3Env.routerAddress.toLowerCase());
++        const settled = decodeFunctionData({ abi: JINN_ROUTER_V3_ABI, data: executions[0]!.data });
++        expect(settled.functionName).toBe('claimSolutionDelivery');
++        expect(String(settled.args[0]).toLowerCase()).toBe(claim.requestId.toLowerCase());
++
+         // ── A compromised agent host: the mandate refuses Safe self-administration ──
+         const state = openVenueState(join(work, 'probe-venue.db'));
+         try {
+diff --git a/packages/marketplace/binding/src/index.ts b/packages/marketplace/binding/src/index.ts
+index fa8147d67..a17d8398b 100644
+--- a/packages/marketplace/binding/src/index.ts
++++ b/packages/marketplace/binding/src/index.ts
+@@ -45,6 +45,8 @@ export {
+ } from "./venue/safe-revert.js";
+ export { SAFE_ABI, buildSafeSignature, executeSafeTransaction } from "./venue/safe.js";
+ export type { SafeTransactionParams } from "./venue/safe.js";
++export { erc7579Calls, safeExecutionsOf } from "./venue/safe-executions.js";
++export type { SafeExecution } from "./venue/safe-executions.js";
+ export { createEoaBroadcastPort } from "./venue/eoa-broadcast.js";
+ export type { EoaBroadcastOptions } from "./venue/eoa-broadcast.js";
+ export {
+diff --git a/packages/marketplace/binding/src/venue/safe-executions.test.ts b/packages/marketplace/binding/src/venue/safe-executions.test.ts
+new file mode 100644
+index 000000000..22876f5f8
+--- /dev/null
++++ b/packages/marketplace/binding/src/venue/safe-executions.test.ts
+@@ -0,0 +1,137 @@
++import { describe, expect, test } from "vitest";
++import {
++  encodeAbiParameters,
++  encodeEventTopics,
++  encodeFunctionData,
++  encodePacked,
++  getAddress,
++  parseAbi,
++  parseAbiParameters,
++  type Address,
++  type Hex,
++  type Log,
++} from "viem";
++import { SAFE_ABI } from "./safe.js";
++import { erc7579Calls, safeExecutionsOf } from "./safe-executions.js";
++
++const ENTRY_POINT = "0x0000000071727De22E5E9d8BAf0edAc6f37da032" as Address;
++const SAFE = getAddress("0x5afe000000000000000000000000000000000000");
++const OTHER_SAFE = getAddress("0x5afe000000000000000000000000000000000001");
++const ROUTER = "0x1111111111111111111111111111111111111111" as Address;
++const ASSERT = "0x2222222222222222222222222222222222222222" as Address;
++const KERNEL = "0x3333333333333333333333333333333333333333" as Address;
++const OTHER_ACCOUNT = "0x4444444444444444444444444444444444444444" as Address;
++const TX = `0x${"ab".repeat(32)}` as Hex;
++const ZERO = "0x0000000000000000000000000000000000000000" as Address;
++
++const EP_ABI = parseAbi([
++  "function handleOps((address sender, uint256 nonce, bytes initCode, bytes callData, bytes32 accountGasLimits, uint256 preVerificationGas, bytes32 gasFees, bytes paymasterAndData, bytes signature)[] ops, address beneficiary)",
++  "event UserOperationEvent(bytes32 indexed userOpHash, address indexed sender, address indexed paymaster, uint256 nonce, bool success, uint256 actualGasCost, uint256 actualGasUsed)",
++]);
++const EXECUTE_ABI = parseAbi(["function execute(bytes32 mode, bytes executionCalldata)"]);
++
++const routerCall = "0xc47dda39aabbccdd" as Hex;
++function execTransaction(to: Address, data: Hex): Hex {
++  return encodeFunctionData({
++    abi: SAFE_ABI, functionName: "execTransaction",
++    args: [to, 0n, data, 0, 0n, 0n, 0n, ZERO, ZERO, "0x01"],
++  });
++}
++function executeSingle(target: Address, data: Hex): Hex {
++  return encodeFunctionData({
++    abi: EXECUTE_ABI, functionName: "execute",
++    args: [`0x${"00".repeat(32)}`, encodePacked(["address", "uint256", "bytes"], [target, 0n, data])],
++  });
++}
++function executeBatch(calls: readonly { target: Address; data: Hex }[]): Hex {
++  return encodeFunctionData({
++    abi: EXECUTE_ABI, functionName: "execute",
++    args: [
++      `0x01${"00".repeat(31)}`,
++      encodeAbiParameters(parseAbiParameters("(address target, uint256 value, bytes callData)[]"), [
++        calls.map((c) => ({ target: c.target, value: 0n, callData: c.data })),
++      ]),
++    ],
++  });
++}
++function op(sender: Address, nonce: bigint, callData: Hex) {
++  return {
++    sender, nonce, initCode: "0x" as Hex, callData,
++    accountGasLimits: `0x${"00".repeat(32)}` as Hex, preVerificationGas: 0n,
++    gasFees: `0x${"00".repeat(32)}` as Hex, paymasterAndData: "0x" as Hex, signature: "0x" as Hex,
++  };
++}
++function userOpEvent(sender: Address, nonce: bigint, success: boolean): Log {
++  return {
++    address: ENTRY_POINT,
++    topics: encodeEventTopics({
++      abi: EP_ABI, eventName: "UserOperationEvent",
++      args: { userOpHash: `0x${"11".repeat(32)}`, sender, paymaster: ZERO },
++    }),
++    data: encodeAbiParameters(parseAbiParameters("uint256, bool, uint256, uint256"), [nonce, success, 1n, 1n]),
++  } as unknown as Log;
++}
++function client(transaction: { to: Address | null; input: Hex }, logs: readonly Log[] = []) {
++  return {
++    getTransaction: async () => transaction,
++    getTransactionReceipt: async () => ({ logs }),
++  } as unknown as Parameters<typeof safeExecutionsOf>[0];
++}
++
++describe("safeExecutionsOf", () => {
++  test("an owner EOA's execTransaction is the transaction itself", async () => {
++    const executions = await safeExecutionsOf(client({ to: SAFE, input: execTransaction(ROUTER, routerCall) }), TX);
++    expect(executions).toEqual([{ safe: SAFE, to: ROUTER, value: 0n, data: routerCall, operation: 0, via: "direct" }]);
++  });
++
++  test("inside handleOps: the Safe calls of successful UserOperations only, from single and batch execute", async () => {
++    const input = encodeFunctionData({
++      abi: EP_ABI, functionName: "handleOps",
++      args: [[
++        // the Kernel owner: SafeNonceAssert check, then the Safe transaction (TPM_sign's shape)
++        op(KERNEL, 7n, executeBatch([{ target: ASSERT, data: "0x12345678" }, { target: SAFE, data: execTransaction(ROUTER, routerCall) }])),
++        // someone else's operation in the same bundle whose execution reverted
++        op(OTHER_ACCOUNT, 1n, executeSingle(OTHER_SAFE, execTransaction(ROUTER, routerCall))),
++      ], ZERO],
++    });
++    const executions = await safeExecutionsOf(
++      client({ to: ENTRY_POINT, input }, [userOpEvent(KERNEL, 7n, true), userOpEvent(OTHER_ACCOUNT, 1n, false)]),
++      TX,
++    );
++    expect(executions).toEqual([
++      { safe: SAFE, to: ROUTER, value: 0n, data: routerCall, operation: 0, via: "user-operation", account: KERNEL },
++    ]);
++  });
++
++  test("a UserOperationEvent from another contract than the EntryPoint called is ignored", async () => {
++    const input = encodeFunctionData({
++      abi: EP_ABI, functionName: "handleOps",
++      args: [[op(KERNEL, 7n, executeSingle(SAFE, execTransaction(ROUTER, routerCall)))], ZERO],
++    });
++    const forged = { ...userOpEvent(KERNEL, 7n, true), address: ROUTER } as Log;
++    expect(await safeExecutionsOf(client({ to: ENTRY_POINT, input }, [forged]), TX)).toEqual([]);
++  });
++
++  test("anything else yields nothing", async () => {
++    expect(await safeExecutionsOf(client({ to: ROUTER, input: routerCall }), TX)).toEqual([]);
++    const input = encodeFunctionData({
++      abi: EP_ABI, functionName: "handleOps",
++      args: [[op(KERNEL, 0n, executeSingle(ROUTER, routerCall))], ZERO],
++    });
++    expect(await safeExecutionsOf(client({ to: ENTRY_POINT, input }, [userOpEvent(KERNEL, 0n, true)]), TX)).toEqual([]);
++  });
++});
++
++describe("erc7579Calls", () => {
++  test("decodes single and batch CALL modes and refuses the rest", () => {
++    expect(erc7579Calls(executeSingle(SAFE, "0xabcd"))).toEqual([{ target: SAFE, value: 0n, data: "0xabcd" }]);
++    expect(erc7579Calls(executeBatch([{ target: ASSERT, data: "0x01" }, { target: SAFE, data: "0x02" }])).map((c) => c.target))
++      .toEqual([ASSERT, SAFE]);
++    const delegate = encodeFunctionData({
++      abi: EXECUTE_ABI, functionName: "execute",
++      args: [`0xff${"00".repeat(31)}`, encodePacked(["address", "bytes"], [SAFE, "0xabcd"])],
++    });
++    expect(erc7579Calls(delegate)).toEqual([]);
++    expect(erc7579Calls("0xdeadbeef")).toEqual([]);
++  });
++});
+diff --git a/packages/marketplace/binding/src/venue/safe-executions.ts b/packages/marketplace/binding/src/venue/safe-executions.ts
+new file mode 100644
+index 000000000..1d9a97ac5
+--- /dev/null
++++ b/packages/marketplace/binding/src/venue/safe-executions.ts
+@@ -0,0 +1,133 @@
++// SPDX-License-Identifier: MIT
++
++// The Safe transactions a chain transaction actually executed, for readers that bind an event to
++// the calldata behind it (verdict recovery, settlement binding). Two shapes are recognised:
++//
++//   - direct: an owner EOA calls `Safe.execTransaction(...)` -- the transaction's own input;
++//   - ERC-4337: a bundler calls `EntryPoint.handleOps(ops, beneficiary)` (EntryPoint v0.7) and
++//     each UserOperation's account -- an ERC-7579 smart account such as a Kernel that owns the
++//     Safe -- runs `execute(mode, executionCalldata)` with one or more calls, one of which is
++//     `Safe.execTransaction(...)`.
++//
++// For the ERC-4337 shape only UserOperations whose `UserOperationEvent.success` is true count:
++// a bundle can carry an operation whose execution reverted, and its calldata proves nothing.
++import { decodeAbiParameters, decodeEventLog, decodeFunctionData, getAddress, parseAbi, parseAbiParameters, type Address, type Hex, type PublicClient } from "viem";
++import { SAFE_ABI } from "./safe.js";
++
++export interface SafeExecution {
++  /** The Safe that ran the transaction (null only for a transaction without a recipient). */
++  readonly safe: Address | null;
++  readonly to: Address;
++  readonly value: bigint;
++  readonly data: Hex;
++  /** Safe `Enum.Operation`: 0 = CALL, 1 = DELEGATECALL. */
++  readonly operation: number;
++  /** How it reached the Safe: from an owner EOA, or from a smart account's UserOperation. */
++  readonly via: "direct" | "user-operation";
++  /** The smart account (`UserOperation.sender`) for `via: "user-operation"`. */
++  readonly account?: Address;
++}
++
++const ENTRY_POINT_V07_ABI = parseAbi([
++  "function handleOps((address sender, uint256 nonce, bytes initCode, bytes callData, bytes32 accountGasLimits, uint256 preVerificationGas, bytes32 gasFees, bytes paymasterAndData, bytes signature)[] ops, address beneficiary)",
++  "event UserOperationEvent(bytes32 indexed userOpHash, address indexed sender, address indexed paymaster, uint256 nonce, bool success, uint256 actualGasCost, uint256 actualGasUsed)",
++]);
++const ERC7579_EXECUTE_ABI = parseAbi(["function execute(bytes32 mode, bytes executionCalldata)"]);
++const EXECUTIONS = parseAbiParameters("(address target, uint256 value, bytes callData)[]");
++
++const CALLTYPE_SINGLE = 0x00;
++const CALLTYPE_BATCH = 0x01;
++
++function asSafeExecution(
++  safe: Address | null,
++  data: Hex,
++  via: SafeExecution["via"],
++  account?: Address,
++): SafeExecution | undefined {
++  try {
++    const decoded = decodeFunctionData({ abi: SAFE_ABI, data });
++    if (decoded.functionName !== "execTransaction") return undefined;
++    const [to, value, inner, operation] = decoded.args as readonly [Address, bigint, Hex, number, ...unknown[]];
++    return {
++      safe: safe === null ? null : getAddress(safe), to: getAddress(to), value, data: inner, operation: Number(operation), via,
++      ...(account === undefined ? {} : { account: getAddress(account) }),
++    };
++  } catch {
++    return undefined;
++  }
++}
++
++/** The (target, callData) calls of an ERC-7579 `execute` (single or batch CALL; nothing else). */
++export function erc7579Calls(callData: Hex): readonly { readonly target: Address; readonly value: bigint; readonly data: Hex }[] {
++  let decoded;
++  try {
++    decoded = decodeFunctionData({ abi: ERC7579_EXECUTE_ABI, data: callData });
++  } catch {
++    return [];
++  }
++  const [mode, execution] = decoded.args as readonly [Hex, Hex];
++  const callType = Number.parseInt(mode.slice(2, 4), 16);
++  if (callType === CALLTYPE_SINGLE) {
++    // abi.encodePacked(target, value, callData)
++    if (execution.length < 2 + 2 * 52) return [];
++    return [{
++      target: getAddress(`0x${execution.slice(2, 42)}`),
++      value: BigInt(`0x${execution.slice(42, 106)}`),
++      data: `0x${execution.slice(106)}` as Hex,
++    }];
++  }
++  if (callType === CALLTYPE_BATCH) {
++    try {
++      const [calls] = decodeAbiParameters(EXECUTIONS, execution);
++      return calls.map((c) => ({ target: c.target, value: c.value, data: c.callData }));
++    } catch {
++      return [];
++    }
++  }
++  return []; // DELEGATECALL / static / unknown call types are not Safe executions we vouch for
++}
++
++export async function safeExecutionsOf(
++  publicClient: Pick<PublicClient, "getTransaction" | "getTransactionReceipt">,
++  hash: Hex,
++): Promise<readonly SafeExecution[]> {
++  const transaction = await publicClient.getTransaction({ hash });
++  const input = transaction.input;
++
++  let ops;
++  try {
++    const decoded = decodeFunctionData({ abi: ENTRY_POINT_V07_ABI, data: input });
++    if (decoded.functionName !== "handleOps") throw new Error("not handleOps");
++    ops = decoded.args[0];
++  } catch {
++    // Not a bundle: the transaction itself is the Safe execution (or nothing we recognise).
++    const direct = asSafeExecution(transaction.to ?? null, input, "direct");
++    return direct === undefined ? [] : [direct];
++  }
++
++  // Which (sender, nonce) operations of this bundle executed successfully.
++  const receipt = await publicClient.getTransactionReceipt({ hash });
++  const succeeded = new Set<string>();
++  for (const log of receipt.logs) {
++    if (transaction.to === null || transaction.to === undefined
++      || log.address.toLowerCase() !== transaction.to.toLowerCase()) continue;
++    try {
++      const event = decodeEventLog({ abi: ENTRY_POINT_V07_ABI, data: log.data, topics: log.topics as [Hex, ...Hex[]] });
++      if (event.eventName === "UserOperationEvent" && event.args.success) {
++        succeeded.add(`${event.args.sender.toLowerCase()}:${event.args.nonce}`);
++      }
++    } catch {
++      // other EntryPoint events (BeforeExecution, AccountDeployed, Deposited, ...)
++    }
++  }
++
++  const executions: SafeExecution[] = [];
++  for (const op of ops) {
++    if (!succeeded.has(`${op.sender.toLowerCase()}:${op.nonce}`)) continue;
++    for (const call of erc7579Calls(op.callData)) {
++      const execution = asSafeExecution(call.target, call.data, "user-operation", op.sender);
++      if (execution !== undefined) executions.push(execution);
++    }
++  }
++  return executions;
++}
+diff --git a/packages/marketplace/venue-base/src/verdict.test.ts b/packages/marketplace/venue-base/src/verdict.test.ts
+index b95ceb6e2..2e80c59ba 100644
+--- a/packages/marketplace/venue-base/src/verdict.test.ts
++++ b/packages/marketplace/venue-base/src/verdict.test.ts
+@@ -8,7 +8,16 @@ import {
+   VerdictCode,
+ } from "@jinn-network/marketplace-binding";
+ import { describe, expect, test, vi } from "vitest";
+-import { decodeFunctionData, encodeFunctionData, type Address, type Hex } from "viem";
++import {
++  decodeFunctionData,
++  encodeAbiParameters,
++  encodeEventTopics,
++  encodeFunctionData,
++  parseAbi,
++  parseAbiParameters,
++  type Address,
++  type Hex,
++} from "viem";
+ import type { BaseVenueSafeBroadcaster, SafeBroadcastReceipt } from "./broadcast/safe-broadcaster.js";
+ import { createVerdictPorts } from "./verdict.js";
+ 
+@@ -454,3 +463,69 @@ describe("verdict ports", () => {
+     }));
+   });
+ });
++
++describe("verdict recovery when the Safe's owner is a smart account (EntryPoint.handleOps)", () => {
++  const ENTRY_POINT = "0x0000000071727De22E5E9d8BAf0edAc6f37da032" as Address;
++  const KERNEL = "0x00000000000000000000000000000000000000d4" as Address;
++  const NONCE_ASSERT = "0x00000000000000000000000000000000000000e5" as Address;
++  const ZERO = "0x0000000000000000000000000000000000000000" as Address;
++  const EP_ABI = parseAbi([
++    "function handleOps((address sender, uint256 nonce, bytes initCode, bytes callData, bytes32 accountGasLimits, uint256 preVerificationGas, bytes32 gasFees, bytes paymasterAndData, bytes signature)[] ops, address beneficiary)",
++    "event UserOperationEvent(bytes32 indexed userOpHash, address indexed sender, address indexed paymaster, uint256 nonce, bool success, uint256 actualGasCost, uint256 actualGasUsed)",
++  ]);
++  const EXECUTE_ABI = parseAbi(["function execute(bytes32 mode, bytes executionCalldata)"]);
++
++  // TPM_sign's Kernel owner: a batch of SafeNonceAssert.check + Safe.execTransaction(router call).
++  function bundle(success: boolean) {
++    const safeTx = encodeFunctionData({
++      abi: SAFE_ABI, functionName: "execTransaction",
++      args: [
++        ROUTER, 0n,
++        encodeFunctionData({ abi: JINN_ROUTER_V3_ABI, functionName: "claimVerdictDelivery", args: [REQUEST_ID, DELIVERY_DIGEST, VerdictCode.Fail] }),
++        0, 0n, 0n, 0n, ZERO, ZERO, `0x${KERNEL.slice(2).padStart(64, "0")}${"0".repeat(64)}01`,
++      ],
++    });
++    const callData = encodeFunctionData({
++      abi: EXECUTE_ABI, functionName: "execute",
++      args: [`0x01${"00".repeat(31)}`, encodeAbiParameters(parseAbiParameters("(address target, uint256 value, bytes callData)[]"), [[
++        { target: NONCE_ASSERT, value: 0n, callData: "0x12345678" },
++        { target: SAFE, value: 0n, callData: safeTx },
++      ]])],
++    });
++    const input = encodeFunctionData({
++      abi: EP_ABI, functionName: "handleOps",
++      args: [[{
++        sender: KERNEL, nonce: 5n, initCode: "0x", callData,
++        accountGasLimits: `0x${"00".repeat(32)}`, preVerificationGas: 0n, gasFees: `0x${"00".repeat(32)}`,
++        paymasterAndData: "0x", signature: "0x",
++      }], ZERO],
++    });
++    const event = {
++      address: ENTRY_POINT,
++      topics: encodeEventTopics({ abi: EP_ABI, eventName: "UserOperationEvent", args: { userOpHash: `0x${"44".repeat(32)}`, sender: KERNEL, paymaster: ZERO } }),
++      data: encodeAbiParameters(parseAbiParameters("uint256, bool, uint256, uint256"), [5n, success, 1n, 1n]),
++    };
++    return {
++      getTransaction: vi.fn().mockResolvedValue({ to: ENTRY_POINT, input }),
++      getTransactionReceipt: vi.fn().mockResolvedValue({ logs: [event] }),
++    };
++  }
++
++  test("recovers the verdict digest from the Safe call inside a successful UserOperation", async () => {
++    const d = deps();
++    Object.assign(d.publicClient, bundle(true));
++    (d.publicClient.readContract as ReturnType<typeof vi.fn>).mockResolvedValue(true);
++    (d.publicClient.getContractEvents as ReturnType<typeof vi.fn>).mockResolvedValue([canonicalVerdictSettlementEvent()]);
++    await expect(createVerdictPorts(d).readVerdictSettlement({ requestId: REQUEST_ID, fromBlock: 7n }))
++      .resolves.toMatchObject({ requestId: REQUEST_ID, verdictDigest: DELIVERY_DIGEST, verdictCode: VerdictCode.Fail });
++  });
++
++  test("refuses the same calldata when its UserOperation did not succeed", async () => {
++    const d = deps();
++    Object.assign(d.publicClient, bundle(false));
++    (d.publicClient.readContract as ReturnType<typeof vi.fn>).mockResolvedValue(true);
++    (d.publicClient.getContractEvents as ReturnType<typeof vi.fn>).mockResolvedValue([canonicalVerdictSettlementEvent()]);
++    await expect(createVerdictPorts(d).readVerdictSettlement({ requestId: REQUEST_ID, fromBlock: 7n }))
++      .rejects.toThrow(/no exact canonical verdict digest/u);
++  });
++});
+diff --git a/packages/marketplace/venue-base/src/verdict.ts b/packages/marketplace/venue-base/src/verdict.ts
+index 1d43c2780..e16155a64 100644
+--- a/packages/marketplace/venue-base/src/verdict.ts
++++ b/packages/marketplace/venue-base/src/verdict.ts
+@@ -6,9 +6,9 @@ import {
+   JINN_ROUTER_V3_ABI,
+   MECH_ABI,
+   MECH_DELIVER_TO_MARKETPLACE_ABI,
+-  SAFE_ABI,
+   SafeInnerRevertError,
+   formatKnownRevertDetail,
++  safeExecutionsOf,
+   type VerdictCode,
+ } from "@jinn-network/marketplace-binding";
+ import {
+@@ -319,29 +319,48 @@ export function createVerdictPorts(deps: VerdictPortDeps): VerdictPorts {
+     ) {
+       throw new Error(`settled verdict ${input.requestId} has no canonical transaction identity`);
+     }
+-    const transaction = await deps.publicClient.getTransaction({ hash: event.transactionHash });
+     let verdictDigest: Hex;
+     try {
+-      const outer = decodeFunctionData({ abi: SAFE_ABI, data: transaction.input });
+-      if (outer.functionName !== "execTransaction") {
++      // The Safe execution(s) behind the event's transaction: the transaction itself when an
++      // owner EOA sent it, or the Safe calls inside the successful UserOperations of an
++      // `EntryPoint.handleOps` bundle when the Safe's owner is a smart account.
++      const executions = await safeExecutionsOf(deps.publicClient, event.transactionHash);
++      if (executions.length === 0) {
+         throw new Error("canonical verdict transaction is not a Safe execTransaction");
+       }
+-      const outerArgs = outer.args as readonly [Address, bigint, Hex, number, ...unknown[]];
+-      if (outerArgs[0].toLowerCase() !== deps.routerAddress.toLowerCase()
+-        || outerArgs[1] !== 0n
+-        || Number(outerArgs[3]) !== 0) {
+-        throw new Error("canonical Safe transaction does not call the router directly");
+-      }
+-      const decoded = decodeFunctionData({ abi: JINN_ROUTER_V3_ABI, data: outerArgs[2] });
+-      if (decoded.functionName !== "claimVerdictDelivery") {
+-        throw new Error("canonical Safe inner transaction did not call claimVerdictDelivery");
++      const digests: Hex[] = [];
++      let refusal = "";
++      for (const execution of executions) {
++        if (execution.to.toLowerCase() !== deps.routerAddress.toLowerCase()
++          || execution.value !== 0n
++          || execution.operation !== 0) {
++          refusal ||= "canonical Safe transaction does not call the router directly";
++          continue;
++        }
++        let decoded;
++        try {
++          decoded = decodeFunctionData({ abi: JINN_ROUTER_V3_ABI, data: execution.data });
++        } catch {
++          refusal ||= "canonical Safe inner transaction did not call claimVerdictDelivery";
++          continue;
++        }
++        if (decoded.functionName !== "claimVerdictDelivery") {
++          refusal ||= "canonical Safe inner transaction did not call claimVerdictDelivery";
++          continue;
++        }
++        const decodedArgs = decoded.args as readonly [Hex, Hex, VerdictCode];
++        if (decodedArgs[0].toLowerCase() !== input.requestId.toLowerCase()
++          || Number(decodedArgs[2]) !== Number(args.verdictCode)) {
++          refusal ||= "canonical verdict transaction arguments contradict the emitted event";
++          continue;
++        }
++        digests.push(decodedArgs[1]);
+       }
+-      const decodedArgs = decoded.args as readonly [Hex, Hex, VerdictCode];
+-      if (decodedArgs[0].toLowerCase() !== input.requestId.toLowerCase()
+-        || Number(decodedArgs[2]) !== Number(args.verdictCode)) {
+-        throw new Error("canonical verdict transaction arguments contradict the emitted event");
++      if (digests.length === 0) throw new Error(refusal);
++      if (digests.length > 1) {
++        throw new Error("canonical verdict transaction carries more than one matching claimVerdictDelivery");
+       }
+-      verdictDigest = decodedArgs[1];
++      verdictDigest = digests[0]!;
+     } catch (cause) {
+       throw new Error(`settled verdict ${input.requestId} has no exact canonical verdict digest: ${String(cause)}`);
+     }
+-- 
+2.43.0
+

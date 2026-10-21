@@ -73,7 +73,7 @@ refused under both.
 ## Integrating into Jinn: the patch series (first version)
 
 [`patches/`](patches/) is a first version of `ADAPTATION.md` §5 Phase 1, as
-four commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
+five commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
 
 | Patch | What |
 |---|---|
@@ -81,6 +81,7 @@ four commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
 | `0002-feat-venue-base-injectable-Safe-broadcaster…` | `createBaseVenue({ safeBroadcaster })`: a factory that receives the venue's own durable lock and submission ledger; `walletClient` optional when it is given |
 | `0003-feat-operator-hardware-signed-Kernel-owner…` | `operator/src/signer/`: the `agent-signer` CLI as a typed call, `KernelSafeBroadcaster`, a viem transport for direct calls; the optional `signer` config section; wiring `main.ts` → composition root → venue; boot refuses if the Kernel does not own the Safe |
 | `0004-test-operator-hermetic-solution-loop…` | `test/hermetic/full-loop-kernel-owner.test.ts`: Jinn's own hermetic solution loop with the service Safe owned by a Kernel account (below) |
+| `0005-feat-bind-Safe-executions-inside-EntryPoint.handleOps…` | `ADAPTATION.md` §5 item 9: readers that bind an event to the Safe call behind it (`venue-base` `readVerdictSettlement`, the operator's solution-settlement binding) now also find that call inside `EntryPoint.handleOps` — so other operators recover our verdicts and our settlements are not marked orphaned |
 
 Apply and enable:
 
@@ -151,13 +152,26 @@ simulate `execute` against), which starved Jinn's `claimTask` through the
 Safe (`GS013`). It now estimates each inner call from the account's address
 plus Kernel's overhead.
 
+How peers read a Safe transaction sent by a smart account (patch 0005):
+`safeExecutionsOf(publicClient, txHash)` in `marketplace-binding` returns the
+Safe executions a transaction actually ran — the transaction itself when an
+owner EOA sent `execTransaction`, or, for an EntryPoint v0.7 `handleOps`
+bundle, the `execTransaction` calls inside the ERC-7579 `execute` (single or
+batch) of each UserOperation whose `UserOperationEvent` (from that
+EntryPoint) reports success. A reverted operation in the same bundle, or a
+`UserOperationEvent` emitted by another contract, proves nothing and is
+ignored. The direct path keeps its exact behaviour and error messages. Tests:
+the helper on its own; both readers on a bundle (bound when the operation
+succeeded, refused when it failed — and the new tests fail against the old
+readers); and on real bytes, the Anvil loop's settlement transaction is
+bound to `router.claimSolutionDelivery(requestId)`, run by the Safe, from
+the Kernel.
+
 Not in this version (the rest of `ADAPTATION.md` §5): the keystore agent EOA
 still exists and still signs off-chain documents (task.v1, `signCanonical`,
 ERC-8128 — item 10), direct EOA writes (ERC-8004, validation — the transport
 exists but is not wired, item 8), CLI verbs with their own Safe broadcaster
-(item 7), readers that decode a peer's outer transaction as
-`Safe.execTransaction` and must also accept `EntryPoint.handleOps` (item 9 —
-other operators would not bind our verdicts yet), bootstrap and the master
+(item 7), bootstrap and the master
 role (Phase 2), native mode (Phase 3). Moving the Safe's ownership from the
 agent EOA to the Kernel (`swapOwner`) is a one-time owner step outside the
 patch.
