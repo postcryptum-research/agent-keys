@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>TPM_sign passkey test</title>
+<style>body{font-family:system-ui,sans-serif;max-width:760px;margin:2em auto;padding:0 16px;background:#f8fafc;color:#0f172a}
+button{font-size:1.1em;padding:.6em 1.2em;margin:.4em 0;border-radius:10px;border:0;background:#4338ca;color:#fff;cursor:pointer}
+pre{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:1em;white-space:pre-wrap;word-break:break-all}
+.ok{color:#047857}.bad{color:#be123c}</style></head>
+<body>
+<h2>TPM_sign — passkey probe (localhost only)</h2>
+<p>1. Create a passkey. In Chrome's dialog choose <b>"Use a phone or tablet"</b> and scan the QR code with the phone (see docs/PHONE_OWNER.md for scanners that work).</p>
+<button id="create">1. Create passkey</button>
+<p>2. Sign a test hash (standing in for an owner operation's userOpHash).</p>
+<button id="sign">2. Sign the test hash</button>
+<pre id="out">—</pre>
+<script>
+const out = document.getElementById('out');
+const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2,'0')).join('');
+const unhex = h => new Uint8Array(h.match(/../g).map(x => parseInt(x,16)));
+const log = (s, cls) => { out.innerHTML += (cls ? `<span class="${cls}">${s}</span>` : s) + '\n'; };
+const save = async () => {}; // results stay on this page
+function flags(authData) {
+  const f = new Uint8Array(authData)[32];
+  return {UP: !!(f&1), UV: !!(f&4), BE: !!(f&8), BS: !!(f&16)};
+}
+// DER ECDSA signature -> r, s (32 bytes each)
+function derToRS(der) {
+  const d = new Uint8Array(der); let i = 2;
+  const rl = d[i+1]; let r = d.slice(i+2, i+2+rl); i = i+2+rl;
+  const sl = d[i+1]; let s = d.slice(i+2, i+2+sl);
+  const fix = x => { while (x.length > 32 && x[0] === 0) x = x.slice(1); const o = new Uint8Array(32); o.set(x, 32-x.length); return o; };
+  return [fix(r), fix(s)];
+}
+let cred = JSON.parse(localStorage.getItem('tpm_sign_cred') || 'null');
+document.getElementById('create').onclick = async () => {
+  out.textContent = '';
+  try {
+    const c = await navigator.credentials.create({publicKey: {
+      rp: {name: 'TPM_sign owner (test)', id: 'localhost'},
+      user: {id: crypto.getRandomValues(new Uint8Array(16)), name: 'tpm-sign-owner-test', displayName: 'TPM_sign owner (test)'},
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      pubKeyCredParams: [{type: 'public-key', alg: -7}],
+      authenticatorSelection: {userVerification: 'required', residentKey: 'preferred'},
+      attestation: 'none', hints: ['hybrid'],
+    }});
+    const spki = c.response.getPublicKey();
+    const pt = new Uint8Array(spki).slice(-65);
+    const authData = c.response.getAuthenticatorData();
+    cred = {id: hex(c.rawId), x: '0x'+hex(pt.slice(1,33)), y: '0x'+hex(pt.slice(33,65)), spki: hex(spki),
+            transports: c.response.getTransports ? c.response.getTransports() : [], flags: flags(authData),
+            attachment: c.authenticatorAttachment};
+    localStorage.setItem('tpm_sign_cred', JSON.stringify(cred));
+    log('passkey created', 'ok');
+    log(JSON.stringify(cred, null, 1));
+    await save({step: 'create', ...cred});
+  } catch (e) { log('error: ' + e.name + ': ' + e.message, 'bad'); }
+};
+document.getElementById('sign').onclick = async () => {
+  out.textContent = '';
+  if (!cred) { log('create a passkey first', 'bad'); return; }
+  // a fixed test "userOpHash": sha256("TPM_sign passkey test")
+  const challenge = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode('TPM_sign passkey test')));
+  try {
+    const a = await navigator.credentials.get({publicKey: {
+      challenge, rpId: 'localhost', userVerification: 'required',
+      allowCredentials: [{type: 'public-key', id: unhex(cred.id), transports: cred.transports.length ? cred.transports : ['hybrid']}],
+      hints: ['hybrid'],
+    }});
+    const authData = a.response.authenticatorData, cdj = a.response.clientDataJSON;
+    const [r, s] = derToRS(a.response.signature);
+    // verify here exactly as the chain will: ECDSA-P256 over sha256(authData || sha256(clientDataJSON))
+    const key = await crypto.subtle.importKey('spki', unhex(cred.spki), {name: 'ECDSA', namedCurve: 'P-256'}, false, ['verify']);
+    const msg = new Uint8Array([...new Uint8Array(authData), ...new Uint8Array(await crypto.subtle.digest('SHA-256', cdj))]);
+    const raw = new Uint8Array([...r, ...s]);
+    const ok = await crypto.subtle.verify({name: 'ECDSA', hash: 'SHA-256'}, key, raw, msg);
+    const cdText = new TextDecoder().decode(cdj);
+    const res = {step: 'sign', challenge: '0x'+hex(challenge), authenticatorData: '0x'+hex(authData),
+                 clientDataJSON: cdText, r: '0x'+hex(r), s: '0x'+hex(s), flags: flags(authData), verified: ok,
+                 x: cred.x, y: cred.y};
+    log(ok ? 'signature verified in the browser: OK' : 'signature did NOT verify', ok ? 'ok' : 'bad');
+    log(JSON.stringify(res, null, 1));
+    await save(res);
+  } catch (e) { log('error: ' + e.name + ': ' + e.message, 'bad'); }
+};
+</script></body></html>
