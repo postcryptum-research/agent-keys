@@ -1,5 +1,5 @@
 # Devices and approaches for the OWNER key (TPM_sign)
-*Russian original: [OWNER_DEVICES_ru.md](OWNER_DEVICES_ru.md).*
+*Russian original: [OWNER_DEVICES_ru.md](OWNER_DEVICES_ru.md). Hardware beyond owner keys — agent hosts, secure elements for SBCs and IoT, HSMs — with prices: [HARDWARE_WISHLIST.md](HARDWARE_WISHLIST.md).*
 
 > **English summary (2026-10-20).** Which devices can hold the *owner*
 > (root) key off the agent's host — the "second factor" of
