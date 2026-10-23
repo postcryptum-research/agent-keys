@@ -98,3 +98,8 @@ laptop (Chrome) and an Android phone:
 - Whatever the way, keep the cold recovery key (`RESILIENCE.md`): a phone
   is lost, reset or replaced more often than a token, and Keystore keys are
   not in any backup.
+- **Transport for way 1**: an animated-QR (BC-UR) channel instead of SSH or
+  a web page would make the phone a true air-gapped owner device — camera
+  and screen only. Cake Wallet's Cupcake shows the UX works on old phones,
+  but keeps a software key; the comparison is in
+  [`related/CUPCAKE.md`](related/CUPCAKE.md).

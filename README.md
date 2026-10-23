@@ -77,6 +77,9 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design and
 [`docs/BENCHMARK.md`](docs/BENCHMARK.md) for what each authorization method
 costs — P-256 through RIP-7212 is as cheap as `ecrecover`, and the whole
 agent path adds about 77k gas per operation.
+How this compares with what else exists — old-phone signers such as Cake
+Wallet's Cupcake, hosted agent-wallet platforms, passkey accounts and the
+nearest open-source projects: [`docs/related/`](docs/related/README.md).
 
 ## Why not an EOA
 
@@ -117,7 +120,8 @@ contracts/   Foundry: P256Validator, P256Signer, AgentPolicy (ERC-7579 modules),
              and Safe v1.4.1; P-256 vectors signed in software, a Linux TPM,
              a Windows TPM, a TROPIC01 and an Apple Secure Enclave
 examples/    AgentKit, Claude Code skill, Jinn, Olas, ElizaOS, x402
-docs/        architecture, benchmark, ERC-1271 (Safes, x402), per-platform guides
+docs/        architecture, benchmark, ERC-1271 (Safes, x402), per-platform guides;
+             related/ — how other products compare (Cupcake, agent-wallet platforms)
 scripts/     testnet chores (testnet_usdc.py: gas-wallet ETH -> Base Sepolia USDC)
 legacy/      the original Python / tpm2-tools prototype, kept for reference
 ```
