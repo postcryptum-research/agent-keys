@@ -249,4 +249,18 @@ Enclave in ordinary machines and to AI agents.
 
 ## License
 
-MIT.
+The repository is under two permissive licenses, by directory:
+
+| Path | License | Files |
+|---|---|---|
+| `signer/` — `hw-signer`, `agent-signer`, the Swift shim | Apache-2.0 | [`signer/LICENSE`](signer/LICENSE), [`signer/NOTICE`](signer/NOTICE) |
+| everything else — `contracts/`, `examples/`, `scripts/`, `legacy/`, `docs/` | MIT | [`LICENSE`](LICENSE) |
+
+The signer is Apache-2.0 for its explicit patent grant and contribution
+terms, which matter for security software adopted by companies; versions
+published before the change were MIT and stay available under MIT. The
+contracts stay MIT so that any account, module or framework can import them,
+and their SPDX headers match the verified on-chain sources. Contributions are
+accepted under the license of the directory they change. Third-party code —
+the git submodules under `contracts/lib`, crates and npm packages — keeps its
+own license.
