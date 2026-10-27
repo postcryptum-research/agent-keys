@@ -1,6 +1,6 @@
 # A phone as the owner key — what we found
 
-Status (2026-10-22): **explored, parked.** The owner's second factor is a
+Status: **now the project's focus** (2026-10-27) — the development plan for the own-app way is [`MOBILE_OWNER_PLAN.md`](MOBILE_OWNER_PLAN.md). The text below (2026-10-22, when it was parked) records the exploration. The owner's second factor is a
 YubiKey for now. This page records what was checked, so the next person can
 pick it up where we stopped instead of starting over. Device details of the
 phone we tried are deliberately left out.
