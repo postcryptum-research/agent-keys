@@ -1,0 +1,6 @@
+TPM_sign signer (hw-signer, agent-signer)
+Copyright 2026 77ph and the TPM_sign contributors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE in this
+directory). Third-party crates used by this workspace keep their own
+licenses.

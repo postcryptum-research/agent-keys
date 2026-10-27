@@ -4,7 +4,7 @@ members = ["crates/hw-signer", "crates/agent-signer"]
 
 [workspace.package]
 edition = "2021"
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/77ph/TPM_sign"
 
 [profile.release]
