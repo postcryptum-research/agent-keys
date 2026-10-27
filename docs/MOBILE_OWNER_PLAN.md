@@ -31,8 +31,8 @@ sync to the cloud): [`PHONE_OWNER.md`](PHONE_OWNER.md).
      — end-to-end tests on a local anvil, needs Foundry. It is the harness
      to reuse for the phone's signatures.
    - `cd contracts && forge test`
-3. **Two decisions are open** — see "Open decisions" below. Ask the owner
-   before choosing.
+3. **Decisions are made** (see "Decisions" below): both platforms, and
+   the next step is the design document — no prototype yet.
 
 ## What already exists and is reused unchanged
 
@@ -174,16 +174,29 @@ laptop: agent-signer CLI                         phone: owner app
 - **No silent extra trust:** no relay server, and no cloud sync of the key.
   These are what distinguish this design from passkeys.
 
-## Open decisions (ask the project owner)
+## Decisions (owner, 2026-10-27)
 
-1. **First platform:** iPhone (needs an iPhone and a Mac with Xcode) or
-   Android (APK, no store; StrongBox only on some phones) — or both, with
-   the shared Rust core.
-2. **Start with a short design review of this plan, or go straight to P0.**
-   The auditor session (`security-audit-playbook-13`) reviewed the earlier
-   design docs.
-3. **Licence:** a colleague is deciding it; the repository is private until
-   then.
+1. **Platforms: both, iPhone and Android,** sharing one Rust core
+   (decoding, hashing, display text, via `uniffi`) with two thin native
+   apps (Swift, Kotlin).
+2. **First deliverable: a design document, not code.** The next step is a
+   detailed design spec, and no prototype until it is reviewed. It covers:
+   - the request/response wire format and its versioning;
+   - the QR payload and the LAN session (token lifetime, what the laptop
+     serves, error cases);
+   - the enrollment flow and the attestation evidence per platform (iOS
+     approach to be proposed);
+   - exactly what the screen shows for each owner operation, and what is
+     refused;
+   - the shared-core API (`uniffi`);
+   - the CLI changes (key spec, commands);
+   - the test plan (anvil harness first);
+   - the threat model, in full.
+
+   The spec goes to the auditor session (`security-audit-playbook-13`) for
+   review, as the earlier design docs did, before P0 starts.
+3. **Licence:** a colleague is deciding it; the repository stays private
+   until then.
 
 ## Project rules that apply
 
