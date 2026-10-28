@@ -53,10 +53,25 @@ elsewhere:
   member with a development certificate.
 - A TestFlight or App Store build (2, 4) went through App Store Connect,
   and so through whoever holds the release roles (§4).
+- The category is asserted by Apple, not reported by the app. A
+  development certificate can only ever yield 3.
 - So the CLI should accept **only 2 and 4** for real accounts, and 3 only
   with an explicit `--allow-dev-build` on a test chain.
+- **The filter's security reduces to the custody of the App Store Connect
+  roles** (§4). That is where the trust sits.
+- Accepting 2 puts **TestFlight upload rights** in the trust root too, not
+  only App Store release rights. Either give upload rights to the same
+  people as release, or accept only 4 for the highest-value accounts and
+  treat 2 as a test tier.
 - `apple_bundle_version_01` lets the CLI refuse app versions below a
   minimum (T14, downgrade).
+- **Where the fields live.** Apple's attestation verification steps read
+  both extensions from the attestation's authenticator data, which the
+  `nonce` in Apple's signed credential certificate covers. So they should
+  be available, and unforgeable, at **enrollment** (`attestKey`), not
+  only in later assertions (V for Apple's documented steps). Confirm on a
+  device in P3, since the design relies on it (I, P3). If they turn out to
+  be assertion-only, enrollment adds one assertion to capture them.
 
 **Three corrections for the design (PR #5):**
 - **The two verification steps above are missing** from §5.3's list. Add
@@ -115,6 +130,17 @@ attests just as well (T6). So:
 | **The Apple Distribution certificate's private key** | one build machine, or Xcode Cloud | not on laptops that run the agent (`KEY_POLICY.md`, rule 3 in spirit); a written list of who can sign builds |
 | **App Store Connect API keys** (for CI) | CI only, scoped to the minimum role | rotated; revoked on any doubt |
 | **The bundle id and Team ID** | fixed in the repository and in the CLI | changing either is a protocol change, with a new CLI release |
+| **TestFlight upload rights** | the same people as App Store release, if category 2 is accepted (§2) | an uploader can otherwise ship an accepted build |
+| **Account Holder succession** | a named deputy and a written procedure | the role is one legally binding person; plan for their being unavailable before it happens |
+
+**The deeper root is the code, not the account.** A malicious `owner-core`
+shows one operation and signs another, whoever holds the certificate. So
+custody also covers **source to build**:
+- who may merge to the release branch;
+- mandatory code review of every change to `owner-core` and the apps;
+- build provenance (which commit, which machine, which toolchain);
+- reproducible Android builds. The design promises them for P5; here they
+  are a custody control, not a nicety.
 
 **Release discipline that follows from T6:**
 - the CLI accepts only TestFlight and App Store builds (§2, the channel
@@ -161,7 +187,17 @@ The same question on Android, so the two are decided together:
   ours (I, P3).
   - Pin the right digest per channel: the APK we sign for testers, and the
     Play-signed build.
-  - Accept that Google is then in T6's trust root for Play builds.
+  - Accept that Google is then in T6's trust root for Play builds. The
+    hardware binding of the key (StrongBox or the TEE) stays sound; it is
+    the app-identity part of the attestation that gains Google.
+- **The honest statement is symmetric:** store distribution puts the
+  store operator in the trust root on both platforms. Google signs Play
+  builds; Apple re-signs App Store builds. Say so in the user
+  documentation.
+- **The trust-minimising Android path** for the highest-value accounts: a
+  self-signed APK with a key the developers hold, our digest pinned, no
+  Google in the signing path, and a reproducible build users can check.
+  The cost is no Play distribution.
 
 ## 8. Open questions for the owner
 
@@ -176,6 +212,15 @@ The same question on Android, so the two are decided together:
    within weeks, since P0–P2 do not need App Attest at all.
 5. **Who builds releases** (one machine, or Xcode Cloud) and the two-person
    release rule.
+6. **Which iOS channels the CLI accepts:** TestFlight and App Store (2, 4),
+   or the App Store only (4) for high-value accounts (§2).
+7. **Android distribution:** Play (Google in the trust root), a
+   self-signed APK (no Google, no Play), or both with per-channel digests
+   (§7).
+
+*Reviewed by the auditor on 2026-10-28: no blocker. The refinements above
+(channel-filter scope, TestFlight rights, source-to-build custody,
+succession, store-operator symmetry) are folded in.*
 
 ## Sources
 
