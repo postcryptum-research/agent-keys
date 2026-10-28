@@ -2,9 +2,9 @@
 
 *Draft, 2026-10-27. Nothing here is built. It answers decision 2 of
 [`MOBILE_OWNER_PLAN.md`](MOBILE_OWNER_PLAN.md): the spec that goes to
-review before P0 starts. The nine design decisions in §12 were taken by the
-owner on 2026-10-27, as proposed; the rest is open to challenge in the
-review.*
+review before P0 starts. The nine design decisions in §12 were accepted as
+proposed on 2026-10-27, for the owner to confirm in the review of this
+document; the rest is open to challenge in that review too.*
 
 Evidence marks, as elsewhere: **V** verified in this repository's code or at
 the linked source; **I** inferred, to be confirmed in the phase named.
@@ -659,9 +659,10 @@ validator accepts a self-built envelope: I, checked in P0 on anvil.
 - **Not all phones have StrongBox.** The TEE is accepted and shown as such
   in the CLI output; the deployer decides.
 
-## 12. Decisions (taken 2026-10-27)
+## 12. Decisions (accepted 2026-10-27, for the owner to confirm)
 
-The owner accepted every proposal below as it stands.
+Every proposal below was accepted as it stands on 2026-10-27. The owner
+confirms or changes them in the review of this document.
 
 | # | Question | Decision |
 |---|---|---|

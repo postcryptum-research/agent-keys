@@ -35,7 +35,8 @@ sync to the cloud): [`PHONE_OWNER.md`](PHONE_OWNER.md).
 3. **Decisions are made** (see "Decisions" below): both platforms, and
    the design document is drafted —
    [`MOBILE_OWNER_DESIGN.md`](MOBILE_OWNER_DESIGN.md), with its nine
-   design decisions taken. Next is its review; no prototype yet.
+   design decisions accepted, for the owner to confirm. Next is its
+   review; no prototype yet.
 
 ## What already exists and is reused unchanged
 
@@ -203,7 +204,8 @@ laptop: agent-signer CLI                         phone: owner app
 3. **Licence (decided 2026-10-27):** MIT for the repository, Apache-2.0
    for `signer/` — see the README's license section. The repository is
    private for the moment and will be made public again.
-4. **Design decisions (2026-10-27):** D1–D9 of
+4. **Design decisions (accepted 2026-10-27, for the owner to confirm in
+   review):** D1–D9 of
    [`MOBILE_OWNER_DESIGN.md`](MOBILE_OWNER_DESIGN.md) §12, as proposed
    there: the local network for v1 with an air-gapped QR mode later;
    biometric only; one key per account; unknown calls warned, not refused;
