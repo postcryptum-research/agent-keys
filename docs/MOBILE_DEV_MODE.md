@@ -18,15 +18,21 @@ inferred, to be confirmed in the phase named.
 | Possible without any vendor account | **yes** | **no**. The minimum is a free personal Apple Account. There is no company, payment or store, but Apple is still involved |
 | Signing | our own self-signed key | Apple's free "Personal Team" development certificate |
 | Install | `adb install` from the laptop | Xcode, from a Mac, onto a phone in Developer Mode |
-| Key attestation | **full** (Google's hardware attestation chain, our certificate digest pinned) | **none** (no App Attest) |
+| Key attestation | **full** (Google's hardware attestation chain, our certificate digest pinned); verifiable offline, but the revocation check and some phones' certificate refresh need internet occasionally (§2.4) | **none** (no App Attest) |
 | Lifetime of an install | unlimited | **7 days**, then rebuild and reinstall |
 | Devices | any number | 3 per Apple Account |
-| Fit | development, pilots, and a serious trust-minimised path for real use | development and the developer's own phone only |
+| Fit | development and pilots; the trust-minimising path | development and the developer's own phone only |
 
-**Android plan B is nearly production-grade**: it is the auditor's
-"trust-minimising path" from the PR #6 review. **iOS plan B is a
-development mode**, useful for P0–P4 on the developer's own iPhone, not
-for distribution.
+**Android plan B is the trust-minimising path** (the auditor's term from the
+PR #6 review): the app's identity rests on our code and our key, with no
+Google or Apple in it. **Operationally it is development- and pilot-grade,
+not production-grade:**
+- there is no automatic update, so a security fix cannot be pushed to
+  testers;
+- installing needs an `adb`-authorised laptop (§2.3).
+
+**iOS plan B is a development mode**, useful for P0–P4 on the developer's
+own iPhone, not for distribution.
 
 ## 2. Android
 
@@ -49,18 +55,31 @@ for distribution.
 - **Pin it.** The CLI pins the certificate's SHA-256 digest. The key
   attestation names it in `attestationApplicationId` (design §5.2), so the
   laptop knows the key belongs to **our** build, signed by **us**.
-- **The signing key may live on a token.** `apksigner` can use a PKCS#11
-  provider, for example the YubiKey's PIV slot (I, P1). Then the app's
-  signing key is as hard to steal as the owner keys.
+- **Keep the signing key on a token. This is recommended for any real
+  use.** `apksigner` can sign through a PKCS#11 provider, for example a
+  YubiKey's PIV slot (sound per the audit; the setup is I, P1). The app's
+  signing key is then as hard to steal as the owner keys.
+- **Check the version.** The attestation's `attestationApplicationId` also
+  carries the app's `versionCode`. The CLI refuses versions below a
+  minimum: T14, the Android twin of the iOS version check in
+  `APP_ATTEST_ORG.md` §2.
 
-**The signing key is critical, more than in the store path:**
+**The signing key plays two roles, more than in the store path:**
 - Android installs an update only if it is signed by the same key (or by
   a successor in a v3 rotation lineage).
-- **Losing the key** means a new app id, so every phone uninstalls the old
-  app. **Uninstalling deletes its Keystore keys**, so every enrolled
-  account goes through recovery (`RESILIENCE.md`).
-- **Back up the key**, encrypted and offline, as the recovery key is
-  (I, P1: the rotation lineage as the planned way to replace it).
+- **Losing the key hurts availability.** It means a new app id, so every
+  phone uninstalls the old app. **Uninstalling deletes its Keystore keys**,
+  so every enrolled account goes through recovery (`RESILIENCE.md`).
+  Mitigation: an encrypted offline **backup**, as for the recovery key,
+  plus a v3 **rotation lineage** as the planned way to replace the key
+  (I, P1).
+- **A compromised key breaks integrity (T6).** An attacker with the key
+  can ship a malicious update with the same key through `adb install -r`.
+  That update inherits the app's access to the Keystore keys, so it can
+  show one operation and sign another. The per-use biometric does not
+  help, because the user approves what is shown. Mitigation: the key on a
+  **token** (non-extractable), and **reproducible builds** (§2.5), so a
+  verifier can catch a build that does not match the tagged commit.
 
 ### 2.3 Installing: ADB, exempt from Google's verification
 
@@ -79,8 +98,15 @@ For plan B:
 Recommended: **`adb install`** for development and pilots, and `adb
 install -r` for updates, which keeps the app's data and keys.
 
-Turn wireless debugging off after use. An open debugging session on the
-owner's phone is an attack surface (T5).
+**Turn debugging off after every install. This is mandatory.** The
+`adb`-authorised laptop is the CLI's laptop, which the design treats as
+untrusted (T1).
+- It cannot forge an update, because it lacks the signing key.
+- But while debugging is on, it can `adb uninstall` the app. That wipes
+  the Keystore keys and forces recovery.
+
+So debugging is a transient trust surface: open it for the install, then
+close it, and revoke the USB debugging authorisations.
 
 **Risk:** the ADB exemption is Google's policy and can change (I). If it
 narrows, the advanced flow remains, at the cost of the 24-hour wait once.
@@ -109,10 +135,15 @@ store's. The CLI verifies everything listed in design §5.2, offline:
 - **Ease of install:** testers need a cable or Wi-Fi debugging, or the
   advanced flow.
 - **No automatic updates.** Updates are pushed by `adb` or shared as an
-  APK.
-- **No store review.** Store review was never a real safeguard against T6;
-  plan B relies on **reproducible builds** instead, so a tester can
+  APK, so a security fix reaches a tester only when they install it. This
+  is the main operational gap compared with a store.
+- **No store review.** Store review was never a real safeguard against T6.
+  Plan B relies on **reproducible builds** instead, so a tester can
   rebuild from the tagged commit and compare.
+  - **This protection is conditional.** It covers only someone who
+    actually rebuilds and compares.
+  - A tester who installs a shared APK without checking has no more T6
+    protection than in the store path.
 
 ## 3. iOS
 
@@ -156,6 +187,12 @@ reliably (I). So plan B uses what the Mac backend already does (V,
 - **Store** its `dataRepresentation` in the app's own files. That is an
   encrypted handle that only this phone's Secure Enclave can use, not the
   key itself.
+  - It is the same as a keychain item for extraction. The Secure Enclave
+    enforces the biometric gate on the key either way.
+  - **Mark the file excluded from backup** (`isExcludedFromBackup`). A
+    plain file goes into iCloud and computer backups by default. The
+    handle is useless off the device, but the backup would still leak
+    which accounts this phone controls, and it costs no availability.
 - **Sign** the 32-byte digest, as in the design (§5.3).
 
 **Reinstalls and the 7-day expiry.** Reinstalling from Xcode over the
@@ -186,7 +223,7 @@ certificate (§2.2). Nothing else needs one:
 |---|---|---|
 | Legal entity, D-U-N-S | needed (App Store wallet rule) | none |
 | Accounts | Apple Developer Program (organization); Play Console | Android: none. iOS: a free personal Apple Account |
-| Who is in T6's trust root | our code + the release roles + Apple (re-signing) and Google (Play App Signing) | **our code + our signing key** on Android; on iOS our code + the developer's Apple Account |
+| Who is in T6's trust root | our code + the release roles + Apple (re-signing) and Google (Play App Signing) | **our code + our signing key** on Android: its loss costs availability, its compromise costs integrity (§2.2); on iOS our code + the developer's Apple Account |
 | Android attestation | full; Google's digest for Play builds | **full, our own digest** |
 | iOS attestation | App Attest, channel-filtered | **none** (`--allow-no-attestation` + T2) |
 | Distribution | stores, TestFlight | `adb` / APK files; Xcode to own devices |
@@ -212,8 +249,12 @@ own phone, and for store distribution.
 - **Google's sideloading policy** may narrow further. The `adb` exemption
   is a policy, not a technical guarantee (I).
 - **Apple's free-tier limits** have tightened before (I) and may again.
-- **The Android signing key is a single point of failure** for updates, and
-  so for every enrolled phone (§2.2). Back it up and plan its rotation.
+- **The Android signing key is a single point of failure**, both ways.
+  Its loss forces recovery on every enrolled phone; its compromise allows
+  a malicious update. Keep it on a token, back it up, plan its rotation
+  (§2.2).
+- **No automatic updates.** A fix reaches testers only when they install
+  it (§2.5).
 - **Wireless debugging** left on is an attack surface. Turn it off after
   use (§2.3).
 - **The `DIGEST_NONE` deprecation** (design §11.1) is the same in both
@@ -223,11 +264,18 @@ own phone, and for store distribution.
 
 1. **Is plan B the default for development and the Android pilot,** with
    plan A only when iOS distribution is needed?
-2. **Where the Android signing key lives:** a file plus an offline backup,
-   or a YubiKey PIV slot plus a backup.
+2. **Where the Android signing key lives.** Recommended for any real use:
+   a YubiKey PIV slot plus an offline backup. A plain file is acceptable
+   for development only (§2.2).
 3. **Which free Apple Account** the iOS development uses: a project
    account, not a person's main one, so a departure does not take the
    Team ID with it.
+
+*Reviewed by the auditor on 2026-10-28: no blocker. Folded in: the
+operational qualification of Android plan B, the mandatory end of
+debugging, the Android version floor, the signing key's integrity role,
+the exclusion of the iOS key handle from backups, and the conditions on
+reproducible builds and offline attestation.*
 
 ## Sources
 
