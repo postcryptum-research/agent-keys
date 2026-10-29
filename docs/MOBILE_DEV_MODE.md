@@ -41,7 +41,7 @@ own iPhone, not for distribution.
 | Item | What | Mark |
 |---|---|---|
 | Laptop | Linux, macOS or Windows; the one that runs the CLI is fine | — |
-| Phone | Android 11 (API 30) or later, which `setUserAuthenticationParameters` needs (D7); StrongBox preferred, the TEE accepted | V (design D7) |
+| Phone | Android 11 (API 30) or later, which `setUserAuthenticationParameters` needs (D7); StrongBox preferred, the TEE accepted. User verification is `BIOMETRIC_STRONG` by default, or `BIOMETRIC_STRONG \| DEVICE_CREDENTIAL` with the PIN opt-in (D2); development builds should exercise both | V (design D7, D2) |
 | Connection | a USB cable, or Wi-Fi debugging (`adb pair`, Android 11+) | V |
 | Software | a JDK; the Android command-line tools (`sdkmanager`, `platform-tools` for `adb`, `build-tools` for `apksigner`); the NDK; Rust with `aarch64-linux-android` and `armv7-linux-androideabi`; `cargo-ndk`; `uniffi-bindgen`; Gradle. All free downloads, no account (the SDK licence is accepted in `sdkmanager`) | I, P0 |
 | Signing key | a self-signed certificate made with `keytool` | V (Android signs only with self-signed certificates) |
@@ -59,6 +59,10 @@ own iPhone, not for distribution.
   use.** `apksigner` can sign through a PKCS#11 provider, for example a
   YubiKey's PIV slot (sound per the audit; the setup is I, P1). The app's
   signing key is then as hard to steal as the owner keys.
+  - **Use a separate token** from the owner's YubiKey (`PHONE_OWNER.md`,
+    `OWNER_DEVICES.md`), or at least a separate slot with its own PIN.
+  - Otherwise one lost or compromised device hits both the app's integrity
+    (T6) and owner control.
 - **Check the version.** The attestation's `attestationApplicationId` also
   carries the app's `versionCode`. The CLI refuses versions below a
   minimum: T14, the Android twin of the iOS version check in
@@ -106,7 +110,9 @@ untrusted (T1).
   the Keystore keys and forces recovery.
 
 So debugging is a transient trust surface: open it for the install, then
-close it, and revoke the USB debugging authorisations.
+close it, and revoke the USB debugging authorisations. Debugging can be
+turned off only on the phone, so any install helper we write ends by
+printing that reminder.
 
 **Risk:** the ADB exemption is Google's policy and can change (I). If it
 narrows, the advanced flow remains, at the cost of the 24-hour wait once.
@@ -183,7 +189,9 @@ The Personal Team may not get the `keychain-access-groups` entitlement
 reliably (I). So plan B uses what the Mac backend already does (V,
 `signer/crates/hw-signer/swift/SecureEnclaveShim.swift`):
 - **Create** `SecureEnclave.P256.Signing.PrivateKey` (CryptoKit), with an
-  access control of `.privateKeyUsage` and `.biometryCurrentSet`.
+  access control of `.privateKeyUsage` and `.biometryCurrentSet`, or
+  `.privateKeyUsage` and `.userPresence` (biometry or passcode) with the
+  PIN opt-in (D2). Development builds should exercise both.
 - **Store** its `dataRepresentation` in the app's own files. That is an
   encrypted handle that only this phone's Secure Enclave can use, not the
   key itself.
