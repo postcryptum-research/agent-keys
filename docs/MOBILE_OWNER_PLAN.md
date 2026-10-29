@@ -34,9 +34,11 @@ sync to the cloud): [`PHONE_OWNER.md`](PHONE_OWNER.md).
      `odyssey`, run `forge test --evm-version osaka`
 3. **Decisions are made** (see "Decisions" below): both platforms, and
    the design document is drafted —
-   [`MOBILE_OWNER_DESIGN.md`](MOBILE_OWNER_DESIGN.md), with its nine
-   design decisions accepted, for the owner to confirm. Next is its
-   review; no prototype yet.
+   [`MOBILE_OWNER_DESIGN.md`](MOBILE_OWNER_DESIGN.md). The owner confirmed
+   its decisions on 2026-10-28, and revision 2 answers the review and the
+   audit response
+   ([`audit/RESP-mobile-owner-design-2026-10-28.md`](audit/RESP-mobile-owner-design-2026-10-28.md)).
+   Next: the owner's look at revision 2, then P0.
 
 ## What already exists and is reused unchanged
 
@@ -91,9 +93,9 @@ framework.
   with a fallback to the TEE.
 - **A check on every signature:**
   `setUserAuthenticationParameters(0, BIOMETRIC_STRONG | DEVICE_CREDENTIAL)`
-  (Android 11+) and `setUnlockedDeviceRequired(true)`. The design narrows
-  this to `BIOMETRIC_STRONG` only (decision D2 in
-  [`MOBILE_OWNER_DESIGN.md`](MOBILE_OWNER_DESIGN.md)).
+  (Android 11+) and `setUnlockedDeviceRequired(true)`. The design makes
+  `BIOMETRIC_STRONG` alone the default and the device PIN a per-enrollment
+  opt-in (decision D2 in [`MOBILE_OWNER_DESIGN.md`](MOBILE_OWNER_DESIGN.md)).
 - **Signing:** `Signature("NONEwithECDSA")` in a `BiometricPrompt`
   `CryptoObject` over the 32 bytes, which gives DER → `r ‖ s`; the CLI
   normalises to low-s.
@@ -201,22 +203,31 @@ laptop: agent-signer CLI                         phone: owner app
 
    The spec goes to the auditor session (`security-audit-playbook-13`) for
    review, as the earlier design docs did, before P0 starts.
-3. **Licence (decided 2026-10-27):** MIT for the repository, Apache-2.0
-   for `signer/` — see the README's license section. The repository is
-   private for the moment and will be made public again.
-4. **Design decisions (accepted 2026-10-27, for the owner to confirm in
-   review):** D1–D9 of
-   [`MOBILE_OWNER_DESIGN.md`](MOBILE_OWNER_DESIGN.md) §12, as proposed
-   there: the local network for v1 with an air-gapped QR mode later;
-   biometric only; one key per account; unknown calls warned, not refused;
-   App Attest on iOS; no `initCode`; iOS 16 / Android 11; a 0.005 ETH gas
-   cap; a new `owner-core` crate.
+3. **Licence.** Existing code: MIT, with Apache-2.0 for `signer/`
+   (README, #4). **The mobile owner apps and `owner-core`: not decided.**
+   That is a separate study (app-store distribution terms, the
+   dependencies' licences, the native apps), to be done before P5 and
+   before any code of the apps is published.
+4. **Design decisions (2026-10-28):** D1–D9 and the v1/v2 split of
+   [`MOBILE_OWNER_DESIGN.md`](MOBILE_OWNER_DESIGN.md) §12:
+   - confirmed as proposed: D1 (the local network for v1, an air-gapped
+     QR mode later), D3 (one key per account), D6 (no `initCode`), D7
+     (iOS 16 / Android 11), D8 (a 0.005 ETH gas cap), D9 (a new
+     `owner-core` crate);
+   - D2: biometric only by default; the device PIN as a per-enrollment
+     opt-in, once recovery is robust and tested;
+   - D4: unknown root external calls refused by default; a per-enrollment
+     expert mode, off by default, allows them with a second confirmation;
+   - D5: App Attest on iOS, after the organisational study
+     (`APP_ATTEST_ORG.md`, PR #6), before P3;
+   - v1: build-embedded pins, the LAN only, handover decoded on a phone.
+     v2, "the phone sees the chain": the on-chain Registry, codehash pins
+     and on-chain root checks, as one feature.
 
 ## Project rules that apply
 
-- **Private repository, for the moment.** It will be made public again;
-  until then, publish nothing from it externally (artifacts, PRs
-  elsewhere, posts) without the owner's explicit consent.
+- **Private repository, for now.** Publish nothing from it externally
+  (artifacts, PRs elsewhere, posts) without the owner's explicit consent.
 - **No personal device data** — the models, OS versions or patch levels of
   the owner's own phones — in the repository, commits or tests.
 - **Secrets stay out of the repository and out of output:** `../.env` and
