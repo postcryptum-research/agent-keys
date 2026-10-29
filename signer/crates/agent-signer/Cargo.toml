@@ -28,6 +28,10 @@ insecure-software-keys = []
 
 [dependencies]
 hw-signer = { path = "../hw-signer" }
+# Shared with the mobile owner apps (docs/MOBILE_OWNER_DESIGN.md §7): Kernel
+# encodings and the local userOpHash. Outside this workspace on purpose; see
+# its README for the licence status.
+owner-core = { path = "../../../mobile/owner-core" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 hex = "0.4"

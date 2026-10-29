@@ -2,7 +2,7 @@ mod abi;
 mod agent;
 mod bundler;
 mod chain;
-mod kernel;
+use owner_core::kernel;
 mod keyfile;
 mod x402;
 
