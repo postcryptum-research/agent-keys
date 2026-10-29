@@ -214,8 +214,12 @@ laptop: agent-signer CLI                         phone: owner app
      QR mode later), D3 (one key per account), D6 (no `initCode`), D7
      (iOS 16 / Android 11), D8 (a 0.005 ETH gas cap), D9 (a new
      `owner-core` crate);
-   - D2: biometric only by default; the device PIN as a per-enrollment
-     opt-in, once recovery is robust and tested;
+   - D2: biometric only by default, and the device PIN as a
+     per-enrollment opt-in. Condition, from the audit: because the
+     biometric-only default leaves recovery as the only way out after a
+     broken sensor or a changed biometric, **the recovery path must be
+     robust and tested before the biometric-only default ships**. The
+     condition is on the default, not on the PIN opt-in;
    - D4: unknown root external calls refused by default; a per-enrollment
      expert mode, off by default, allows them with a second confirmation;
    - D5: App Attest on iOS, after the organisational study

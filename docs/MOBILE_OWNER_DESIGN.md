@@ -409,8 +409,11 @@ Per enrollment, the phone stores:
 - the laptop pins, each marked unverified (§6.7);
 - **the options**, chosen at enrollment and changeable only on the phone:
   the gas cap (D8, default 0.005 ETH), expert mode (D4, default off) and
-  the device PIN (D2, default off; changing it means a new key, because
-  the access control is fixed when the key is created);
+  the device PIN (D2, default off). Changing it means a **new key**,
+  because the access control is fixed when the key is created. A new key
+  needs a `set-root` to it, signed by the current key on the same phone.
+  That is the phone-to-phone handover of §2.2: the phone decodes it and
+  shows the new key's fingerprint;
 - the enrollment time, and a local history of signed hashes with their
   summaries.
 
@@ -574,7 +577,10 @@ one (T19). So the facts come from the **build**:
 
 ### 7.1 Crate layout (D9)
 
-- **New crate `owner-core`,** proposed at `signer/crates/owner-core`.
+- **New crate `owner-core`,** proposed **outside `signer/`**, at
+  `mobile/owner-core`. `signer/` carries an Apache-2.0 `LICENSE` and
+  `NOTICE` for the whole directory, so placing the crate there would
+  suggest Apache-2.0 by location, whatever its manifest says.
   Dependencies: `alloy-primitives`, `alloy-sol-types`, `sha2`, `p256`,
   `serde`. No network, no async, no `alloy` providers, so it builds for
   `aarch64-apple-ios`, `aarch64-linux-android` and
@@ -584,8 +590,11 @@ one (T19). So the facts come from the **build**:
   before any of the apps' code is published. Until then the placement is
   provisional, and the crate's manifest does **not** take
   `license.workspace` (which would make it Apache-2.0 automatically). It
-  has `publish = false` and no `license` field. The study also has to
-  settle that the Apache-2.0 CLI depends on it.
+  has `publish = false`, no `license` field, and its own README saying
+  "licence not decided". The study also has to settle that the Apache-2.0
+  CLI depends on it.
+- **Code moved from `kernel.rs` stays under Apache-2.0** (with its notice),
+  whatever the study decides for the rest of the crate.
 - **Moved from `agent-signer/src/kernel.rs`:** the pure encode and decode
   functions (validation ids, nonce keys, `decode_execute`,
   `PolicyParams` and `permission_data`, plus decoders the CLI lacks for
@@ -838,8 +847,9 @@ health digest is safe on the same grounds. Three requirements keep it so:
   implementations. Their users need the PIN opt-in or another phone (D2).
 - **Not all phones have StrongBox.** The TEE is accepted and shown as such
   in the CLI output; the deployer decides.
-- **Biometric only leans on recovery.** The owner's condition for D2: the
-  recovery path must be robust and tested before this ships.
+- **Biometric only leans on recovery.** The condition for D2's
+  biometric-only default (not for the PIN opt-in): the recovery path must
+  be robust and tested before that default ships.
 
 ## 12. Decisions (owner, 2026-10-28)
 
@@ -849,7 +859,7 @@ split added.
 | # | Question | Decision |
 |---|---|---|
 | D1 | Transport for v1 | **LAN with the QR commitment.** The request format is transport-independent; the air-gapped mode comes later (§3.5). Confirmed |
-| D2 | User verification | **Biometric only by default,** invalidated on a new biometric enrollment. **The device PIN (`DEVICE_CREDENTIAL`) is a per-enrollment opt-in.** Condition: recovery is robust and tested before this ships |
+| D2 | User verification | **Biometric only by default,** invalidated on a new biometric enrollment. **The device PIN (`DEVICE_CREDENTIAL`) is a per-enrollment opt-in.** Condition (audit Q6): the **biometric-only default** leaves recovery as the only way out after a broken sensor or a changed biometric, so the recovery path must be robust and tested before that default ships. The condition is on the default, not on the PIN opt-in |
 | D3 | Keys | **One per account** (§5.1). Confirmed |
 | D4 | Unknown external calls from the root key | **Refused by default.** A per-enrollment **expert mode**, off by default, allows them with a warning and a second confirmation stating the unbounded effect (§6.3) |
 | D5 | iOS evidence | **App Attest,** with `--allow-no-attestation` kept. The organisational study comes before P3 (`APP_ATTEST_ORG.md`, PR #6) |
