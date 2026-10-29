@@ -30,9 +30,15 @@ sync to the cloud): [`PHONE_OWNER.md`](PHONE_OWNER.md).
    - `cargo test -p agent-signer --features insecure-software-keys --test anvil_cli`
      — end-to-end tests on a local anvil, needs Foundry. It is the harness
      to reuse for the phone's signatures.
-   - `cd contracts && forge test`
+   - `cd contracts && forge test` — with forge 1.8.x, which ignores
+     `odyssey`, run `forge test --evm-version osaka`
 3. **Decisions are made** (see "Decisions" below): both platforms, and
-   the next step is the design document — no prototype yet.
+   the design document is drafted —
+   [`MOBILE_OWNER_DESIGN.md`](MOBILE_OWNER_DESIGN.md). The owner confirmed
+   its decisions on 2026-10-28, and revision 2 answers the review and the
+   audit response
+   ([`audit/RESP-mobile-owner-design-2026-10-28.md`](audit/RESP-mobile-owner-design-2026-10-28.md)).
+   Next: the owner's look at revision 2, then P0.
 
 ## What already exists and is reused unchanged
 
@@ -87,7 +93,9 @@ framework.
   with a fallback to the TEE.
 - **A check on every signature:**
   `setUserAuthenticationParameters(0, BIOMETRIC_STRONG | DEVICE_CREDENTIAL)`
-  (Android 11+) and `setUnlockedDeviceRequired(true)`.
+  (Android 11+) and `setUnlockedDeviceRequired(true)`. The design makes
+  `BIOMETRIC_STRONG` alone the default and the device PIN a per-enrollment
+  opt-in (decision D2 in [`MOBILE_OWNER_DESIGN.md`](MOBILE_OWNER_DESIGN.md)).
 - **Signing:** `Signature("NONEwithECDSA")` in a `BiometricPrompt`
   `CryptoObject` over the 32 bytes, which gives DER → `r ‖ s`; the CLI
   normalises to low-s.
@@ -195,14 +203,35 @@ laptop: agent-signer CLI                         phone: owner app
 
    The spec goes to the auditor session (`security-audit-playbook-13`) for
    review, as the earlier design docs did, before P0 starts.
-3. **Licence:** a colleague is deciding it; the repository stays private
-   until then.
+3. **Licence.** Existing code: MIT, with Apache-2.0 for `signer/`
+   (README, #4). **The mobile owner apps and `owner-core`: not decided.**
+   That is a separate study (app-store distribution terms, the
+   dependencies' licences, the native apps), to be done before P5 and
+   before any code of the apps is published.
+4. **Design decisions (2026-10-28):** D1–D9 and the v1/v2 split of
+   [`MOBILE_OWNER_DESIGN.md`](MOBILE_OWNER_DESIGN.md) §12:
+   - confirmed as proposed: D1 (the local network for v1, an air-gapped
+     QR mode later), D3 (one key per account), D6 (no `initCode`), D7
+     (iOS 16 / Android 11), D8 (a 0.005 ETH gas cap), D9 (a new
+     `owner-core` crate);
+   - D2: biometric only by default, and the device PIN as a
+     per-enrollment opt-in. Condition, from the audit: because the
+     biometric-only default leaves recovery as the only way out after a
+     broken sensor or a changed biometric, **the recovery path must be
+     robust and tested before the biometric-only default ships**. The
+     condition is on the default, not on the PIN opt-in;
+   - D4: unknown root external calls refused by default; a per-enrollment
+     expert mode, off by default, allows them with a second confirmation;
+   - D5: App Attest on iOS, after the organisational study
+     (`APP_ATTEST_ORG.md`, PR #6), before P3;
+   - v1: build-embedded pins, the LAN only, handover decoded on a phone.
+     v2, "the phone sees the chain": the on-chain Registry, codehash pins
+     and on-chain root checks, as one feature.
 
 ## Project rules that apply
 
-- **Private repository.** Publish nothing from it externally (artifacts, PRs
-  elsewhere, posts) without the owner's explicit consent. The licence is
-  pending.
+- **Private repository, for now.** Publish nothing from it externally
+  (artifacts, PRs elsewhere, posts) without the owner's explicit consent.
 - **No personal device data** — the models, OS versions or patch levels of
   the owner's own phones — in the repository, commits or tests.
 - **Secrets stay out of the repository and out of output:** `../.env` and
