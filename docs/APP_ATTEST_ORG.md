@@ -43,10 +43,10 @@ elsewhere:
 | Entitlement | `com.apple.developer.devicecheck.appattest-environment`. It matters only in development: "Regardless of how you set the entitlement, your app always operates in production mode after distribution, whether through TestFlight, the App Store, or the Apple Developer Enterprise Program" | V ([Apple](https://developer.apple.com/documentation/devicecheck/preparing-to-use-the-app-attest-service)) |
 | Environments | sandbox and production keys are tracked separately and are not interchangeable. The CLI must accept the right `aaguid` per build type | V, same source |
 | Network | `attestKey` calls an Apple server, so the phone needs internet once per enrollment | V, same source |
-| Rate limits | under 100 `attestKey` calls per second across all installations; ramp up gradually. Irrelevant at our scale, but the app must handle a throttling error | V, same source |
+| Rate limits | "fewer than 100 request per second across all installations of your apps" (the page's *Important* box), and for a rollout "no more than 10 million users per day per app". Irrelevant at our scale, but the app must handle a throttling error | V, same source |
 | Device support | `DCAppAttestService.isSupported` is false on the simulator and some contexts. The app falls back to `--allow-no-attestation`, as designed | I, P3 |
 | The CLI side | Apple's App Attestation root certificate embedded in `agent-signer`, plus the expected App ID `<App ID prefix>.<bundle id>`. The prefix is "usually" the 10-character Team ID; check it in the developer account | V ([validating](https://developer.apple.com/documentation/devicecheck/validating-apps-that-connect-to-your-server)) |
-| Distribution channel in the attestation | the authenticator data carries `apple_validation_category_01`: 2 = TestFlight, 3 = development signing, 4 = App Store, 5 = ad-hoc or enterprise. It also carries `apple_bundle_version_01`, the app version | V, same source |
+| Distribution channel in the attestation | the authenticator data carries `apple_validation_category_01`: Apple's table runs 0–10: 0 invalid, 1 an OS executable, 2 TestFlight, 3 development signing, 4 App Store, 5 ad-hoc or enterprise, 6 Developer ID, 7–9 system-generated ("aren't appropriate"), 10 any other signing identity. It also carries `apple_bundle_version_01`, the app version | V, same source |
 
 **The channel field is the organisational lever.**
 - A development-signed build (category 3) can be produced by any team
@@ -56,7 +56,9 @@ elsewhere:
 - The category is asserted by Apple, not reported by the app. A
   development certificate can only ever yield 3.
 - So the CLI should accept **only 2 and 4** for real accounts, and 3 only
-  with an explicit `--allow-dev-build` on a test chain.
+  with an explicit `--allow-dev-build` on a test chain. **Every other
+  value (0, 1, 5, 6, 7–9, 10) is refused**, including 5 (ad-hoc,
+  enterprise) and 6 (Developer ID).
 - **The filter's security reduces to the custody of the App Store Connect
   roles** (§4). That is where the trust sits.
 - Accepting 2 puts **TestFlight upload rights** in the trust root too, not
