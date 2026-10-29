@@ -364,6 +364,36 @@ impl Session {
         Ok(cfg.hook != Address::ZERO)
     }
 
+    /// The operation's hash, computed locally by `owner-core` and checked
+    /// against `EntryPoint.getUserOpHash`. A difference means the shared
+    /// formula — the one the phone will trust — disagrees with the chain,
+    /// and nothing is signed (docs/MOBILE_OWNER_DESIGN.md §8.3).
+    async fn user_op_hash_checked<P: alloy::providers::Provider + Clone>(
+        &self,
+        ep: &IEntryPoint::IEntryPointInstance<P>,
+        op: &IEntryPoint::PackedUserOperation,
+    ) -> Result<B256> {
+        let local = owner_core::user_op::user_op_hash(
+            &owner_core::user_op::PackedUserOp {
+                sender: op.sender,
+                nonce: op.nonce,
+                init_code: op.initCode.clone(),
+                call_data: op.callData.clone(),
+                account_gas_limits: op.accountGasLimits,
+                pre_verification_gas: op.preVerificationGas,
+                gas_fees: op.gasFees,
+                paymaster_and_data: op.paymasterAndData.clone(),
+            },
+            self.dep.entry_point,
+            self.dep.chain_id,
+        );
+        let on_chain = ep.getUserOpHash(op.clone()).call().await?;
+        if local != on_chain {
+            bail!("userOpHash mismatch: computed {local}, EntryPoint says {on_chain}; not signing");
+        }
+        Ok(local)
+    }
+
     /// Owner operation: install the cold recovery key and grant it only
     /// `changeRootValidator`.
     pub async fn add_recovery(&self, key: &hw_signer::PublicKey, sponsored: bool) -> Result<Included> {
@@ -726,7 +756,7 @@ impl Session {
             SignAs::Agent => kernel::permission_signature(sig),
             _ => kernel::root_signature(sig),
         };
-        let mut user_op_hash = ep.getUserOpHash(op.clone()).call().await?;
+        let mut user_op_hash = self.user_op_hash_checked(&ep, &op).await?;
         op.signature = frame(&signer.sign_digest(&user_op_hash.0)?);
         eprintln!(
             "path:           {}",
@@ -747,7 +777,7 @@ impl Session {
                 "bundler est.:   preVerification {}, verification {}, call {}",
                 est.pre_verification_gas, est.verification_gas_limit, est.call_gas_limit
             );
-            user_op_hash = ep.getUserOpHash(op.clone()).call().await?;
+            user_op_hash = self.user_op_hash_checked(&ep, &op).await?;
             op.signature = frame(&signer.sign_digest(&user_op_hash.0)?);
             eprintln!("userOpHash:     {user_op_hash}");
             let sent = bundler.send(&op).await?;

@@ -1,8 +1,8 @@
 //! Byte-exact encodings for a Kernel v3.3 account owned by hardware keys.
 //! Every layout here is the one exercised by `contracts/test/*.t.sol`.
 
-use alloy::primitives::{aliases::U192, Address, Bytes, FixedBytes, B256, U256};
-use alloy::sol_types::{SolCall, SolValue};
+use alloy_primitives::{aliases::U192, Address, Bytes, FixedBytes, B256, U256};
+use alloy_sol_types::{SolCall, SolValue};
 use hw_signer::{PublicKey, Signature};
 
 use crate::abi::{IKernel, IKernelFactory};
@@ -278,7 +278,7 @@ pub fn pack_gas(high: u128, low: u128) -> B256 {
 /// verifier passes to `isValidSignature` — EIP-712 in the account's own
 /// domain ("Kernel", "0.3.3"), struct `Kernel(bytes32 hash)`.
 pub fn kernel_wrapped_hash(account: Address, chain_id: u64, hash: B256) -> B256 {
-    use alloy::primitives::keccak256;
+    use alloy_primitives::keccak256;
     let domain_typehash = keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
     let domain = keccak256(
         (domain_typehash, keccak256("Kernel"), keccak256("0.3.3"), U256::from(chain_id), account).abi_encode(),
@@ -303,7 +303,7 @@ pub fn transfer_with_authorization_digest(
     valid_before: U256,
     nonce: B256,
 ) -> B256 {
-    use alloy::primitives::keccak256;
+    use alloy_primitives::keccak256;
     let typehash = keccak256(
         "TransferWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)",
     );
@@ -324,7 +324,7 @@ pub fn root_signature(sig: &Signature) -> Bytes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{address, b256};
+    use alloy_primitives::{address, b256};
 
     // Reference values computed independently with `cast` (abi-encode + keccak).
     const A: Address = address!("1111111111111111111111111111111111111111");

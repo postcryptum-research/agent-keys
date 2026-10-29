@@ -119,6 +119,8 @@ contracts/   Foundry: P256Validator, P256Signer, AgentPolicy (ERC-7579 modules),
              WhitelistPaymaster + tests against Kernel v3.3, EntryPoint v0.7
              and Safe v1.4.1; P-256 vectors signed in software, a Linux TPM,
              a Windows TPM, a TROPIC01 and an Apple Secure Enclave
+mobile/      owner-core: Kernel encodings and the ERC-4337 hash shared with the
+             phone owner apps (docs/MOBILE_OWNER_DESIGN.md); licence pending
 examples/    AgentKit, Claude Code skill, Jinn, Olas, ElizaOS, x402
 docs/        architecture, benchmark, ERC-1271 (Safes, x402), per-platform guides;
              related/ — how other products compare (Cupcake, agent-wallet platforms)

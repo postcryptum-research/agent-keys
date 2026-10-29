@@ -52,6 +52,7 @@ dependencies = [
  "hex",
  "hw-signer",
  "libc",
+ "owner-core",
  "p256",
  "rand_core 0.6.4",
  "rpassword",
@@ -3166,6 +3167,15 @@ name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
+
+[[package]]
+name = "owner-core"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "hw-signer",
+]
 
 [[package]]
 name = "p256"
