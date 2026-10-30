@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Moved from signer/crates/agent-signer (Apache-2.0); the licence of the rest
+// of this crate is not decided yet — see README.md.
 //! Kernel v3.3 call types used by the encoders in `kernel.rs`. Only the
 //! calls, no RPC bindings: the CLI keeps its own `#[sol(rpc)]` interfaces in
 //! `agent-signer/src/abi.rs` for talking to the chain; the phone never does.

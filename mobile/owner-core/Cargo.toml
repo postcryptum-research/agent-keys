@@ -8,7 +8,7 @@ description = "Kernel v3.3 encodings and ERC-4337 hashing shared by agent-signer
 publish = false
 
 [dependencies]
-alloy-primitives = { version = "1.7", default-features = false, features = ["std", "k256"] }
+alloy-primitives = { version = "1.7", default-features = false, features = ["std"] }
 alloy-sol-types = { version = "1.7", default-features = false, features = ["std"] }
 hw-signer = { path = "../../signer/crates/hw-signer", default-features = false }
 
