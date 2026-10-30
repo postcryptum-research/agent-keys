@@ -27,6 +27,8 @@ sync to the cloud): [`PHONE_OWNER.md`](PHONE_OWNER.md).
    [`PHONE_OWNER.md`](PHONE_OWNER.md), then this file.
 2. **Build and run the tests.**
    - `cd signer && cargo test`
+   - `cd mobile/owner-core && cargo test` — the shared core is outside the
+     signer workspace, so the first command does not cover it
    - `cargo test -p agent-signer --features insecure-software-keys --test anvil_cli`
      — end-to-end tests on a local anvil, needs Foundry. It is the harness
      to reuse for the phone's signatures.

@@ -134,6 +134,8 @@ Any platform, no hardware (software backend — dev/CI only):
 
 ```sh
 cd signer && cargo test
+cd ../mobile/owner-core && cargo test   # the core shared with the phone apps; outside the signer workspace
+cd ../../signer
 # end to end on a local anvil: the real CLI against EntryPoint, Kernel, our
 # modules, a Safe, a paymaster, a fake bundler and an x402 server (software
 # keys, so only in this test-only build)

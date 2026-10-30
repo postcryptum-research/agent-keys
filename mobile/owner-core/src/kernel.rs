@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Moved from signer/crates/agent-signer (Apache-2.0); the licence of the rest
+// of this crate is not decided yet — see README.md.
 //! Byte-exact encodings for a Kernel v3.3 account owned by hardware keys.
 //! Every layout here is the one exercised by `contracts/test/*.t.sol`.
 
