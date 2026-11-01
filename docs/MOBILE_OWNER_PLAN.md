@@ -101,8 +101,12 @@ framework.
 - **Signing:** `Signature("NONEwithECDSA")` in a `BiometricPrompt`
   `CryptoObject` over the 32 bytes, which gives DER → `r ‖ s`; the CLI
   normalises to low-s.
-- **The security level:** `KeyInfo.getSecurityLevel()` gives StrongBox, TEE
-  or software. Refuse software.
+- **The security level:** on Android 11 (API 30) the creation path tells
+  StrongBox from TEE (`setIsStrongBoxBacked(true)` succeeded, or the retry
+  after `StrongBoxUnavailableException`), and `KeyInfo.isInsideSecureHardware()`
+  must be true; `KeyInfo.getSecurityLevel()` exists only from Android 12
+  (API 31). The attestation's `keyMintSecurityLevel` is authoritative.
+  Refuse software.
 - **Attestation:** with `setAttestationChallenge(...)`, a certificate chain
   to Google's root proves the key's security level. The laptop can verify
   it at enrollment.
@@ -209,7 +213,8 @@ laptop: agent-signer CLI                         phone: owner app
    (README, #4). **The mobile owner apps and `owner-core`: not decided.**
    That is a separate study (app-store distribution terms, the
    dependencies' licences, the native apps), to be done before P5 and
-   before any code of the apps is published.
+   before any code of the apps is published. Draft:
+   [`MOBILE_LICENSE_STUDY.md`](MOBILE_LICENSE_STUDY.md).
 4. **Design decisions (2026-10-28):** D1–D9 and the v1/v2 split of
    [`MOBILE_OWNER_DESIGN.md`](MOBILE_OWNER_DESIGN.md) §12:
    - confirmed as proposed: D1 (the local network for v1, an air-gapped
@@ -221,7 +226,8 @@ laptop: agent-signer CLI                         phone: owner app
      biometric-only default leaves recovery as the only way out after a
      broken sensor or a changed biometric, **the recovery path must be
      robust and tested before the biometric-only default ships**. The
-     condition is on the default, not on the PIN opt-in;
+     condition is on the default, not on the PIN opt-in. What "robust and
+     tested" means: [`RECOVERY_DRILL.md`](RECOVERY_DRILL.md);
    - D4: unknown root external calls refused by default; a per-enrollment
      expert mode, off by default, allows them with a second confirmation;
    - D5: App Attest on iOS, after the organisational study

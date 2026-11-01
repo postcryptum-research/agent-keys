@@ -71,7 +71,9 @@ only scan, fetch, sign in hardware and render a list of sections.
 2. The CLI opens a LAN session (§3) and prints a QR in the terminal.
 3. The phone scans it, fetches the request, checks it against the QR's
    commitment, and shows: the chain, the full account address, the label,
-   and any laptop pins, marked "from the laptop — unverified".
+   any laptop pins, marked "from the laptop — unverified", and **the
+   security level this phone can give the key** (§5.6). On a TEE-only
+   phone the user must acknowledge the warning before going on.
 4. The user confirms and sets the enrollment's options (§5.4): the gas cap,
    expert mode (off by default) and the device PIN (off by default). The
    phone creates a **new** key for this account (§5.1) and returns the
@@ -406,6 +408,7 @@ CLI. The organisational side is the owner's study, `APP_ATTEST_ORG.md`
 Per enrollment, the phone stores:
 - the label, chain id, EntryPoint and account;
 - the key reference (Keystore alias or keychain item) and the public key;
+- the security tier the key got: StrongBox, TEE or Secure Enclave (§5.6);
 - the laptop pins, each marked unverified (§6.7);
 - **the options**, chosen at enrollment and changeable only on the phone:
   the gas cap (D8, default 0.005 ETH), expert mode (D4, default off) and
@@ -426,6 +429,47 @@ A counterfactual account's address depends on its owner key (the root
 validator is in `initData`), so the phone cannot be enrolled for an address
 before its own key exists. v1 enrolls existing accounts only, then hands
 over. A later version can enroll first and bind the account at creation.
+
+### 5.6 Telling the user what the phone can give: StrongBox or TEE only
+
+Two Android tiers exist, and the user must know which one holds the key:
+
+| Tier | Where the key lives | What it resists | What it does not |
+|---|---|---|---|
+| **StrongBox** | a separate secure element with its own CPU and storage (Titan M on Pixels, Knox Vault on recent Galaxy S) — comparable to the iPhone's Secure Enclave, which is a coprocessor on the SoC with its own memory rather than a discrete chip | everything the TEE resists, plus bugs in the trusted OS and physical attacks on the chip | — |
+| **TEE only** | the main processor's trusted mode (TrustZone); non-extractable, signs inside | malware on the phone, even with root; copying the key | a bug in the trusted OS or the main processor's firmware; physical attacks on the silicon |
+
+Both are accepted (§5.2), and both are far above a key file. But the
+difference is exactly the class of attack a separate chip is for, so the
+app says it plainly, in three places:
+
+- **At first launch** and on the accounts screen: a persistent notice,
+  "This phone keeps keys in its processor's trusted mode (TEE), not in a
+  separate secure chip. A phone with StrongBox, or an iPhone, protects the
+  owner key better. Details →", with a short explanation of the table
+  above. On a StrongBox phone the notice says so, once.
+- **At enrollment**, before the user confirms (§2.1): the tier is shown
+  with the warning on a TEE-only phone, and the user acknowledges it.
+  How the phone knows the tier: on Android 11 (API 30, the D7 floor) the
+  key creation path says it — `setIsStrongBoxBacked(true)` succeeded means
+  StrongBox, the retry after `StrongBoxUnavailableException` means TEE,
+  and `KeyInfo.isInsideSecureHardware()` must be true either way;
+  `KeyInfo.getSecurityLevel()` exists only from Android 12 (API 31) and
+  confirms it there (V, AOSP `KeyInfo.java` at `android-11.0.0_r1` and
+  `android-12.0.0_r1`, per the review). The tier is stored in the
+  enrollment record (§5.4) and returned in the enrollment response, **for
+  display**. The authoritative value is `attestationSecurityLevel` /
+  `keyMintSecurityLevel` in the attestation record, which the laptop
+  verifies (§5.2).
+- **On the laptop**: `key create --phone` prints the tier, the config
+  snippet carries it (`"attestation": "strongbox"` or `"tee"`, §8.1), and
+  the attestation check confirms it (§5.2). A deployment may refuse TEE-only
+  owner keys for a value-bearing account; the CLI offers
+  `--require-strongbox` for that, and it decides on the attestation's
+  security level, never on the phone's self-report.
+
+iPhones have no such split: every model the app supports has the Secure
+Enclave. The notice is therefore Android-only.
 
 ## 6. What the phone shows, and what it refuses
 
@@ -665,7 +709,7 @@ translation can follow.
 
 | Command | Change |
 |---|---|
-| `key create --phone <label> --agent <cfg>` | the enrollment session (§2.1); verifies attestation, prints the public key, fingerprint and config snippet; `--allow-no-attestation` for iOS without App Attest; `--allow-dev-build` for development-signed iOS builds, test chains only |
+| `key create --phone <label> --agent <cfg>` | the enrollment session (§2.1); verifies attestation, prints the public key, fingerprint, security tier and config snippet; `--allow-no-attestation` for iOS without App Attest; `--allow-dev-build` for development-signed iOS builds, test chains only; `--require-strongbox` to refuse a TEE-only key (§5.6) |
 | `owner set-root … --expect-fingerprint <fp>` | refuses unless `--public-key` has that fingerprint; for the first handover (§2.2) |
 | `key check --phone <label>` | the health check (§2.4) |
 | `key show --phone <label>` | prints the configured public key and fingerprint (no session) |
@@ -782,7 +826,7 @@ phone OS; our app and its build; the phone's secure hardware; the chain.
 | T2 | **The laptop is compromised during a handover** and substitutes its own key in `set-root` | phone to phone: the current phone decodes the `set-root` and shows the new key's fingerprint, which prevents it (§2.2). First handover: `--expect-fingerprint`, a clean machine, and a check from a **third** device of `P256Validator.publicKeys(account)` | the first handover is signed blind. Between a substituted `set-root` landing and the third-device check, the attacker holds root and can rotate again or drain. v2 adds on-chain checks by the phone itself (§14) |
 | T3 | **A LAN attacker** swaps the request or the response | QR commitment; the laptop verifies the signature against its own hash | denial of service only |
 | T4 | **A foreign QR** (another screen, a poster) | unenrolled accounts are refused; for an enrolled one, the normal review applies | as T1 |
-| T5 | **Malware on the phone** (user level) | Keystore and keychain keys are bound to our app; use needs biometrics enforced by hardware | a rooted or jailbroken phone. Treat a phone that cannot pass attestation as untrusted |
+| T5 | **Malware on the phone** (user level) | Keystore and keychain keys are bound to our app; use needs biometrics enforced by hardware | a rooted or jailbroken phone. Treat a phone that cannot pass attestation as untrusted. On a TEE-only phone, a bug in the trusted OS reaches the key; the app says so (§5.6) |
 | T6 | **Our app itself is malicious or compromised** (supply chain, a bad update) | open source; minimal dependencies; release signing; the Android attestation names our signing certificate; custody of the signing keys and release roles (`APP_ATTEST_ORG.md` §4) | it could show one operation and sign another. Mitigation by reproducible Android builds (P5); none on iOS beyond App Store review. Store distribution also puts the store operator in this root (Google signs Play builds, Apple re-signs App Store builds). The largest residual risk; say so in user docs |
 | T7 | **A thief with the phone** | biometric only by default (D2); the key is invalidated by a new biometric enrollment | with the per-enrollment PIN opt-in, a thief who saw the PIN can sign. The opt-in says so when it is chosen |
 | T8 | **Coercion** | out of scope | keep the recovery key with someone else, or in another place |
