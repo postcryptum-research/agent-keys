@@ -69,7 +69,7 @@ Three facts shape the choice:
 | Dependency | Licence | Note |
 |---|---|---|
 | `alloy-primitives`, `alloy-sol-types` | MIT OR Apache-2.0 (V, lockfile) | |
-| `p256`, `sha2`, `serde` and the rest of `owner-core`'s tree | MIT OR Apache-2.0 (V, the #4 licence check) | |
+| the rest of `owner-core`'s tree (`cargo tree -e normal`, after #10) | mostly MIT OR Apache-2.0; also MIT only (`bytes`, `convert_case`, `derive_more` and `derive_more-impl`, `generic-array`, `ruint` and `ruint-macro`), BSD-3-Clause (`subtle`), `(MIT OR Apache-2.0) AND Unicode-3.0` (`unicode-ident`), `CC0-1.0 OR MIT-0 OR Apache-2.0` (`dunce`), and `hw-signer` Apache-2.0 (V, 2026-11-01) | all permissive, no copyleft and no MPL in the Rust tree; `serde` is not in it. The `NOTICE` in §6 lists exactly these |
 | `hw-signer` (types only, no backends) | Apache-2.0 | ours |
 | **`uniffi`** (bindings generator and its runtime support code) | **MPL-2.0** (V, crates.io) | the generated Swift/Kotlin bindings embed uniffi's support code. MPL-2.0 covers *files*; the generated files are derived from MPL templates. **To confirm (I):** whether the uniffi project treats generated bindings as unencumbered output. If not, those generated files stay MPL-2.0, which the stores accept, and the rest of the app keeps its own licence |
 | AndroidX (`biometric`, `camera`, `core`) | Apache-2.0 (V) | |
@@ -133,10 +133,31 @@ accept and that leaves the Apache-2.0 core and CLI untouched.
 - [ ] Trademark: register or at least assert the name and logo
       (the private market notes recommend it).
 
-## 7. Open questions for the owner
+## 7. Open questions for the owner, with a recommendation on each
 
-1. Option A as recommended, or C for the apps?
-2. Is a trademark registration wanted before P5, and under which entity
-   (the same question as `APP_ATTEST_ORG.md` §8.1)?
-3. Should `owner-core` be published to crates.io once licensed (so third
-   parties can build compatible signers), or stay `publish = false`?
+1. **Option A, or C for the apps?** **A.** Nothing in P0 changes it: the
+   core is pure encoding and hashing, the apps are thin shells around the
+   platform's key APIs, and no copyleft code has entered the tree (§3).
+   C would buy a file-level guarantee that app forks stay open, at the
+   cost of a licence boundary between the apps and the Apache-2.0 core and
+   CLI. The T6 argument needs source availability, which A gives.
+2. **Trademark before P5, and under which entity?** **Yes, before P5, not
+   before P0.** The store listings make the name public and squatting a
+   name in a store is cheap, so file once a release date exists. A
+   trademark belongs to a legal person, so it depends on
+   `APP_ATTEST_ORG.md` §8.1: the entity that enrolls with Apple should own
+   the mark, the bundle id and the signing keys together. If that entity
+   does not exist yet when P5 nears, file in the owner's name and assign
+   it later (an assignment is routine) rather than wait. Scope: an EU
+   trade mark in classes 9 (software) and 42 (software services), with a
+   US filing if the stores' main market is there; one class in the EU is
+   under €1,000 (I: check current fees at filing).
+3. **`owner-core` on crates.io?** **Not yet: `publish = false` until the
+   licence is set and the API has a stable surface.** Publishing commits
+   us to semver for the wire format and the `Review` API, to publishing
+   `hw-signer` first (crates.io does not accept path dependencies), to a
+   release cadence with yanks for security fixes, and to supporting
+   consumers we do not know. Until a second consumer exists, a git
+   dependency with a tag gives third parties the same code without those
+   obligations. Publish at the first tagged 1.0 of the protocol, when the
+   two apps and the CLI have shipped against it.

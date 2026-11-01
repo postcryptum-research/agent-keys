@@ -101,8 +101,12 @@ framework.
 - **Signing:** `Signature("NONEwithECDSA")` in a `BiometricPrompt`
   `CryptoObject` over the 32 bytes, which gives DER → `r ‖ s`; the CLI
   normalises to low-s.
-- **The security level:** `KeyInfo.getSecurityLevel()` gives StrongBox, TEE
-  or software. Refuse software.
+- **The security level:** on Android 11 (API 30) the creation path tells
+  StrongBox from TEE (`setIsStrongBoxBacked(true)` succeeded, or the retry
+  after `StrongBoxUnavailableException`), and `KeyInfo.isInsideSecureHardware()`
+  must be true; `KeyInfo.getSecurityLevel()` exists only from Android 12
+  (API 31). The attestation's `keyMintSecurityLevel` is authoritative.
+  Refuse software.
 - **Attestation:** with `setAttestationChallenge(...)`, a certificate chain
   to Google's root proves the key's security level. The laptop can verify
   it at enrollment.

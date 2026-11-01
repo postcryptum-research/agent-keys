@@ -436,7 +436,7 @@ Two Android tiers exist, and the user must know which one holds the key:
 
 | Tier | Where the key lives | What it resists | What it does not |
 |---|---|---|---|
-| **StrongBox** | a separate secure element with its own CPU and storage (Titan M on Pixels, Knox Vault on recent Galaxy S) — the equivalent of the iPhone's Secure Enclave | everything the TEE resists, plus bugs in the trusted OS and physical attacks on the chip | — |
+| **StrongBox** | a separate secure element with its own CPU and storage (Titan M on Pixels, Knox Vault on recent Galaxy S) — comparable to the iPhone's Secure Enclave, which is a coprocessor on the SoC with its own memory rather than a discrete chip | everything the TEE resists, plus bugs in the trusted OS and physical attacks on the chip | — |
 | **TEE only** | the main processor's trusted mode (TrustZone); non-extractable, signs inside | malware on the phone, even with root; copying the key | a bug in the trusted OS or the main processor's firmware; physical attacks on the silicon |
 
 Both are accepted (§5.2), and both are far above a key file. But the
@@ -450,14 +450,23 @@ app says it plainly, in three places:
   above. On a StrongBox phone the notice says so, once.
 - **At enrollment**, before the user confirms (§2.1): the tier is shown
   with the warning on a TEE-only phone, and the user acknowledges it.
-  The tier is read from `KeyInfo.getSecurityLevel()` after key creation
-  (V, plan), stored in the enrollment record (§5.4) and returned in the
-  enrollment response.
+  How the phone knows the tier: on Android 11 (API 30, the D7 floor) the
+  key creation path says it — `setIsStrongBoxBacked(true)` succeeded means
+  StrongBox, the retry after `StrongBoxUnavailableException` means TEE,
+  and `KeyInfo.isInsideSecureHardware()` must be true either way;
+  `KeyInfo.getSecurityLevel()` exists only from Android 12 (API 31) and
+  confirms it there (V, AOSP `KeyInfo.java` at `android-11.0.0_r1` and
+  `android-12.0.0_r1`, per the review). The tier is stored in the
+  enrollment record (§5.4) and returned in the enrollment response, **for
+  display**. The authoritative value is `attestationSecurityLevel` /
+  `keyMintSecurityLevel` in the attestation record, which the laptop
+  verifies (§5.2).
 - **On the laptop**: `key create --phone` prints the tier, the config
   snippet carries it (`"attestation": "strongbox"` or `"tee"`, §8.1), and
   the attestation check confirms it (§5.2). A deployment may refuse TEE-only
   owner keys for a value-bearing account; the CLI offers
-  `--require-strongbox` for that.
+  `--require-strongbox` for that, and it decides on the attestation's
+  security level, never on the phone's self-report.
 
 iPhones have no such split: every model the app supports has the Secure
 Enclave. The notice is therefore Android-only.
