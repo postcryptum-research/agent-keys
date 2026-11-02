@@ -133,6 +133,41 @@ with an optional `"serial": <number>` when several YubiKeys may be plugged
 in. The PIN is asked at every owner operation; the terminal then says
 `touch the YubiKey to sign…`.
 
+## On Base Sepolia (2026-11-02)
+
+Account `0xEdB645B14e2f952C5784e34949b58F0826fBc9E9`, configs
+`signer/agent.tropic01.base-sepolia.json` and the three others of that
+account. Before: root = `P256Validator` V1 `0xDe1A…24D1` holding the TPM owner
+key `0x81010010`; recovery installed; agent permission `trp1` in a TROPIC01.
+
+1. **Handover.** The TPM owner key signed `owner set-root --validator
+   0xdA4c…50c2 --retire 0xDe1A…24D1 --public-key <x>,<y> --sponsored`: the
+   current `p256Validator` installed with the YubiKey's key, the V1 instance
+   with the TPM key uninstalled in the same operation, paymaster-sponsored,
+   through the public bundler — tx
+   `0x010aa69c4e3ce347c851a643178a97184f350d05eeb63d56673be5e52256aff4`
+   (block 53508267). `owner status`: root validator `0xda4c…50c2`, recovery
+   still `installed = true, may take root = true`. On chain,
+   `publicKeys(account)` on the new validator is the YubiKey's `(x, y)` and
+   zeros on the old one.
+2. **The old owner is powerless.** A root operation signed by the TPM key
+   (a config still naming it) was refused by the EntryPoint:
+   `AA24 signature error`.
+3. **The agent survived.** `demo --sponsored` with the TROPIC01 key:
+   `DemoCounter` 33 → 34, tx
+   `0x88e0d0e0996fc069df1122dcadba48ae86c6aae5a8f699b5afdde81128e7d870`
+   (block 53508948), paymaster-sponsored, delivered through our own
+   `handleOps` because the public bundler had started refusing our priority
+   fee (issue #15).
+4. **The YubiKey is root.** `op send --root` to `DemoCounter.increment`,
+   signed in slot 9c after the PIN and a touch: tx
+   `0x9948458ac07de5d8839aec54f974bdde6b77964a7f471353e66bd56b0b6ed99a`
+   (block 53509520, 139,115 gas), paymaster-sponsored, own `handleOps`.
+
+The four configs now carry `"owner": { "yubikey": { "slot": "9c" } }`. Every
+owner operation on this account needs the YubiKey, its PIN and a touch from
+here on; the recovery key file is the way back if the YubiKey is lost.
+
 ## Security notes
 
 - **What the device protects:** the private key never leaves the applet;
