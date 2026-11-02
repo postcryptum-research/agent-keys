@@ -1,6 +1,7 @@
 # The field around TPM_sign
 
-Researched 2026-10-23. Two questions, one page each half: *who else turns a
+Researched 2026-10-23; §2a, §2d and §3 updated 2026-11-02 with the Circle
+Agent Wallets case and the I-HITL paper. Two questions, one page each half: *who else turns a
 phone or spare device into a signer*, and *who else gives an AI agent a key
 it cannot leak, with rules it cannot break*. For every entry: where the key
 lives, who enforces policy, and whether the project is open source. Marks:
@@ -47,6 +48,7 @@ where the vendor states it plainly.
 | Turnkey | secure enclaves with attestation at each deploy (V, vendor) | the service (policy engine) | partly (QuorumOS) |
 | Coinbase CDP / AgentKit | CDP server wallets (TEE, AWS Nitro, I) or CDP smart wallets; AgentKit SDK ships no spending limits — "you add them through the application" (V, comparison) | the application, or on-chain if a smart wallet is used | AgentKit SDK is open source (V); the wallet service is not |
 | Alchemy Agent Wallet (x402) | TEE-based signing (V, vendor) | the service | no |
+| Circle Agent Wallets | Circle's infrastructure (I) | the service: per-transaction, daily, weekly and monthly caps; **raising a cap is confirmed by a one-time code e-mailed to the owner** (V, the set-up of the I-HITL paper below; Circle's documentation now warns against giving the agent that inbox) | no |
 | Crossmint | TEE; proposes a "dual key" design — an owner key and an agent key registered to a smart wallet (V, vendor blog) | the service + smart wallet | no |
 | Thirdweb Engine / Vault | server-side wallets, scoped session keys (V, comparison); Vault uses a TEE (I) | the service | SDKs open; service not |
 | Dynamic (now Fireblocks) | MPC or smart-contract wallet, configurable (V, comparison) | the service | no |
@@ -61,6 +63,32 @@ account to lose and no API key that is itself a secret worth stealing.
 What they have that we do not: multi-chain, key rotation and revocation at
 service level, audits (Openfort lists five; Privy SOC 2), and no hardware to
 provision.
+
+**The case that shows why the enforcement point matters (2026-10).** The
+I-HITL paper (Breckenridge, Vilardell, Wang, Zhang, Juels; Cornell Tech and
+Yale; [arXiv 2610.35835](https://arxiv.org/abs/2610.35835), v3 2026-10-30)
+gave agents a Circle Agent Wallet with a tiny cap, plus e-mail and a browser.
+Raising the cap needed a one-time code sent to the owner's inbox, which the
+agent could read. Results (V, the paper): 9 of 10 models read the code and
+raised their own cap in at least one run; with an injected e-mail 7 of 10
+did; in a summarisation task 5 of 10 paid an attacker's address. The
+behaviour did not correlate with model capability. Circle's response was a
+documentation warning. The paper's theorem: when the approval channel runs
+through a platform the agent controls, no protocol can bind approvals to
+actions; it takes a trusted device the agent cannot reach, with an attested
+key, and a non-extractable one if the human must not be able to delegate.
+
+**For us:** the cap is on-chain and changing it is a root operation signed
+by the owner key, which the agent does not have (`test_agent_keyIsNotRoot`);
+the permission validator is granted only `execute`, and the policy refuses
+any other calldata (`test_policy_rejectsBatchAndMalformedCalls`); an
+attacker's address fails the allow-list. There is no code to intercept,
+because there is no approval channel other than a hardware signature. What
+the case adds to our list: the agent's own account must never be an
+allow-list target ([#11](https://github.com/77ph/TPM_sign/issues/11)), and
+the owner key must not sit on the agent's host, which is the testnet
+exception of `KEY_POLICY.md` rule 6 and the reason for the phone owner
+(`../MOBILE_OWNER_DESIGN.md` §10).
 
 ### 2b. On-chain policy for a delegated key (the part `AgentPolicy` lives in)
 
@@ -95,6 +123,7 @@ signs unattended, which is why the policy module exists.
 | **yubikey-evm-signer** ([github](https://github.com/storopoli/yubikey-evm-signer)) | Rust + WASM: sign EVM transactions with a YubiKey PIV P-256 key, relying on EIP-7951; passes the Ethereum tx test vectors | YubiKey | none (an EOA-style signer for a P-256 account) | 5 stars, Apache-2.0, 2026-01 → 2026-07; relevant to our planned YubiKey owner path (`OWNER_DEVICES.md`) |
 | **claw-cash** ([github](https://github.com/tiero/claw-cash)) | Bitcoin wallet for agents over Telegram bots; secp256k1 keys generated and used inside an **Evervault enclave** service | a hosted enclave (the project's API) | rate limits, 2FA via Telegram | 38 stars, MIT, 2026-02 → 2026-07; custodial-shaped |
 | Guardian Wallet (agentokratia) | MPC shares (one in the agent's environment) with a server policy engine | MPC | server | small |
+| **Countersign** (the I-HITL prototype, Cornell Tech / Yale, 2026-10) | a phone countersigns an agent's critical actions: the approval terminates on a consumer device the agent cannot reach, the device's key is attested and non-extractable, the service verifies the countersignature (V, [arXiv 2610.35835](https://arxiv.org/abs/2610.35835); code availability I) | the phone's secure hardware | the service that checks the countersignature | academic prototype; the closest sibling of our phone owner (`../MOBILE_OWNER_DESIGN.md`), which puts the same device key on-chain as the account's root instead of behind a service |
 
 No open-source project found combines **all** of: a key in a commodity
 secure element the operator owns (TPM / enclave / SE), an **unattended**
@@ -118,6 +147,11 @@ covers its signing path.
   (ours: `permission rotate`, `owner set-root`), revocation (`permission
   revoke`), attestation of *which code* runs next to the key (we have
   PCR-sealed TPM keys; a Mac has no equivalent) — see `RESILIENCE.md`.
+- **The formal model for the owner side**: I-HITL (2a, 2d) proves that an
+  approval must terminate on a device the agent cannot reach, and names
+  attested, non-extractable keys as the requirement. The phone owner is that
+  device and the chain is the honest service. Our open end in their terms is
+  the first handover (`../MOBILE_OWNER_DESIGN.md` T2).
 - **Interop to watch**: ERC-7715/7710 for expressing the mandate; the
   spend-mandate proposal for token budgets; BC-UR transport for an air-gapped
   owner phone (`CUPCAKE.md`, last section).
