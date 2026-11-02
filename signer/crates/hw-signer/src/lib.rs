@@ -26,6 +26,9 @@ pub mod windows_tpm;
 /// Tropic Square TROPIC01 over the USB DevKit (docs/TROPIC01.md).
 #[cfg(feature = "tropic01")]
 pub mod tropic01;
+/// YubiKey 5 PIV slot over PC/SC (docs/YUBIKEY.md).
+#[cfg(feature = "yubikey-piv")]
+pub mod yubikey_piv;
 
 /// Uncompressed P-256 public key coordinates — what the smart account enrolls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

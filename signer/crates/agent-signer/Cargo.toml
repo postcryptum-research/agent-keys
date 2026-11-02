@@ -20,6 +20,8 @@ secure-enclave = ["hw-signer/secure-enclave"]
 windows-tpm = ["hw-signer/windows-tpm"]
 # Enable TROPIC01 keys over the USB DevKit.
 tropic01 = ["hw-signer/tropic01"]
+# Enable YubiKey 5 PIV keys over PC/SC (docs/YUBIKEY.md).
+yubikey = ["hw-signer/yubikey-piv"]
 # Accept software (plaintext) keys from the config, in every role. Tests only:
 # the integration tests (tests/anvil_cli.rs) drive owner and recovery
 # operations on a local chain with them. A build without this feature refuses

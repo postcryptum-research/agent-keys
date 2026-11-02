@@ -194,14 +194,19 @@ pub fn open(path: &Path, passphrase: &[u8]) -> Result<KeyFileSigner> {
 
 /// Read a passphrase from the terminal (twice when creating).
 pub fn prompt(confirm: bool) -> Result<Zeroizing<String>> {
-    let first = Zeroizing::new(rpassword::prompt_password("key file passphrase: ")?);
+    let first = prompt_secret("key file passphrase: ")?;
     if confirm {
-        let again = Zeroizing::new(rpassword::prompt_password("repeat passphrase: ")?);
+        let again = prompt_secret("repeat passphrase: ")?;
         if *first != *again {
             bail!("passphrases differ");
         }
     }
     Ok(first)
+}
+
+/// Read a secret from the terminal without echo (a passphrase, a PIN).
+pub fn prompt_secret(label: &str) -> Result<Zeroizing<String>> {
+    Ok(Zeroizing::new(rpassword::prompt_password(label)?))
 }
 
 /// A decrypted key file. The scalar lives in the `SigningKey`, which wipes

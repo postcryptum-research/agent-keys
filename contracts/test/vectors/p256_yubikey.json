@@ -1,0 +1,9 @@
+{
+  "backend": "yubikey",
+  "message": "TPM_sign: YubiKey 5 PIV P-256 vector",
+  "digest": "0x3c59a181264b617a3d8f15bd36a9bf354b1bdc29770107df68efa17fc74ceff5",
+  "r": "0x98216f52a926c8a0401a08b859febb2dd0601e2b5eca803ebf58338adb68bf75",
+  "s": "0x0afc3a29e8007b922c2e1c12b2a53abe789c389941ec28ea2fe07f8f9b5d5568",
+  "x": "0x3333d3e46fe3be6862cc30df960ded00bc6941b07f76165f5584c794c80882e2",
+  "y": "0x4fd98950bc3e9281fa8e1b2bb5d48c8bfe119257cd1e90659b6a70d654cabfc2"
+}
