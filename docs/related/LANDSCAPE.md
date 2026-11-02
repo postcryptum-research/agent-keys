@@ -152,6 +152,11 @@ covers its signing path.
   attested, non-extractable keys as the requirement. The phone owner is that
   device and the chain is the honest service. Our open end in their terms is
   the first handover (`../MOBILE_OWNER_DESIGN.md` T2).
+- **Integration targets**: BTCPay Server, after its hot-wallet sweep of
+  2026-11, through a USDC-on-Base plugin whose store wallet is a
+  mandate-bounded account (`BTCPAY.md`, #13). The Bitcoin side needs a
+  server TEE and is a different product; `BTCPAY.md` §6 records only the
+  requirements.
 - **Interop to watch**: ERC-7715/7710 for expressing the mandate; the
   spend-mandate proposal for token budgets; BC-UR transport for an air-gapped
   owner phone (`CUPCAKE.md`, last section).
