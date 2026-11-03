@@ -33,9 +33,17 @@ run on 2026-11-02 with a YubiKey 5 NFC, firmware 5.8.0.
   on the device: the `userOpHash` is signed as is) and returns `(r, s)`
   normalized to low-s. The device answers DER; the backend parses it.
 - The backend never prompts and never holds the management key. The CLI
-  asks the PIN (`rpassword`, zeroized) when it opens an owner or recovery
-  key; **an agent key is refused** unless the slot's policies are PIN never
-  and touch never, because an unattended agent cannot answer either.
+  hands it a PIN *provider* (`rpassword`, zeroized), called at the first
+  signature that needs the PIN and kept for the rest of the operation, so a
+  bundler path that signs twice asks once; a rejected PIN is forgotten
+  again. **An agent key is refused** unless the slot's policies are PIN
+  never and touch never, because an unattended agent cannot answer either.
+- **Before any root operation the CLI checks the key against the chain:**
+  it reads the account's root validator and that validator's
+  `publicKeys(account)`, and refuses with "not the account's root key" when
+  the key in the slot is a different one. A retired owner still named in a
+  config, another YubiKey, or the wrong slot therefore costs no PIN try and
+  no touch. The same check serves every owner backend, the phone included.
 - `attestation()` returns the slot's attestation certificate (see below).
 - Errors: wrong PIN → `SignerError::Key` with the tries left; PIN blocked →
   `Key` pointing at the PUK; no device, two devices, PC/SC → `Backend`;
@@ -184,3 +192,10 @@ here on; the recovery key file is the way back if the YubiKey is lost.
   mitigation is rotation (`owner set-root` to a new key).
 - **One key, one device.** No seed, no backup. The recovery key is the
   backup (`RESILIENCE.md` §3.2).
+- **`cargo audit`:** the feature pulls `rsa` in through the `yubikey` crate,
+  and `rsa` 0.10 carries RUSTSEC-2023-0071 (the Marvin timing side channel).
+  We open P-256 slots only and never sign or decrypt with RSA, so the code
+  never runs; the advisory is accepted with that reason in
+  `signer/.cargo/audit.toml`, to be dropped when `yubikey` moves to a fixed
+  `rsa`. `yubikey` 0.9.0-rc.0 itself is a release candidate, pinned by the
+  lockfile until 0.9.0 lands.

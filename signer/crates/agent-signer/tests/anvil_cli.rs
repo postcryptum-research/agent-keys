@@ -480,7 +480,9 @@ fn recovery_drill() {
     chain.ok(&["op", "send", "--agent", &new_cfg, "--root", "--target", &counter, "--data", INCREMENT]);
     assert_eq!(chain.counter(), before + U256::from(1));
     let refused = chain.fails(&["op", "send", "--agent", &old_cfg, "--root", "--target", &counter, "--data", INCREMENT]);
-    assert!(refused.contains("AA24"), "{refused}");
+    // refused by the CLI's root-key check, which reads the validator's key
+    // from the chain; the validator's own AA24 is what the forge tests cover
+    assert!(refused.contains("not the account's root key"), "{refused}");
     // and the agent permission survived the change of owner
     chain.ok(&["demo", "--agent", &new_cfg]);
 }

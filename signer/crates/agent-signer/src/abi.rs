@@ -152,6 +152,13 @@ sol! {
         function isValidSignature(bytes32 hash, bytes calldata signature) external view returns (bytes4);
     }
 
+    // P256Validator, and P256RecoveryValidator which inherits it: the key the
+    // account's root (or recovery) path verifies against.
+    #[sol(rpc)]
+    interface IP256ValidatorView {
+        function publicKeys(address account) external view returns (bytes32 x, bytes32 y);
+    }
+
     #[sol(rpc)]
     interface IP256SignerView {
         function publicKeys(bytes32 id, address account) external view returns (bytes32 x, bytes32 y);

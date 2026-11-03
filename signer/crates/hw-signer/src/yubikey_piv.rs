@@ -16,6 +16,7 @@
 //! so callers can register a notice to print before that happens.
 
 use std::fmt;
+use std::sync::Mutex;
 
 use yubikey::piv::{self, AlgorithmId, SlotAlgorithmId, SlotId};
 use yubikey::{PinPolicy, Serial, TouchPolicy, YubiKey};
@@ -29,6 +30,9 @@ pub use yubikey::{PinPolicy as PivPinPolicy, TouchPolicy as PivTouchPolicy};
 /// Called right before a signature that the device will wait on a touch for.
 pub type TouchNotice = Box<dyn Fn() + Send + Sync>;
 
+/// Asked for the PIN the first time a signature needs it.
+pub type PinProvider = Box<dyn Fn() -> Result<Zeroizing<Vec<u8>>, SignerError> + Send + Sync>;
+
 /// A P-256 key in PIV `slot` of the YubiKey with `serial`.
 pub struct YubiKeyPivSigner {
     serial: u32,
@@ -36,7 +40,11 @@ pub struct YubiKeyPivSigner {
     public_key: PublicKey,
     pin_policy: PinPolicy,
     touch_policy: TouchPolicy,
-    pin: Option<Zeroizing<Vec<u8>>>,
+    /// The PIN once known: given up front or obtained from the provider at
+    /// the first signature, then kept for this signer's life (a bundler path
+    /// signs twice). Cleared again when the device rejects it.
+    pin: Mutex<Option<Zeroizing<Vec<u8>>>>,
+    pin_provider: Option<PinProvider>,
     touch_notice: Option<TouchNotice>,
 }
 
@@ -62,14 +70,25 @@ impl YubiKeyPivSigner {
             public_key,
             pin_policy,
             touch_policy,
-            pin: None,
+            pin: Mutex::new(None),
+            pin_provider: None,
             touch_notice: None,
         })
     }
 
     /// Supply the PIN for a slot whose policy asks for one.
     pub fn with_pin(mut self, pin: Zeroizing<Vec<u8>>) -> Self {
-        self.pin = Some(pin);
+        self.pin = Mutex::new(Some(pin));
+        self
+    }
+
+    /// Ask for the PIN only when a signature needs it. The caller can then
+    /// check the key against the chain before the user types anything.
+    pub fn with_pin_provider(
+        mut self,
+        provider: impl Fn() -> Result<Zeroizing<Vec<u8>>, SignerError> + Send + Sync + 'static,
+    ) -> Self {
+        self.pin_provider = Some(Box::new(provider));
         self
     }
 
@@ -138,10 +157,18 @@ impl HardwareSigner for YubiKeyPivSigner {
         let name = slot_name(self.slot);
         let mut yk = open_device(Some(self.serial))?;
         if self.needs_pin() {
-            let pin = self.pin.as_ref().ok_or_else(|| {
-                SignerError::Key(format!("slot {name}: PIN policy {:?} needs a PIN and none was given", self.pin_policy))
-            })?;
-            yk.verify_pin(pin).map_err(|e| match e {
+            let mut cached = self.pin.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if cached.is_none() {
+                let provider = self.pin_provider.as_ref().ok_or_else(|| {
+                    SignerError::Key(format!("slot {name}: PIN policy {:?} needs a PIN and none was given", self.pin_policy))
+                })?;
+                *cached = Some(provider()?);
+            }
+            let verified = yk.verify_pin(cached.as_ref().expect("filled above"));
+            if verified.is_err() {
+                *cached = None;
+            }
+            verified.map_err(|e| match e {
                 yubikey::Error::WrongPin { tries } => {
                     SignerError::Key(format!("wrong PIN; {tries} tries left before only the PUK can unblock it"))
                 }

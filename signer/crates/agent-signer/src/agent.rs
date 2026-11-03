@@ -409,8 +409,15 @@ pub fn open_yubikey(
     }
     let mut signer = signer.with_touch_notice(|| eprintln!("touch the YubiKey to sign…"));
     if ask_pin && signer.needs_pin() {
-        let pin = crate::keyfile::prompt_secret(&format!("YubiKey PIV PIN (slot {name}): "))?;
-        signer = signer.with_pin(Zeroizing::new(pin.as_bytes().to_vec()));
+        // Asked at the first signature, not now: by then the CLI has checked
+        // the key against the account's root (chain.rs), so a wrong device
+        // or slot costs no PIN try and no touch.
+        let label = format!("YubiKey PIV PIN (slot {name}): ");
+        signer = signer.with_pin_provider(move || {
+            crate::keyfile::prompt_secret(&label)
+                .map(|pin| Zeroizing::new(pin.as_bytes().to_vec()))
+                .map_err(|e| hw_signer::SignerError::Key(format!("PIN: {e}")))
+        });
     }
     Ok(signer)
 }

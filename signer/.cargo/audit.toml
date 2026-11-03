@@ -1,0 +1,12 @@
+# `cargo audit` reads this file. Accepted advisories, each with the reason;
+# review them whenever the dependency in question moves.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071: Marvin timing side channel in `rsa`. It reaches the
+    # lockfile through the `yubikey` crate (RSA PIV slots). The YubiKey
+    # backend opens P-256 slots only and never signs or decrypts with RSA,
+    # so the affected code never runs. Reviewed 2026-11-03; drop this line
+    # when `yubikey` depends on a fixed `rsa`.
+    "RUSTSEC-2023-0071",
+]

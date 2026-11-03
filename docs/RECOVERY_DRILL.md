@@ -46,7 +46,7 @@ are `agent-signer …`, run where the key in question lives.
 | 4 | `owner recover --agent recovery.json` (recovery key signs, passphrase) | `the recovery key is root now: tx …`; `owner status`: `is root now = true` |
 | 5 | `owner set-root --agent recovery.json --as-recovery --validator <P256Validator> --retire <P256Validator> --public-key <x>,<y of the new owner key>` | `root handed to …: tx …`; `owner status`: root validator is `P256Validator`, `is root now = false` |
 | 6 | a root operation with the **new** owner key (`op send --root …`) | included |
-| 7 | the same root operation with the **lost** owner key | refused: `AA24 signature error` |
+| 7 | the same root operation with the **lost** owner key | refused before anything is sent: `the key about to sign (…) is not the account's root key (… in validator …)`. The CLI reads the root validator's key from the chain; the validator's own `AA24` is what the forge tests exercise |
 | 8 | `demo --agent <new owner config>` (the agent key) | included: the permission survived |
 | 9 | `permission show` | every field `ok` |
 
@@ -83,8 +83,12 @@ when L1–L3 have each passed within the periods in §5.
 ### 3.2 Mechanism (L1, L3)
 
 - [ ] Steps 0–9 pass in order, with the outputs in §2.
-- [ ] Step 7 fails with AA24, not with anything else: the lost key is
-      refused by the validator, not by a CLI check.
+- [ ] Step 7 fails with "not the account's root key", quoting the key the
+      chain holds: the CLI read `publicKeys(account)` from the root validator
+      and it is the new key, not the lost one. (Before 2026-11-03 this step
+      ended at the EntryPoint with `AA24`; the check now runs before any PIN,
+      touch or signature is spent. The validator's refusal itself is covered
+      by `test_agent_keyIsNotRoot` and the P256Validator tests.)
 - [ ] Step 8 passes: no agent permission was lost or re-installed.
 - [ ] After step 5, `P256Validator.publicKeys(account)` is the **new**
       key, read from a block explorer on a device that is not the one that
