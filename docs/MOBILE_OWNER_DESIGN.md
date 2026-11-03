@@ -837,7 +837,9 @@ hand approvals to the agent, is the non-extractable, biometric-gated key
 (D2, D5). Their Circle experiment, in which agents raised their own caps
 through an e-mailed code, is in `related/LANDSCAPE.md` §2a. The first
 handover (T2) is our gap in their terms: an approval signed before the
-device has a channel of its own.
+device has a channel of its own. It is the same for every owner key without
+a screen, a TPM or a YubiKey alike: the first `set-root` to a phone is
+signed on the laptop's word.
 
 | # | Threat | Mitigation | Residual |
 |---|---|---|---|

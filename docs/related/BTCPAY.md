@@ -1,7 +1,8 @@
 # BTCPay Server: the hot-wallet sweep of 2026-11, and what fits TPM_sign
 
 *Researched 2026-11-02, from the press coverage of the incident and BTCPay's
-own documentation. The owner brought the case as "a project for integration
+own documentation; §1 updated 2026-11-03 with BTCPay's incident post and the
+Bitquery tally. The owner brought the case as "a project for integration
 lying on the surface". This page analyses every option, and marks which ones
 are in scope for TPM_sign (a commodity hardware key under an on-chain
 mandate) and which belong to a different product. Marks: **V** verified at
@@ -13,14 +14,32 @@ the linked source; **I** inferred from documentation or press, not tested.*
   BTCPay Servers being swept by unauthorized attackers. If you're running an
   instance, please shut it down (`./btcpay-down.sh`) until we complete the
   investigation." (V, quoted by CoinDesk.)
-- Nicolas Dorier: the reports "appear to involve BTCPay Server releases older
-  than version 2.4.2"; an attacker **had logged in as an administrator**, and
-  "the team does not yet know how the attacker got it"; the project's own
-  public servers on 2.4.7 "were not attacked" (V, CoinDesk).
+- Nicolas Dorier, the same day: the reports "appear to involve BTCPay Server
+  releases older than version 2.4.2"; an attacker **had logged in as an
+  administrator**; the project's own public servers on 2.4.7 "were not
+  attacked" (V, CoinDesk).
+- **2026-11-02, BTCPay's incident post**
+  ([blog](https://blog.btcpayserver.org/btcpay-server-security-incident-2-4-1-and-earlier/),
+  V): the servers hit ran "BTCPay Server 2.4.1 (released on 23 July 2026) or
+  earlier"; "the attackers used a different method to exploit the
+  vulnerability fixed in 2.4.2, released on 7 August 2026" (that
+  [advisory](https://blog.btcpayserver.org/security-advisory-btcpay-server-2-4-2/)
+  covered controller helper methods reachable unauthenticated over HTTP and
+  LND APIs proxied through the public domain: I, Ostorlab's reading).
+  **Bitcoin and Litecoin** hot wallets were swept. "Funds in wallets whose
+  spending keys are held off the server, including hardware wallets, were
+  unaffected by these thefts." Advice: create a new wallet and sweep what is
+  left into it, move to a fresh server on the current release, take the old
+  one offline and keep its logs, replace passwords and access keys from a
+  trusted device. No official total: the two destination addresses' balances
+  "should not be treated as a confirmed total of losses".
+- **Third-party tally** (Bitquery, as reported by Infosecurity Magazine; I):
+  about **$1.63M** in **682 sweeps**, 18.38 BTC and 3,405 LTC, between
+  2026-10-30 and the morning of 2026-11-02; 87% of it in one wave on the
+  afternoon and evening of 2026-11-01; 267 sweeps, about $150K, after the
+  22:25 UTC shutdown alert.
 - 2.4.7 (2026-10-29) closed a batch of security findings, one of them
-  critical (I, Forklog). In August 2026 a separate flaw in releases before
-  2.4.2 let attackers read the LND node's credential files (I, press).
-- Amount stolen and number of servers: not disclosed as of 2026-11-02 (V).
+  critical (I, Forklog).
 
 ## 2. Why the wallet could be swept
 
@@ -46,8 +65,8 @@ chain.
 
 | | Option | What it takes | Who enforces the spending rule | In scope here? |
 |---|---|---|---|---|
-| A | **The Bitcoin hot key in a hardware element on the BTCPay host** | secp256k1 signing. TPM 2.0 and the Secure Enclave cannot (the project's original dead end, `../ARCHITECTURE.md`); a few elements can (NXP SE050, OnlyKey: I, `../OWNER_DEVICES_ru.md`) | **nobody**: an admin on the host drives the element as a signing oracle. Bitcoin has no on-chain policy for outputs or amounts (no covenants deployed as of 2026-11, I), so the element only stops key *export*, not theft | **No.** It would reproduce the incident with one extra step |
-| B | **Bitcoin signing inside a server TEE with a policy co-signer the host cannot bypass**: PSBT outputs only to the merchant's cold descriptor, per-period caps for refunds, expiry, owner approvals from a device the host cannot reach | a TEE on server hardware, attestation of the signer, a PSBT policy engine, Lightning aside | the TEE's policy, which the admin cannot change | **No, a different product.** The owner has one; this repository only records the requirements (§6) |
+| A | **The Bitcoin (or Litecoin) hot key in a hardware element on the BTCPay host** | secp256k1 signing. TPM 2.0 and the Secure Enclave cannot (the project's original dead end, `../ARCHITECTURE.md`); a few elements can (NXP SE050, OnlyKey: I, `../OWNER_DEVICES_ru.md`) | **nobody**: an admin on the host drives the element as a signing oracle. Bitcoin has no on-chain policy for outputs or amounts (no covenants deployed as of 2026-11, I), so the element only stops key *export*, not theft | **No.** It would reproduce the incident with one extra step |
+| B | **Bitcoin signing inside a server TEE with a policy co-signer the host cannot bypass**: PSBT outputs only to the merchant's cold descriptor, per-period caps for refunds, expiry, owner approvals from a device the host cannot reach | a TEE on server hardware, attestation of the signer, a PSBT policy engine, Lightning aside | the TEE's policy, which the admin cannot change | **No, a different product:** the owner's [`77ph/BTCPayTEE`](https://github.com/77ph/BTCPayTEE) (private), which links back here for what it takes from TPM_sign. This page only records the requirements (§6) |
 | C | **Multisig with an external co-signer service** | a service that signs the second key under its own rules | the service | **No.** That is the hosted-custodian model of `LANDSCAPE.md` §2a; TPM_sign exists to avoid it |
 | D | **Timelocked vault scripts** (hot key spends only after a delay the cold key can interrupt) | script design, a watcher, user education | the script, for timing only; no amount or destination rule | **No.** A real Bitcoin mitigation, but not ours, and it still needs someone watching |
 | E | **A BTCPay plugin for USDC on Base whose store wallet is a Kernel account** | a BTCPay plugin (C#), a Base RPC, `agent-signer` next to BTCPay, a mandate template | **the chain**: `AgentPolicy`, which the admin cannot change without the owner's hardware key | **Yes** ([#13](https://github.com/77ph/TPM_sign/issues/13)) |
@@ -113,9 +132,10 @@ chain: the USDt-on-Tron plugin (V, listed in the docs).
 | B5 | **Chain-side** (reorgs, confirmations, token blacklists) | the plugin's confirmation depth; USDC's issuer controls remain | not custody |
 | B6 | **The owner's phone is lost** | `../RECOVERY_DRILL.md` | — |
 
-## 6. Requirements for the Bitcoin side, recorded for the other product
+## 6. Requirements for the Bitcoin and Litecoin side, recorded for the other product
 
-Not designed here. What the incident says such a product must have:
+Not designed here: that product is [`77ph/BTCPayTEE`](https://github.com/77ph/BTCPayTEE).
+What the incident says it must have:
 
 - unattended secp256k1 signing inside a TEE or secure element from which the
   host's admin cannot export the key;
@@ -136,6 +156,8 @@ Not designed here. What the incident says such a product must have:
 
 ## Sources
 
+- BTCPay Server, 2026-11-02: [BTCPay Server security incident: 2.4.1 and earlier](https://blog.btcpayserver.org/btcpay-server-security-incident-2-4-1-and-earlier/); 2026-08-07: [Security advisory: BTCPay Server 2.4.2](https://blog.btcpayserver.org/security-advisory-btcpay-server-2-4-2/)
+- Infosecurity Magazine, 2026-11-03 (the Bitquery tally): [Hackers Exploit BTCPay Server Flaw to Steal Cryptocurrency](https://www.infosecurity-magazine.com/news/btcpay-server-flaw-cryptocurrency/); Ostorlab: [BTCPay Server Hot Wallet Thefts, Fixed in 2.4.2](https://blog.ostorlab.co/btcpay-server-hot-wallet-thefts.html)
 - CoinDesk, 2026-11-02: [BTCPay tells users to turn off their servers after reports of drained wallets](https://www.coindesk.com/tech/2026/11/02/btcpay-a-bitcoin-payment-tool-tells-users-to-switch-off-their-servers-after-reports-of-drained-wallets)
 - Forklog, 2026-11-02: [Хакеры похитили биткоины из горячих кошельков BTCPay Server](https://forklog.com/news/hakery-pohitili-bitkoiny-iz-goryachih-koshelkov-btcpay-server)
 - BTCPay Server docs: [Hardware wallet integration](https://docs.btcpayserver.org/HardwareWalletIntegration/), [Altcoins FAQ](https://docs.btcpayserver.org/FAQ/Altcoin/)
