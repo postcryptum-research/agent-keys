@@ -820,6 +820,27 @@ agent's mandate; the owner's ability to recover.
 **Trust boundaries:** the laptop; the LAN; the QR's optical channel; the
 phone OS; our app and its build; the phone's secure hardware; the chain.
 
+**Formal model.** This design is an instance of what Breckenridge,
+Vilardell, Wang, Zhang and Juels call an *inalienable human-in-the-loop*
+([arXiv 2610.35835](https://arxiv.org/abs/2610.35835), 2026; V for their
+statements). Their impossibility result: if the approval passes through a
+platform the agent controls (here, the laptop), no protocol can bind the
+approval to the action. Their sufficient condition: a trusted device that
+either shows the human a message the adversary cannot fake or produces an
+approval the adversary cannot forge, with authentic channels to the service.
+Here the phone is that device: the message it shows is decoded by
+`owner-core` from the raw request and checked against the QR commitment
+(§3, §6); the approval is a hardware signature verified by `P256Validator`
+on the chain, which is the honest service; attestation (§5) ties the key to
+that device. Their "strong" variant, where the human must not be able to
+hand approvals to the agent, is the non-extractable, biometric-gated key
+(D2, D5). Their Circle experiment, in which agents raised their own caps
+through an e-mailed code, is in `related/LANDSCAPE.md` §2a. The first
+handover (T2) is our gap in their terms: an approval signed before the
+device has a channel of its own. It is the same for every owner key without
+a screen, a TPM or a YubiKey alike: the first `set-root` to a phone is
+signed on the laptop's word.
+
 | # | Threat | Mitigation | Residual |
 |---|---|---|---|
 | T1 | **The laptop is compromised** and requests a malicious operation | the phone decodes, recomputes the hash and shows the real effect; laptop labels are marked as such; addresses are shown in full; gas cap | a user who approves without reading. The bold second confirmation targets the dangerous cases |
