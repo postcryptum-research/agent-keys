@@ -43,7 +43,11 @@ run on 2026-11-02 with a YubiKey 5 NFC, firmware 5.8.0.
   `publicKeys(account)`, and refuses with "not the account's root key" when
   the key in the slot is a different one. A retired owner still named in a
   config, another YubiKey, or the wrong slot therefore costs no PIN try and
-  no touch. The same check serves every owner backend, the phone included.
+  no touch. The same check serves every owner backend, the phone included,
+  and the recovery path gets its twin (`check_recovery_key`, before the
+  passphrase). It runs only when the root is one of this repository's P-256
+  validators from the deployments file; another root validator (a WebAuthn
+  or ECDSA one) is reported and skipped, never refused.
 - `attestation()` returns the slot's attestation certificate (see below).
 - Errors: wrong PIN → `SignerError::Key` with the tries left; PIN blocked →
   `Key` pointing at the PUK; no device, two devices, PC/SC → `Backend`;

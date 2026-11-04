@@ -71,11 +71,12 @@ when L1–L3 have each passed within the periods in §5.
       person's memory can defeat is not robust.
 - [ ] **The public key on-chain matches the file**: `key show --keyfile`
       prints the file's `x`, `y`; `P256RecoveryValidator.publicKeys(account)`
-      read on a block explorer shows the same pair. The CLI does not make
-      this comparison today (`owner status` reports only the install state,
-      V); adding it to `owner status` is a small follow-up (I), either from
-      the key file, which needs the passphrase, or from a
-      `recoveryPublicKey` in the config next to `ownerPublicKey`.
+      read on a block explorer shows the same pair. The CLI makes the same
+      comparison before every `owner recover`, from the file's public half
+      and without the passphrase, and refuses a file that does not match
+      (V, `chain.rs` `check_recovery_key`); `owner status` still reports only
+      the install state, so the explorer check stays in the drill (I: add the
+      comparison to `owner status` too).
 - [ ] **Nothing on the agent's host**: the file is never copied there,
       and the agent's config carries no `recovery` entry (only the owner's
       local config does).
@@ -114,6 +115,7 @@ when L1–L3 have each passed within the periods in §5.
 |---|---|---|
 | Wrong passphrase | `wrong passphrase, or the key file was altered`; nothing sent (V, `keyfile.rs`) | the signer unit test `roundtrip_wrong_passphrase_and_tamper`; do it once by hand in L2 |
 | A byte of the file altered | the same error (AES-GCM authentication) | the same unit test |
+| A different recovery file (another key) | refused before the passphrase: `the recovery key about to sign (…) is not the one installed on the account` (V, `check_recovery_key`) | L1 (`recovery_drill`) |
 | `set-root` without `--retire` after a recovery | refused by the CLI: "retire the lost owner's validator" (V) | L1 (I: add a `chain.fails` case; not in `recovery_drill` today) |
 | `set-root` to a validator that is already installed, without retiring it | refused: Kernel would keep the old key (V) | L1 (I: add a `chain.fails` case; not in `recovery_drill` today) |
 | The recovery key is asked to sign an ordinary root operation **before** `recover` | the validator only has `changeRootValidator`: Kernel refuses (V, `RESILIENCE.md` §3.0) | L1 (I: add a case) |

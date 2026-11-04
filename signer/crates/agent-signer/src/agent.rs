@@ -35,6 +35,12 @@ pub struct Deployments {
     /// The P256Validator instance that holds a cold recovery key.
     #[serde(default)]
     pub p256_recovery_validator: Option<Address>,
+    /// Earlier instances, still root on some accounts: the CLI reads their
+    /// keys for the pre-signature checks but installs nothing new on them.
+    #[serde(default)]
+    pub p256_validator_v1: Option<Address>,
+    #[serde(default)]
+    pub p256_recovery_validator_v1: Option<Address>,
 }
 
 /// A TPM key: `"0x81010010"`; `{"handle": "0x81010011", "pcrs": [0, 2, 4, 7]}`

@@ -466,6 +466,15 @@ fn recovery_drill() {
 
     chain.ok(&["owner", "add-recovery", "--agent", &old_cfg]);
     assert!(chain.ok(&["owner", "status", "--agent", &old_cfg]).contains("installed = true"));
+    // a different recovery key is refused by the CLI's check against the
+    // chain, before anything is signed
+    let wrong = key(6);
+    let wrong_cfg = chain.config(
+        "wrong-recovery.json",
+        &Cfg { owner: &owner, recovery: Some(&wrong), account: Some(account.clone()), ..base_cfg(&owner, &agent, &counter, until) },
+    );
+    let refused = chain.fails(&["owner", "recover", "--agent", &wrong_cfg]);
+    assert!(refused.contains("not the one installed on the account"), "{refused}");
     chain.ok(&["owner", "recover", "--agent", &old_cfg]);
     let validator = chain.addr("p256Validator");
     let public_key = format!("{},{}", new_owner.x, new_owner.y);
