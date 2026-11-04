@@ -157,6 +157,10 @@ covers its signing path.
   mandate-bounded account (`BTCPAY.md`, #13). The Bitcoin side needs a
   server TEE and is a different product; `BTCPAY.md` §6 records only the
   requirements.
+- **The incident ledger**: `INCIDENTS.md` collects the real losses whose
+  root cause the design removes (DarkSword reading wallet keys from a
+  kernel-compromised iPhone, Circle's agents raising their own caps,
+  BTCPay's seeds on the server) and says for each what it does not remove.
 - **Interop to watch**: ERC-7715/7710 for expressing the mandate; the
   spend-mandate proposal for token budgets; BC-UR transport for an air-gapped
   owner phone (`CUPCAKE.md`, last section).
