@@ -23,3 +23,11 @@ examples/olas/open-autonomy/
 
 # Local per-machine agent configs (e.g. with a recovery key file path). Never commit.
 signer/*.local.json
+
+# Android (mobile/android)
+mobile/android/.gradle/
+mobile/android/.kotlin/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/local.properties
+mobile/android/p0-out/
