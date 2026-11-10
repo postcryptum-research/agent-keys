@@ -508,6 +508,52 @@ fn recovery_drill() {
     chain.ok(&["demo", "--agent", &new_cfg]);
 }
 
+/// The owner replaces its own key on the same validator — a new device, or
+/// the phone design's "new key on the same phone" (D2) — while that validator
+/// is root. Kernel will not uninstall the root validator, so the CLI pivots
+/// root onto the installed recovery validator inside the batch and back.
+/// Without a recovery key the CLI says what to do instead of sending.
+#[test]
+fn owner_rotates_its_key_on_the_root_validator() {
+    let chain = chain_or_skip!("rotate-root-key");
+    let (owner, agent, recovery, new_owner) = (key(1), key(2), key(4), key(6));
+    let counter = chain.addr("demoCounter");
+    let until = far_future(&chain);
+    let account = chain.deploy(&chain.config("agent.json", &base_cfg(&owner, &agent, &counter, until)));
+    let with = |name: &str, o: &Key, rec: Option<&Key>| {
+        chain.config(name, &Cfg { owner: o, recovery: rec, account: Some(account.clone()), ..base_cfg(o, &agent, &counter, until) })
+    };
+    let validator = chain.addr("p256Validator");
+    let public_key = format!("{},{}", new_owner.x, new_owner.y);
+
+    // no recovery key installed: refused with guidance, nothing sent
+    let bare = with("owner-norec.json", &owner, None);
+    let refused = chain.fails(&[
+        "owner", "set-root", "--agent", &bare, "--validator", &validator, "--retire", &validator, "--public-key", &public_key,
+    ]);
+    assert!(refused.contains("owner add-recovery"), "{refused}");
+
+    // with the recovery key installed, the rotation goes through in one operation
+    let old_cfg = with("owner.json", &owner, Some(&recovery));
+    chain.ok(&["owner", "add-recovery", "--agent", &old_cfg]);
+    chain.ok(&[
+        "owner", "set-root", "--agent", &old_cfg, "--validator", &validator, "--retire", &validator, "--public-key", &public_key,
+    ]);
+    let status = chain.ok(&["owner", "status", "--agent", &old_cfg]);
+    assert!(status.contains(&validator.to_lowercase()), "root is back on the validator: {status}");
+    assert!(status.contains("is root now = false"), "{status}");
+
+    // the new key is root; the old one is refused before any signature
+    let new_cfg = with("new-owner.json", &new_owner, Some(&recovery));
+    let before = chain.counter();
+    chain.ok(&["op", "send", "--agent", &new_cfg, "--root", "--target", &counter, "--data", INCREMENT]);
+    assert_eq!(chain.counter(), before + U256::from(1));
+    let refused = chain.fails(&["op", "send", "--agent", &old_cfg, "--root", "--target", &counter, "--data", INCREMENT]);
+    assert!(refused.contains("not the account's root key"), "{refused}");
+    // and the agent permission survived
+    chain.ok(&["demo", "--agent", &new_cfg]);
+}
+
 // ---------------------------------------------------------------- x402
 
 /// A minimal x402 server: 402 with PAYMENT-REQUIRED; with PAYMENT-SIGNATURE it

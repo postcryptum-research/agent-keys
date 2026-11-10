@@ -384,6 +384,10 @@ deleted tpm_sign-demo
 The owner and agent keys of the Base Sepolia account stay in that Mac's
 enclave.
 
+*Update 2026-11-10:* the account's root moved from the enclave key to a
+YubiKey 5C (`YUBIKEY.md`, "A second device"); the agent key stays in the
+enclave and still runs.
+
 ## 13. The rest of the CLI on the same account (2026-10-21)
 
 Everything `agent-signer` can do on-chain, run once on the enclave account

@@ -166,12 +166,18 @@ laptop: agent-signer CLI                         phone: owner app
 | # | Phase | Proves | Done when |
 |---|---|---|---|
 | P0 | **Spike** on the first platform | the hardware signs a raw 32-byte digest that `P256Validator` accepts | a phone signature verifies on a local anvil through a root operation (`anvil_cli` harness) |
-|    | *Status 2026-11-07:* Android, TEE-only phone — the key, the biometric-gated signature over the golden `userOpHash`, the attestation chain to Google's root and the committed vector `p256_android.json` (`mobile/android/README.md`, run record). The anvil root operation waits for P1's signing hook. | | |
 | P1 | Enrollment and blind signing | the QR → LAN loop works with the real CLI | `owner set-root` to the phone key, then a root op signed on the phone, on anvil; then on Base Sepolia with the owner's yes |
 | P2 | Decode and display | what you see is what you sign | the phone shows a decoded mandate and recomputes the hash; a tampered request is visibly different |
 | P3 | Attestation | the laptop knows where the key lives | Android chain verified at enrollment; the iOS approach decided |
 | P4 | Second platform | the same thing on the other OS | P0–P2 pass there |
 | P5 | Distribution | others can install it | TestFlight / APK to testers; app stores later |
+
+P0 status (2026-11-07, PR #18): run on a TEE-only Android phone — the key
+with §5.2's parameters, the biometric-gated signature over the golden
+`userOpHash`, the attestation chain to Google's root, and the committed
+vector `contracts/test/vectors/p256_android.json` (run record in
+`mobile/android/README.md`). The anvil root operation, the other half of
+P0's "done when", is the first step of P1: the signing hook of design §8.3.
 
 ## Threat model, briefly
 
