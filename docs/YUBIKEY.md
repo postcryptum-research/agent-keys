@@ -34,9 +34,11 @@ run on 2026-11-02 with a YubiKey 5 NFC, firmware 5.8.0.
   normalized to low-s. The device answers DER; the backend parses it.
 - The backend never prompts and never holds the management key. The CLI
   hands it a PIN *provider* (`rpassword`, zeroized), called at the first
-  signature that needs the PIN and kept for the rest of the operation, so a
-  bundler path that signs twice asks once; a rejected PIN is forgotten
-  again. **An agent key is refused** unless the slot's policies are PIN
+  signature that needs the PIN and kept for the rest of the operation; a
+  rejected PIN is forgotten again. Through a bundler the CLI estimates gas
+  with a placeholder and signs **once**, so an owner operation is one PIN
+  and one touch; only a bundler that refuses the fee after the fact costs a
+  second touch, and the CLI says so (design §8.3, #15). **An agent key is refused** unless the slot's policies are PIN
   never and touch never, because an unattended agent cannot answer either.
 - **Before any root operation the CLI checks the key against the chain:**
   it reads the account's root validator and that validator's

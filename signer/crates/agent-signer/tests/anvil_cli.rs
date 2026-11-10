@@ -630,11 +630,26 @@ fn x402_pay_and_reclaim() {
 /// the UserOperation back and submits it through the real
 /// `EntryPoint.handleOps` on anvil, so the client is judged by the real
 /// EntryPoint, not by a mock.
+#[derive(Clone, Copy, PartialEq)]
+enum FakeBundler {
+    /// Publishes gas prices (`pimlico_getUserOperationGasPrice`) and accepts
+    /// what it estimated.
+    Plain,
+    /// Publishes no prices and refuses the first submission as underpriced,
+    /// naming a floor the way Pimlico does; accepts the repriced resend.
+    FeeFloor,
+}
+
 fn fake_bundler(chain_url: String, entry_point: String) -> String {
+    fake_bundler_with(chain_url, entry_point, FakeBundler::Plain)
+}
+
+fn fake_bundler_with(chain_url: String, entry_point: String, mode: FakeBundler) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     std::thread::spawn(move || {
         let mut receipts: std::collections::HashMap<String, Value> = Default::default();
+        let mut refused_once = false;
         for stream in listener.incoming() {
             let mut stream = stream.unwrap();
             let mut reader = BufReader::new(stream.try_clone().unwrap());
@@ -659,10 +674,39 @@ fn fake_bundler(chain_url: String, entry_point: String) -> String {
             };
             let result: Result<Value, String> = match req["method"].as_str().unwrap() {
                 "eth_supportedEntryPoints" => Ok(json!([entry_point])),
-                "eth_estimateUserOperationGas" => Ok(json!({
-                    "preVerificationGas": "0x186a0", "verificationGasLimit": "0x16e360", "callGasLimit": "0x7a120",
-                    "paymasterVerificationGasLimit": "0x186a0", "paymasterPostOpGasLimit": "0x0",
-                })),
+                "pimlico_getUserOperationGasPrice" => match mode {
+                    FakeBundler::Plain => Ok(json!({
+                        "slow": {"maxFeePerGas": "0x3b9aca00", "maxPriorityFeePerGas": "0xf4240"},
+                        "standard": {"maxFeePerGas": "0x77359400", "maxPriorityFeePerGas": "0x1e8480"},
+                        "fast": {"maxFeePerGas": "0xb2d05e00", "maxPriorityFeePerGas": "0x2dc6c0"},
+                    })),
+                    FakeBundler::FeeFloor => Err("unsupported method pimlico_getUserOperationGasPrice".into()),
+                },
+                "eth_estimateUserOperationGas" => {
+                    // the client estimates with a placeholder of the real signature's
+                    // length: 64 bytes on the root path, 65 under a permission
+                    let sig_len = req["params"][0]["signature"].as_str().map(|s| (s.len() - 2) / 2).unwrap_or(0);
+                    if sig_len != 64 && sig_len != 65 {
+                        Err(format!("estimate expects a 64- or 65-byte placeholder signature, got {sig_len} bytes"))
+                    } else {
+                        Ok(json!({
+                            "preVerificationGas": "0x186a0", "verificationGasLimit": "0x16e360", "callGasLimit": "0x7a120",
+                            "paymasterVerificationGasLimit": "0x186a0", "paymasterPostOpGasLimit": "0x0",
+                        }))
+                    }
+                }
+                "eth_sendUserOperation" if mode == FakeBundler::FeeFloor && !refused_once => {
+                    refused_once = true;
+                    let current = req["params"][0]["maxPriorityFeePerGas"]
+                        .as_str()
+                        .map(|s| u128::from_str_radix(s.trim_start_matches("0x"), 16).unwrap())
+                        .unwrap_or(0);
+                    Err(format!(
+                        "error code -32602: maxPriorityFeePerGas must be at least {} (current maxPriorityFeePerGas: {current}) - \
+                         use pimlico_getUserOperationGasPrice to get the current gas price",
+                        current + 1
+                    ))
+                }
                 "eth_sendUserOperation" => {
                     let op = &req["params"][0];
                     let hex_bytes = |k: &str| -> Vec<u8> {
@@ -785,10 +829,21 @@ fn sponsored_and_bundled() {
     let bundler = fake_bundler(chain.url.clone(), chain.addr("entryPoint"));
     let via = chain.ok(&["demo", "--agent", &cfg, "--sponsored", "--bundler", &bundler]);
     assert!(via.contains("bundler accepted"), "{via}");
+    // priced by the bundler, estimated with a placeholder, signed once
+    assert!(via.contains("gas prices:     from the bundler"), "{via}");
+    assert!(via.contains("+20% margin"), "{via}");
+    assert!(!via.contains("signing once more"), "{via}");
     assert_eq!(chain.counter(), before + U256::from(2));
     chain.ok(&["account", "fund", "--agent", &cfg, "--wei", "100000000000000000"]);
     chain.ok(&["demo", "--agent", &cfg, "--bundler", &bundler]);
     assert_eq!(chain.counter(), before + U256::from(3));
+    // a bundler that publishes no prices and enforces a priority-fee floor at
+    // submission: the operation is repriced, signed once more and accepted
+    let strict = fake_bundler_with(chain.url.clone(), chain.addr("entryPoint"), FakeBundler::FeeFloor);
+    let repriced = chain.ok(&["demo", "--agent", &cfg, "--bundler", &strict]);
+    assert!(repriced.contains("repricing and signing once more"), "{repriced}");
+    assert!(repriced.contains("bundler accepted"), "{repriced}");
+    assert_eq!(chain.counter(), before + U256::from(4));
     // a refused operation through the bundler is reported, not swallowed
     let refused = chain.fails(&["op", "send", "--agent", &cfg, "--bundler", &bundler, "--target", "0x000000000000000000000000000000000000dEaD", "--wei", "1"]);
     assert!(!refused.is_empty());
