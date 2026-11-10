@@ -1,7 +1,9 @@
 {
   "deployments": "../contracts/deployments/84532.enclave.json",
   "owner": {
-    "secure-enclave": "tpm_sign-owner2"
+    "yubikey": {
+      "slot": "9c"
+    }
   },
   "ownerPublicKey": {
     "x": "0xfa990fbed501c795ecaae03573c69f1d957df2a8976195be8b3478a168a37c9f",

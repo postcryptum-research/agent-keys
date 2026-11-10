@@ -185,6 +185,59 @@ The four configs now carry `"owner": { "yubikey": { "slot": "9c" } }`. Every
 owner operation on this account needs the YubiKey, its PIN and a touch from
 here on; the recovery key file is the way back if the YubiKey is lost.
 
+## A second device, and the Secure Enclave test account (2026-11-10)
+
+A **YubiKey 5C NFC** (firmware 5.8.0), set up on macOS exactly as above,
+is the second device this backend has run on: `key show` and `key check`
+with PIN + touch, the attestation chain to `Yubico Attestation Root 1`
+(`.3.3 = 05 08 00`, `.3.8 = 03 02`, `.3.9 = 03`: USB-C keychain), a vector
+through the precompile, and the hardware test (with `--nocapture`; see
+the note above). macOS needs no setup: PC/SC is built in. The first time
+the key is plugged in, macOS may open its Keyboard Setup Assistant for the
+YubiKey's OTP interface; skip it.
+
+With the owner's yes (PR #14), that key became the root of the **Secure
+Enclave test account** `0xD62Dd4afD4e77cDFA6f8eaD1D2655745cF5af628`
+(`signer/agent.enclave.base-sepolia.json`), whose owner until then was
+`tpm_sign-owner2` in a Mac's Secure Enclave:
+
+1. **The first attempt reverted in simulation, and nothing was sent.**
+   `owner set-root --validator <P256Validator> --retire <P256Validator>` — a
+   new key on the *same* validator, while that validator is root — hit
+   Kernel's `RootValidatorCannotBeRemoved()` (`0x98015ee8`): Kernel never
+   uninstalls the validator that is root at that moment. The CLI's
+   same-validator path had only ever run after `owner recover`, when root
+   was elsewhere. **Fixed the same day:** when the validator to retire is
+   the current root, the batch first points root at the installed recovery
+   validator, then uninstalls, reinstalls with the new key and points root
+   back — one operation under the current owner's signature. Without a
+   recovery key the CLI refuses with the advice to install one first. The
+   anvil case `owner_rotates_its_key_on_the_root_validator` covers both.
+   This is the path a phone owner takes when it rotates its own key
+   (`MOBILE_OWNER_DESIGN.md` §2.2, §5.4), so it had to work.
+2. **Handover**, signed by the enclave key, no prompt — tx
+   `0x70543b1650778607ac7b281d130890f4add133b06da949505e08d36964e0d866`
+   (block 57014798, 179,975 gas). `publicKeys(account)` on the validator
+   is the YubiKey's `(x, y)`; `owner status`: root validator unchanged,
+   recovery still `installed = true, may take root = true`.
+3. **The old owner is refused before any signature.** A config still naming
+   the enclave key: `the key about to sign (0x6b12ddff…) is not the
+   account's root key (0x3c34687f… in validator 0xdA4c…50c2)`. No PIN, no
+   touch, nothing sent — the check from this PR, on macOS.
+4. **The YubiKey is root.** `op send --root` to `DemoCounter.increment`,
+   PIN + touch — tx
+   `0x8e3fc3f7285943148aeddb2ca88e68e583276099c3eefd5438077e6ac04b8c87`
+   (block 57016004, 135,748 gas).
+5. **The agent survived.** `demo --sponsored` with the enclave agent key:
+   counter 37 → 38, tx
+   `0xdf1516540a449a91f65503a7054e0c87c532e81d66b1a9e6d8fa1d1813594955`
+   (block 57016142); `permission show`: every field `ok`.
+
+The config now says `"owner": {"yubikey": {"slot": "9c"}}`; its
+`ownerPublicKey` is the key the account was created with (the convention:
+the creation key derives the address and is never rewritten; the current
+root is read from the chain).
+
 ## Security notes
 
 - **What the device protects:** the private key never leaves the applet;

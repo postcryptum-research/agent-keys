@@ -452,8 +452,32 @@ impl Session {
         let install = kernel::install_validator_call(vid, key, nonce);
         let change = kernel::change_root_calldata(validator, None);
         let me = self.account;
+        let root_now = IKernel::new(me, self.provider.clone()).rootValidator().call().await?;
         let calls = match retire {
-            // the same contract: free it first, then install the new key
+            // the same contract while it is root (a new key on the same
+            // device, or a new device on the same validator): Kernel refuses
+            // to uninstall the root validator (RootValidatorCannotBeRemoved),
+            // so root pivots onto the installed recovery validator for the
+            // length of this batch — atomically, under the current owner's
+            // signature — and comes back on the new key.
+            Some(old) if reinstall && root_now == vid => {
+                let pivot = self.recovery_validator()?;
+                if !self.is_installed(pivot).await? {
+                    bail!(
+                        "replacing the key of the root validator {validator} needs a place for root to stand \
+                         meanwhile: install the recovery key first (`owner add-recovery`), or hand over to another \
+                         validator instance and retire this one"
+                    );
+                }
+                vec![
+                    (me, U256::ZERO, kernel::change_root_calldata(pivot, None)),
+                    (me, U256::ZERO, kernel::uninstall_validator_call(old)),
+                    (me, U256::ZERO, install),
+                    (me, U256::ZERO, change),
+                ]
+            }
+            // the same contract, not root at the moment (after `recover`):
+            // free it first, then install the new key
             Some(old) if reinstall => vec![
                 (me, U256::ZERO, kernel::uninstall_validator_call(old)),
                 (me, U256::ZERO, install),
