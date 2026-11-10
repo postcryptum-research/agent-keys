@@ -2,7 +2,9 @@
 
 *Researched 2026-11-02, from the press coverage of the incident and BTCPay's
 own documentation; §1 updated 2026-11-03 with BTCPay's incident post and the
-Bitquery tally. The owner brought the case as "a project for integration
+Bitquery tally; since 2026-11-10 every BTCPay integration, including option E
+below, belongs to the owner's separate project `77ph/BTCPayTEE`, and this
+page is analysis only. The owner brought the case as "a project for integration
 lying on the surface". This page analyses every option, and marks which ones
 are in scope for TPM_sign (a commodity hardware key under an on-chain
 mandate) and which belong to a different product. Marks: **V** verified at
@@ -69,7 +71,7 @@ chain.
 | B | **Bitcoin signing inside a server TEE with a policy co-signer the host cannot bypass**: PSBT outputs only to the merchant's cold descriptor, per-period caps for refunds, expiry, owner approvals from a device the host cannot reach | a TEE on server hardware, attestation of the signer, a PSBT policy engine, Lightning aside | the TEE's policy, which the admin cannot change | **No, a different product:** the owner's [`77ph/BTCPayTEE`](https://github.com/77ph/BTCPayTEE) (private), which links back here for what it takes from TPM_sign. This page only records the requirements (§6) |
 | C | **Multisig with an external co-signer service** | a service that signs the second key under its own rules | the service | **No.** That is the hosted-custodian model of `LANDSCAPE.md` §2a; TPM_sign exists to avoid it |
 | D | **Timelocked vault scripts** (hot key spends only after a delay the cold key can interrupt) | script design, a watcher, user education | the script, for timing only; no amount or destination rule | **No.** A real Bitcoin mitigation, but not ours, and it still needs someone watching |
-| E | **A BTCPay plugin for USDC on Base whose store wallet is a Kernel account** | a BTCPay plugin (C#), a Base RPC, `agent-signer` next to BTCPay, a mandate template | **the chain**: `AgentPolicy`, which the admin cannot change without the owner's hardware key | **Yes** ([#13](https://github.com/77ph/TPM_sign/issues/13)) |
+| E | **A BTCPay plugin for USDC on Base whose store wallet is a Kernel account** | a BTCPay plugin (C#), a Base RPC, `agent-signer` next to BTCPay, a mandate template | **the chain**: `AgentPolicy`, which the admin cannot change without the owner's hardware key | **Fits the architecture, but not built here.** On 2026-11-10 the owner moved the whole BTCPay integration, this option included, into [`77ph/BTCPayTEE`](https://github.com/77ph/BTCPayTEE); #13 closed. §4 and §5 stay as the design that project can take |
 | F | **Lightning** (the LND node's credentials, the other hot asset) | — | — | **No.** Out of scope for both products until the Bitcoin side exists |
 
 BTCPay itself leaves room for E: it keeps opt-in integrations for other
@@ -148,11 +150,14 @@ What the incident says it must have:
 
 ## 7. What this project does next
 
-- [#13](https://github.com/77ph/TPM_sign/issues/13): option E, in phases:
-  a receive-only plugin; payouts under the forwarder mandate; the owner's
-  phone for mandate changes and large refunds.
-- [#11](https://github.com/77ph/TPM_sign/issues/11): the V6 bundle, where a
-  payee list would replace the forwarder.
+Nothing BTCPay-specific. Since 2026-11-10 the BTCPay integration in all its
+forms, the Bitcoin and Litecoin side (option B) and the USDC-on-Base store
+wallet (option E), is the owner's separate project
+[`77ph/BTCPayTEE`](https://github.com/77ph/BTCPayTEE); #13 was closed. This
+page stays as the analysis that project builds on. What remains here from
+the case is general: [#11](https://github.com/77ph/TPM_sign/issues/11), the
+V6 bundle, where a per-token payee list would replace the forwarder for any
+deployment that sweeps to a fixed address.
 
 ## Sources
 
