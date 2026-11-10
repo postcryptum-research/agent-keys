@@ -300,7 +300,11 @@ mod tests {
     /// Signs with the key in `YUBIKEY_PIV_SLOT` (default 9c) of the one
     /// YubiKey plugged in; the PIN comes from `YUBIKEY_PIV_PIN` when the
     /// slot's policy needs it. Run:
-    /// `read -s YUBIKEY_PIV_PIN && export YUBIKEY_PIV_PIN && cargo test -p hw-signer --features yubikey-piv yubikey -- --ignored`
+    /// `read -s YUBIKEY_PIV_PIN && export YUBIKEY_PIV_PIN && cargo test -p hw-signer --features yubikey-piv yubikey -- --ignored --nocapture`
+    /// `--nocapture` matters: the touch cue is printed from the test, and
+    /// without it the runner swallows it, the 15-second touch window closes
+    /// unseen, and the device answers "authentication error". The key's
+    /// light blinks while it waits for the touch.
     #[test]
     #[ignore = "requires a YubiKey with a P-256 key in the slot"]
     fn yubikey_signs_and_verifies() {

@@ -128,7 +128,10 @@ cargo build -p agent-signer --features tpm,yubikey        # tpm for a TPM agent 
 # the module's own tests; the hardware one needs the PIN in YUBIKEY_PIV_PIN
 cargo test -p hw-signer --features yubikey-piv yubikey
 read -s YUBIKEY_PIV_PIN && export YUBIKEY_PIV_PIN && \
-  cargo test -p hw-signer --features yubikey-piv yubikey -- --ignored
+  cargo test -p hw-signer --features yubikey-piv yubikey -- --ignored --nocapture
+# --nocapture, or the runner swallows the "touch the YubiKey…" cue, the
+# 15-second touch window closes unseen and the test fails with
+# "authentication error". The key's light blinks while it waits for the touch.
 ```
 
 `key create` and `key evict` refuse on purpose: ykman generates keys (it
