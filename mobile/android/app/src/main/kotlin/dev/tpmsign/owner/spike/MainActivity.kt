@@ -163,7 +163,8 @@ class MainActivity : AppCompatActivity() {
                     val (x, y) = publicXY()
                     val json = """
                         |{
-                        |  "backend": "android-keystore-$tier",
+                        |  "backend": "android-keystore",
+                        |  "tier": "$tier",
                         |  "message": "$GOLDEN_MESSAGE",
                         |  "digest": "0x$GOLDEN_DIGEST_HEX",
                         |  "r": "0x${r.hex32()}",

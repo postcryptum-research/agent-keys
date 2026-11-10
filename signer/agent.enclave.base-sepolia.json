@@ -4,8 +4,8 @@
     "secure-enclave": "tpm_sign-owner2"
   },
   "ownerPublicKey": {
-    "x": "0x6b12ddff426f46e98ede8323d1a5ea32171c107647cce025c81aedad607c293c",
-    "y": "0x200835b1a8dbb33ebac5ec4656ce95154961a90599e24d6cb801e6787af91c6f"
+    "x": "0xfa990fbed501c795ecaae03573c69f1d957df2a8976195be8b3478a168a37c9f",
+    "y": "0x79e91bb677633ef9b93f9b3f167589d463e0a2182f372ef10db6ee041ceee364"
   },
   "agent": {
     "secure-enclave": "tpm_sign-agent"

@@ -117,8 +117,8 @@ nothing (AA24). Who signs the `set-root` decides how safe it is (T2):
 3. The user approves. Biometric verification unlocks the key, and the
    hardware signs the 32-byte hash.
 4. The phone posts the signature. The CLI checks that it verifies against
-   `ownerPublicKey` over its own `userOpHash`, frames it as `r ‖ s`, and
-   submits through `handleOps` or the bundler.
+   the account's **on-chain root key** over its own `userOpHash`, frames it
+   as `r ‖ s`, and submits through `handleOps` or the bundler.
 
 ### 2.4 Health check
 
@@ -702,8 +702,12 @@ translation can follow.
 
 - **New variant `KeySpec::Phone`,** accepted for the **owner** role only;
   refused for the agent with an explanation. Recovery may come later.
-- **`ownerPublicKey` is required** with a phone owner. The CLI checks that
-  the fingerprint matches it.
+- **`ownerPublicKey` stays the account's creation key** (the convention
+  decided on 2026-11-10: it derives the counterfactual address and is not
+  rewritten after a handover). The key the phone must hold is the
+  **on-chain root key**, which the CLI reads from the root validator before
+  every root operation (`check_root_key`); the config's `fingerprint` is
+  checked against that key, and a mismatch is refused before any prompt.
 
 ### 8.2 Commands
 
@@ -762,7 +766,8 @@ translation can follow.
      RIP-7212's 3,450 (I). The spec records the verification gas the
      tests expect, so that a fall back to the Solidity verifier, about 100
      times dearer, shows up as a failure.
-4. **After the phone answers:** verify against `ownerPublicKey`, frame
+4. **After the phone answers:** verify against the on-chain root key (the
+   one `check_root_key` read), frame
    with `root_signature`, submit.
 
 ### 8.4 Terminal QR
