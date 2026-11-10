@@ -19,12 +19,41 @@ use serde_json::{json, Value};
 
 use crate::abi::IEntryPoint::PackedUserOperation;
 
-fn hi_lo(word: B256) -> (u128, u128) {
+/// Split a packed `(hi, lo)` word: `accountGasLimits` into (verification,
+/// call), `gasFees` into (maxPriorityFee, maxFee).
+pub fn split_gas(word: B256) -> (u128, u128) {
     let b = word.0;
     (
         u128::from_be_bytes(b[..16].try_into().expect("16 bytes")),
         u128::from_be_bytes(b[16..].try_into().expect("16 bytes")),
     )
+}
+
+fn hi_lo(word: B256) -> (u128, u128) {
+    split_gas(word)
+}
+
+/// The floor a bundler names when it refuses an operation as underpriced,
+/// e.g. Pimlico's `maxPriorityFeePerGas must be at least 1000000 (current
+/// maxPriorityFeePerGas: 100000)`. Returns the floor in wei.
+pub fn min_priority_fee_from_error(message: &str) -> Option<u128> {
+    let idx = message.find("maxPriorityFeePerGas must be at least")?;
+    let rest = &message[idx + "maxPriorityFeePerGas must be at least".len()..];
+    let digits: String = rest.trim_start().chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
+/// One tier of `pimlico_getUserOperationGasPrice`.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GasPrice {
+    pub max_fee_per_gas: U256,
+    pub max_priority_fee_per_gas: U256,
+}
+
+#[derive(Debug, Deserialize)]
+struct GasPriceTiers {
+    standard: GasPrice,
 }
 
 fn quantity(n: u128) -> Value {
@@ -114,9 +143,20 @@ impl Bundler {
         Ok(())
     }
 
-    /// Apply the bundler's gas estimate to `op`. The operation must carry a
-    /// signature that validates, since the bundler simulates it; the caller
-    /// re-signs afterwards because the hash covers the gas fields.
+    /// The bundler's own gas prices, when it publishes them
+    /// (`pimlico_getUserOperationGasPrice`): the only way to know the floor
+    /// it will enforce at `eth_sendUserOperation`. `None` when the method is
+    /// not offered; the caller falls back to the node's estimate.
+    pub async fn gas_price(&self) -> Option<GasPrice> {
+        let tiers: Result<GasPriceTiers, _> =
+            self.rpc.raw_request("pimlico_getUserOperationGasPrice".into(), json!([])).await;
+        tiers.ok().map(|t| t.standard)
+    }
+
+    /// Apply the bundler's gas estimate to `op`. The operation carries a
+    /// placeholder signature of the real one's length: bundlers simulate
+    /// without checking it, and the hash covers the gas fields, so the
+    /// hardware signs once, after this.
     pub async fn estimate(&self, op: &mut PackedUserOperation) -> Result<GasEstimate> {
         let est: GasEstimate = self
             .rpc
@@ -152,6 +192,12 @@ impl Bundler {
             .context("eth_sendUserOperation")
     }
 
+    /// Whether a refusal came from the bundler's priority-fee floor, and
+    /// what the floor is.
+    pub fn fee_floor(error: &anyhow::Error) -> Option<u128> {
+        min_priority_fee_from_error(&format!("{error:#}"))
+    }
+
     /// Poll until the operation is included (or `timeout` passes).
     pub async fn wait(&self, user_op_hash: B256, timeout: Duration) -> Result<UserOpReceipt> {
         let started = std::time::Instant::now();
@@ -169,5 +215,32 @@ impl Bundler {
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_pimlico_fee_floor() {
+        let msg = "eth_sendUserOperation\n\nCaused by:\n    server returned an error response: error code -32602: \
+                   maxPriorityFeePerGas must be at least 1000000 (current maxPriorityFeePerGas: 100000) - use \
+                   pimlico_getUserOperationGasPrice to get the current gas price";
+        assert_eq!(min_priority_fee_from_error(msg), Some(1_000_000));
+        assert_eq!(min_priority_fee_from_error("AA24 signature error"), None);
+        assert_eq!(min_priority_fee_from_error("maxPriorityFeePerGas must be at least"), None);
+    }
+
+    #[test]
+    fn gas_price_tiers_parse() {
+        let v: GasPriceTiers = serde_json::from_value(json!({
+            "slow": {"maxFeePerGas": "0x829b42b5", "maxPriorityFeePerGas": "0x829b42b5"},
+            "standard": {"maxFeePerGas": "0x88d36a75", "maxPriorityFeePerGas": "0xf4240"},
+            "fast": {"maxFeePerGas": "0x8f0b9234", "maxPriorityFeePerGas": "0x8f0b9234"}
+        }))
+        .unwrap();
+        assert_eq!(v.standard.max_priority_fee_per_gas, U256::from(1_000_000u64));
+        assert_eq!(v.standard.max_fee_per_gas, U256::from(0x88d36a75u64));
     }
 }

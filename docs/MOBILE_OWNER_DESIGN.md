@@ -727,19 +727,34 @@ translation can follow.
    `owner-core`, compares it with `EntryPoint.getUserOpHash`, and stops on
    any difference. That check doubles as a test of the core against the
    chain on every run.
-3. **One signature with a bundler.** Today the hardware signs twice when a
-   bundler is used, before and after gas estimation (V, `chain.rs`). With
-   a phone that would mean two biometric prompts. Instead:
-   - the CLI estimates with a placeholder signature of **exactly 64
-     bytes**. `P256Validator` returns early when the length is not 64 (V,
-     `P256Validator.sol`), so any other length would measure validation
-     without the P-256 verification and underestimate it, and the real
-     operation would fail with AA23 after the user had already approved;
+3. **One signature with a bundler.** Until 2026-11-10 the hardware signed
+   twice when a bundler was used, before and after gas estimation; with a
+   phone that would have meant two biometric prompts, with a YubiKey two
+   touches. The CLI now does what this item asked (V, `chain.rs`
+   `send_raw_at`, issue #15):
+   - it estimates with a placeholder signature of **exactly the real
+     one's length**, 64 bytes on the root path and 65 under a permission
+     (`PLACEHOLDER_SIGNATURE`, framed like the real one). `P256Validator`
+     returns early when the length is not 64 (V, `P256Validator.sol`), so
+     any other length would measure validation without the P-256
+     verification and underestimate it, and the real operation would fail
+     with AA23 after the user had already approved;
    - estimation works because `validateUserOp` returns
      `SIG_VALIDATION_FAILED` for a bad signature instead of reverting (V,
-     checked by the audit). P1 confirms it against the public bundler;
-   - the CLI adds a **20 % margin** to `verificationGasLimit`, then asks the
-     phone once;
+     checked by the audit; the anvil suite's fake bundler refuses any other
+     placeholder length);
+   - it adds a **20 % margin** to `verificationGasLimit`, then asks the
+     device once;
+   - gas prices come from the bundler itself when it publishes them
+     (`pimlico_getUserOperationGasPrice`), since the node's estimate can
+     fall under the floor the bundler enforces at submission. If a bundler
+     publishes no prices and refuses the operation naming its floor, the CLI
+     reprices to it and asks for **one more** signature, saying so; that is
+     the only case with two prompts (V, anvil `sponsored_and_bundled`);
+   - confirmed against the public Pimlico endpoint on Base Sepolia on
+     2026-11-10: prices from the bundler, estimate on the placeholder
+     accepted, one signature, included (tx
+     `0x15a5fcf916b2dd0f3516a5eca2bdb0aebf075909e8e895c08c00ec6f7751ff65`);
    - the precompile is present on Base Sepolia (V, 2026-10-28: a call to
      `0x…0100` with the committed enclave vector returns 1, a tampered copy
      returns nothing). A direct call estimates at 30,811 gas, which after

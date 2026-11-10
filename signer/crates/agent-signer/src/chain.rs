@@ -50,6 +50,12 @@ pub fn forbidden_target(dep: &Deployments, account: Address, target: Address, se
     modules.iter().find(|(a, _)| *a == Some(target)).map(|(_, why)| why.to_string())
 }
 
+/// Stands in for the real signature while a bundler estimates gas: the same
+/// length, plausible non-zero scalars, never valid. Our validators report a
+/// wrong signature as failed instead of reverting, so the simulation runs to
+/// the end and the hardware signs only once, over the final gas fields.
+const PLACEHOLDER_SIGNATURE: hw_signer::Signature = hw_signer::Signature { r: [0x11; 32], s: [0x22; 32] };
+
 /// Secrets come from the environment (optionally a `.env` file), never from
 /// the agent config: `BASE_SEPOLIA_RPC_URL` (or `RPC_URL`) and, optionally,
 /// `GAS_WALLET_KEYFILE`, a file holding the hex key of a small hot wallet that
@@ -838,7 +844,23 @@ impl Session {
             }
         };
         eprintln!("nonce:          {nonce:#x}");
-        let fees = self.provider.estimate_eip1559_fees().await?;
+        // Gas prices: the bundler's own when it publishes them (it enforces a
+        // floor at submission that the node's estimate can fall under),
+        // otherwise the node's.
+        let bundler_price = match &self.bundler {
+            Some(b) => b.gas_price().await,
+            None => None,
+        };
+        let (max_priority_fee, max_fee) = match bundler_price {
+            Some(p) => {
+                eprintln!("gas prices:     from the bundler");
+                (p.max_priority_fee_per_gas.to::<u128>(), p.max_fee_per_gas.to::<u128>())
+            }
+            None => {
+                let fees = self.provider.estimate_eip1559_fees().await?;
+                (fees.max_priority_fee_per_gas, fees.max_fee_per_gas)
+            }
+        };
         let verification_gas: u128 = if deployed { 300_000 } else { 1_500_000 };
         let call_gas = self.estimate_call_gas(&call_data, deployed).await?;
         eprintln!("gas limits:     verification {verification_gas}, call {call_gas}");
@@ -850,7 +872,7 @@ impl Session {
             callData: call_data,
             accountGasLimits: kernel::pack_gas(verification_gas, call_gas),
             preVerificationGas: U256::from(100_000u64),
-            gasFees: kernel::pack_gas(fees.max_priority_fee_per_gas, fees.max_fee_per_gas),
+            gasFees: kernel::pack_gas(max_priority_fee, max_fee),
             paymasterAndData: paymaster_and_data,
             signature: Bytes::new(),
         };
@@ -888,6 +910,22 @@ impl Session {
             SignAs::Agent => kernel::permission_signature(sig),
             _ => kernel::root_signature(sig),
         };
+        if let Some(bundler) = &self.bundler {
+            // The bundler's estimate replaces ours. It simulates the operation
+            // with a placeholder signature of the real one's length (our
+            // validators answer "failed", they do not revert), so the hardware
+            // signs once, after the gas fields are final: one touch, one
+            // confirmation per operation. The placeholder's failed check may
+            // cost less than a real one, hence the margin on verification.
+            op.signature = frame(&PLACEHOLDER_SIGNATURE);
+            let est = bundler.estimate(&mut op).await?;
+            let (verification, call) = crate::bundler::split_gas(op.accountGasLimits);
+            op.accountGasLimits = kernel::pack_gas(verification * 12 / 10, call);
+            eprintln!(
+                "bundler est.:   preVerification {}, verification {} (+20% margin), call {}",
+                est.pre_verification_gas, est.verification_gas_limit, est.call_gas_limit
+            );
+        }
         let mut user_op_hash = self.user_op_hash_checked(&ep, &op).await?;
         op.signature = frame(&signer.sign_digest(&user_op_hash.0)?);
         eprintln!(
@@ -902,17 +940,26 @@ impl Session {
         eprintln!("gas paid by:    {}", if sponsored { "paymaster" } else { "the account" });
 
         if let Some(bundler) = &self.bundler {
-            // The bundler's estimate replaces ours; the hash covers the gas
-            // fields, so the hardware signs once more.
-            let est = bundler.estimate(&mut op).await?;
-            eprintln!(
-                "bundler est.:   preVerification {}, verification {}, call {}",
-                est.pre_verification_gas, est.verification_gas_limit, est.call_gas_limit
-            );
-            user_op_hash = self.user_op_hash_checked(&ep, &op).await?;
-            op.signature = frame(&signer.sign_digest(&user_op_hash.0)?);
             eprintln!("userOpHash:     {user_op_hash}");
-            let sent = bundler.send(&op).await?;
+            let sent = match bundler.send(&op).await {
+                Ok(hash) => hash,
+                Err(e) => match Bundler::fee_floor(&e) {
+                    // The bundler's floor moved under us (or it publishes no
+                    // prices): lift both fees to it and sign once more. The
+                    // one case that costs a second touch, and it says so.
+                    Some(floor) => {
+                        let (priority, max_fee) = crate::bundler::split_gas(op.gasFees);
+                        let bump = floor.saturating_sub(priority);
+                        op.gasFees = kernel::pack_gas(floor, max_fee.saturating_add(bump));
+                        eprintln!("bundler wants maxPriorityFeePerGas ≥ {floor} wei: repricing and signing once more");
+                        user_op_hash = self.user_op_hash_checked(&ep, &op).await?;
+                        op.signature = frame(&signer.sign_digest(&user_op_hash.0)?);
+                        eprintln!("userOpHash:     {user_op_hash}");
+                        bundler.send(&op).await?
+                    }
+                    None => return Err(e),
+                },
+            };
             if sent != user_op_hash {
                 bail!("bundler reports userOpHash {sent}, we computed {user_op_hash}");
             }
