@@ -170,6 +170,23 @@ contract P256ValidatorTest is Test {
         );
     }
 
+    /// A phone's Android Keystore key (TEE) signed the owner-core golden
+    /// `userOpHash` with NONEwithECDSA behind a biometric prompt
+    /// (mobile/android, P0). The validator accepts it as it would any root key.
+    function test_androidVector_passesValidator() public {
+        string memory json = vm.readFile("test/vectors/p256_android.json");
+        bytes32 digest = vm.parseJsonBytes32(json, ".digest");
+        bytes32 r = vm.parseJsonBytes32(json, ".r");
+        bytes32 s = vm.parseJsonBytes32(json, ".s");
+        _install(account, vm.parseJsonBytes32(json, ".x"), vm.parseJsonBytes32(json, ".y"));
+
+        assertEq(_validate(account, digest, abi.encodePacked(r, s)), SIG_VALIDATION_SUCCESS_UINT);
+        assertEq(
+            _validate(account, digest ^ bytes32(uint256(1)), abi.encodePacked(r, s)),
+            SIG_VALIDATION_FAILED_UINT
+        );
+    }
+
     // --- end to end through EntryPoint and Kernel ---
 
     function test_kernel_executesUserOpSignedByP256() public {
