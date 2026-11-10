@@ -458,6 +458,9 @@ contract AgentPolicy is IPolicy {
         if (!m.allowed[target][selector]) return (false, 0);
         // Install refuses these; refused again here so that no mandate, in
         // any version's storage, can reach the account or the policy itself.
+        // The EntryPoint is refused at install only, on purpose: checking it
+        // here would cost a staticcall per operation, and every mandate this
+        // version holds went through that install-time filter.
         if (!_targetAllowed(target, selector)) return (false, 0);
         // A batch is only meaningful delegatecalled by a Safe (below); called
         // any other way its legs would run as the batch contract.
