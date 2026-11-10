@@ -152,11 +152,11 @@ covers its signing path.
   attested, non-extractable keys as the requirement. The phone owner is that
   device and the chain is the honest service. Our open end in their terms is
   the first handover (`../MOBILE_OWNER_DESIGN.md` T2).
-- **Integration targets**: BTCPay Server, after its hot-wallet sweep of
-  2026-11, through a USDC-on-Base plugin whose store wallet is a
-  mandate-bounded account (`BTCPAY.md`, #13). The Bitcoin side needs a
-  server TEE and is a different product; `BTCPAY.md` §6 records only the
-  requirements.
+- **BTCPay Server**, after its hot-wallet sweep of 2026-11: `BTCPAY.md`
+  analyses every integration option, including a USDC-on-Base plugin whose
+  store wallet is a mandate-bounded account. The integration itself, that
+  option and the Bitcoin side alike, is the owner's separate project
+  `77ph/BTCPayTEE`; nothing BTCPay-specific is on this repository's list.
 - **The incident ledger**: `INCIDENTS.md` collects the real losses whose
   root cause the design removes (DarkSword reading wallet keys from a
   kernel-compromised iPhone, Circle's agents raising their own caps,

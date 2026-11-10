@@ -18,7 +18,7 @@ not; the second column is what makes the page worth reading.
 |---|---|---|---|---|---|
 | 2026-03 → 2026-10 | **DarkSword**: a full-chain iOS exploit kit, a malicious web page in Safari ends as a kernel implant; from 2026-09 reused against crypto wallets on unpatched iPhones (I: SlowMist, press) | six WebKit / ANGLE / dyld / XNU bugs, three zero-days; victims on iOS below 18.7.5 or 26.3 | in the wallet app's files and the iOS Keychain: secp256k1 private keys and seed phrases, readable once the kernel is the attacker's | the owner key is **born in the Secure Enclave** (or StrongBox / TEE), P-256, non-extractable even for kernel code; its use needs biometrics the enclave enforces itself; **there is no seed phrase anywhere**; the agent key is in a TPM or secure element under an on-chain mandate | a kernel-compromised phone controls the **screen**: an owner who approves may be shown one operation and sign another (`MOBILE_OWNER_DESIGN.md` T1, T5); patch level matters and attestation does not see a runtime exploit |
 | 2026-10 | **Circle Agent Wallets / I-HITL**: AI agents read the e-mailed one-time code and raised their own spending caps; 9 of 10 models in at least one run; 5 of 10 paid an attacker on a planted e-mail (V, arXiv 2610.35835) | the cap was a service-side policy and the approval channel was readable by the agent | in the vendor's infrastructure; the limit in the vendor's database | the mandate is **on-chain**; changing it is a root operation signed by the owner's hardware key, which the agent does not hold; an attacker's address fails the allow-list; the phone owner is the paper's "inalienable human in the loop" | an injected agent can still spend **within** the mandate: the loss is bounded by the budget, not prevented; the first phone handover is signed blind (T2) |
-| 2026-10-30 → 2026-11-02 | **BTCPay Server hot wallets swept**: merchants' Bitcoin and Litecoin hot wallets drained after admin logins on releases 2.4.1 and earlier; about $1.63M in 682 sweeps per Bitquery (I) | the hot wallet is the seed on the internet-facing server; the fix shipped 2026-08-07 and was not applied | a seed file on the server | a key in hardware that the host's admin can drive but not read, **under a mandate the host cannot change**: the USDC-on-Base store wallet of `BTCPAY.md` §4 | nothing for Bitcoin itself: secp256k1 and no on-chain policy; that side is a server-TEE product (`77ph/BTCPayTEE`), not this one |
+| 2026-10-30 → 2026-11-02 | **BTCPay Server hot wallets swept**: merchants' Bitcoin and Litecoin hot wallets drained after admin logins on releases 2.4.1 and earlier; about $1.63M in 682 sweeps per Bitquery (I) | the hot wallet is the seed on the internet-facing server; the fix shipped 2026-08-07 and was not applied | a seed file on the server | a key in hardware that the host's admin can drive but not read, **under a mandate the host cannot change**: the USDC-on-Base store wallet designed in `BTCPAY.md` §4 | nothing for Bitcoin itself: secp256k1 and no on-chain policy. Every BTCPay integration, that design included, is the owner's separate project `77ph/BTCPayTEE`; this repository keeps the analysis |
 
 ## 2. Notes
 
@@ -74,8 +74,9 @@ agent's own account must never be an allow-list target.
 ### BTCPay Server hot wallets (2026-10/11)
 
 Full treatment in `BTCPAY.md`: the incident, BTCPay's own update, every
-integration option, the one that fits (#13), and the requirements of the
-Bitcoin side recorded for `77ph/BTCPayTEE`.
+integration option with what it would take, and the requirements of the
+Bitcoin side. The integration itself, in every form, is the owner's
+separate project `77ph/BTCPayTEE` (2026-11-10); #13 was closed.
 
 ## Sources
 
