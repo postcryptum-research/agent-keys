@@ -1063,6 +1063,46 @@ contract AgentPermissionTest is Test {
         policy.onInstall(install);
     }
 
+    // --- the agent is never let loose on its own account ---
+
+    /// The account itself, its EntryPoint and the policy (outside x402) are
+    /// refused as allow-list targets at install, whatever the selector; the
+    /// x402 entry points on the policy stay allowed.
+    function test_policy_install_refusesSelfTargets() public {
+        AgentPolicy.TokenCap[] memory caps = new AgentPolicy.TokenCap[](0);
+        address[] memory targets = new address[](1);
+        bytes4[] memory selectors = new bytes4[](1);
+        bytes32 id = bytes32(uint256(0x5e1f));
+
+        // the account: the agent could grant itself access or replace the root key
+        (targets[0], selectors[0]) = (acct, Kernel.grantAccess.selector);
+        vm.prank(acct);
+        vm.expectRevert(abi.encodeWithSelector(AgentPolicy.ForbiddenTarget.selector, acct, Kernel.grantAccess.selector));
+        policy.onInstall(abi.encodePacked(id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0))));
+
+        // the EntryPoint, read from the Kernel: the agent could withdraw the deposit
+        bytes4 withdrawTo = bytes4(keccak256("withdrawTo(address,uint256)"));
+        (targets[0], selectors[0]) = (address(entryPoint), withdrawTo);
+        vm.prank(acct);
+        vm.expectRevert(abi.encodeWithSelector(AgentPolicy.ForbiddenTarget.selector, address(entryPoint), withdrawTo));
+        policy.onInstall(abi.encodePacked(id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0))));
+
+        // the policy itself, outside its x402 entry points
+        (targets[0], selectors[0]) = (address(policy), AgentPolicy.onInstall.selector);
+        vm.prank(acct);
+        vm.expectRevert(
+            abi.encodeWithSelector(AgentPolicy.ForbiddenTarget.selector, address(policy), AgentPolicy.onInstall.selector)
+        );
+        policy.onInstall(abi.encodePacked(id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0))));
+
+        // the x402 entry points on the policy are what the account calls on purpose
+        (targets[0], selectors[0]) = (address(policy), AgentPolicy.x402Reclaim.selector);
+        vm.prank(acct);
+        policy.onInstall(abi.encodePacked(id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0))));
+        assertTrue(policy.isAllowed(acct, id, address(policy), AgentPolicy.x402Reclaim.selector));
+        assertFalse(policy.isAllowed(acct, id, acct, Kernel.grantAccess.selector));
+    }
+
     // --- x402: pre-registered EIP-3009 authorizations, scoped ERC-1271 ---
 
     PermissionId internal constant PAY_ID = PermissionId.wrap(0x70617931); // "pay1"

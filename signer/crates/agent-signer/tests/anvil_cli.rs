@@ -384,6 +384,18 @@ fn agent_lifecycle() {
     let cfg = chain.config("agent.json", &base);
     let account = chain.deploy(&cfg);
 
+    // the agent's own account is never a valid target: the CLI refuses the
+    // mandate before anything is signed (the policy would refuse it on chain)
+    let selfish = chain.config(
+        "selfish.json",
+        &Cfg {
+            owner: &owner, agent: &agent, permission: "0x73656c66", allow: vec![(account.clone(), "0x12345678")],
+            account: Some(account.clone()), recovery: None, valid_after: 0, valid_until: until, tokens: Value::Null,
+        },
+    );
+    let refused = chain.fails(&["permission", "add", "--agent", &selfish]);
+    assert!(refused.contains("never a valid target for the agent"), "{refused}");
+
     // outside the mandate: a transfer to an outsider is refused, nothing moves
     let refused = chain.fails(&["op", "send", "--agent", &cfg, "--target", "0x000000000000000000000000000000000000dEaD", "--wei", "1"]);
     assert!(refused.contains("3e4983f6") || refused.to_lowercase().contains("policy"), "{refused}");

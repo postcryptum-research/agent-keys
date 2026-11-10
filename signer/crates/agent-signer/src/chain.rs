@@ -21,6 +21,35 @@ use crate::agent::{open_signer, parse32, AgentConfig, Deployments, KeySpec, Role
 use crate::bundler::Bundler;
 use crate::kernel::{self, PermissionId};
 
+/// Why an allow-list entry can never be installed: the agent would reach the
+/// account's own administration, its EntryPoint deposit, the project's
+/// modules or the policy itself. `AgentPolicy` refuses the first three
+/// classes on chain as well (`ForbiddenTarget`); the CLI refuses them all
+/// before anything is signed, with the reason.
+pub fn forbidden_target(dep: &Deployments, account: Address, target: Address, selector: [u8; 4]) -> Option<String> {
+    use crate::abi::IAgentPolicyX402::{x402AuthorizeCall, x402ReclaimCall};
+    let modules: [(Option<Address>, &str); 7] = [
+        (Some(dep.p256_validator), "the root validator: the agent could replace the owner key"),
+        (dep.p256_validator_v1, "a root validator: the agent could replace the owner key"),
+        (dep.p256_recovery_validator, "the recovery validator: the agent could replace the recovery key"),
+        (dep.p256_recovery_validator_v1, "a recovery validator: the agent could replace the recovery key"),
+        (Some(dep.p256_signer), "the permission signer: the agent could swap its own key"),
+        (Some(dep.kernel), "the Kernel implementation"),
+        (Some(dep.kernel_factory), "the account factory"),
+    ];
+    if target == account {
+        return Some("the account itself: the agent could grant itself access, replace the root key or execute as root".into());
+    }
+    if target == dep.entry_point {
+        return Some("the EntryPoint: the agent could withdraw the account's deposit".into());
+    }
+    if target == dep.agent_policy {
+        let x402 = selector == x402AuthorizeCall::SELECTOR || selector == x402ReclaimCall::SELECTOR;
+        return (!x402).then(|| "the policy itself, outside its x402 entry points".to_string());
+    }
+    modules.iter().find(|(a, _)| *a == Some(target)).map(|(_, why)| why.to_string())
+}
+
 /// Secrets come from the environment (optionally a `.env` file), never from
 /// the agent config: `BASE_SEPOLIA_RPC_URL` (or `RPC_URL`) and, optionally,
 /// `GAS_WALLET_KEYFILE`, a file holding the hex key of a small hot wallet that
@@ -650,7 +679,20 @@ impl Session {
         self.send_raw(call, true, sponsored).await
     }
 
+    /// Refuse a mandate whose allow-list names something the agent must never
+    /// be able to call, before any signature (`forbidden_target`).
+    fn check_mandate_targets(&self) -> Result<()> {
+        let params = self.cfg.policy_params(&self.token_domains)?;
+        for (target, selector) in params.targets.iter().zip(&params.selectors) {
+            if let Some(why) = forbidden_target(&self.dep, self.account, *target, selector.0) {
+                bail!("allow-list entry {target} {selector} is never a valid target for the agent: {why}");
+            }
+        }
+        Ok(())
+    }
+
     pub async fn add_calldata(&self) -> Result<Bytes> {
+        self.check_mandate_targets()?;
         let new = self.cfg.permission_id()?;
         let kernel_account = IKernel::new(self.account, self.provider.clone());
         if kernel_account.validationConfig(kernel::permission_vid(new)).call().await?.hook != Address::ZERO {
@@ -665,6 +707,7 @@ impl Session {
     }
 
     pub async fn rotate_calldata(&self, old: PermissionId) -> Result<Bytes> {
+        self.check_mandate_targets()?;
         let new = self.cfg.permission_id()?;
         let nonce = self.install_nonce(new).await?;
         let calls = vec![
@@ -770,6 +813,8 @@ impl Session {
         let init_code = if deployed {
             Bytes::new()
         } else {
+            // the first operation installs the mandate: same rule as `permission add`
+            self.check_mandate_targets()?;
             kernel::init_code(self.dep.kernel_factory, self.init_data()?, self.cfg.salt()?)
         };
 
@@ -1047,5 +1092,48 @@ mod tests {
             crate::agent::KeySpec::Tpm(crate::agent::TpmKey::Protected { ref auth_file, .. })
                 if auth_file.to_str() == Some("/etc/tpm_sign/owner.auth")
         ));
+    }
+}
+
+#[cfg(test)]
+mod forbidden_target_tests {
+    use super::*;
+
+    fn deployments() -> Deployments {
+        serde_json::from_value(serde_json::json!({
+            "chainId": 31337,
+            "entryPoint": "0x0000000071727De22E5E9d8BAf0edAc6f37da032",
+            "kernel": "0x1000000000000000000000000000000000000001",
+            "kernelFactory": "0x1000000000000000000000000000000000000002",
+            "p256Validator": "0x1000000000000000000000000000000000000003",
+            "p256Signer": "0x1000000000000000000000000000000000000004",
+            "agentPolicy": "0x1000000000000000000000000000000000000005",
+            "demoCounter": "0x1000000000000000000000000000000000000006",
+            "p256RecoveryValidator": "0x1000000000000000000000000000000000000007",
+            "p256ValidatorV1": "0x1000000000000000000000000000000000000008"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn the_agent_never_targets_its_own_account_or_the_modules() {
+        use crate::abi::IAgentPolicyX402::{x402AuthorizeCall, x402ReclaimCall};
+        let dep = deployments();
+        let account: Address = "0x2000000000000000000000000000000000000001".parse().unwrap();
+        let any = [0x12, 0x34, 0x56, 0x78];
+        assert!(forbidden_target(&dep, account, account, any).unwrap().contains("the account itself"));
+        assert!(forbidden_target(&dep, account, dep.entry_point, any).unwrap().contains("EntryPoint"));
+        assert!(forbidden_target(&dep, account, dep.p256_validator, any).unwrap().contains("root validator"));
+        assert!(forbidden_target(&dep, account, dep.p256_validator_v1.unwrap(), any).is_some());
+        assert!(forbidden_target(&dep, account, dep.p256_recovery_validator.unwrap(), any).is_some());
+        assert!(forbidden_target(&dep, account, dep.p256_signer, any).is_some());
+        assert!(forbidden_target(&dep, account, dep.kernel, any).is_some());
+        assert!(forbidden_target(&dep, account, dep.kernel_factory, any).is_some());
+        // the policy: only its x402 entry points
+        assert!(forbidden_target(&dep, account, dep.agent_policy, any).is_some());
+        assert!(forbidden_target(&dep, account, dep.agent_policy, x402AuthorizeCall::SELECTOR).is_none());
+        assert!(forbidden_target(&dep, account, dep.agent_policy, x402ReclaimCall::SELECTOR).is_none());
+        // an ordinary contract is fine
+        assert!(forbidden_target(&dep, account, dep.demo_counter, any).is_none());
     }
 }

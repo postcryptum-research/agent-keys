@@ -87,12 +87,13 @@ contract Deploy is Script {
     function _keepSuperseded(string memory json, string memory recorded) internal {
         // Superseded versions stay recorded: live permissions and accounts
         // installed with them keep pointing there until the owner moves them.
-        string[9] memory superseded = [
+        string[10] memory superseded = [
             "agentPolicyV1",
             "agentPolicyV2",
             "agentPolicyV3",
             "agentPolicyV4",
             "agentPolicyV5",
+            "agentPolicyV6",
             "p256SignerV1",
             "p256ValidatorV1",
             "whitelistPaymasterV1",
