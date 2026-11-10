@@ -466,6 +466,15 @@ fn recovery_drill() {
 
     chain.ok(&["owner", "add-recovery", "--agent", &old_cfg]);
     assert!(chain.ok(&["owner", "status", "--agent", &old_cfg]).contains("installed = true"));
+    // a different recovery key is refused by the CLI's check against the
+    // chain, before anything is signed
+    let wrong = key(6);
+    let wrong_cfg = chain.config(
+        "wrong-recovery.json",
+        &Cfg { owner: &owner, recovery: Some(&wrong), account: Some(account.clone()), ..base_cfg(&owner, &agent, &counter, until) },
+    );
+    let refused = chain.fails(&["owner", "recover", "--agent", &wrong_cfg]);
+    assert!(refused.contains("not the one installed on the account"), "{refused}");
     chain.ok(&["owner", "recover", "--agent", &old_cfg]);
     let validator = chain.addr("p256Validator");
     let public_key = format!("{},{}", new_owner.x, new_owner.y);
@@ -480,7 +489,9 @@ fn recovery_drill() {
     chain.ok(&["op", "send", "--agent", &new_cfg, "--root", "--target", &counter, "--data", INCREMENT]);
     assert_eq!(chain.counter(), before + U256::from(1));
     let refused = chain.fails(&["op", "send", "--agent", &old_cfg, "--root", "--target", &counter, "--data", INCREMENT]);
-    assert!(refused.contains("AA24"), "{refused}");
+    // refused by the CLI's root-key check, which reads the validator's key
+    // from the chain; the validator's own AA24 is what the forge tests cover
+    assert!(refused.contains("not the account's root key"), "{refused}");
     // and the agent permission survived the change of owner
     chain.ok(&["demo", "--agent", &new_cfg]);
 }

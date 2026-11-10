@@ -6,7 +6,7 @@ of 2026-10-22, in EUR, including VAT unless marked "ex VAT".
 
 **Already in hand or covered:** a Linux TPM (Intel PTT), a Windows TPM, an
 Apple Secure Enclave (a colleague's Mac), the TROPIC01 USB devkit, a Ledger
-Nano S Plus; a YubiKey 5 NFC is on order. Owner-key devices are compared in
+Nano S Plus, a YubiKey 5 NFC (owner key, [`YUBIKEY.md`](YUBIKEY.md)). Owner-key devices are compared in
 depth in [`OWNER_DEVICES.md`](OWNER_DEVICES.md); this page looks wider —
 where the **agent** runs, servers, IoT devices — and only summarises owner
 devices.

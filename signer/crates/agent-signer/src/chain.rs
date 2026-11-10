@@ -14,8 +14,10 @@ use alloy::signers::local::PrivateKeySigner;
 use alloy::sol_types::{SolCall, SolEvent};
 use anyhow::{bail, Context, Result};
 
-use crate::abi::{IDemoCounter, IEntryPoint, IKernel, IKernelFactory, ISafeNonceAssert, IWhitelistPaymaster};
-use crate::agent::{open_signer, parse32, AgentConfig, Deployments, Role};
+use crate::abi::{
+    IDemoCounter, IEntryPoint, IKernel, IKernelFactory, IP256ValidatorView, ISafeNonceAssert, IWhitelistPaymaster,
+};
+use crate::agent::{open_signer, parse32, AgentConfig, Deployments, KeySpec, Role};
 use crate::bundler::Bundler;
 use crate::kernel::{self, PermissionId};
 
@@ -534,6 +536,72 @@ impl Session {
         Ok(())
     }
 
+    /// This repository's P-256 validators on this chain: the only root
+    /// validators whose key the CLI knows how to read.
+    fn known_validators(&self) -> Vec<Address> {
+        [
+            Some(self.dep.p256_validator),
+            self.dep.p256_validator_v1,
+            self.dep.p256_recovery_validator,
+            self.dep.p256_recovery_validator_v1,
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+
+    /// Before a root operation: the key about to sign must be the one the
+    /// account's root validator holds, read from the chain. A config that
+    /// still names a retired owner, or the wrong device in the port, is
+    /// refused here instead of by the EntryPoint after the fact. A root
+    /// validator that is not one of ours (a WebAuthn or ECDSA validator)
+    /// has no key we know how to read, so the check steps aside.
+    async fn check_root_key(&self, signer: &dyn hw_signer::HardwareSigner) -> Result<()> {
+        let kernel = IKernel::new(self.account, self.provider.clone());
+        let root = kernel.rootValidator().call().await?;
+        if root[0] != 0x01 {
+            eprintln!("root validator type 0x{:02x} is not a validator module; skipping the root-key check", root[0]);
+            return Ok(());
+        }
+        let validator = Address::from_slice(&root[1..21]);
+        if !self.known_validators().contains(&validator) {
+            eprintln!("root validator {validator} is not one of this repository's P-256 validators; skipping the root-key check");
+            return Ok(());
+        }
+        let on_chain = IP256ValidatorView::new(validator, self.provider.clone()).publicKeys(self.account).call().await?;
+        let ours = signer.public_key()?;
+        if on_chain.x.0 != ours.x || on_chain.y.0 != ours.y {
+            bail!(
+                "the key about to sign (0x{}…) is not the account's root key (0x{}… in validator {validator}); \
+                 after a handover, point the config's owner at the new device — `owner status` shows the root validator",
+                hex::encode(&ours.x[..4]),
+                hex::encode(&on_chain.x[..4])
+            );
+        }
+        Ok(())
+    }
+
+    /// Before the recovery key signs on its own path (`owner recover`): it
+    /// must be the key installed in the account's recovery validator, read
+    /// from the chain, so a wrong recovery file is refused before its
+    /// passphrase is typed.
+    async fn check_recovery_key(&self, ours: &hw_signer::PublicKey) -> Result<()> {
+        let validator = self.recovery_validator()?;
+        let on_chain = IP256ValidatorView::new(validator, self.provider.clone()).publicKeys(self.account).call().await?;
+        if on_chain.x.is_zero() {
+            bail!("no recovery key is installed on this account ({validator}): `owner add-recovery` first");
+        }
+        if on_chain.x.0 != ours.x || on_chain.y.0 != ours.y {
+            bail!(
+                "the recovery key about to sign (0x{}…) is not the one installed on the account (0x{}… in {validator}); \
+                 check the config's `recovery` entry",
+                hex::encode(&ours.x[..4]),
+                hex::encode(&on_chain.x[..4])
+            );
+        }
+        Ok(())
+    }
+
     /// Root validator and recovery state, for `owner status`.
     pub async fn owner_status(&self) -> Result<()> {
         let kernel = IKernel::new(self.account, self.provider.clone());
@@ -742,6 +810,13 @@ impl Session {
             signature: Bytes::new(),
         };
 
+        // A recovery key file's public half is readable without the
+        // passphrase: check it against the chain before asking for one.
+        if deployed && sign_as == SignAs::Recovery {
+            if let Some(KeySpec::Keyfile(path)) = &self.cfg.recovery {
+                self.check_recovery_key(&crate::keyfile::public_key(path)?).await?;
+            }
+        }
         // The only place the owner's (or the recovery) key is opened: an
         // owner operation, run where that key lives.
         let signer = match sign_as {
@@ -752,6 +827,18 @@ impl Session {
                 Role::Recovery,
             )?,
         };
+        // Make sure this is the key the chain expects before the device
+        // spends a PIN try, a touch or a signature on it.
+        if deployed {
+            match sign_as {
+                SignAs::Owner | SignAs::RecoveryAsRoot => self.check_root_key(signer.as_ref()).await?,
+                // a key file was checked above, before its passphrase
+                SignAs::Recovery if !matches!(self.cfg.recovery, Some(KeySpec::Keyfile(_))) => {
+                    self.check_recovery_key(&signer.public_key()?).await?
+                }
+                _ => {}
+            }
+        }
         let frame = |sig: &hw_signer::Signature| match sign_as {
             SignAs::Agent => kernel::permission_signature(sig),
             _ => kernel::root_signature(sig),

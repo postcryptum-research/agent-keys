@@ -35,6 +35,12 @@ pub struct Deployments {
     /// The P256Validator instance that holds a cold recovery key.
     #[serde(default)]
     pub p256_recovery_validator: Option<Address>,
+    /// Earlier instances, still root on some accounts: the CLI reads their
+    /// keys for the pre-signature checks but installs nothing new on them.
+    #[serde(default)]
+    pub p256_validator_v1: Option<Address>,
+    #[serde(default)]
+    pub p256_recovery_validator_v1: Option<Address>,
 }
 
 /// A TPM key: `"0x81010010"`; `{"handle": "0x81010011", "pcrs": [0, 2, 4, 7]}`
@@ -68,6 +74,11 @@ pub enum KeySpec {
     WindowsTpm(String),
     /// Tropic Square TROPIC01 on its USB DevKit: serial port and ECC key slot.
     Tropic01 { port: String, slot: u16 },
+    /// YubiKey 5 PIV slot (`"9c"`, `"9a"`, …, `"82"`–`"95"`); `serial` picks
+    /// one of several YubiKeys. The PIN and touch policies are the slot's
+    /// (docs/YUBIKEY.md); the PIN is asked at use.
+    #[serde(rename = "yubikey")]
+    YubiKey { slot: String, serial: Option<u32> },
     /// 32-byte hex scalar in this file. **Insecure**: refused in every role
     /// unless built with `--features insecure-software-keys` (tests only;
     /// docs/KEY_POLICY.md rule 5).
@@ -329,6 +340,17 @@ pub fn open_signer(spec: &KeySpec, role: Role) -> Result<Box<dyn HardwareSigner>
                 anyhow::bail!("key in TROPIC01 slot {slot} on {port}: needs `--features tropic01`")
             }
         }
+        KeySpec::YubiKey { slot, serial } => {
+            #[cfg(feature = "yubikey")]
+            {
+                Ok(Box::new(open_yubikey(*serial, slot, role, true)?))
+            }
+            #[cfg(not(feature = "yubikey"))]
+            {
+                let _ = serial;
+                anyhow::bail!("key in YubiKey PIV slot {slot}: needs `--features yubikey`")
+            }
+        }
         KeySpec::Keyfile(path) => {
             if role == Role::Agent {
                 anyhow::bail!(
@@ -362,4 +384,46 @@ pub fn open_signer(spec: &KeySpec, role: Role) -> Result<Box<dyn HardwareSigner>
             }
         }
     }
+}
+
+/// Open a YubiKey PIV slot for `role`. An agent key signs unattended, so a
+/// slot whose policy needs a PIN or a touch is refused for that role. With
+/// `ask_pin`, the PIN is prompted when the slot's policy needs one; without,
+/// the signer can show its public key but not sign.
+#[cfg(feature = "yubikey")]
+pub fn open_yubikey(
+    serial: Option<u32>,
+    slot: &str,
+    role: Role,
+    ask_pin: bool,
+) -> Result<hw_signer::yubikey_piv::YubiKeyPivSigner> {
+    use hw_signer::yubikey_piv::{slot_name, PivSlot, YubiKeyPivSigner};
+    use zeroize::Zeroizing;
+
+    let slot_id: PivSlot = slot
+        .parse()
+        .map_err(|e| anyhow::anyhow!("YubiKey slot {slot:?}: {e} (9a, 9c, 9d, 9e or 82..95)"))?;
+    let signer = YubiKeyPivSigner::open(serial, slot_id)?;
+    let name = slot_name(slot_id);
+    if role == Role::Agent && (signer.needs_pin() || signer.needs_touch()) {
+        anyhow::bail!(
+            "refusing YubiKey slot {name} as the agent key: PIN policy {:?} and touch policy {:?} need a human at \
+             every signature. An unattended agent key needs PIN never and touch never (docs/YUBIKEY.md)",
+            signer.pin_policy(),
+            signer.touch_policy()
+        );
+    }
+    let mut signer = signer.with_touch_notice(|| eprintln!("touch the YubiKey to sign…"));
+    if ask_pin && signer.needs_pin() {
+        // Asked at the first signature, not now: by then the CLI has checked
+        // the key against the account's root (chain.rs), so a wrong device
+        // or slot costs no PIN try and no touch.
+        let label = format!("YubiKey PIV PIN (slot {name}): ");
+        signer = signer.with_pin_provider(move || {
+            crate::keyfile::prompt_secret(&label)
+                .map(|pin| Zeroizing::new(pin.as_bytes().to_vec()))
+                .map_err(|e| hw_signer::SignerError::Key(format!("PIN: {e}")))
+        });
+    }
+    Ok(signer)
 }
