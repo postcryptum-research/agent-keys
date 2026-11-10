@@ -403,6 +403,13 @@ protects against file deletion, but not against erasing the Mac or replacing the
 - `invalidateNonce(n)` revokes **all** non-root validators and permissions with
   `nonce < n` at once [V `ValidationManager.sol:146–158`, `Kernel.sol:242–244`]:
   this is a "kill switch" that hits both the agent and recovery.
+- **The agent cannot address its own account.** `AgentPolicy` refuses the
+  account itself, its EntryPoint and the policy (outside x402) as allow-list
+  targets at install and again at validation [V `AgentPolicy.sol`
+  `_targetAllowed`, since 2026-11-10], and the CLI refuses the project's
+  validators and signer as well: no mandate, however written, lets the agent
+  reach `grantAccess`, `changeRootValidator`, `withdrawTo` or the modules'
+  `onInstall`.
 - Ready-made modules next to Kernel:
   - `WeightedECDSAValidator` (in the Kernel v3.3 repo itself): guardian weights and
     threshold, **`delay`** (proposal → approve → execution no earlier than

@@ -19,6 +19,12 @@ import {LibERC7579} from "kernel/lib/solady/src/accounts/LibERC7579.sol";
 
 import {SafeNonceAssert} from "./SafeNonceAssert.sol";
 
+/// The one Kernel view the policy reads at install time: which EntryPoint
+/// the account answers to, so that it can never become an agent's target.
+interface IKernelEntryPoint {
+    function entrypoint() external view returns (address);
+}
+
 /// @title AgentPolicy
 /// @notice Kernel permission policy that bounds what an agent's key may do.
 ///
@@ -38,7 +44,11 @@ import {SafeNonceAssert} from "./SafeNonceAssert.sol";
 ///  - a time window `[validAfter, validUntil]` that the EntryPoint enforces:
 ///    several permissions for the same agent key, each with its own window,
 ///    budget and allow-list, make a schedule ("weekdays: up to X on these
-///    contracts; the 1st: payroll up to Y").
+///    contracts; the 1st: payroll up to Y");
+///  - the account itself, its EntryPoint and this policy (except its two
+///    x402 entry points) are never valid targets, refused at install and
+///    again at validation: no mandate, however written, lets the agent widen
+///    its own permission, replace the root key or drain the deposit.
 ///
 /// Safe pass-through: an allow-list entry `(safe, execTransaction)` lets the
 /// agent drive a Safe that this account owns (Olas / Jinn service Safes),
@@ -117,6 +127,9 @@ contract AgentPolicy is IPolicy {
     }
 
     error InvalidConfig();
+    /// An allow-list entry the agent must never have (the account, its
+    /// EntryPoint, this policy outside x402).
+    error ForbiddenTarget(address target, bytes4 selector);
     error X402NotRegistered();
     error X402StillLive();
     error X402Settled();
@@ -192,7 +205,11 @@ contract AgentPolicy is IPolicy {
         }
 
         Mandate storage m = _mandates[msg.sender][id][c.epoch];
+        address entryPoint = _entryPointOf(msg.sender);
         for (uint256 i; i < targets.length; i++) {
+            if (!_targetAllowed(targets[i], selectors[i]) || (entryPoint != address(0) && targets[i] == entryPoint)) {
+                revert ForbiddenTarget(targets[i], selectors[i]);
+            }
             m.allowed[targets[i]][selectors[i]] = true;
         }
         for (uint256 i; i < tokens.length; i++) {
@@ -439,6 +456,12 @@ contract AgentPolicy is IPolicy {
         if (data.length > 0 && data.length < 4) return (false, 0);
         bytes4 selector = _selector(data);
         if (!m.allowed[target][selector]) return (false, 0);
+        // Install refuses these; refused again here so that no mandate, in
+        // any version's storage, can reach the account or the policy itself.
+        // The EntryPoint is refused at install only, on purpose: checking it
+        // here would cost a staticcall per operation, and every mandate this
+        // version holds went through that install-time filter.
+        if (!_targetAllowed(target, selector)) return (false, 0);
         // A batch is only meaningful delegatecalled by a Safe (below); called
         // any other way its legs would run as the batch contract.
         if (selector == MULTI_SEND) return (false, 0);
@@ -449,6 +472,28 @@ contract AgentPolicy is IPolicy {
         }
         if (!_chargeToken(m, target, selector, data)) return (false, 0);
         return (true, value);
+    }
+
+    /// @dev Targets no agent may ever have, whatever the allow-list says: the
+    /// account itself (Kernel's own `grantAccess`, `installValidations`,
+    /// `changeRootValidator`, `execute`: the mandate would widen or replace
+    /// itself) and this policy, except the two x402 entry points the account
+    /// calls on purpose. `msg.sender` is the account in both callers.
+    function _targetAllowed(address target, bytes4 selector) internal view returns (bool) {
+        if (target == msg.sender) return false;
+        if (target == address(this)) {
+            return selector == this.x402Authorize.selector || selector == this.x402Reclaim.selector;
+        }
+        return true;
+    }
+
+    /// @dev The account's EntryPoint, read from Kernel at install so that
+    /// `withdrawTo` and friends on the account's deposit can never be
+    /// allow-listed. Zero when the account does not answer (not a Kernel).
+    function _entryPointOf(address account) internal view returns (address) {
+        (bool ok, bytes memory ret) = account.staticcall(abi.encodeWithSelector(IKernelEntryPoint.entrypoint.selector));
+        if (!ok || ret.length < 32) return address(0);
+        return abi.decode(ret, (address));
     }
 
     /// @dev An allow-listed Safe: the call that matters is the inner one.

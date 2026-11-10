@@ -121,6 +121,15 @@ Exactly one of:
 | `validAfter` | no, default 0 | integer, Unix seconds, < `validUntil` | start of the window (0 = at once); several permissions with their own windows make a schedule |
 | `tokens` | no | list of `{"token": address, "maxPerOp": decimal string, "budget": decimal string, "x402": bool}` | per-token limits in the token's base units (USDC: 6 decimals, so `"20000000"` = 20 USDC). Required for every token whose `transfer` / `transferFrom` / `approve` / `increaseAllowance` is in `allow` — without one the call is refused. One entry per token. `x402` (default `false`): the agent may also pay x402 in this token (EIP-3009, e.g. USDC) from the same budget; the CLI reads the token's `DOMAIN_SEPARATOR()` and installs it with the limit ([`ERC1271.md`](ERC1271.md)) |
 
+Never valid `allow` targets, refused by the CLI before anything is signed and
+by `AgentPolicy` at install (`ForbiddenTarget`) and again at validation: the
+**account itself** (Kernel's `grantAccess`, `installValidations`,
+`changeRootValidator`, `execute`: the mandate would widen or replace itself),
+its **EntryPoint** (`withdrawTo` on the deposit), the project's **validators,
+signer, Kernel implementation and factory** (CLI only: they could replace the
+owner, recovery or agent key), and the **policy itself** except its two x402
+entry points. The Circle Agent Wallets case is why (`related/INCIDENTS.md`).
+
 Special `allow` entries:
 
 | Entry | Effect |
