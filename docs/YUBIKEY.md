@@ -238,6 +238,25 @@ The config now says `"owner": {"yubikey": {"slot": "9c"}}`; its
 the creation key derives the address and is never rewritten; the current
 root is read from the chain).
 
+### Onto the new AgentPolicy (2026-11-11, issue #24)
+
+After #23 deployed the AgentPolicy with the forbidden-target guard
+(`0xdd544A6F0220778Fff16F51B468656e73E32ae85`), the enclave test account's
+permission `0x73653032` moved onto it with one YubiKey signature:
+`permission rotate --old-id 0x73653032 --sponsored` — tx
+`0x37d637ebcc011e1de3612d02fbb1af61294dee80334edbb628965aed2a59a845`
+(block 57463810, 440,350 gas, paymaster-sponsored, own `handleOps`).
+`permission show` afterwards: policy module `0xdd54…ae85`, every field `ok`,
+token limit `ok`; the enclave agent's `demo --sponsored` ran on it (counter
+39 → 40, tx `0x32a240d3810ae387d9a1c2f13fbbceb93f637ea07207c0f332d0d2bbe7a2ef29`).
+
+Two config changes went with it: `contracts/deployments/84532.enclave.json`
+names the new policy (the previous one stays as `agentPolicyV6`), and the
+mandate's two x402 allow-list entries — which name the **policy's own
+address** as their target — moved to the new address too. Any mandate with
+x402 entries needs that second change when it is rotated; the guard then
+admits exactly those two selectors on the policy.
+
 ## Security notes
 
 - **What the device protects:** the private key never leaves the applet;
