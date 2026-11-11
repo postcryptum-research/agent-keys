@@ -257,6 +257,18 @@ address** as their target — moved to the new address too. Any mandate with
 x402 entries needs that second change when it is rotated; the guard then
 admits exactly those two selectors on the policy.
 
+The main account (`0xEdB645B14e2f952C5784e34949b58F0826fBc9E9`) followed the
+same day for its x402 permission `0x78347031`, after the same two-line change
+in `signer/agent.x402.base-sepolia.json`:
+`permission rotate --old-id 0x78347031 --sponsored`, PIN + touch — tx
+`0x6656551e6d7abb87823adfece6f52d0d8f5385c29391c56b453cb88a7d19f5ed`
+(block 57473629, 425,972 gas, paymaster-sponsored, through the bundler).
+`permission show` afterwards: policy module `0xdd54…ae85`, every field and
+both x402 allow entries `ok`, spend counters back at zero (a rotation
+installs a fresh mandate). The account's window-demo permission
+`0x77696e31` was left alone: its window closed on 2026-10-20, so it
+authorises nothing on either policy.
+
 ## Security notes
 
 - **What the device protects:** the private key never leaves the applet;
