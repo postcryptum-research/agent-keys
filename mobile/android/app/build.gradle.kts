@@ -15,8 +15,8 @@ android {
         applicationId = "dev.tpmsign.owner.spike"
         minSdk = 30          // Android 11: setUserAuthenticationParameters (design D7)
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.0.1-p0"
+        versionCode = 2
+        versionName = "0.0.2-p1"
     }
     buildTypes {
         release { isMinifyEnabled = false }
@@ -36,4 +36,8 @@ dependencies {
     // compileSdk 37 and AGP 9.1).
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.biometric:biometric:1.1.0")
+    // QR scanning (Apache-2.0): zxing-android-embedded + zxing core, no Google ML Kit
+    // (docs/MOBILE_LICENSE_STUDY.md §3).
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0") { isTransitive = false }
+    implementation("com.google.zxing:core:3.5.4")
 }

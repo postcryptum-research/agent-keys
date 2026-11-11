@@ -75,6 +75,15 @@ pub fn normalize_low_s(sig: Signature) -> Signature {
     }
 }
 
+/// What a signer gets to see about an ERC-4337 operation: its hash, and
+/// for signers that must show a human what they sign (a phone), the whole
+/// operation as the serialized sign request of `owner-core` — opaque here,
+/// so this crate stays free of the wire format.
+pub struct UserOpContext<'a> {
+    pub user_op_hash: [u8; 32],
+    pub request: Option<&'a [u8]>,
+}
+
 /// A key that lives in hardware and never leaves it.
 pub trait HardwareSigner {
     /// Public key coordinates. The private key is never exposed.
@@ -83,6 +92,13 @@ pub trait HardwareSigner {
     /// Sign a 32-byte digest. The caller decides what the digest commits to —
     /// for ERC-4337 it is the `userOpHash`. The hardware only ever sees `h`.
     fn sign_digest(&self, digest: &[u8; 32]) -> Result<Signature, SignerError>;
+
+    /// Sign an ERC-4337 operation. Chips sign its hash; a phone decodes the
+    /// request, shows it, and signs only what it has shown
+    /// (docs/MOBILE_OWNER_DESIGN.md §8.3). The default is the hash.
+    fn sign_user_op(&self, ctx: &UserOpContext<'_>) -> Result<Signature, SignerError> {
+        self.sign_digest(&ctx.user_op_hash)
+    }
 }
 
 /// Off-chain P-256 verification, mirroring what the on-chain validator checks:

@@ -94,7 +94,8 @@ nothing (AA24). Who signs the `set-root` decides how safe it is (T2):
   that is root at that moment, so when the new key goes onto the *same*
   validator the CLI pivots root through the installed recovery validator
   inside the batch (found on 2026-11-10, `YUBIKEY.md`): the recovery key
-  must be installed before such a rotation. The
+  must be installed before such a rotation — a precondition of
+  [`RECOVERY_DRILL.md`](RECOVERY_DRILL.md) §3.1 now. The
   **current phone** signs the `set-root`, so it decodes it and shows
   "**Hand control of this account to key `<fingerprint>`**" (§6.3). A key
   substituted by the laptop shows a fingerprint that differs from the one

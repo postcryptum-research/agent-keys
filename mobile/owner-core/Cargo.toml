@@ -8,9 +8,17 @@ description = "Kernel v3.3 encodings and ERC-4337 hashing shared by agent-signer
 publish = false
 
 [dependencies]
-alloy-primitives = { version = "1.7", default-features = false, features = ["std"] }
+alloy-primitives = { version = "1.7", default-features = false, features = ["std", "serde"] }
 alloy-sol-types = { version = "1.7", default-features = false, features = ["std"] }
 hw-signer = { path = "../../signer/crates/hw-signer", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+base64 = "0.22"
+
+[dev-dependencies]
+p256 = { version = "0.13", features = ["ecdsa"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 
 # A standalone package: the signer/ workspace depends on it by path, and its
 # own tests run from this directory.

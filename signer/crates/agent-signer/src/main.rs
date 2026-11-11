@@ -4,6 +4,7 @@ mod bundler;
 mod chain;
 use owner_core::kernel;
 mod keyfile;
+mod phone;
 mod x402;
 
 use std::path::PathBuf;
@@ -58,6 +59,18 @@ struct AgentArgs {
     /// own handleOps (overrides BUNDLER_URL).
     #[arg(long)]
     bundler: Option<String>,
+    /// Phone owner: the address (and port) the one-shot LAN session binds to.
+    /// Default: the default-route interface, an ephemeral port.
+    #[arg(long)]
+    listen: Option<std::net::SocketAddr>,
+    /// Phone owner: seconds to wait for the phone's answer.
+    #[arg(long, default_value_t = 120)]
+    phone_timeout: u64,
+    /// Phone owner: also write the QR's URI to this file (for tests and
+    /// automation; the terminal shows the QR itself). Also read from
+    /// TPMSIGN_PHONE_QR_FILE.
+    #[arg(long)]
+    phone_qr_file: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -760,6 +773,11 @@ fn enclave_key(label: &str, _: KeyOp) -> Result<()> {
 }
 
 async fn session(args: &AgentArgs) -> Result<Session> {
+    phone::configure(phone::PhoneOptions {
+        listen: args.listen,
+        timeout: std::time::Duration::from_secs(args.phone_timeout),
+        qr_file: args.phone_qr_file.clone().or_else(|| std::env::var_os("TPMSIGN_PHONE_QR_FILE").map(PathBuf::from)),
+    });
     let env = Env::load(args.env_file.as_deref(), args.bundler.as_deref())?;
     let (cfg, base) = AgentConfig::load(&args.agent)?;
     Session::open(&env, cfg, &base).await

@@ -20,6 +20,13 @@ import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
 import android.security.keystore.StrongBoxUnavailableException
 import android.util.Log
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.InetAddress
+import java.net.URL
+import java.util.Base64
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -63,7 +70,8 @@ class MainActivity : AppCompatActivity() {
         val create = Button(this).apply { text = "1. Create the owner key"; setOnClickListener { safely { createKey() } } }
         val sign = Button(this).apply { text = "2. Sign the golden digest (fingerprint)"; setOnClickListener { safely { signGolden() } } }
         val wipe = Button(this).apply { text = "Delete the key"; setOnClickListener { safely { deleteKey() } } }
-        column.addView(create); column.addView(sign); column.addView(wipe); column.addView(out)
+        val scan = Button(this).apply { text = "3. Scan the laptop's QR and sign (P1)"; setOnClickListener { safely { startScan() } } }
+        column.addView(create); column.addView(sign); column.addView(scan); column.addView(wipe); column.addView(out)
         setContentView(ScrollView(this).apply { addView(column) })
 
         say("Android API ${Build.VERSION.SDK_INT}")
@@ -191,6 +199,125 @@ class MainActivity : AppCompatActivity() {
             .build()
         prompt.authenticate(info, BiometricPrompt.CryptoObject(sig))
     }
+
+    // ---- 3. P1: the LAN session (design §3, §4) — blind signing of the
+    // laptop's userOpHash after the commitment check. Decoding and display of
+    // the operation (P2) come with owner-core on the phone.
+
+    private val scanLauncher = registerForActivityResult(ScanContract()) { result ->
+        val text = result.contents
+        if (text == null) say("scan cancelled") else safely { handleQr(text) }
+    }
+
+    private fun startScan() {
+        if (!keyStore.containsAlias(ALIAS)) { say("create the key first"); return }
+        scanLauncher.launch(ScanOptions().apply {
+            setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+            setPrompt("Scan the QR shown by agent-signer")
+            setBeepEnabled(false)
+            setOrientationLocked(false)
+        })
+    }
+
+    /** `tpmsign:1?u=<url>&h=<commitment>`; the host must be a local address (§3.2). */
+    private fun handleQr(uri: String) {
+        require(uri.startsWith("tpmsign:1?")) { "not a tpmsign:1 QR" }
+        val params = uri.removePrefix("tpmsign:1?").split("&")
+            .mapNotNull { it.split("=", limit = 2).takeIf { p -> p.size == 2 } }.associate { it[0] to it[1] }
+        val url = params["u"] ?: error("no u= in the QR")
+        val commitment = params["h"] ?: error("no h= in the QR")
+        val host = URL(url).host
+        require(URL(url).protocol == "http" && isLocalHost(host)) { "session host $host is not a local address; refusing" }
+        say("session: $url")
+        Thread {
+            try {
+                val bytes = httpGet(url)
+                val got = b64url(sha256(bytes))
+                require(got == commitment) { "the served request does not match the QR's commitment; refusing" }
+                runOnUiThread { safely { reviewAndSign(bytes, commitment, url) } }
+            } catch (e: Exception) {
+                runOnUiThread { say("ERROR ${e::class.java.simpleName}: ${e.message}") }
+            }
+        }.start()
+    }
+
+    private fun reviewAndSign(bytes: ByteArray, commitment: String, url: String) {
+        val req = JSONObject(String(bytes))
+        require(req.getString("tpmSign") == "sign-request") { "not a sign request" }
+        require(req.getInt("version") == 1) { "protocol version ${req.getInt("version")} not supported" }
+        val now = System.currentTimeMillis() / 1000
+        require(now <= req.getLong("expires") + 300) { "the request has expired" }
+        val op = req.getJSONObject("userOp")
+        val nonce = java.math.BigInteger(op.getString("nonce"))
+        require(nonce.shiftRight(64).signum() == 0) { "not a root-path operation (nonce key != 0); refusing" }
+        require(op.getString("initCode") == "0x") { "operations with initCode are refused (v1)" }
+        val laptop = req.getJSONObject("laptop")
+        val hashHex = laptop.getString("userOpHash").removePrefix("0x")
+        require(hashHex.length == 64) { "bad userOpHash" }
+        // P1 shows what it has; P2 decodes the calldata and recomputes the hash on the phone.
+        say("REVIEW (P1, blind)\n  chain ${req.getString("chainId")}\n  account ${op.getString("sender")}\n  nonce $nonce\n  callData ${op.getString("callData").take(74)}…\n  laptop says: ${laptop.optString("command", "?")}\n  userOpHash 0x$hashHex")
+        val priv = keyStore.getKey(ALIAS, null) as PrivateKey
+        val sig = Signature.getInstance("NONEwithECDSA").apply { initSign(priv) }
+        val prompt = BiometricPrompt(this, ContextCompat.getMainExecutor(this), object : BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                safely {
+                    val s = result.cryptoObject!!.signature!!
+                    s.update(hashHex.hexToBytes())
+                    val (r, sv) = derToRs(s.sign())
+                    val sLow = if (sv > P256_HALF_N) P256_N.subtract(sv) else sv
+                    val (x, y) = publicXY()
+                    val resp = JSONObject()
+                        .put("tpmSign", "sign-response").put("version", 1).put("request", commitment)
+                        .put("result", "signed").put("userOpHash", "0x$hashHex")
+                        .put("signature", "0x${r.hex32()}${sLow.hex32()}")
+                        .put("publicKey", JSONObject().put("x", "0x$x").put("y", "0x$y"))
+                        .put("app", JSONObject().put("platform", "android").put("version", "0.0.2-p1").put("core", "none"))
+                    Thread {
+                        try {
+                            val code = httpPost(url, resp.toString().toByteArray())
+                            runOnUiThread { say("signed and posted: HTTP $code") }
+                        } catch (e: Exception) { runOnUiThread { say("POST failed: ${e.message}") } }
+                    }.start()
+                }
+            }
+            override fun onAuthenticationError(code: Int, msg: CharSequence) {
+                say("biometric error $code: $msg — telling the laptop")
+                val refusal = JSONObject().put("tpmSign", "sign-response").put("version", 1).put("request", commitment)
+                    .put("result", "refused").put("reason", "user").put("detail", msg.toString())
+                Thread { try { httpPost(url, refusal.toString().toByteArray()) } catch (_: Exception) {} }.start()
+            }
+            override fun onAuthenticationFailed() { say("biometric not recognised, try again") }
+        })
+        prompt.authenticate(
+            BiometricPrompt.PromptInfo.Builder().setTitle("Sign a root operation")
+                .setSubtitle("userOpHash 0x${hashHex.take(8)}…${hashHex.takeLast(6)}")
+                .setNegativeButtonText("Refuse")
+                .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG).build(),
+            BiometricPrompt.CryptoObject(sig)
+        )
+    }
+
+    private fun isLocalHost(host: String): Boolean {
+        val a = try { InetAddress.getByName(host.trim('[', ']')) } catch (_: Exception) { return false }
+        return a.isSiteLocalAddress || a.isLinkLocalAddress || a.isLoopbackAddress ||
+            (a is java.net.Inet6Address && (a.address[0].toInt() and 0xfe) == 0xfc)
+    }
+
+    private fun httpGet(url: String): ByteArray {
+        val c = (URL(url).openConnection() as HttpURLConnection).apply { connectTimeout = 10000; readTimeout = 10000; useCaches = false }
+        try { require(c.responseCode == 200) { "HTTP ${c.responseCode}" }; return c.inputStream.readBytes() } finally { c.disconnect() }
+    }
+
+    private fun httpPost(url: String, body: ByteArray): Int {
+        val c = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"; doOutput = true; connectTimeout = 10000; readTimeout = 10000
+            setRequestProperty("Content-Type", "application/json")
+        }
+        try { c.outputStream.use { it.write(body) }; return c.responseCode } finally { c.disconnect() }
+    }
+
+    private fun sha256(b: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(b)
+    private fun b64url(b: ByteArray): String = Base64.getUrlEncoder().withoutPadding().encodeToString(b)
 
     private fun deleteKey() {
         if (keyStore.containsAlias(ALIAS)) { keyStore.deleteEntry(ALIAS); say("key deleted") } else say("no key")

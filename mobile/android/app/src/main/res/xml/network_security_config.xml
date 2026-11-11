@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The LAN session is plain HTTP by design: the QR commits to the request
+     bytes and the laptop verifies every signature (design §3.1). Android cannot
+     scope cleartext to private IP ranges, so the app enforces that rule itself
+     before connecting (QrPayload: private, link-local or ULA hosts only). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
