@@ -94,11 +94,30 @@ because the QR commitment provides the integrity (design §3.1). An update
 of an already installed app goes through `adb install -r`; only a fresh
 install trips the vendor's USB-install guard.
 
+### P1: enrollment (version 0.0.3-p1)
+
+Button **4. Enroll this phone for an account**: scan the QR that
+`agent-signer key create --phone <label> --agent <cfg>` prints, same
+transport and commitment check as a sign request. The app shows the chain,
+the account, the label and the §5.6 notice for this phone's tier; on a
+TEE-only phone the button reads "I understand, enroll". On yes it creates a
+**new** key for that account (alias by chain and account, design §5.1) with
+the attestation challenge `sha256("TPM_sign/v1/enroll" ‖ commitment)`
+(§5.2), posts the public key, the tier, and the attestation chain as base64
+DER, shows the key's fingerprint for the owner to compare with the laptop,
+and keeps an enrollment record (§5.4: label, chain, account, tier, key —
+nothing secret) that the app lists at launch, flagging a missing key. On no
+it posts a refusal. Button 3 then signs with the account's enrolled key and
+falls back to the P0 key for accounts enrolled by hand.
+
+The laptop writes the enrollment (request, answer, `attest-*.der`) with
+`--out <dir>`; verifying the chain there is P3.
+
 ### P1 run record — a real root operation on anvil, signed on the phone
 
 `~/… phone-anvil-run.sh` (the ignored test `phone_owner_real_device`, the
 phone's P0 key as the owner of a fresh anvil account, the Mac and the phone
-on one Wi-Fi):
+on one Wi-Fi), 2026-11-11, app 0.0.2-p1:
 
 ```
 tpmsign:1?u=http://192.168.x.x:56181/s/<token>&h=<commitment>
@@ -117,3 +136,49 @@ test phone_owner_real_device ... ok
 
 On the phone: the QR scanned at once, the review showed the account, nonce
 and hash, the fingerprint prompt signed, `signed and posted: HTTP 200`.
+
+### P1 run record — enrollment, handover, a phone-signed operation
+
+The same script with app 0.0.3-p1, later on 2026-11-11: the test now
+enrolls first. A fresh anvil account owned by a software key; the phone
+enrolls a new key for it (button 4, the TEE notice acknowledged), the
+laptop hands root to that key with the fingerprint check, the phone signs a
+root operation (button 3), the agent still runs:
+
+```
+tpmsign:1?u=http://192.168.x.x:50324/s/<token>&h=<commitment>
+waiting up to 180s for the phone…
+enrollment written to …/enrollment (5 attestation certificates)
+enrolled phone owner key "owner-phone" for account 0xdc0fa0c9AA445eFE417d1C07Da7CdA4a934072C6 (chain 31337)
+  public key     x = 0xa6a22946b6546621392368bf5aeec01d2432ac5b871ad9d36fc13fb444c0eed5
+                 y = 0x216799da099495a257f2a9fa0d92ea94dcf3195ab88ac6d46ee99e183c4bf585
+  fingerprint    ZOLH5-D2DIS-66ZBB-4T6NL   ← compare with the phone's screen
+  security level tee (self-reported)
+  attestation    5 certificates; verification against the platform's roots is the next step (design §5.2), …
+  app            android 0.0.3-p1 (core none)
+
+Nothing changed on-chain. Next, signed by the current owner key:
+  agent-signer owner set-root --agent …/owner.json --validator <P256Validator> --public-key 0xa6a2…eed5,0x2167…f585 --expect-fingerprint ZOLH5-D2DIS-66ZBB-4T6NL [--retire <validator>]
+then point the config's owner at the phone (ownerPublicKey stays the account's creation key):
+{ "owner": { "phone": { "label": "owner-phone", "publicKey": { … }, "fingerprint": "ZOLH5-D2DIS-66ZBB-4T6NL" } } }
+
+root handed to the phone key ZOLH5-D2DIS-66ZBB-4T6NL.
+
+phone owner "owner-phone": scan this with the owner app, review the operation, confirm.
+key fingerprint: ZOLH5-D2DIS-66ZBB-4T6NL   userOpHash: 0x0dd703e590a76073d85f01a3a5159da0b0888355588867fa766c5e700f95865f
+tpmsign:1?u=http://192.168.x.x:50362/s/<token>&h=<commitment>
+phone:          signed, signature verified against the owner key
+path:           root (owner key)
+included: tx 0x5adc76bd46e3e9680fa57cc6dda6ca8fe37e10c76855cfa3cdf3847a6d061438 (block 5, 126989 gas)
+
+phone-signed root operation included on anvil; the agent still runs:
+test phone_owner_real_device ... ok
+```
+
+The phone showed the same fingerprint after enrolling, and listed the
+enrollment at the next launch. The key enrolled here is a new Keystore
+entry for that anvil account; the P0 key is untouched. The attestation
+chain came back as five base64 DER certificates and was stored, not
+verified: that check, with the challenge
+`sha256("TPM_sign/v1/enroll" ‖ commitment)`, is P3. The test keeps the
+evidence only when `TPMSIGN_PHONE_OUT` names a directory.

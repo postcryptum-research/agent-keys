@@ -2,6 +2,7 @@
 //! same bytes and the same hashes (docs/MOBILE_OWNER_DESIGN.md §7).
 
 pub mod abi;
+pub mod enroll;
 pub mod fingerprint;
 pub mod kernel;
 pub mod request;

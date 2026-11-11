@@ -101,6 +101,13 @@ pub trait HardwareSigner {
     }
 }
 
+/// Whether `(x, y)` is a point on P-256 (not the identity). A key that is
+/// not cannot have signed anything and must never become an account's root.
+pub fn valid_public_key(pk: &PublicKey) -> bool {
+    let point = EncodedPoint::from_affine_coordinates(&FieldBytes::from(pk.x), &FieldBytes::from(pk.y), false);
+    VerifyingKey::from_encoded_point(&point).is_ok()
+}
+
 /// Off-chain P-256 verification, mirroring what the on-chain validator checks:
 /// `(h, r, s)` against `(x, y)`. Used by tests and the CLI self-check.
 pub fn verify_p256(digest: &[u8; 32], sig: &Signature, pk: &PublicKey) -> bool {

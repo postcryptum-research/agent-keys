@@ -186,12 +186,23 @@ has the `phone` owner key, the one-shot LAN session and
 `HardwareSigner::sign_user_op`, the app scans, checks the commitment and
 signs behind the fingerprint (blind: it signs the laptop's `userOpHash`
 after checking the request's shape; decoding and recomputing on the phone
-is P2). Still open in P1: the enrollment session (`key create --phone`,
-design §2.1, §4.3) — today the phone's key goes into the config by hand —
-and the config's `fingerprint` check. Tests: the anvil case
-`phone_owner_signs_a_root_operation` (a simulated phone: sign, a wrong
-signature, a refusal, the agent-role refusal) and the ignored real-device
-case `phone_owner_real_device`.
+is P2). The enrollment session is in: `key create --phone <label> --agent
+<cfg>` (design §2.1, §4.3) asks the phone for a new key per account, with
+the attestation challenge bound to the request, and prints the key, its
+fingerprint and the config snippet; the config's `fingerprint` is checked
+against its `publicKey` before any session, and `owner set-root
+--expect-fingerprint` refuses a handover to a key the owner did not see.
+What P1 still lacks: the attestation chain the phone returns is stored, not
+verified — that is P3, and until then the security tier is the phone's own
+word; the phone health check (design §2.4); and the Base Sepolia run with
+the owner's yes. Tests: the anvil cases `phone_owner_signs_a_root_operation`
+(a simulated phone: sign, a wrong signature, a refusal, the agent-role
+refusal, a wrong config fingerprint) and
+`phone_is_enrolled_then_takes_over_root` (enrollment refused, without
+evidence, accepted; the handover with the fingerprint check and an off-curve
+key refused; a root operation through the session; the old key refused), and
+the ignored real-device case `phone_owner_real_device` (enrollment, handover,
+a phone-signed operation).
 
 ## Threat model, briefly
 

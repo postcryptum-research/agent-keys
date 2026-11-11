@@ -83,12 +83,15 @@ pub enum KeySpec {
     /// the phone's secure hardware; an operation goes to it over the local
     /// network behind a QR code, and comes back signed. `publicKey` is the
     /// enrolled key, so read-only commands and the pre-signature root check
-    /// need no session. Owner role only.
+    /// need no session; `fingerprint` is the one the owner read on the
+    /// phone's screen at enrollment (`key create --phone`), and the key is
+    /// refused before any prompt when the two disagree. Owner role only.
     #[serde(rename = "phone")]
     Phone {
         label: String,
         #[serde(rename = "publicKey")]
         public_key: PublicKeyJson,
+        fingerprint: String,
     },
     /// 32-byte hex scalar in this file. **Insecure**: refused in every role
     /// unless built with `--features insecure-software-keys` (tests only;
@@ -362,14 +365,22 @@ pub fn open_signer(spec: &KeySpec, role: Role) -> Result<Box<dyn HardwareSigner>
                 anyhow::bail!("key in YubiKey PIV slot {slot}: needs `--features yubikey`")
             }
         }
-        KeySpec::Phone { label, public_key } => {
+        KeySpec::Phone { label, public_key, fingerprint } => {
             if role != Role::Owner {
                 anyhow::bail!(
                     "phone key {label:?}: a phone signs only owner operations (a human confirms each one); \
                      it cannot be the agent key, and recovery on a phone is not supported yet"
                 );
             }
-            Ok(Box::new(crate::phone::PhoneSigner::new(label.clone(), public_key.parse()?)))
+            let pk = public_key.parse()?;
+            let actual = owner_core::fingerprint::fingerprint(&pk);
+            if !fingerprint.eq_ignore_ascii_case(&actual) {
+                anyhow::bail!(
+                    "phone key {label:?}: the config's fingerprint {fingerprint} is not the fingerprint of its publicKey ({actual}); \
+                     the key the phone showed at enrollment and the key in this file differ — fix the config before anything is signed"
+                );
+            }
+            Ok(Box::new(crate::phone::PhoneSigner::new(label.clone(), pk)))
         }
         KeySpec::Keyfile(path) => {
             if role == Role::Agent {

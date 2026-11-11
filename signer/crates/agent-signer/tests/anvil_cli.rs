@@ -250,9 +250,12 @@ impl Chain {
     /// Run the CLI with this chain's `.env`, never the developer's.
     fn cli(&self, args: &[&str]) -> Output {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_agent-signer"));
-        cmd.args(args)
-            .args(["--env-file", self.dir.join(".env").to_str().unwrap()])
-            .env_remove("BASE_SEPOLIA_RPC_URL")
+        cmd.args(args).env_remove("BASE_SEPOLIA_RPC_URL");
+        if args.first() != Some(&"key") {
+            // `key` commands talk to a device, not to the chain
+            cmd.args(["--env-file", self.dir.join(".env").to_str().unwrap()]);
+        }
+        cmd.env_remove("BASE_SEPOLIA_RPC_URL")
             .env_remove("BUNDLER_URL")
             .env_remove("GAS_WALLET_KEYFILE");
         cmd.output().unwrap()
@@ -432,6 +435,19 @@ fn agent_lifecycle() {
     chain.fails(&["demo", "--agent", &rotated]);
 }
 
+/// The `phone` owner key spec as `key create --phone` prints it.
+fn phone_spec(label: &str, k: &Key) -> Value {
+    json!({"phone": {"label": label, "publicKey": {"x": k.x, "y": k.y}, "fingerprint": fingerprint_of(k)}})
+}
+
+fn fingerprint_of(k: &Key) -> String {
+    let pk = hw_signer::PublicKey {
+        x: hex::decode(&k.x[2..]).unwrap().try_into().unwrap(),
+        y: hex::decode(&k.y[2..]).unwrap().try_into().unwrap(),
+    };
+    owner_core::fingerprint::fingerprint(&pk)
+}
+
 fn base_cfg<'a>(owner: &'a Key, agent: &'a Key, counter: &str, until: u64) -> Cfg<'a> {
     Cfg {
         owner, agent, permission: "0x74657331", allow: vec![(counter.to_string(), INCREMENT)],
@@ -571,7 +587,12 @@ fn http_get(url: &str) -> Vec<u8> {
 /// What the phone does, in a thread: wait for the QR the CLI writes to
 /// `qr_file`, fetch the request, check the commitment, recompute the hash,
 /// sign with `key` (or misbehave as `mode` says), post the answer.
+/// The phone side of the protocol with a software key. Modes: `sign`,
+/// `wrong-hash`, `refuse` answer a sign request; `enroll` and `enroll-refuse`
+/// answer an enrollment request with `key` as the new key (no attestation:
+/// a simulator has none).
 fn phone_simulator(qr_file: std::path::PathBuf, key: Key, mode: &'static str) -> std::thread::JoinHandle<()> {
+    use owner_core::enroll::{EnrollRequest, EnrollResponse};
     use owner_core::request::{commitment, AppInfo, QrPayload, SignRequest, SignResponse};
     std::thread::spawn(move || {
         let started = std::time::Instant::now();
@@ -588,17 +609,29 @@ fn phone_simulator(qr_file: std::path::PathBuf, key: Key, mode: &'static str) ->
         let bytes = http_get(&qr.url);
         assert_eq!(commitment(&bytes), qr.commitment, "the served request must match the QR's commitment");
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-        let req = SignRequest::parse(&bytes, now, 300).expect("a well-formed request");
-        assert_eq!(req.nonce_key().unwrap(), U256::ZERO, "the phone signs root operations only");
-        let hash = req.user_op_hash().unwrap();
         let app = AppInfo { platform: "simulator".into(), version: "0".into(), core: "0".into() };
-        let mut scalar = [0u8; 32];
-        scalar.copy_from_slice(&hex::decode(&key.scalar[2..]).unwrap());
-        let sk = SigningKey::from_bytes(&scalar.into()).unwrap();
         let pk = hw_signer::PublicKey {
             x: hex::decode(&key.x[2..]).unwrap().try_into().unwrap(),
             y: hex::decode(&key.y[2..]).unwrap().try_into().unwrap(),
         };
+        if mode.starts_with("enroll") {
+            let req = EnrollRequest::parse(&bytes, now, 300).expect("a well-formed enrollment request");
+            assert_eq!(req.chain_id().unwrap(), 31337);
+            assert!(!req.label.is_empty());
+            let resp = match mode {
+                "enroll" => EnrollResponse::enrolled(&qr.commitment, &pk, "simulator", false, &[], app),
+                "enroll-refuse" => EnrollResponse::refused(&qr.commitment, "user", Some("declined on the phone".into()), app),
+                other => panic!("mode {other}"),
+            };
+            http_post(&qr.url, std::str::from_utf8(&resp.to_bytes()).unwrap());
+            return;
+        }
+        let req = SignRequest::parse(&bytes, now, 300).expect("a well-formed request");
+        assert_eq!(req.nonce_key().unwrap(), U256::ZERO, "the phone signs root operations only");
+        let hash = req.user_op_hash().unwrap();
+        let mut scalar = [0u8; 32];
+        scalar.copy_from_slice(&hex::decode(&key.scalar[2..]).unwrap());
+        let sk = SigningKey::from_bytes(&scalar.into()).unwrap();
         let sign = |h: &B256| {
             use p256::ecdsa::signature::hazmat::PrehashSigner;
             let s: p256::ecdsa::Signature = sk.sign_prehash(&h.0).unwrap();
@@ -628,7 +661,7 @@ fn phone_owner_signs_a_root_operation() {
     // the config, with the owner replaced by the phone key spec
     let cfg_path = chain.config("phone.json", &base_cfg(&phone, &agent, &counter, until));
     let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
-    v["owner"] = json!({"phone": {"label": "sim-phone", "publicKey": {"x": phone.x, "y": phone.y}}});
+    v["owner"] = phone_spec("sim-phone", &phone);
     std::fs::write(&cfg_path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
     let account = chain.deploy(&cfg_path); // the agent's first operation; no owner signature needed
     let qr_file = chain.dir.join("phone.qr");
@@ -672,50 +705,208 @@ fn phone_owner_signs_a_root_operation() {
     // 4. a phone can never be the agent key
     let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
     v["owner"] = json!({"software": key(1).scalar});
-    v["agent"] = json!({"phone": {"label": "sim-phone", "publicKey": {"x": phone.x, "y": phone.y}}});
+    v["agent"] = phone_spec("sim-phone", &phone);
     v["account"] = json!(account);
     let bad = chain.dir.join("phone-as-agent.json");
     std::fs::write(&bad, serde_json::to_string_pretty(&v).unwrap()).unwrap();
     let err = chain.fails(&["demo", "--agent", bad.to_str().unwrap()]);
     assert!(err.contains("signs only owner operations"), "{err}");
+
+    // 5. a config whose fingerprint is not its key's is refused before any session
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+    v["owner"]["phone"]["fingerprint"] = json!(fingerprint_of(&key(8)));
+    let wrong = chain.dir.join("phone-wrong-fp.json");
+    std::fs::write(&wrong, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    let err = chain.fails(&[
+        "op", "send", "--agent", wrong.to_str().unwrap(), "--root", "--target", &counter, "--data", INCREMENT,
+        "--listen", "127.0.0.1:0", "--phone-timeout", "5",
+    ]);
+    assert!(err.contains("is not the fingerprint of its publicKey"), "{err}");
+    assert!(!err.contains("tpmsign:1?"), "no session was opened: {err}");
 }
 
-/// The same loop with a real phone: the owner app on it holds the key whose
-/// public coordinates are in `TPMSIGN_PHONE_X` / `TPMSIGN_PHONE_Y`. Run from
-/// a terminal (the QR must be on screen), with `--nocapture`:
-///   TPMSIGN_PHONE_X=0x… TPMSIGN_PHONE_Y=0x… cargo test -p agent-signer \
-///     --features insecure-software-keys --test anvil_cli phone_owner_real_device -- --ignored --nocapture
+/// Design §2.1 and §9.4: enrollment on the (simulated) phone, the handover
+/// to the enrolled key with the fingerprint check, then a root operation
+/// signed through the LAN session — and what is refused on the way.
+#[test]
+fn phone_is_enrolled_then_takes_over_root() {
+    let chain = chain_or_skip!("phone-enroll");
+    let (owner, agent, recovery, phone) = (key(1), key(2), key(4), key(9));
+    let counter = chain.addr("demoCounter");
+    let until = far_future(&chain);
+    let account = chain.deploy(&chain.config("agent.json", &base_cfg(&owner, &agent, &counter, until)));
+    let cfg = chain.config(
+        "owner.json",
+        &Cfg { recovery: Some(&recovery), account: Some(account.clone()), ..base_cfg(&owner, &agent, &counter, until) },
+    );
+    let qr_file = chain.dir.join("enroll.qr");
+    let qr = qr_file.to_str().unwrap();
+    let out_dir = chain.dir.join("enrollment");
+    let out = out_dir.to_str().unwrap();
+
+    // the config must name the account (§5.5)
+    let unpinned = chain.config("unpinned.json", &base_cfg(&owner, &agent, &counter, until));
+    let err = chain.fails(&["key", "create", "--phone", "owner-phone", "--agent", &unpinned, "--listen", "127.0.0.1:0", "--phone-timeout", "5"]);
+    assert!(err.contains("pin `account`"), "{err}");
+
+    // 1. the phone declines
+    let sim = phone_simulator(qr_file.clone(), key(9), "enroll-refuse");
+    let err = chain.fails(&["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--listen", "127.0.0.1:0", "--phone-qr-file", qr, "--phone-timeout", "60"]);
+    sim.join().unwrap();
+    assert!(err.contains("the phone refused: user"), "{err}");
+    let _ = std::fs::remove_file(&qr_file);
+
+    // 2. a simulator has no attestation: refused unless allowed
+    let sim = phone_simulator(qr_file.clone(), key(9), "enroll");
+    let err = chain.fails(&["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--listen", "127.0.0.1:0", "--phone-qr-file", qr, "--phone-timeout", "60"]);
+    sim.join().unwrap();
+    assert!(err.contains("no attestation evidence"), "{err}");
+    let _ = std::fs::remove_file(&qr_file);
+
+    // 3. enrolled: the key, its fingerprint, the next step, the config snippet
+    let sim = phone_simulator(qr_file.clone(), key(9), "enroll");
+    let text = chain.ok(&[
+        "key", "create", "--phone", "owner-phone", "--agent", &cfg, "--allow-no-attestation", "--out", out,
+        "--listen", "127.0.0.1:0", "--phone-qr-file", qr, "--phone-timeout", "60",
+    ]);
+    sim.join().unwrap();
+    let fp = fingerprint_of(&phone);
+    assert!(text.contains(&format!("x = {}", phone.x)), "{text}");
+    assert!(text.contains(&format!("fingerprint    {fp}")), "{text}");
+    assert!(text.contains("security level simulator (self-reported)"), "{text}");
+    assert!(text.contains("Nothing changed on-chain"), "{text}");
+    assert!(text.contains(&format!("--expect-fingerprint {fp}")), "{text}");
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(out_dir.join("enroll-response.json")).unwrap()).unwrap();
+    assert_eq!(saved["publicKey"]["x"].as_str().unwrap().to_lowercase(), phone.x.to_lowercase());
+    let req: Value = serde_json::from_str(&std::fs::read_to_string(out_dir.join("enroll-request.json")).unwrap()).unwrap();
+    assert_eq!(req["account"].as_str().unwrap().to_lowercase(), account.to_lowercase());
+    assert_eq!(req["label"], "owner-phone");
+    let _ = std::fs::remove_file(&qr_file);
+    // the snippet it printed is a valid owner spec
+    let snippet_start = text.find("{\n  \"owner\"").expect("a config snippet");
+    let snippet_end = snippet_start + text[snippet_start..].find("\n}").expect("the snippet's end") + 2;
+    let snippet: Value = serde_json::from_str(&text[snippet_start..snippet_end]).expect("the snippet parses");
+    assert_eq!(snippet["owner"]["phone"]["fingerprint"], fp);
+
+    // 4. the handover goes only to the key the owner saw
+    let validator = chain.addr("p256Validator");
+    let public_key = format!("{},{}", phone.x, phone.y);
+    chain.ok(&["owner", "add-recovery", "--agent", &cfg]);
+    let other = fingerprint_of(&key(8));
+    let err = chain.fails(&[
+        "owner", "set-root", "--agent", &cfg, "--validator", &validator, "--retire", &validator, "--public-key", &public_key,
+        "--expect-fingerprint", &other,
+    ]);
+    assert!(err.contains(&format!("has fingerprint {fp}, not the expected {other}")), "{err}");
+    let err = chain.fails(&[
+        "owner", "set-root", "--agent", &cfg, "--validator", &validator, "--retire", &validator, "--public-key",
+        &format!("{},{}", phone.x, "0x".to_string() + &"11".repeat(32)),
+    ]);
+    assert!(err.contains("not a point on P-256"), "{err}");
+    let text = chain.ok(&[
+        "owner", "set-root", "--agent", &cfg, "--validator", &validator, "--retire", &validator, "--public-key", &public_key,
+        "--expect-fingerprint", &fp.to_lowercase(),
+    ]);
+    assert!(text.contains(&format!("fingerprint {fp}")), "{text}");
+
+    // 5. the phone is root: the config points at it; a root operation goes through the session
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    v["owner"] = snippet["owner"].clone();
+    let phone_cfg = chain.dir.join("phone-owner.json");
+    std::fs::write(&phone_cfg, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    let phone_cfg = phone_cfg.to_str().unwrap();
+    let shown = chain.ok(&["key", "show", "--phone", "owner-phone", "--agent", phone_cfg]);
+    assert!(shown.contains(&format!("fingerprint {fp}")), "{shown}");
+    let sim = phone_simulator(qr_file.clone(), key(9), "sign");
+    let before = chain.counter();
+    let text = chain.ok(&[
+        "op", "send", "--agent", phone_cfg, "--root", "--target", &counter, "--data", INCREMENT,
+        "--listen", "127.0.0.1:0", "--phone-qr-file", qr, "--phone-timeout", "60",
+    ]);
+    sim.join().unwrap();
+    assert!(text.contains("phone:          signed, signature verified"), "{text}");
+    assert_eq!(chain.counter(), before + U256::from(1));
+    // the old owner key is refused before any signature; the agent still runs
+    let refused = chain.fails(&["op", "send", "--agent", &cfg, "--root", "--target", &counter, "--data", INCREMENT]);
+    assert!(refused.contains("not the account's root key"), "{refused}");
+    chain.ok(&["demo", "--agent", phone_cfg]);
+}
+
+/// The real thing, with a real phone on the same network (design §9.6): the
+/// phone enrolls a new key for a fresh anvil account, the current owner hands
+/// root to it (`set-root` with the fingerprint check), the phone signs a root
+/// operation, and the agent still runs. Run from `signer/`:
+///
+///   cargo test -p agent-signer --features insecure-software-keys \
+///     --test anvil_cli phone_owner_real_device -- --ignored --nocapture
+///
+/// On the phone: "4. Enroll" for the first QR, "3. Scan and sign" for the second.
+/// `TPMSIGN_PHONE_OUT=<dir>` keeps the enrollment (request, answer, attestation
+/// DER) after the run; the temp directory is removed otherwise.
 #[test]
 #[ignore = "needs a phone with the owner app on the same network"]
 fn phone_owner_real_device() {
-    let (Ok(x), Ok(y)) = (std::env::var("TPMSIGN_PHONE_X"), std::env::var("TPMSIGN_PHONE_Y")) else {
-        panic!("set TPMSIGN_PHONE_X and TPMSIGN_PHONE_Y to the phone key's public coordinates");
-    };
     let chain = chain_or_skip!("phone-real");
-    let agent = key(2);
+    let (owner, agent, recovery) = (key(1), key(2), key(4));
     let counter = chain.addr("demoCounter");
     let until = far_future(&chain);
-    let phone = Key { scalar: String::new(), x, y };
-    let cfg_path = chain.config("phone-real.json", &base_cfg(&phone, &agent, &counter, until));
-    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
-    v["owner"] = json!({"phone": {"label": "owner-phone", "publicKey": {"x": phone.x, "y": phone.y}}});
-    std::fs::write(&cfg_path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
-    let account = chain.deploy(&cfg_path);
-    eprintln!("\naccount {account} on a local anvil; its owner key is the phone's. Open the owner app, tap\n\"3. Scan the laptop's QR and sign\", scan the QR below, review, confirm with your fingerprint.\n");
-    let before = chain.counter();
+    let account = chain.deploy(&chain.config("agent.json", &base_cfg(&owner, &agent, &counter, until)));
+    let cfg = chain.config(
+        "owner.json",
+        &Cfg { recovery: Some(&recovery), account: Some(account.clone()), ..base_cfg(&owner, &agent, &counter, until) },
+    );
+    let env_file = chain.dir.join(".env");
+    let env_file = env_file.to_str().unwrap();
     // inherit stdio so the QR shows on the terminal
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agent-signer"));
-    cmd.args(["op", "send", "--agent", &cfg_path, "--root", "--target", &counter, "--data", INCREMENT, "--phone-timeout", "180"])
-        .args(["--env-file", chain.dir.join(".env").to_str().unwrap()])
-        .env_remove("BASE_SEPOLIA_RPC_URL")
-        .env_remove("BUNDLER_URL")
-        .env_remove("GAS_WALLET_KEYFILE");
-    let status = cmd.status().expect("run agent-signer");
+    let run = |args: &[&str]| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_agent-signer"));
+        cmd.args(args).args(["--phone-timeout", "180"]);
+        if args[0] != "key" {
+            cmd.args(["--env-file", env_file]);
+        }
+        cmd
+            .env_remove("BASE_SEPOLIA_RPC_URL")
+            .env_remove("BUNDLER_URL")
+            .env_remove("GAS_WALLET_KEYFILE");
+        cmd.status().expect("run agent-signer")
+    };
+
+    // 1. enrollment; the evidence survives the run when TPMSIGN_PHONE_OUT names a directory
+    let out_dir = std::env::var_os("TPMSIGN_PHONE_OUT").map(PathBuf::from).unwrap_or_else(|| chain.dir.join("enrollment"));
+    eprintln!("\naccount {account} on a local anvil. On the phone tap \"4. Enroll this phone for an account\", scan the QR\nbelow, read the notice, confirm.\n");
+    let status = run(&["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--out", out_dir.to_str().unwrap()]);
+    assert!(status.success(), "the enrollment failed");
+    let resp: Value = serde_json::from_str(&std::fs::read_to_string(out_dir.join("enroll-response.json")).unwrap()).unwrap();
+    let phone = Key {
+        scalar: String::new(),
+        x: resp["publicKey"]["x"].as_str().unwrap().to_string(),
+        y: resp["publicKey"]["y"].as_str().unwrap().to_string(),
+    };
+    let fp = fingerprint_of(&phone);
+
+    // 2. the handover, signed by the current (software) owner, to the key the phone showed
+    let validator = chain.addr("p256Validator");
+    chain.ok(&["owner", "add-recovery", "--agent", &cfg]);
+    chain.ok(&[
+        "owner", "set-root", "--agent", &cfg, "--validator", &validator, "--retire", &validator,
+        "--public-key", &format!("{},{}", phone.x, phone.y), "--expect-fingerprint", &fp,
+    ]);
+    eprintln!("\nroot handed to the phone key {fp}.");
+
+    // 3. a root operation signed on the phone
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    v["owner"] = phone_spec("owner-phone", &phone);
+    let phone_cfg = chain.dir.join("phone-owner.json");
+    std::fs::write(&phone_cfg, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    let phone_cfg = phone_cfg.to_str().unwrap();
+    eprintln!("On the phone tap \"3. Scan the laptop's QR and sign\", scan the QR below, review, confirm with your fingerprint.\n");
+    let before = chain.counter();
+    let status = run(&["op", "send", "--agent", phone_cfg, "--root", "--target", &counter, "--data", INCREMENT]);
     assert!(status.success(), "the phone-signed root operation failed");
     assert_eq!(chain.counter(), before + U256::from(1), "the counter moved by the phone-signed root operation");
     eprintln!("\nphone-signed root operation included on anvil; the agent still runs:");
-    chain.ok(&["demo", "--agent", &cfg_path]);
-    eprintln!("done.");
+    chain.ok(&["demo", "--agent", phone_cfg]);
+    eprintln!("done. The enrollment (request, answer, attestation DER) is in {}", out_dir.display());
 }
 
 // ---------------------------------------------------------------- x402
