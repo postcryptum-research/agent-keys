@@ -683,6 +683,12 @@ fn phone_owner_signs_a_root_operation() {
     sim.join().unwrap();
     assert!(out.contains("path:           root (owner key)"), "{out}");
     assert!(out.contains("phone:          signed, signature verified"), "{out}");
+    // the laptop previews the phone's review of the CLI's own request (P2)
+    assert!(out.contains("what the phone will show:"), "{out}");
+    assert!(out.contains("Call: increment()"), "{out}");
+    assert!(out.contains("demo counter (verified in this build)"), "{out}");
+    assert!(out.contains("Maximum gas cost:"), "{out}");
+    assert!(!out.contains("will REFUSE"), "{out}");
     assert_eq!(chain.counter(), before + U256::from(1));
     let _ = std::fs::remove_file(&qr_file);
 

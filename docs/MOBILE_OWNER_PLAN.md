@@ -216,6 +216,28 @@ operation through the session; the old key refused), and
 the ignored real-device case `phone_owner_real_device` (enrollment, handover,
 a phone-signed operation).
 
+P2 status (2026-11-12, slice 1): the review lives in `owner-core`
+(`review.rs`, design §6): one parse of a sign request into a `Review` — the
+§6.2 checks (commitment, version and expiry with the 5-minute tolerance,
+the enrollment match, no `initCode`, the root nonce key, the recomputed
+hash), the decoders for every call the CLI emits today (execute single and
+batch with delegatecall and other modes refused, `installValidations` of a
+permission with its full mandate or of a validator, `grantAccess`,
+`changeRootValidator`, `uninstallValidation`, the demo counter, ERC-20
+`transfer` and `approve` in raw units, plain value transfers), the bold
+effects that need the second confirmation, unknown external calls refused
+unless expert mode, the maximum gas cost against the enrollment's cap and
+the no-charge paymaster rule, every hash-covered field under details, and
+the label rules. The facts (names, paymasters, recovery validators) come
+from the caller for now; the build-embedded table is slice 3. Tests: the
+§9.2 tamper test (every field and every calldata byte either changes the
+screen or is refused, the swapped gas limits named), the §6.2 and §6.5
+cases, the admin calls. The CLI prints the same review on the laptop before
+the QR, so the owner compares screens and a refusal is known before the
+phone is asked; the anvil phone case asserts it on a real request. Next,
+slice 2: `owner-core` on the phone through `uniffi`, the app rendering the
+sections and signing the hash it recomputed.
+
 ## Threat model, briefly
 
 - **The laptop is compromised.** It can request a malicious operation, but

@@ -6,6 +6,7 @@ pub mod enroll;
 pub mod fingerprint;
 pub mod kernel;
 pub mod request;
+pub mod review;
 pub mod user_op;
 
 pub use hw_signer::{PublicKey, Signature};
