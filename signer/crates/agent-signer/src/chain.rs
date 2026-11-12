@@ -710,6 +710,8 @@ impl Session {
         facts.sponsoring_paymasters.extend(d.whitelist_paymaster);
         facts.recovery_validators.extend(d.p256_recovery_validator);
         facts.recovery_validators.extend(d.p256_recovery_validator_v1);
+        facts.demo_counter = Some(d.demo_counter);
+        facts.known_modules = vec![d.agent_policy, d.p256_signer];
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|t| t.as_secs()).unwrap_or(0);
         let enrolled = [EnrolledAccount::new(d.chain_id, d.entry_point, self.account)];
         let review = open_request(request, &owner_core::request::commitment(request), now, &enrolled, &facts);

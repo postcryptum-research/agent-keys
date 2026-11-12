@@ -59,6 +59,10 @@ pub struct Facts {
     /// Paymasters without a `postOp` (§6.4): the only ones accepted.
     pub sponsoring_paymasters: Vec<Address>,
     pub recovery_validators: Vec<Address>,
+    /// The project's demo counter: `increment()` is recognised there only.
+    pub demo_counter: Option<Address>,
+    /// Policy and signer modules whose init data this build can read.
+    pub known_modules: Vec<Address>,
 }
 
 impl Facts {
@@ -117,10 +121,23 @@ impl Review {
 
     /// The screen as one text, for tests and the CLI's dry run.
     pub fn text(&self) -> String {
+        self.render(true)
+    }
+
+    /// The screen without the `userOpHash` row: what the tamper test
+    /// compares, since that row changes with every mutation by definition.
+    pub fn text_without_hash(&self) -> String {
+        self.render(false)
+    }
+
+    fn render(&self, with_hash: bool) -> String {
         let mut out = String::new();
         for s in &self.sections {
             out.push_str(&format!("## {}\n", s.title));
             for r in &s.rows {
+                if !with_hash && r.label == "userOpHash" {
+                    continue;
+                }
                 out.push_str(&format!("{}{}: {}\n", if r.emphasis { "! " } else { "" }, r.label, r.value));
             }
         }
@@ -171,7 +188,10 @@ pub fn open_request(
         Ok(op) => op,
         Err(e) => return Review::refused(c, vec![], e.to_string()),
     };
-    let chain_id = req.chain_id().unwrap_or(0);
+    let chain_id = match req.chain_id() {
+        Ok(id) => id,
+        Err(e) => return Review::refused(c, vec![], e.to_string()),
+    };
     let Some(acct) = enrolled
         .iter()
         .find(|e| e.chain_id == chain_id && e.entry_point == req.entry_point && e.account == op.sender)
@@ -192,8 +212,11 @@ pub fn open_request(
     if op.nonce >> 64 != U256::ZERO {
         return Review::refused(c, vec![], "the nonce key is not the root key; this phone signs root operations only");
     }
-    // 6: the recomputed hash equals the laptop's hint — SignRequest::parse checked it
-    let digest = req.laptop.user_op_hash;
+    // 6: SignRequest::parse refused a hint that differs; the digest is still the recomputed value
+    let digest = match req.user_op_hash() {
+        Ok(h) => h,
+        Err(e) => return Review::refused(c, vec![], e.to_string()),
+    };
 
     let mut b = Builder { facts, sections: Vec::new(), warnings: Vec::new() };
     let s = b.section("Operation");
@@ -225,7 +248,11 @@ pub fn open_request(
         let title = if calls.len() == 1 { "Call".to_string() } else { format!("Call {} of {}", i + 1, calls.len()) };
         let s = b.section(title);
         let outcome = if *target == op.sender {
-            self_call(&mut b, s, data, acct, &installed_keys)
+            if !value.is_zero() {
+                Err("a self-call with value; refused".to_string())
+            } else {
+                self_call(&mut b, s, data, acct, &installed_keys)
+            }
         } else {
             external_call(&mut b, s, *target, *value, data, acct, &labels)
         };
@@ -296,8 +323,14 @@ fn top_level(call_data: &[u8], account: Address) -> Result<Vec<(Address, U256, B
     }
     let selector: [u8; 4] = call_data[..4].try_into().expect("4");
     if selector == IKernel::executeCall::SELECTOR {
-        let exec = IKernel::executeCall::abi_decode(call_data).map_err(|e| format!("execute: {e}"))?;
+        let exec = IKernel::executeCall::abi_decode_validate(call_data).map_err(|e| format!("execute: {e}"))?;
+        if exec.abi_encode() != call_data {
+            return Err("execute calldata is not canonical (trailing or misplaced bytes); refused".into());
+        }
         let mode = exec.execMode.0;
+        if mode[2..] != [0u8; 30] {
+            return Err("execMode carries a selector or payload this version does not show; refused".into());
+        }
         if mode[1] != 0x00 {
             return Err(format!("execute exec type 0x{:02x} (not revert-on-failure); refused", mode[1]));
         }
@@ -312,8 +345,11 @@ fn top_level(call_data: &[u8], account: Address) -> Result<Vec<(Address, U256, B
                 Ok(vec![(target, value, Bytes::copy_from_slice(&d[52..]))])
             }
             0x01 => {
-                let executions = Vec::<IKernel::Execution>::abi_decode(&exec.executionCalldata)
+                let executions = Vec::<IKernel::Execution>::abi_decode_validate(&exec.executionCalldata)
                     .map_err(|e| format!("batch executions: {e}"))?;
+                if executions.abi_encode() != exec.executionCalldata.as_ref() {
+                    return Err("batch calldata is not canonical; refused".into());
+                }
                 if executions.is_empty() {
                     return Err("an empty batch".into());
                 }
@@ -337,7 +373,7 @@ fn keys_installed_in(calls: &[(Address, U256, Bytes)], account: Address) -> BTre
         if *target != account {
             continue;
         }
-        if let Ok(c) = IKernel::installValidationsCall::abi_decode(data) {
+        if let Ok(c) = IKernel::installValidationsCall::abi_decode_validate(data) {
             for (vid, vdata) in c.vIds.iter().zip(&c.validationData) {
                 if vid.0[0] == VALIDATION_TYPE_VALIDATOR {
                     if let Some(pk) = decode_pubkey(vdata) {
@@ -361,17 +397,29 @@ fn self_call(
         return Err("a self-call without a selector; refused".into());
     }
     let selector: [u8; 4] = data[..4].try_into().expect("4");
+    // the hook Kernel means by "none" (address(1)); any other hook runs code around the validator
+    let no_hook = Address::with_last_byte(1);
     if selector == IKernel::installValidationsCall::SELECTOR {
-        let c = IKernel::installValidationsCall::abi_decode(data).map_err(|e| format!("installValidations: {e}"))?;
-        if c.vIds.len() != c.configs.len() || c.vIds.len() != c.validationData.len() {
+        let c = IKernel::installValidationsCall::abi_decode_validate(data).map_err(|e| format!("installValidations: {e}"))?;
+        if c.abi_encode() != data {
+            return Err("installValidations calldata is not canonical; refused".into());
+        }
+        if c.vIds.len() != c.configs.len() || c.vIds.len() != c.validationData.len() || c.vIds.len() != c.hookData.len() {
             return Err("installValidations with mismatched arrays; refused".into());
         }
-        for ((vid, cfg), vdata) in c.vIds.iter().zip(&c.configs).zip(&c.validationData) {
+        for (((vid, cfg), vdata), hdata) in c.vIds.iter().zip(&c.configs).zip(&c.validationData).zip(&c.hookData) {
+            clean_permission_vid(*vid)?;
+            if cfg.hook != no_hook {
+                return Err(format!("installValidations with hook {}; this version installs validations without hooks", cfg.hook.to_checksum(None)));
+            }
+            if !hdata.is_empty() {
+                return Err("installValidations with hook data; refused".into());
+            }
             match vid.0[0] {
                 VALIDATION_TYPE_PERMISSION => {
                     let id = FixedBytes::<4>::from_slice(&vid.0[1..5]);
                     b.row(s, "Install agent permission", format!("0x{}", hex(id.as_slice())));
-                    permission_rows(b, s, vdata)?;
+                    permission_rows(b, s, vdata, acct)?;
                     b.row(s, "Validation nonce", cfg.nonce.to_string());
                 }
                 VALIDATION_TYPE_VALIDATOR => {
@@ -395,7 +443,11 @@ fn self_call(
         }
         Ok(())
     } else if selector == IKernel::grantAccessCall::SELECTOR {
-        let c = IKernel::grantAccessCall::abi_decode(data).map_err(|e| format!("grantAccess: {e}"))?;
+        let c = IKernel::grantAccessCall::abi_decode_validate(data).map_err(|e| format!("grantAccess: {e}"))?;
+        if c.abi_encode() != data {
+            return Err("grantAccess calldata is not canonical; refused".into());
+        }
+        clean_permission_vid(c.vId)?;
         let who = vid_text(c.vId);
         let what = selector_name(c.selector.0);
         let verb = if c.allow { "Allow" } else { "Forbid" };
@@ -406,9 +458,18 @@ fn self_call(
         }
         Ok(())
     } else if selector == IKernel::changeRootValidatorCall::SELECTOR {
-        let c = IKernel::changeRootValidatorCall::abi_decode(data).map_err(|e| format!("changeRootValidator: {e}"))?;
+        let c = IKernel::changeRootValidatorCall::abi_decode_validate(data).map_err(|e| format!("changeRootValidator: {e}"))?;
+        if c.abi_encode() != data {
+            return Err("changeRootValidator calldata is not canonical; refused".into());
+        }
         if c.rootValidator.0[0] != VALIDATION_TYPE_VALIDATOR {
             return Err("changeRootValidator to a non-validator id; refused".into());
+        }
+        if c.hook != no_hook || !c.hookData.is_empty() {
+            return Err("changeRootValidator with a hook; refused".into());
+        }
+        if !c.validatorData.is_empty() && decode_pubkey(&c.validatorData).is_none() {
+            return Err("changeRootValidator: validator data is not a P-256 key; refused".into());
         }
         let v = Address::from_slice(&c.rootValidator.0[1..21]);
         let key = decode_pubkey(&c.validatorData).or_else(|| installed_keys.get(&c.rootValidator).copied());
@@ -419,12 +480,27 @@ fn self_call(
         b.row(s, "Root validator", b.facts.name(v));
         Ok(())
     } else if selector == IKernel::uninstallValidationCall::SELECTOR {
-        let c = IKernel::uninstallValidationCall::abi_decode(data).map_err(|e| format!("uninstallValidation: {e}"))?;
+        let c = IKernel::uninstallValidationCall::abi_decode_validate(data).map_err(|e| format!("uninstallValidation: {e}"))?;
+        if c.abi_encode() != data {
+            return Err("uninstallValidation calldata is not canonical; refused".into());
+        }
+        if !c.hookDeinitData.is_empty() {
+            return Err("uninstallValidation with hook data; refused".into());
+        }
+        clean_permission_vid(c.vId)?;
         match c.vId.0[0] {
             VALIDATION_TYPE_PERMISSION => {
+                // Kernel's PermissionDisableDataFormat: one entry per module; ours carry nothing
+                let entries = Vec::<Bytes>::abi_decode_validate(&c.deinitData).map_err(|e| format!("permission deinit data: {e}"))?;
+                if entries.abi_encode() != c.deinitData.as_ref() || entries.iter().any(|e| !e.is_empty()) {
+                    return Err("uninstallValidation of a permission with module data; refused".into());
+                }
                 b.row(s, "Remove permission", format!("0x{}", hex(&c.vId.0[1..5])));
             }
             VALIDATION_TYPE_VALIDATOR => {
+                if !c.deinitData.is_empty() {
+                    return Err("uninstallValidation of a validator with data; refused".into());
+                }
                 let v = Address::from_slice(&c.vId.0[1..21]);
                 if acct.validator == Some(v) {
                     b.bold(s, "Remove validator", format!("{} — this phone will no longer control the account", b.facts.name(v)));
@@ -442,34 +518,60 @@ fn self_call(
 
 /// Kernel's `PermissionEnableDataFormat` as `permission_data` builds it:
 /// policies first, the signer last; each entry `flag(2) ‖ module(20) ‖ init`.
-fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8]) -> Result<(), String> {
-    let entries = Vec::<Bytes>::abi_decode(vdata).map_err(|e| format!("permission data: {e}"))?;
+fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledAccount) -> Result<(), String> {
+    let entries = Vec::<Bytes>::abi_decode_validate(vdata).map_err(|e| format!("permission data: {e}"))?;
+    if entries.abi_encode() != vdata {
+        return Err("permission data is not canonical; refused".into());
+    }
     if entries.len() < 2 {
         return Err("permission data without a policy and a signer; refused".into());
     }
     let (signer, policies) = entries.split_last().expect("at least two");
+    // the module the build can read, or expert mode: the mandate rows are this build's reading
+    // of init data that the module interprets its own way
+    let module_known = |b: &mut Builder<'_>, what: &str, module: Address| -> Result<(), String> {
+        if b.facts.known_modules.contains(&module) {
+            return Ok(());
+        }
+        if !acct.expert_mode {
+            return Err(format!(
+                "{what} module {} is not known to this build, so the mandate shown could mean anything there (expert mode is off)",
+                module.to_checksum(None)
+            ));
+        }
+        b.bold(s, format!("Unknown {what} module"), format!("{} — this build cannot read what it enforces", module.to_checksum(None)));
+        b.warnings.push(format!("{what} module {} is not known to this build", module.to_checksum(None)));
+        Ok(())
+    };
     for p in policies {
         if p.len() < 22 {
             return Err("a policy entry shorter than flag ‖ module; refused".into());
         }
+        // Kernel's PassFlag: a set bit skips the policy for user operations or the signature
+        if p[..2] != [0, 0] {
+            return Err(format!("a policy entry with flag 0x{}; a permission that skips its policy is refused", hex(&p[..2])));
+        }
         let module = Address::from_slice(&p[2..22]);
         b.row(s, "Policy module", b.facts.name(module));
-        if !b.facts.names.contains_key(&module) {
-            b.warnings.push(format!("policy module {} is not known to this build", module.to_checksum(None)));
-        }
+        module_known(b, "policy", module)?;
         type PolicyInit = (Vec<Address>, Vec<FixedBytes<4>>, U256, U256, U256, Vec<(Address, U256, U256, B256)>, U256);
-        let (targets, selectors, max_value, budget, until, tokens, after) =
-            PolicyInit::abi_decode_params(&p[22..]).map_err(|e| format!("policy parameters: {e}"))?;
+        let decoded = PolicyInit::abi_decode_params_validate(&p[22..]).map_err(|e| format!("policy parameters: {e}"))?;
+        if decoded.abi_encode_params() != p[22..] {
+            return Err("policy parameters are not canonical; refused".into());
+        }
+        let (targets, selectors, max_value, budget, until, tokens, after) = decoded;
         if targets.len() != selectors.len() {
             return Err("policy targets and selectors differ in length; refused".into());
         }
+        let secs = |v: U256, what: &str| u64::try_from(v).map_err(|_| format!("{what} does not fit a timestamp; refused"));
+        let (until, after) = (secs(until, "validUntil")?, secs(after, "validAfter")?);
         for (t, sel) in targets.iter().zip(&selectors) {
             b.row(s, "Allow", format!("{} · {}", b.facts.name(*t), selector_name(sel.0)));
         }
         b.row(s, "Max value per operation", format!("{} ETH", format_ether(max_value)));
         b.row(s, "Budget", format!("{} ETH", format_ether(budget)));
-        b.row(s, "Valid from", if after.is_zero() { "now".to_string() } else { format!("{} UTC ({after})", utc(after.to::<u64>())) });
-        b.row(s, "Valid until", format!("{} UTC ({until})", utc(until.saturating_to::<u64>())));
+        b.row(s, "Valid from", if after == 0 { "now".to_string() } else { format!("{} UTC ({after})", utc(after)) });
+        b.row(s, "Valid until", format!("{} UTC ({until})", utc(until)));
         for (token, max, budget, domain) in &tokens {
             b.row(
                 s,
@@ -477,7 +579,7 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8]) -> Result<(), St
                 format!(
                     "{}: max {max} per operation, budget {budget} (raw units, unverified decimals){}",
                     b.facts.name(*token),
-                    if domain.is_zero() { "" } else { ", x402 payments allowed" }
+                    if domain.is_zero() { String::new() } else { format!(", x402 payments allowed (domain {domain})") }
                 ),
             );
         }
@@ -485,11 +587,12 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8]) -> Result<(), St
     if signer.len() < 22 {
         return Err("a signer entry shorter than flag ‖ module; refused".into());
     }
+    if signer[..2] != [0, 0] {
+        return Err(format!("a signer entry with flag 0x{}; a permission that skips its signature is refused", hex(&signer[..2])));
+    }
     let module = Address::from_slice(&signer[2..22]);
     b.row(s, "Signer module", b.facts.name(module));
-    if !b.facts.names.contains_key(&module) {
-        b.warnings.push(format!("signer module {} is not known to this build", module.to_checksum(None)));
-    }
+    module_known(b, "signer", module)?;
     let pk = decode_pubkey(&signer[22..]).ok_or("signer data is not a P-256 key; refused")?;
     b.row(s, "Agent key", fingerprint(&pk));
     Ok(())
@@ -510,7 +613,12 @@ fn external_call(
     }
     b.row(s, "To", to);
     if !value.is_zero() {
-        b.row(s, "Send", format!("{} ETH", format_ether(value)));
+        // value to a contract the build knows is a parameter; to anything else it is a payment
+        if b.facts.names.contains_key(&target) {
+            b.row(s, "Send", format!("{} ETH", format_ether(value)));
+        } else {
+            b.bold(s, "Send", format!("{} ETH to an address this build does not know", format_ether(value)));
+        }
     }
     if data.is_empty() {
         if value.is_zero() {
@@ -522,19 +630,23 @@ fn external_call(
         return Err("an external call with data shorter than a selector; refused".into());
     }
     let selector: [u8; 4] = data[..4].try_into().expect("4");
-    if selector == SELECTOR_INCREMENT && data.len() == 4 {
+    if selector == SELECTOR_INCREMENT && data.len() == 4 && b.facts.demo_counter == Some(target) {
         b.row(s, "Call", "increment()");
         return Ok(());
     }
     if (selector == SELECTOR_ERC20_TRANSFER || selector == SELECTOR_ERC20_APPROVE) && data.len() == 68 {
+        if data[4..16] != [0u8; 12] {
+            return Err("an ERC-20 call with a non-canonical address word; refused".into());
+        }
         let who = Address::from_slice(&data[16..36]);
         let amount = U256::from_be_slice(&data[36..68]);
-        let what = if selector == SELECTOR_ERC20_TRANSFER { "transfer" } else { "approve" };
-        b.row(
-            s,
-            "Call",
-            format!("ERC-20 {what}({}, {amount}) — raw units, unverified decimals", who.to_checksum(None)),
-        );
+        let amount = if amount == U256::MAX { "unlimited".to_string() } else { format!("{amount} (raw units, unverified decimals)") };
+        if selector == SELECTOR_ERC20_TRANSFER {
+            b.row(s, "Call", format!("ERC-20 transfer to {}: {amount}", who.to_checksum(None)));
+        } else {
+            // an approval hands spending rights to a third party
+            b.bold(s, "ERC-20 approve", format!("{} may spend {amount} of this token", who.to_checksum(None)));
+        }
         return Ok(());
     }
     if !acct.expert_mode {
@@ -559,6 +671,14 @@ fn decode_pubkey(data: &[u8]) -> Option<PublicKey> {
     }
     let pk = PublicKey { x: data[..32].try_into().ok()?, y: data[32..].try_into().ok()? };
     hw_signer::valid_public_key(&pk).then_some(pk)
+}
+
+/// `0x02 ‖ id ‖ 0×16`: the tail is not shown, so it must be zero.
+fn clean_permission_vid(vid: FixedBytes<21>) -> Result<(), String> {
+    if vid.0[0] == VALIDATION_TYPE_PERMISSION && vid.0[5..] != [0u8; 16] {
+        return Err("a permission id with non-zero trailing bytes; refused".into());
+    }
+    Ok(())
 }
 
 fn vid_text(vid: FixedBytes<21>) -> String {
@@ -659,7 +779,13 @@ mod tests {
         names.insert(POLICY, "AgentPolicy".to_string());
         names.insert(SIGNER, "P256Signer".to_string());
         names.insert(PAYMASTER, "WhitelistPaymaster".to_string());
-        Facts { names, sponsoring_paymasters: vec![PAYMASTER], recovery_validators: vec![RECOVERY] }
+        Facts {
+            names,
+            sponsoring_paymasters: vec![PAYMASTER],
+            recovery_validators: vec![RECOVERY],
+            demo_counter: Some(COUNTER),
+            known_modules: vec![POLICY, SIGNER],
+        }
     }
 
     fn enrolled() -> Vec<EnrolledAccount> {
@@ -839,6 +965,10 @@ mod tests {
         o.gas_fees = kernel::pack_gas(1, 1);
         // an unknown external call: refused, allowed in expert mode with the bold warning
         assert!(matches!(open(&o).verdict, Verdict::Refuse(ref m) if m.contains("cannot decode")));
+        // increment() is a selector, not a contract: on an unknown target it is an unknown call
+        let mut inc_elsewhere = op(kernel::execute_calldata(PAYMASTER, U256::ZERO, &SELECTOR_INCREMENT));
+        inc_elsewhere.gas_fees = kernel::pack_gas(1, 1);
+        assert!(matches!(open(&inc_elsewhere).verdict, Verdict::Refuse(ref m) if m.contains("cannot decode")));
         let mut expert = enrolled();
         expert[0].expert_mode = true;
         let (bytes, c) = request(&o);
@@ -872,10 +1002,25 @@ mod tests {
     /// calldata.
     #[test]
     fn tamper_every_hash_covered_field() {
+        // every decoder in one batch: an external call with value, an ERC-20 transfer, a
+        // permission install with its mandate, a validator install, a grant, a root change
         let golden = {
             let me = ACCOUNT;
+            let perm = FixedBytes::from([0x74, 0x65, 0x73, 0x31]);
+            let params = kernel::PolicyParams {
+                targets: vec![COUNTER], selectors: vec![FixedBytes::from(SELECTOR_INCREMENT)], max_value_per_op: 1000,
+                budget: 10u128.pow(18), valid_until: NOW + 86_400, tokens: vec![(SIGNER, 5, 50, B256::repeat_byte(1))], valid_after: 0,
+            };
+            let mut transfer = SELECTOR_ERC20_TRANSFER.to_vec();
+            transfer.extend_from_slice(&[0u8; 12]);
+            transfer.extend_from_slice(PAYMASTER.as_slice());
+            transfer.extend_from_slice(&U256::from(5).to_be_bytes::<32>());
             let mut o = op(kernel::execute_batch_calldata(vec![
                 (COUNTER, U256::from(5), Bytes::copy_from_slice(&SELECTOR_INCREMENT)),
+                (SIGNER, U256::ZERO, transfer.into()),
+                (me, U256::ZERO, kernel::install_permission_calldata(perm, kernel::permission_data(POLICY, &params, SIGNER, &key(2)), 1)),
+                (me, U256::ZERO, kernel::grant_execute_calldata(perm)),
+                (me, U256::ZERO, kernel::install_validator_call(kernel::validator_id(RECOVERY), &key(4), 2)),
                 (me, U256::ZERO, kernel::change_root_calldata(RECOVERY, None)),
             ]));
             o.gas_fees = kernel::pack_gas(1, 1);
@@ -883,16 +1028,21 @@ mod tests {
         };
         let base = open(&golden);
         assert_eq!(base.verdict, Verdict::Sign, "{}", base.text());
-        let base_text = base.text();
+        let base_text = base.text_without_hash();
         let base_hash = base.digest_to_sign().unwrap();
-        let check = |what: &str, o: &PackedUserOp| {
+        let mut refused = 0usize;
+        let mut shown = 0usize;
+        let mut check = |what: &str, o: &PackedUserOp| {
             let r = open(o);
             let hash = crate::user_op::user_op_hash(o, ENTRY, 31337);
             assert_ne!(hash, base_hash, "{what}: the mutation did not change the hash");
             if r.verdict != Verdict::Sign && !matches!(r.verdict, Verdict::SignWithWarnings(_)) {
-                return; // refused is fine
+                refused += 1;
+                return;
             }
-            assert_ne!(r.text(), base_text, "{what}: the hash changed but the screen did not");
+            // the hash row is excluded: it changes by definition and proves nothing
+            assert_ne!(r.text_without_hash(), base_text, "{what}: the hash changed but the screen did not");
+            shown += 1;
         };
         let mut o = golden.clone();
         o.nonce = U256::from(8);
@@ -914,14 +1064,106 @@ mod tests {
         pm.extend_from_slice(&[0u8; 32]);
         o.paymaster_and_data = pm.into();
         check("paymasterAndData", &o);
-        // every byte of the calldata
+        // every byte of the calldata, with two flips: the low bit and the high bit
         for i in 0..golden.call_data.len() {
-            let mut cd = golden.call_data.to_vec();
-            cd[i] ^= 0x01;
-            let mut o = golden.clone();
-            o.call_data = cd.into();
-            check(&format!("callData byte {i}"), &o);
+            for mask in [0x01u8, 0x80] {
+                let mut cd = golden.call_data.to_vec();
+                cd[i] ^= mask;
+                let mut o = golden.clone();
+                o.call_data = cd.into();
+                check(&format!("callData byte {i} ^ {mask:#04x}"), &o);
+            }
         }
+        assert!(shown > 100 && refused > 100, "both outcomes occur: shown {shown}, refused {refused}");
+    }
+
+    /// The review of PR #30: hash-covered fields the screen did not show must be
+    /// refused — the permission's pass flags, hooks and hook data, deinit data,
+    /// ERC-20 padding, trailing bytes — and an unknown module is not a warning.
+    #[test]
+    fn hidden_fields_are_refused() {
+        let me = ACCOUNT;
+        let quiet = |cd: Bytes| {
+            let mut o = op(cd);
+            o.gas_fees = kernel::pack_gas(1, 1);
+            o
+        };
+        let perm = FixedBytes::from([0x74, 0x65, 0x73, 0x31]);
+        let params = kernel::PolicyParams {
+            targets: vec![COUNTER], selectors: vec![FixedBytes::from(SELECTOR_INCREMENT)], max_value_per_op: 1, budget: 2,
+            valid_until: NOW + 10, tokens: vec![], valid_after: 0,
+        };
+        let pdata = kernel::permission_data(POLICY, &params, SIGNER, &key(2));
+        let install = |pdata: Bytes| quiet(kernel::execute_calldata(me, U256::ZERO, &kernel::install_permission_calldata(perm, pdata, 1)));
+        assert_eq!(open(&install(pdata.clone())).verdict, Verdict::Sign);
+        // the policy entry's flag: SKIP_USEROP means the mandate on screen is not enforced
+        let entries = Vec::<Bytes>::abi_decode(&pdata).unwrap();
+        let flip_flag = |i: usize, flag: [u8; 2]| {
+            let mut e = entries.clone();
+            let mut raw = e[i].to_vec();
+            raw[..2].copy_from_slice(&flag);
+            e[i] = raw.into();
+            Bytes::from(e.abi_encode())
+        };
+        assert!(matches!(open(&install(flip_flag(0, [0, 1]))).verdict, Verdict::Refuse(ref m) if m.contains("skips its policy")));
+        assert!(matches!(open(&install(flip_flag(1, [0, 2]))).verdict, Verdict::Refuse(ref m) if m.contains("skips its signature")));
+        // a hook on an install
+        let mut c = IKernel::installValidationsCall::abi_decode(&kernel::install_permission_calldata(perm, pdata.clone(), 1)).unwrap();
+        c.configs[0].hook = PAYMASTER;
+        assert!(matches!(open(&quiet(kernel::execute_calldata(me, U256::ZERO, &c.abi_encode()))).verdict, Verdict::Refuse(ref m) if m.contains("hook")));
+        let mut c = IKernel::installValidationsCall::abi_decode(&kernel::install_permission_calldata(perm, pdata.clone(), 1)).unwrap();
+        c.hookData[0] = Bytes::from(vec![1]);
+        assert!(matches!(open(&quiet(kernel::execute_calldata(me, U256::ZERO, &c.abi_encode()))).verdict, Verdict::Refuse(ref m) if m.contains("hook data")));
+        // a self-call with value, and a permission id with a dirty tail
+        let r = open(&quiet(kernel::execute_batch_calldata(vec![(me, U256::from(1), kernel::grant_execute_calldata(perm))])));
+        assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("self-call with value")));
+        let mut g = IKernel::grantAccessCall::abi_decode(&kernel::grant_execute_calldata(perm)).unwrap();
+        g.vId.0[20] = 1;
+        let r = open(&quiet(kernel::execute_calldata(me, U256::ZERO, &g.abi_encode())));
+        assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("trailing bytes")));
+        // a hook on a root change
+        let mut c = IKernel::changeRootValidatorCall::abi_decode(&kernel::change_root_calldata(VALIDATOR, None)).unwrap();
+        c.hook = PAYMASTER;
+        assert!(matches!(open(&quiet(kernel::execute_calldata(me, U256::ZERO, &c.abi_encode()))).verdict, Verdict::Refuse(ref m) if m.contains("hook")));
+        // deinit data on an uninstall
+        let mut c = IKernel::uninstallValidationCall::abi_decode(&kernel::uninstall_validator_call(VALIDATOR)).unwrap();
+        c.deinitData = Bytes::from(vec![1]);
+        assert!(matches!(open(&quiet(kernel::execute_calldata(me, U256::ZERO, &c.abi_encode()))).verdict, Verdict::Refuse(ref m) if m.contains("with data")));
+        let mut c = IKernel::uninstallValidationCall::abi_decode(&kernel::uninstall_permission_calldata(perm)).unwrap();
+        c.hookDeinitData = Bytes::from(vec![1]);
+        assert!(matches!(open(&quiet(c.abi_encode().into())).verdict, Verdict::Refuse(ref m) if m.contains("hook data")));
+        // trailing bytes after execute's calldata
+        let mut cd = kernel::execute_calldata(COUNTER, U256::ZERO, &SELECTOR_INCREMENT).to_vec();
+        cd.push(0);
+        assert!(matches!(open(&quiet(cd.into())).verdict, Verdict::Refuse(ref m) if m.contains("canonical")));
+        // ERC-20 padding bytes
+        let mut transfer = SELECTOR_ERC20_TRANSFER.to_vec();
+        transfer.extend_from_slice(&[0u8; 12]);
+        transfer.extend_from_slice(PAYMASTER.as_slice());
+        transfer.extend_from_slice(&U256::from(5).to_be_bytes::<32>());
+        assert_eq!(open(&quiet(kernel::execute_calldata(SIGNER, U256::ZERO, &transfer))).verdict, Verdict::Sign);
+        let mut padded = transfer.clone();
+        padded[4] = 1;
+        assert!(matches!(open(&quiet(kernel::execute_calldata(SIGNER, U256::ZERO, &padded))).verdict, Verdict::Refuse(ref m) if m.contains("address word")));
+        // approve is an effect; unlimited is named
+        let mut approve = SELECTOR_ERC20_APPROVE.to_vec();
+        approve.extend_from_slice(&transfer[4..36]);
+        approve.extend_from_slice(&U256::MAX.to_be_bytes::<32>());
+        let r = open(&quiet(kernel::execute_calldata(SIGNER, U256::ZERO, &approve)));
+        assert_eq!(r.verdict, Verdict::Sign);
+        assert!(r.needs_second_confirmation() && r.text().contains("may spend unlimited"), "{}", r.text());
+        // value to an unknown address is an effect too
+        let r = open(&quiet(kernel::execute_calldata(address!("7000000000000000000000000000000000000007"), U256::from(10u128.pow(18)), &[])));
+        assert_eq!(r.verdict, Verdict::Sign, "{}", r.text());
+        assert!(r.text().contains("! Send: 1 ETH to an address this build does not know"), "{}", r.text());
+        // an unknown policy module: refused, bold in expert mode
+        let foreign = kernel::permission_data(PAYMASTER, &params, SIGNER, &key(2));
+        assert!(matches!(open(&install(foreign.clone())).verdict, Verdict::Refuse(ref m) if m.contains("not known to this build")));
+        let (bytes, c) = request(&install(foreign));
+        let mut expert = enrolled();
+        expert[0].expert_mode = true;
+        let r = open_request(&bytes, &c, NOW, &expert, &facts());
+        assert!(matches!(r.verdict, Verdict::SignWithWarnings(_)) && r.text().contains("! Unknown policy module"), "{}", r.text());
     }
 
     #[test]
