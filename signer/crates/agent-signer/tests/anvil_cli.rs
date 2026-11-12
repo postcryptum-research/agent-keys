@@ -105,12 +105,17 @@ fn free_port() -> u16 {
 
 /// A plain blocking JSON-RPC call over HTTP/1.1 (no async runtime needed).
 fn http_post(url: &str, body: &str) -> String {
+    http_post_with(url, body, "")
+}
+
+/// `headers`: extra header lines, each ending in CRLF.
+fn http_post_with(url: &str, body: &str, headers: &str) -> String {
     let rest = url.strip_prefix("http://").unwrap();
     let (host, path) = rest.split_once('/').map(|(h, p)| (h, format!("/{p}"))).unwrap_or((rest, "/".into()));
     let mut s = TcpStream::connect(host).unwrap();
     write!(
         s,
-        "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
     .unwrap();
@@ -590,15 +595,25 @@ fn http_get(url: &str) -> Vec<u8> {
 /// The phone side of the protocol with a software key. Modes: `sign`,
 /// `wrong-hash`, `refuse` answer a sign request; `enroll` and `enroll-refuse`
 /// answer an enrollment request with `key` as the new key (no attestation:
-/// a simulator has none).
-fn phone_simulator(qr_file: std::path::PathBuf, key: Key, mode: &'static str) -> std::thread::JoinHandle<()> {
+/// a simulator has none). Every answer carries the MAC of the QR's secret,
+/// as the app's does; a mode ending in `-nomac` posts without it — a host on
+/// the network that saw the session URL but never the QR.
+///
+/// The thread returns whether the laptop **confirmed** the answer: its reply
+/// was the confirmation MAC under the session's secret, the only thing the
+/// app takes as "the laptop has it".
+fn phone_simulator(qr_file: std::path::PathBuf, key: Key, mode: &'static str) -> std::thread::JoinHandle<bool> {
     phone_simulator_after(qr_file, key, mode, Duration::ZERO)
 }
 
 /// `delay` holds the answer back, so another "phone" can post first.
-fn phone_simulator_after(qr_file: std::path::PathBuf, key: Key, mode: &'static str, delay: Duration) -> std::thread::JoinHandle<()> {
+fn phone_simulator_after(qr_file: std::path::PathBuf, key: Key, mode: &'static str, delay: Duration) -> std::thread::JoinHandle<bool> {
     use owner_core::enroll::{EnrollRequest, EnrollResponse};
-    use owner_core::request::{commitment, AppInfo, QrPayload, SignRequest, SignResponse};
+    use owner_core::request::{answer_mac, commitment, verify_confirmation_mac, AppInfo, QrPayload, SignRequest, SignResponse, MAC_HEADER};
+    let (mode, with_mac) = match mode.strip_suffix("-nomac") {
+        Some(m) => (m, false),
+        None => (mode, true),
+    };
     std::thread::spawn(move || {
         let started = std::time::Instant::now();
         let uri = loop {
@@ -611,6 +626,12 @@ fn phone_simulator_after(qr_file: std::path::PathBuf, key: Key, mode: &'static s
             std::thread::sleep(Duration::from_millis(50));
         };
         let qr = QrPayload::parse(&uri).expect("a valid QR payload");
+        let post = |body: Vec<u8>| {
+            let body = String::from_utf8(body).unwrap();
+            let headers = if with_mac { format!("{MAC_HEADER}: {}\r\n", answer_mac(&qr.secret, body.as_bytes()).unwrap()) } else { String::new() };
+            let reply = http_post_with(&qr.url, &body, &headers);
+            verify_confirmation_mac(&qr.secret, body.as_bytes(), &reply)
+        };
         let bytes = http_get(&qr.url);
         assert_eq!(commitment(&bytes), qr.commitment, "the served request must match the QR's commitment");
         std::thread::sleep(delay);
@@ -629,8 +650,7 @@ fn phone_simulator_after(qr_file: std::path::PathBuf, key: Key, mode: &'static s
                 "enroll-refuse" => EnrollResponse::refused(&qr.commitment, "user", Some("declined on the phone".into()), app),
                 other => panic!("mode {other}"),
             };
-            http_post(&qr.url, std::str::from_utf8(&resp.to_bytes()).unwrap());
-            return;
+            return post(resp.to_bytes());
         }
         let req = SignRequest::parse(&bytes, now, 300).expect("a well-formed request");
         assert_eq!(req.nonce_key().unwrap(), U256::ZERO, "the phone signs root operations only");
@@ -640,8 +660,7 @@ fn phone_simulator_after(qr_file: std::path::PathBuf, key: Key, mode: &'static s
         let review = owner_core::review::open_request_with_build_facts(&bytes, &qr.commitment, now, &[me]);
         if let owner_core::review::Verdict::Refuse(why) = &review.verdict {
             let resp = SignResponse::refused(&qr.commitment, "core", Some(why.clone()), app);
-            http_post(&qr.url, std::str::from_utf8(&resp.to_bytes()).unwrap());
-            return;
+            return post(resp.to_bytes());
         }
         let hash = review.digest_to_sign().unwrap();
         assert_eq!(hash, req.user_op_hash().unwrap());
@@ -660,7 +679,7 @@ fn phone_simulator_after(qr_file: std::path::PathBuf, key: Key, mode: &'static s
             "refuse" => SignResponse::refused(&qr.commitment, "user", Some("declined on the phone".into()), app),
             other => panic!("mode {other}"),
         };
-        http_post(&qr.url, std::str::from_utf8(&resp.to_bytes()).unwrap());
+        post(resp.to_bytes())
     })
 }
 
@@ -762,6 +781,23 @@ fn phone_owner_signs_a_root_operation() {
     assert!(err.contains("the phone refused: core") && err.contains("cannot decode"), "{err}");
     assert_eq!(chain.counter(), before);
 
+    // 6a. a host on the network that never saw the QR posts a refusal in the phone's place:
+    //     it carries no MAC of the session's secret, so it is ignored and the phone's own
+    //     answer, a moment later, signs the operation
+    let _ = std::fs::remove_file(&qr_file);
+    let forger = phone_simulator(qr_file.clone(), key(7), "refuse-nomac");
+    let sim = phone_simulator_after(qr_file.clone(), key(7), "sign", Duration::from_millis(1500));
+    let before = chain.counter();
+    let out = chain.ok(&[
+        "op", "send", "--agent", &cfg_path, "--root", "--target", &counter, "--data", INCREMENT,
+        "--listen", "127.0.0.1:0", "--phone-qr-file", qr, "--phone-timeout", "60",
+    ]);
+    forger.join().unwrap();
+    sim.join().unwrap();
+    assert!(out.contains("without this session's secret was ignored"), "{out}");
+    assert!(out.contains("phone:          signed, signature verified"), "{out}");
+    assert_eq!(chain.counter(), before + U256::from(1));
+
     // 7. a new agent permission installed through the phone: the laptop previews the mandate
     //    the phone shows — the modules named by the build, the allow-list, the agent's key —
     //    and the agent then runs under it
@@ -818,9 +854,9 @@ fn phone_is_enrolled_then_takes_over_root() {
     // the label is checked before any QR
     let err = chain.fails(&["key", "create", "--phone", "", "--agent", &cfg, "--listen", "127.0.0.1:0", "--phone-timeout", "5"]);
     assert!(err.contains("label must be 1 to 64"), "{err}");
-    // without a terminal the fingerprint must be given up front, before any QR
+    // the fingerprint is asked for by default, which needs a terminal: said before any QR
     let err = chain.fails(&["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--listen", "127.0.0.1:0", "--phone-timeout", "5"]);
-    assert!(err.contains("--phone-fingerprint"), "{err}");
+    assert!(err.contains("--phone-fingerprint") && err.contains("--phone-skip-fingerprint"), "{err}");
     assert!(!err.contains("tpmsign:1?"), "no session: {err}");
 
     // 1. the phone declines
@@ -841,7 +877,13 @@ fn phone_is_enrolled_then_takes_over_root() {
     // 3. enrolled: the key, its fingerprint, the next step, the config snippet
     let sim = phone_simulator(qr_file.clone(), key(9), "enroll");
     let text = chain.ok(&[&["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--allow-no-attestation", "--out", out], &session[..]].concat());
-    sim.join().unwrap();
+    assert!(sim.join().unwrap(), "the laptop's reply is its confirmation under the session's secret, not a bare 200");
+    // the secret is in the QR and the QR file, never in the text the terminal keeps
+    let shown_uri = text.lines().find(|l| l.starts_with("tpmsign:1?")).expect("the URI line");
+    assert!(shown_uri.ends_with("&k=<in the QR only>"), "{shown_uri}");
+    let real_uri = std::fs::read_to_string(&qr_file).unwrap();
+    let secret = real_uri.rsplit("&k=").next().unwrap();
+    assert!(secret.len() == 22 && !text.contains(secret), "the session secret is not printed");
     assert!(text.contains(&format!("x = {}", phone.x)), "{text}");
     assert!(text.contains(&format!("fingerprint    {fp}   (confirmed")), "{text}");
     assert!(text.contains("security level simulator (self-reported)"), "{text}");
@@ -890,9 +932,26 @@ fn phone_is_enrolled_then_takes_over_root() {
     let snippet: Value = serde_json::from_str(&text[snippet_start..snippet_end]).expect("the snippet parses");
     assert_eq!(snippet["owner"]["phone"]["fingerprint"], fp);
 
-    // 3b. the race from the review of #29: a host on the LAN posts its own key first. The
-    // fingerprint the owner typed from the phone's screen rejects it (400), the session
-    // waits on, and the phone's answer is the one accepted.
+    // 3b. the answer is authenticated by the secret in the QR: a host on the network that saw
+    // the session URL in the phone's GET, but never the QR, posts its own key first. With the
+    // fingerprint check skipped, it is still ignored (no MAC), gets no confirmation, and the
+    // phone's answer is the one accepted and confirmed.
+    let _ = std::fs::remove_file(&qr_file);
+    let intruder = phone_simulator(qr_file.clone(), key(8), "enroll-nomac");
+    let real = phone_simulator_after(qr_file.clone(), key(9), "enroll", Duration::from_millis(1500));
+    let text = chain.ok(&[
+        "key", "create", "--phone", "owner-phone", "--agent", &cfg, "--allow-no-attestation", "--phone-skip-fingerprint",
+        "--listen", "127.0.0.1:0", "--phone-qr-file", qr, "--phone-timeout", "60",
+    ]);
+    assert!(!intruder.join().unwrap(), "the intruder got no confirmation");
+    assert!(real.join().unwrap(), "the phone did");
+    assert!(text.contains("without this session's secret was ignored"), "{text}");
+    assert!(text.contains(&format!("fingerprint    {fp}   ← not confirmed here (--phone-skip-fingerprint)")), "{text}");
+    assert!(!text.contains(&key(8).x), "no line names the intruder's key: {text}");
+
+    // 3c. someone who could read the QR (so they have the secret) and is on the network too:
+    // the fingerprint from the phone's own screen, when the owner gives it, still rejects
+    // their key (400), the session waits on, and the phone's answer is the one accepted.
     let _ = std::fs::remove_file(&qr_file);
     let intruder = phone_simulator_after(qr_file.clone(), key(8), "enroll", Duration::ZERO);
     let real = phone_simulator_after(qr_file.clone(), key(9), "enroll", Duration::from_millis(1500));
@@ -961,8 +1020,6 @@ fn phone_is_enrolled_then_takes_over_root() {
 /// test chain's facts: `OWNER_CORE_FEATURES=ffi,test-chains ./build-core.sh`.
 /// `TPMSIGN_PHONE_OUT=<dir>` keeps the enrollment (request, answer, attestation
 /// DER) after the run; the temp directory is removed otherwise.
-/// `TPMSIGN_PHONE_FINGERPRINT_CMD=<command>` supplies the phone's fingerprint
-/// (a development phone on USB) instead of the terminal prompt.
 #[test]
 #[ignore = "needs a phone with the owner app on the same network"]
 fn phone_owner_real_device() {
@@ -993,15 +1050,9 @@ fn phone_owner_real_device() {
 
     // 1. enrollment; the evidence survives the run when TPMSIGN_PHONE_OUT names a directory
     let out_dir = std::env::var_os("TPMSIGN_PHONE_OUT").map(PathBuf::from).unwrap_or_else(|| chain.dir.join("enrollment"));
-    eprintln!("\naccount {account} on a local anvil. On the phone tap \"4. Enroll this phone for an account\", scan the QR\nbelow, read the notice, confirm; then type the fingerprint the phone shows when asked here.\n");
-    // TPMSIGN_PHONE_FINGERPRINT_CMD: a command that prints the fingerprint the phone shows
-    // (e.g. adb reading the debug app's pending record), instead of typing it
-    let fp_cmd = std::env::var("TPMSIGN_PHONE_FINGERPRINT_CMD").ok();
-    let mut args = vec!["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--out", out_dir.to_str().unwrap()];
-    if let Some(cmd) = &fp_cmd {
-        args.extend(["--phone-fingerprint-cmd", cmd.as_str()]);
-    }
-    let status = run(&args);
+    eprintln!("\naccount {account} on a local anvil. On the phone tap \"4. Enroll this phone for an account\", scan the QR\nbelow, read the notice, confirm. The phone and this terminal then show the same fingerprint.\n");
+    // a test run does not type: the answer is authenticated by the QR's secret (the default asks)
+    let status = run(&["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--phone-skip-fingerprint", "--out", out_dir.to_str().unwrap()]);
     assert!(status.success(), "the enrollment failed");
     let resp: Value = serde_json::from_str(&std::fs::read_to_string(out_dir.join("enroll-response.json")).unwrap()).unwrap();
     let phone = Key {

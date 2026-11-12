@@ -1642,6 +1642,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
  "base64 0.22.1",
+ "hmac",
  "hw-signer",
  "p256",
  "rand_core 0.6.4",

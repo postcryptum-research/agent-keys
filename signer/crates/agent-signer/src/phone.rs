@@ -3,10 +3,13 @@
 //! hardware (docs/MOBILE_OWNER_DESIGN.md §3, §4, §8).
 //!
 //! The QR is the trusted channel: it carries a SHA-256 commitment to the
-//! exact request bytes, so plain HTTP on the LAN is enough — an attacker
-//! there can only make the session fail. Every signature that comes back is
-//! verified here against the enrolled key over our own `userOpHash` before
-//! it is used.
+//! exact request bytes and a secret that never travels over the network.
+//! Plain HTTP on the LAN is then enough: the phone checks the request
+//! against the commitment, and every answer carries a MAC under the secret,
+//! so it comes from the device that scanned the QR — an attacker on the
+//! network can only make the session fail. Every signature that comes back
+//! is also verified here against the enrolled key over our own `userOpHash`
+//! before it is used.
 
 use std::io::Read;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
@@ -21,7 +24,7 @@ use alloy::primitives::Address;
 use hw_signer::{HardwareSigner, PublicKey, Signature, SignerError, UserOpContext};
 use owner_core::enroll::{EnrollRequest, EnrollResponse, Enrollment};
 use owner_core::fingerprint::fingerprint;
-use owner_core::request::{commitment, QrPayload, RequestError, SignResponse};
+use owner_core::request::{commitment, confirmation_mac, verify_answer_mac, QrPayload, RequestError, SignResponse, MAC_HEADER, SESSION_SECRET_BYTES};
 use rand_core::{OsRng, RngCore};
 
 /// Session settings, set once from the command line.
@@ -55,6 +58,10 @@ impl PhoneSigner {
 }
 
 const MAX_WRONG_TOKENS: u32 = 20;
+/// Answers without the session's MAC are ignored at no cost beyond reading
+/// them, so they get their own, larger cap: a host on the network cannot
+/// close the session by sending twenty of them.
+const MAX_UNAUTHENTICATED: u32 = 200;
 /// A sign response is well under 4 KiB (§3.3); an enrollment answer carries
 /// an attestation chain of a few certificates, so the cap is 64 KiB.
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
@@ -93,23 +100,21 @@ impl HardwareSigner for PhoneSigner {
     }
 }
 
-/// How the owner confirms the fingerprint the phone shows at enrollment.
-/// An enrollment answer is the one message nothing authenticates, so
-/// whoever posts first with the session token could name their own key;
-/// the owner's comparison with the phone's screen is the whole defence
-/// until P3 verifies the attestation. The CLI therefore asks for it and
-/// refuses an answer that does not carry the fingerprint typed in.
+/// The owner's check of the fingerprint the phone shows at enrollment. The
+/// answer is already authenticated by the session's secret (the MAC in
+/// `lan_session`), which a host on the network does not have. Someone who
+/// could read the QR — off the laptop's screen, a camera, a shared screen —
+/// and is on the network within the session has it too; the comparison with
+/// the phone's own screen is what stops that case. An enrollment is followed
+/// by a root handover, so the check is the default.
 pub enum FingerprintSource {
-    /// Ask on the terminal when the first answer arrives (the phone shows
-    /// its fingerprint once the key exists).
+    /// Ask on the terminal when the answer arrives: the default.
     Prompt,
-    /// Given up front (`--phone-fingerprint`): tests and scripts.
+    /// Given up front (`--phone-fingerprint`): the answer must carry this key.
     Given(String),
-    /// A shell command run when the first answer arrives, repeated every
-    /// second until its output holds a fingerprint (`--phone-fingerprint-cmd`):
-    /// for a development phone on USB, where `adb` can read what the phone
-    /// shows — a channel a host on the LAN does not have.
-    Command(String),
+    /// Not checked (`--phone-skip-fingerprint`): the session secret alone
+    /// authenticates the answer.
+    Skipped,
 }
 
 /// Enrollment (design §2.1): ask the phone to create a new owner key for
@@ -132,25 +137,23 @@ pub fn enroll(
     let request = EnrollRequest::new(chain_id, entry_point, account, label, B256::from(challenge), expires).with_pins(pins).to_bytes();
     let headline = format!(
         "enrolling phone owner key {label:?} for account {account} on chain {chain_id}: scan this with the owner app, \
-         read the notice about this phone's key hardware, confirm. The phone then shows the new key's fingerprint; \
-         you will be asked to type it here."
+         read the notice about this phone's key hardware, confirm. The phone then shows the new key's fingerprint{}",
+        if matches!(confirm, FingerprintSource::Prompt) { "; you will be asked to type it here." } else { ", and so will this terminal." }
     );
     let mut typed: Option<String> = match &confirm {
         FingerprintSource::Given(fp) => Some(normalize_fingerprint(fp)?),
-        FingerprintSource::Prompt | FingerprintSource::Command(_) => None,
+        FingerprintSource::Prompt | FingerprintSource::Skipped => None,
     };
     let (body, enrollment) = lan_session(&request, &headline, |body| {
         let e = EnrollResponse::verify(body, &request, allow_no_attestation)?;
         let actual = fingerprint(&e.public_key);
         let matches = match &typed {
             Some(t) => fingerprint_matches(t, &actual),
+            None if matches!(confirm, FingerprintSource::Skipped) => true,
             None => {
-                let mut t = match &confirm {
-                    FingerprintSource::Command(cmd) => fingerprint_from_command(cmd, options().timeout)?,
-                    _ => prompt_fingerprint()?,
-                };
+                let mut t = prompt_fingerprint()?;
                 // a typo and a foreign key look the same; one more try tells them apart before the value is kept
-                if !fingerprint_matches(&t, &actual) && matches!(confirm, FingerprintSource::Prompt) {
+                if !fingerprint_matches(&t, &actual) {
                     eprintln!("that does not match the key in this answer. If you mistyped, type the fingerprint once more; otherwise press Enter to reject this answer.");
                     if let Ok(again) = prompt_fingerprint() {
                         t = again;
@@ -218,29 +221,6 @@ fn normalize_fingerprint(typed: &str) -> Result<String, SignerError> {
     Ok(t)
 }
 
-/// Runs `sh -c <cmd>` every second until its stdout holds a fingerprint or
-/// `deadline` passes.
-fn fingerprint_from_command(cmd: &str, deadline: Duration) -> Result<String, RequestError> {
-    let started = Instant::now();
-    eprintln!("an answer arrived; reading the fingerprint the phone shows through `{cmd}`…");
-    loop {
-        let out = std::process::Command::new("sh").arg("-c").arg(cmd).output();
-        if let Ok(out) = out {
-            let text = String::from_utf8_lossy(&out.stdout);
-            if let Some(line) = text.lines().map(str::trim).find(|l| !l.is_empty()) {
-                if let Ok(fp) = normalize_fingerprint(line) {
-                    eprintln!("fingerprint from the command: {line}");
-                    return Ok(fp);
-                }
-            }
-        }
-        if started.elapsed() > deadline {
-            return Err(RequestError::Malformed(format!("`{cmd}` produced no fingerprint within {}s", deadline.as_secs())));
-        }
-        std::thread::sleep(Duration::from_secs(1));
-    }
-}
-
 fn fingerprint_matches(typed_normalized: &str, actual: &str) -> bool {
     let a: String = actual.chars().filter(|c| *c != '-').collect();
     a.starts_with(typed_normalized)
@@ -250,7 +230,7 @@ fn prompt_fingerprint() -> Result<String, RequestError> {
     use std::io::{BufRead, IsTerminal, Write};
     if !std::io::stdin().is_terminal() {
         return Err(RequestError::Malformed(
-            "an answer arrived but there is no terminal to confirm the phone's fingerprint on; run interactively or pass --phone-fingerprint".into(),
+            "an answer arrived but there is no terminal to confirm the phone's fingerprint on; run interactively, or pass --phone-fingerprint or --phone-skip-fingerprint".into(),
         ));
     }
     eprint!("\nthe phone shows the new key's fingerprint. Type at least its first two groups (all four when in doubt): ");
@@ -272,13 +252,18 @@ impl From<RequestError> for SessionError {
     }
 }
 
-/// One session: a random token, the QR on the terminal (and in the QR file,
-/// if configured), the request served to the phone, and the first answer
-/// that `verify` accepts. An answer it rejects gets a 400 and the session
-/// keeps waiting — the token travels in the phone's cleartext GET, so a
-/// host on the LAN can post garbage first — unless the phone itself
-/// refused, which ends the session. Rejected answers and wrong tokens count
-/// against one cap.
+/// One session: a random token and a random secret, the QR on the terminal
+/// (and in the QR file, if configured), the request served to the phone, and
+/// the first answer that carries the secret's MAC and that `verify` accepts.
+/// The token travels in the phone's cleartext GET, so a host on the LAN can
+/// post in the phone's place; the secret travels only in the QR, so such a
+/// post has no valid MAC: it gets a 401 and the session keeps waiting,
+/// whatever it says — a forged refusal included. An authenticated answer
+/// that `verify` rejects gets a 400 and the session waits on; the phone's
+/// own refusal ends it. Wrong tokens and rejected answers count against one
+/// cap, unauthenticated answers against a larger one of their own. An
+/// accepted answer is answered with `confirmation_mac`, which only the
+/// laptop can produce: the phone takes nothing else as "the laptop has it".
 fn lan_session<T>(
     request: &[u8],
     headline: &str,
@@ -288,6 +273,9 @@ fn lan_session<T>(
     let mut token = [0u8; 16];
     OsRng.fill_bytes(&mut token);
     let token = B64URL.encode(token);
+    let mut secret = [0u8; SESSION_SECRET_BYTES];
+    OsRng.fill_bytes(&mut secret);
+    let secret = B64URL.encode(secret);
     let bind = match opts.listen {
         Some(addr) => addr,
         None => SocketAddr::new(default_route_ip().ok_or_else(no_network)?, 0),
@@ -299,13 +287,14 @@ fn lan_session<T>(
         IpAddr::V4(ip) => format!("http://{ip}:{}/s/{token}", local.port()),
         IpAddr::V6(ip) => format!("http://[{ip}]:{}/s/{token}", local.port()),
     };
-    let qr = QrPayload { url: url.clone(), commitment: commitment(request) };
+    let qr = QrPayload { url: url.clone(), commitment: commitment(request), secret: secret.clone() };
     let uri = qr.to_uri();
 
     eprintln!();
     eprintln!("{headline}");
     eprintln!("{}", render_qr(&uri).map_err(|e| SessionError::Backend(e.to_string()))?);
-    eprintln!("{uri}");
+    // the secret is in the QR, not in text: a terminal log or a pasted transcript travels further than a screen
+    eprintln!("{}", uri.replace(&secret, "<in the QR only>"));
     eprintln!("waiting up to {}s for the phone…", opts.timeout.as_secs());
     if let Some(path) = &opts.qr_file {
         std::fs::write(path, &uri).map_err(|e| SessionError::Backend(format!("writing {}: {e}", path.display())))?;
@@ -314,6 +303,7 @@ fn lan_session<T>(
     let started = Instant::now();
     let path = format!("/s/{token}");
     let mut strikes = 0u32;
+    let mut unauthenticated = 0u32;
     let strike = |strikes: &mut u32| -> Result<(), SessionError> {
         *strikes += 1;
         if *strikes >= MAX_WRONG_TOKENS {
@@ -342,6 +332,7 @@ fn lan_session<T>(
             }
             tiny_http::Method::Post => {
                 let Some(left) = remaining() else { continue };
+                let mac = req.headers().iter().find(|h| h.field.equiv(MAC_HEADER)).map(|h| h.value.as_str().to_string());
                 let Some((req, body)) = read_body(req, left) else {
                     eprintln!("a client opened an answer and stalled past the session's deadline; dropped");
                     continue;
@@ -354,9 +345,21 @@ fn lan_session<T>(
                         continue;
                     }
                 };
+                // not from the device that scanned the QR: whatever it says, it is not the phone's answer
+                if !mac.is_some_and(|m| verify_answer_mac(&secret, &body, &m)) {
+                    eprintln!("an answer without this session's secret was ignored (not the phone that scanned the QR); still waiting for the phone");
+                    let _ = req.respond(tiny_http::Response::from_string("no valid MAC for this session").with_status_code(401));
+                    unauthenticated += 1;
+                    if unauthenticated >= MAX_UNAUTHENTICATED {
+                        return Err(SessionError::Backend("too many answers without this session's secret; session closed".into()));
+                    }
+                    continue;
+                }
                 match verify(&body) {
                     Ok(t) => {
-                        let _ = req.respond(tiny_http::Response::from_string("ok"));
+                        // the phone keeps its key only on this: a bare 200 could come from anyone in the path
+                        let confirmation = confirmation_mac(&secret, &body).map_err(|e| SessionError::Backend(e.to_string()))?;
+                        let _ = req.respond(tiny_http::Response::from_string(confirmation));
                         drop(server); // the port closes; later requests get nothing
                         return Ok(t);
                     }

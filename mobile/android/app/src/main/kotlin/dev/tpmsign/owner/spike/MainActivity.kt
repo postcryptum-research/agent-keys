@@ -73,7 +73,7 @@ class MainActivity : AppCompatActivity() {
         const val ALIAS = "tpmsign-p0-owner"
         /** One key per enrolled account (§5.1): alias by chain and account. */
         fun aliasFor(chainId: String, account: String) = "tpmsign-owner-$chainId-${account.lowercase()}"
-        const val APP_VERSION = "0.2.0-p2"
+        const val APP_VERSION = "0.3.1-p3"
         const val PREFS = "enrollments"
         /** owner-core `user_op::tests`: the golden operation's userOpHash on chain 31337 (anvil). */
         const val GOLDEN_DIGEST_HEX = "48e286b71f896beef7a0b4d23fd82d6afae60a64e7976118de492a2fba4c1947"
@@ -255,6 +255,8 @@ class MainActivity : AppCompatActivity() {
     // the operation (P2) come with owner-core on the phone.
 
     private var enrollOnly = false
+    /** The current session's secret, from its QR (§3.2). */
+    private var sessionSecret = ""
     private val scanLauncher = registerForActivityResult(ScanContract()) { result ->
         val text = result.contents
         if (text == null) say("scan cancelled") else safely { handleQr(text) }
@@ -275,6 +277,8 @@ class MainActivity : AppCompatActivity() {
         val qr = parseQr(uri)
         val url = qr.url
         val commitment = qr.commitment
+        // the secret came through the camera and goes nowhere: it only keys the MAC on this session's answers
+        sessionSecret = qr.secret
         say("session: $url")
         Thread {
             try {
@@ -398,8 +402,8 @@ class MainActivity : AppCompatActivity() {
                     val resp = review.finish(s.sign(), (x + y).hexToBytes(), app)
                     Thread {
                         try {
-                            val code = httpPost(url, resp)
-                            runOnUiThread { say("signed and posted: HTTP $code") }
+                            val reply = httpPost(url, resp)
+                            runOnUiThread { say("signed and posted: ${reply.describe()}") }
                         } catch (e: Exception) { runOnUiThread { say("POST failed: ${e.message}") } }
                     }.start()
                 }
@@ -486,14 +490,16 @@ class MainActivity : AppCompatActivity() {
                     val fp = fingerprint(x, y)
                     // the fingerprint is the owner's one check on the laptop's side (P1): it must not get lost
                     prefs().edit().putString(alias, record.put("x", "0x$x").put("y", "0x$y").put("tier", tier).toString()).apply()
-                    say("new key: tier $tier, ${chain.size} attestation certificates\n  x = 0x$x\n  y = 0x$y\n\n  FINGERPRINT  $fp\n  the laptop asks for at least its first two groups; it confirms the enrollment only then (waiting up to 5 minutes)")
+                    say("new key: tier $tier, ${chain.size} attestation certificates\n  x = 0x$x\n  y = 0x$y\n\n  FINGERPRINT  $fp\n  the laptop asks for at least its first two groups, and confirms the enrollment only then (waiting up to 5 minutes)")
                     showFingerprint(fp, account)
                     Thread {
                         // the laptop answers only after the owner confirmed the fingerprint there (P1): wait for that
-                        val outcome = try { "HTTP ${httpPost(url, resp.toString().toByteArray(), readTimeoutMs = 300_000)}" } catch (e: Exception) { "POST failed: ${e.message}" }
+                        val reply = try { httpPost(url, resp.toString().toByteArray(), readTimeoutMs = 300_000) } catch (e: Exception) { null }
+                        val outcome = reply?.describe() ?: "the POST failed"
                         runOnUiThread {
                             safely {
-                                if (outcome == "HTTP 200") {
+                                // the key is kept only when the laptop itself says it has the answer
+                                if (reply?.confirmed == true) {
                                     // confirmed: the record (§5.4) becomes permanent
                                     prefs().edit().putString(alias, record.put("state", "confirmed").put("tier", tier).put("x", "0x$x").put("y", "0x$y").toString()).apply()
                                     say("enrollment confirmed by the laptop. Next there: owner set-root … --expect-fingerprint $fp")
@@ -567,13 +573,33 @@ class MainActivity : AppCompatActivity() {
         } finally { c.disconnect() }
     }
 
-    /** `readTimeout`: a sign response is answered at once; an enrollment answer is held while the owner confirms the fingerprint on the laptop. */
-    private fun httpPost(url: String, body: ByteArray, readTimeoutMs: Int = 10000): Int {
+    /**
+     * Every answer of a session carries the MAC of the QR's secret (§3.3), so the laptop knows it comes
+     * from the phone that scanned the QR. `readTimeout`: a sign response is answered at once; an
+     * enrollment answer may be held while the owner confirms the fingerprint on the laptop.
+     */
+    private fun httpPost(url: String, body: ByteArray, readTimeoutMs: Int = 10000): Reply {
         val c = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"; doOutput = true; connectTimeout = 10000; readTimeout = readTimeoutMs
             setRequestProperty("Content-Type", "application/json")
+            setRequestProperty(answerMacHeader(), answerMac(sessionSecret, body))
         }
-        try { c.outputStream.use { it.write(body) }; return c.responseCode } finally { c.disconnect() }
+        try {
+            c.outputStream.use { it.write(body) }
+            val code = c.responseCode
+            val text = (if (code in 200..299) c.inputStream else c.errorStream)?.use { String(it.readNBytes(4096)) } ?: ""
+            // only the laptop can write this: a bare 200 could come from any host in the path that dropped our POST
+            return Reply(code, text, code == 200 && verifyConfirmation(sessionSecret, body, text))
+        } finally { c.disconnect() }
+    }
+
+    /** The laptop's reply to a POST: `confirmed` when it is the confirmation MAC under the session's secret (§3.3). */
+    private data class Reply(val code: Int, val text: String, val confirmed: Boolean) {
+        fun describe() = when {
+            confirmed -> "confirmed by the laptop"
+            code == 200 -> "HTTP 200 without the laptop's confirmation — not the laptop's answer"
+            else -> "HTTP $code: ${text.take(300)}"
+        }
     }
 
     private fun sha256(b: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(b)

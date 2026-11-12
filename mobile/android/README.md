@@ -175,6 +175,20 @@ phone-signed root operation included on anvil; the agent still runs:
 test phone_owner_real_device ... ok
 ```
 
+## P3: authenticated answers (version 0.3.1-p3)
+
+The QR now carries the session's secret (`&k=…`, design §3.2). The core's
+`parseQr` returns it, the app keeps it in memory for the session only, and
+every POST — a signature, a refusal, an enrollment answer — carries
+`X-TpmSign-Mac`, computed by the core's `answerMac` over the exact body.
+The laptop ignores an answer without it, and answers an accepted one with
+a confirmation MAC under the same secret: the app keeps a new key only on
+that (`verifyConfirmation`), never on a bare `200`, and shows the laptop's
+reason when an answer is turned down. The laptop still asks for the
+fingerprint at enrollment by default, so the dialog says "type"; with
+`--phone-skip-fingerprint` nothing is typed. The app needs agent-signer of
+the same version: a QR without `k` is refused.
+
 ### P2 run record — the phone names the mandate it signs (2026-11-13, app 0.2.0-p2)
 
 The same script, with the app built as `OWNER_CORE_FEATURES=ffi,test-chains`
@@ -309,7 +323,8 @@ open during the prompt, so the app read the timeout as a refusal and deleted
 the key (now the POST waits for the laptop's answer).
 
 The run, with the fingerprint supplied over USB (`adb` reading the debug
-app's pending record through `--phone-fingerprint-cmd`, development only):
+app's pending record through `--phone-fingerprint-cmd`, a development flag
+that was removed in P3, when the session secret made the typing optional):
 
 ```
 waiting up to 180s for the phone…
