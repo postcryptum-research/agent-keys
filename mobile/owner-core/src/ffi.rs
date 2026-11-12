@@ -9,8 +9,9 @@ use std::sync::Arc;
 use alloy_primitives::Address;
 use hw_signer::{normalize_low_s, verify_p256, PublicKey, Signature};
 
+use crate::enroll::EnrollRequest;
 use crate::request::{AppInfo, QrPayload, SignResponse};
-use crate::review::{self, EnrolledAccount, Facts, Review, Verdict};
+use crate::review::{self, EnrolledAccount, Review, Verdict, CLOCK_TOLERANCE_SECS};
 
 #[derive(Debug, uniffi::Error)]
 #[uniffi(flat_error)]
@@ -46,6 +47,33 @@ pub struct FfiEnrolledAccount {
     pub validator: Option<String>,
     pub gas_cap_wei: String,
     pub expert_mode: bool,
+    /// The laptop's pins kept at enrollment (`open_enrollment`).
+    pub pins: Vec<FfiPin>,
+}
+
+/// A name the laptop gave to an address the build does not know (§4.3).
+#[derive(uniffi::Record)]
+pub struct FfiPin {
+    pub address: String,
+    pub label: String,
+}
+
+/// An enrollment request, checked (§2.1 step 3): what the phone shows before
+/// the owner confirms, and what it keeps.
+#[derive(uniffi::Record)]
+pub struct FfiEnrollment {
+    pub chain_id: u64,
+    pub entry_point: String,
+    pub account: String,
+    pub label: String,
+    /// To store with the enrollment and to show as "from the laptop — unverified".
+    pub pins: Vec<FfiPin>,
+    /// Pins not taken because this build names the address itself; one line each, to show.
+    pub ignored_pins: Vec<String>,
+    /// Whether this build has facts for the chain; if not, reviews name nothing.
+    pub chain_known: bool,
+    /// The key-attestation challenge bound to this request (§5.2).
+    pub attestation_challenge: Vec<u8>,
 }
 
 #[derive(uniffi::Record)]
@@ -171,8 +199,40 @@ pub fn parse_qr(uri: String) -> Result<FfiQr, CoreError> {
     Ok(FfiQr { url: q.url, commitment: q.commitment })
 }
 
-/// §6.1. `facts` are empty on the phone until the build-embedded table
-/// (§6.7): addresses show in full without names, and no paymaster is accepted.
+/// §2.1 step 3: the commitment, the type, the version, the expiry with the
+/// clock tolerance, the label and the pins; the pins split by what this
+/// build knows.
+#[uniffi::export]
+pub fn open_enrollment(bytes: Vec<u8>, commitment: String, now: u64) -> Result<FfiEnrollment, CoreError> {
+    if crate::request::commitment(&bytes) != commitment {
+        return Err(CoreError::Failed("the served request does not match the QR's commitment".into()));
+    }
+    let req = EnrollRequest::parse(&bytes, now, CLOCK_TOLERANCE_SECS).map_err(failed)?;
+    let chain_id = req.chain_id().map_err(failed)?;
+    let facts = crate::facts::for_chain(chain_id);
+    if facts.entry_point.is_some_and(|known| known != req.entry_point) {
+        return Err(CoreError::Failed(format!(
+            "EntryPoint {} is not the one this build knows for chain {chain_id}; refusing the enrollment",
+            req.entry_point.to_checksum(None)
+        )));
+    }
+    let (kept, ignored) = req.split_pins(&facts);
+    Ok(FfiEnrollment {
+        chain_id,
+        entry_point: req.entry_point.to_checksum(None),
+        account: req.account.to_checksum(None),
+        label: req.label.clone(),
+        pins: kept.iter().map(|(a, l)| FfiPin { address: a.to_checksum(None), label: l.clone() }).collect(),
+        ignored_pins: ignored
+            .iter()
+            .map(|p| format!("{}: the laptop says \"{}\" — {}", p.address.to_checksum(None), p.laptop_label, p.why))
+            .collect(),
+        chain_known: crate::facts::chains().contains(&chain_id),
+        attestation_challenge: crate::enroll::attestation_challenge(&bytes).to_vec(),
+    })
+}
+
+/// §6.1, with the facts this build embeds for the request's chain (§6.7).
 #[uniffi::export]
 pub fn open_request(
     bytes: Vec<u8>,
@@ -186,9 +246,12 @@ pub fn open_request(
         a.validator = e.validator.as_deref().map(parse_address).transpose()?;
         a.gas_cap_wei = e.gas_cap_wei.parse().map_err(|_| CoreError::Failed("gasCapWei: not a decimal integer".into()))?;
         a.expert_mode = e.expert_mode;
+        for pin in e.pins {
+            a.pins.insert(parse_address(&pin.address)?, pin.label);
+        }
         accounts.push(a);
     }
-    let review = review::open_request(&bytes, &commitment, now, &accounts, &Facts::default());
+    let review = review::open_request_with_build_facts(&bytes, &commitment, now, &accounts);
     Ok(Arc::new(ReviewHandle { review, request_bytes: bytes }))
 }
 
@@ -209,13 +272,14 @@ pub fn default_gas_cap_wei() -> String {
     review::DEFAULT_GAS_CAP_WEI.to_string()
 }
 
+/// The crate's version; a development build that knows the test chain says so.
 #[uniffi::export]
 pub fn core_version() -> String {
-    env!("CARGO_PKG_VERSION").to_string()
+    crate::version().to_string()
 }
 
 fn app_info(app: FfiApp) -> AppInfo {
-    AppInfo { platform: app.platform, version: app.version, core: env!("CARGO_PKG_VERSION").to_string() }
+    AppInfo { platform: app.platform, version: app.version, core: crate::version().to_string() }
 }
 
 fn parse_address(s: &str) -> Result<Address, CoreError> {
@@ -330,6 +394,34 @@ mod tests {
         assert!(fingerprint_of(vec![1; 64]).is_err(), "off the curve");
     }
 
+    #[test]
+    fn enrollment_is_opened_with_the_builds_view_of_its_pins() {
+        use alloy_primitives::{address, B256};
+        let known = address!("dd544A6F0220778Fff16F51B468656e73E32ae85");
+        let unknown = address!("05a97329397200dF8795A882da0b5b1aD894EB97");
+        let pins = [(known, "MyPolicy".to_string()), (unknown, "test paymaster".to_string())].into_iter().collect();
+        let entry = address!("0000000071727De22E5E9d8BAf0edAc6f37da032");
+        let pins2 = [(known, "MyPolicy".to_string())].into_iter().collect();
+        // an enrollment for an EntryPoint other than the build's is refused
+        let wrong_entry = EnrollRequest::new(84532, known, unknown, "owner-phone", B256::ZERO, 2_000_000_000).to_bytes();
+        assert!(open_enrollment(wrong_entry.clone(), crate::request::commitment(&wrong_entry), 0).is_err());
+        let bytes = EnrollRequest::new(84532, entry, unknown, "owner-phone", B256::ZERO, 2_000_000_000).with_pins(pins).to_bytes();
+        let e = open_enrollment(bytes.clone(), crate::request::commitment(&bytes), 1_999_999_000).unwrap();
+        assert!(e.chain_known && e.chain_id == 84532 && e.label == "owner-phone");
+        assert_eq!(e.pins.len(), 1);
+        assert_eq!((e.pins[0].address.as_str(), e.pins[0].label.as_str()), ("0x05a97329397200dF8795A882da0b5b1aD894EB97", "test paymaster"));
+        assert_eq!(e.ignored_pins.len(), 1);
+        assert!(e.ignored_pins[0].contains("the laptop says \"MyPolicy\" — this build knows the address as AgentPolicy"), "{}", e.ignored_pins[0]);
+        assert_eq!(e.attestation_challenge, crate::enroll::attestation_challenge(&bytes).to_vec());
+        // the commitment and the expiry are checked here, not in the app
+        assert!(open_enrollment(bytes.clone(), "x".into(), 1_999_999_000).is_err());
+        assert!(open_enrollment(bytes.clone(), crate::request::commitment(&bytes), 2_000_000_301).is_err());
+        // a chain the build does not know: every pin is kept, and the phone can say so
+        let other = EnrollRequest::new(1, known, unknown, "p", B256::ZERO, 2_000_000_000).with_pins(pins2).to_bytes();
+        let e = open_enrollment(other.clone(), crate::request::commitment(&other), 0).unwrap();
+        assert!(!e.chain_known && e.pins.len() == 1 && e.ignored_pins.is_empty());
+    }
+
     /// `finish` over a reviewed request: a good signature becomes a verified
     /// response; one over another digest, or by another key, is refused.
     #[test]
@@ -361,6 +453,7 @@ mod tests {
             validator: None,
             gas_cap_wei: default_gas_cap_wei(),
             expert_mode: false,
+            pins: vec![],
         }];
         let review = open_request(bytes.clone(), commitment, 1_999_999_000, enrolled).unwrap();
         assert!(matches!(review.verdict(), FfiVerdict::Sign));

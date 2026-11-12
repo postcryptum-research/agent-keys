@@ -15,8 +15,8 @@ android {
         applicationId = "dev.tpmsign.owner.spike"
         minSdk = 30          // Android 11: setUserAuthenticationParameters (design D7)
         targetSdk = 34
-        versionCode = 7
-        versionName = "0.1.0-p2"
+        versionCode = 8
+        versionName = "0.2.0-p2"
     }
     buildTypes {
         release { isMinifyEnabled = false }

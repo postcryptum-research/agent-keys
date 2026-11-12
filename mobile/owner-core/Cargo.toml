@@ -1,6 +1,6 @@
 [package]
 name = "owner-core"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Kernel v3.3 encodings and ERC-4337 hashing shared by agent-signer and the mobile owner apps"
 # Licence: not decided (docs/MOBILE_OWNER_PLAN.md, decision 3; README.md here).
@@ -16,6 +16,10 @@ crate-type = ["lib", "cdylib"]
 ffi = ["dep:uniffi"]
 # `cargo run --features cli --bin uniffi-bindgen` generates the bindings.
 cli = ["ffi", "uniffi/cli"]
+# Development builds only: facts for the CLI's local anvil chain (31337), where
+# the test harness installs Base Sepolia's code at the same addresses
+# (src/facts.rs). Never in a build that is distributed.
+test-chains = []
 
 [[bin]]
 name = "uniffi-bindgen"
@@ -31,6 +35,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
 base64 = "0.22"
+
+[build-dependencies]
+serde_json = "1"
 
 [dev-dependencies]
 p256 = { version = "0.13", features = ["ecdsa"] }

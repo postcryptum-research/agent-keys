@@ -3,6 +3,9 @@
 # (docs/MOBILE_OWNER_DESIGN.md §7.3). Run before `./gradlew assembleDebug`.
 #   cargo-ndk, the Android NDK (ANDROID_NDK_HOME or $ANDROID_HOME/ndk/<ver>),
 #   rustup target aarch64-linux-android. Optional: CARGO=cargo +1.94.
+#   OWNER_CORE_FEATURES (default "ffi"): "ffi,test-chains" for a development
+#   phone that signs on the CLI's local anvil chain — never for a build that
+#   is handed to anyone; the app shows "+test-chains" at launch.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 core="$here/../owner-core"
@@ -12,7 +15,7 @@ if [ -z "${ANDROID_NDK_HOME:-}" ] && [ -n "${ANDROID_HOME:-}" ]; then
 fi
 cd "$core"
 # 1. the phone library (arm64 only for the development builds; armeabi-v7a comes with P5)
-$CARGO ndk -t arm64-v8a -o "$here/app/src/main/jniLibs" build --release --features ffi
+$CARGO ndk -t arm64-v8a -o "$here/app/src/main/jniLibs" build --release --features "${OWNER_CORE_FEATURES:-ffi}"
 # 2. a host library for the bindings generator, and the Kotlin
 $CARGO build --release --features ffi
 case "$(uname)" in Darwin) lib=target/release/libowner_core.dylib ;; *) lib=target/release/libowner_core.so ;; esac

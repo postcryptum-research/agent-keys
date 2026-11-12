@@ -249,12 +249,41 @@ builds the arm64 library with `cargo-ndk` and the Kotlin bindings with
 `uniffi`, and the app's button 3 renders the review from one parse, asks
 the second confirmation for bold effects, signs the recomputed hash and
 lets the core build the response (DER → r‖s, low-s, self-verified). Blind
-signing is gone. With no build facts yet the phone's review emphasises
+signing is gone. Where the build has no facts the phone's review emphasises
 what it cannot classify (a key on an unknown validator, every validator
-removal) and refuses a permission whose modules it cannot read, so a
-permission install is not signable on the phone until slice 3. Still open
-in P2 (slice 3): the build-embedded deployments and token table (§6.7),
-laptop pins, and the device-side "Sign only after scrolling" of §6.6.
+removal) and refuses a permission whose modules it cannot read.
+Slice 3 (2026-11-13): the build knows the project's contracts.
+`owner-core/src/facts.rs` embeds the canonical
+`contracts/deployments/84532.json` (parsed in `build.rs`, so a broken file
+fails the build) and a token table (USDC on Base Sepolia: decimals and
+EIP-712 domain, read from the chain). The phone and the laptop's preview
+both run `open_request_with_build_facts`: names are "verified in this
+build", superseded versions are named as such and are not readable
+modules, only the canonical no-charge paymaster sponsors, known tokens are
+shown in their units, and a mandate whose x402 domain is not the known
+token's own is refused. A variant's paymaster (`84532.enclave.json`) is
+not a fact, so the phone refuses operations it sponsors. The laptop's pins
+(§4.3) travel in the enrollment request for addresses the build does not
+know; the phone keeps them as unverified labels, reports the ones its
+build names itself or whose label is a name the build reserves, and never
+lets a pin change a verdict or an emphasis. Two rules were tightened in
+review, because with names on the screen a plain row reads as safe: a key
+installed on **any** validator is an effect, and a `grantAccess` is plain
+only for a permission's `execute` or when it takes access away; a
+validator's `execute` or `changeRootValidator` is an effect, and every
+other grant is refused.
+On the device the review is rendered from the core's sections, and Sign is
+enabled only at the end of the scroll (§6.6). A development build with
+`test-chains` knows the CLI's anvil chain, where the harness installs the
+same code at the same addresses; it shows `+test-chains` in its version.
+The simulated phone in the anvil suite runs the same review, so the suite
+covers a permission install through the phone (the mandate in the
+laptop's preview) and an unknown call refused by the phone. P2's "done
+when" is met: the phone shows a decoded mandate, recomputes the hash, and
+a tampered request is visibly different or refused. Not done in P2 and
+moved on: the enrollment options on the phone (gas cap, expert mode,
+device PIN — §5.4), the Safe `execTransaction` decoder named in §6.3, and
+the phone learning which validator holds its key (v2, §14).
 
 ## Threat model, briefly
 

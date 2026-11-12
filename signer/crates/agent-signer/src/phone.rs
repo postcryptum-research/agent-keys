@@ -121,6 +121,7 @@ pub fn enroll(
     chain_id: u64,
     entry_point: Address,
     account: Address,
+    pins: std::collections::BTreeMap<Address, String>,
     allow_no_attestation: bool,
     confirm: FingerprintSource,
 ) -> Result<(Vec<u8>, Vec<u8>, Enrollment), SignerError> {
@@ -128,7 +129,7 @@ pub fn enroll(
     OsRng.fill_bytes(&mut challenge);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| SignerError::Backend(e.to_string()))?;
     let expires = now.as_secs() + options().timeout.as_secs();
-    let request = EnrollRequest::new(chain_id, entry_point, account, label, B256::from(challenge), expires).to_bytes();
+    let request = EnrollRequest::new(chain_id, entry_point, account, label, B256::from(challenge), expires).with_pins(pins).to_bytes();
     let headline = format!(
         "enrolling phone owner key {label:?} for account {account} on chain {chain_id}: scan this with the owner app, \
          read the notice about this phone's key hardware, confirm. The phone then shows the new key's fingerprint; \
@@ -174,6 +175,31 @@ pub fn enroll(
         SessionError::Backend(m) => SignerError::Backend(m),
     })?;
     Ok((request, body, enrollment))
+}
+
+/// Names from the laptop's deployments file for the addresses the phone's
+/// build does not know (design §4.3, §6.7): a variant's paymaster, a chain
+/// without embedded facts. The phone shows them as unverified labels and
+/// reports any that its build names itself, so none are sent for those. The
+/// labels say what the config uses an address for; they are never the names
+/// the build gives to what it verifies, which the phone refuses in a pin.
+pub fn laptop_pins(dep: &crate::agent::Deployments) -> std::collections::BTreeMap<Address, String> {
+    let known = owner_core::facts::for_chain(dep.chain_id).names;
+    [
+        (Some(dep.p256_validator), "owner validator (config)"),
+        (Some(dep.p256_signer), "signer module (config)"),
+        (Some(dep.agent_policy), "policy module (config)"),
+        (Some(dep.demo_counter), "counter (config)"),
+        (dep.whitelist_paymaster, "paymaster (config)"),
+        (dep.p256_recovery_validator, "recovery validator (config)"),
+        (dep.p256_validator_v1, "old owner validator (config)"),
+        (dep.p256_recovery_validator_v1, "old recovery validator (config)"),
+        (dep.safe_nonce_assert, "safe nonce guard (config)"),
+    ]
+    .into_iter()
+    .filter_map(|(a, name)| a.map(|a| (a, name.to_string())))
+    .filter(|(a, _)| !known.contains_key(a))
+    .collect()
 }
 
 /// `ABCDE-FGHIJ-KLMNO-PQRST` as the phone shows it, or at least its first

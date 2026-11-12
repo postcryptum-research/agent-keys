@@ -634,7 +634,17 @@ fn phone_simulator_after(qr_file: std::path::PathBuf, key: Key, mode: &'static s
         }
         let req = SignRequest::parse(&bytes, now, 300).expect("a well-formed request");
         assert_eq!(req.nonce_key().unwrap(), U256::ZERO, "the phone signs root operations only");
-        let hash = req.user_op_hash().unwrap();
+        // the phone's own review, with the facts its build embeds (design §6, §6.7): it signs
+        // the hash that review recomputed, or answers with the review's refusal
+        let me = owner_core::review::EnrolledAccount::new(req.chain_id().unwrap(), req.entry_point, req.user_op.sender);
+        let review = owner_core::review::open_request_with_build_facts(&bytes, &qr.commitment, now, &[me]);
+        if let owner_core::review::Verdict::Refuse(why) = &review.verdict {
+            let resp = SignResponse::refused(&qr.commitment, "core", Some(why.clone()), app);
+            http_post(&qr.url, std::str::from_utf8(&resp.to_bytes()).unwrap());
+            return;
+        }
+        let hash = review.digest_to_sign().unwrap();
+        assert_eq!(hash, req.user_op_hash().unwrap());
         let mut scalar = [0u8; 32];
         scalar.copy_from_slice(&hex::decode(&key.scalar[2..]).unwrap());
         let sk = SigningKey::from_bytes(&scalar.into()).unwrap();
@@ -684,7 +694,7 @@ fn phone_owner_signs_a_root_operation() {
     assert!(out.contains("path:           root (owner key)"), "{out}");
     assert!(out.contains("phone:          signed, signature verified"), "{out}");
     // the laptop previews the phone's review of the CLI's own request (P2)
-    assert!(out.contains("what the phone will show:"), "{out}");
+    assert!(out.contains("what the phone will show (owner-core") && out.contains("+test-chains"), "{out}");
     assert!(out.contains("Call: increment()"), "{out}");
     assert!(out.contains("demo counter (verified in this build)"), "{out}");
     assert!(out.contains("Maximum gas cost:"), "{out}");
@@ -737,6 +747,44 @@ fn phone_owner_signs_a_root_operation() {
     ]);
     assert!(err.contains("is not the fingerprint of its publicKey"), "{err}");
     assert!(!err.contains("tpmsign:1?"), "no session was opened: {err}");
+
+    // 6. the phone reviews what it signs (P2): a call it cannot classify is refused on the
+    //    phone with the review's reason, and the laptop had said so before the QR
+    let _ = std::fs::remove_file(&qr_file);
+    let sim = phone_simulator(qr_file.clone(), key(7), "sign");
+    let before = chain.counter();
+    let err = chain.fails(&[
+        "op", "send", "--agent", &cfg_path, "--root", "--target", "0x7000000000000000000000000000000000000007", "--data", "0xdeadbeef",
+        "--listen", "127.0.0.1:0", "--phone-qr-file", qr, "--phone-timeout", "60",
+    ]);
+    sim.join().unwrap();
+    assert!(err.contains("the phone will REFUSE this operation"), "{err}");
+    assert!(err.contains("the phone refused: core") && err.contains("cannot decode"), "{err}");
+    assert_eq!(chain.counter(), before);
+
+    // 7. a new agent permission installed through the phone: the laptop previews the mandate
+    //    the phone shows — the modules named by the build, the allow-list, the agent's key —
+    //    and the agent then runs under it
+    let _ = std::fs::remove_file(&qr_file);
+    let agent2 = key(3);
+    let cfg2 = chain.config(
+        "phone-perm2.json",
+        &Cfg { agent: &agent2, permission: "0x74657332", account: Some(account.clone()), ..base_cfg(&phone, &agent, &counter, until) },
+    );
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&cfg2).unwrap()).unwrap();
+    v["owner"] = phone_spec("sim-phone", &phone);
+    std::fs::write(&cfg2, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    let sim = phone_simulator(qr_file.clone(), key(7), "sign");
+    let out = chain.ok(&["permission", "add", "--agent", &cfg2, "--listen", "127.0.0.1:0", "--phone-qr-file", qr, "--phone-timeout", "60"]);
+    sim.join().unwrap();
+    assert!(out.contains("Install agent permission: 0x74657332"), "{out}");
+    assert!(out.contains("AgentPolicy (verified in this build)") && out.contains("P256Signer (verified in this build)"), "{out}");
+    assert!(out.contains("demo counter (verified in this build) · increment"), "{out}");
+    assert!(out.contains(&format!("Agent key: {}", fingerprint_of(&agent2))), "{out}");
+    assert!(!out.contains("will REFUSE"), "{out}");
+    let before = chain.counter();
+    chain.ok(&["demo", "--agent", &cfg2]);
+    assert_eq!(chain.counter(), before + U256::from(1), "the agent runs under the permission the phone installed");
 }
 
 /// Design §2.1 and §9.4: enrollment on the (simulated) phone, the handover
@@ -804,6 +852,37 @@ fn phone_is_enrolled_then_takes_over_root() {
     let req: Value = serde_json::from_str(&std::fs::read_to_string(out_dir.join("enroll-request.json")).unwrap()).unwrap();
     assert_eq!(req["account"].as_str().unwrap().to_lowercase(), account.to_lowercase());
     assert_eq!(req["label"], "owner-phone");
+    assert!(req.get("laptopPins").is_none(), "the build knows every contract of this deployment: nothing to pin");
+    assert!(!text.contains("names sent to the phone"), "{text}");
+
+    // 3a. a deployment with a contract the phone's build does not know: the laptop pins its
+    //     name for it (design §4.3), and only for it
+    let _ = std::fs::remove_file(&qr_file);
+    let stranger = "0x9000000000000000000000000000000000000009";
+    let mut dep: Value = serde_json::from_str(&std::fs::read_to_string(chain.dir.join("deployments.json")).unwrap()).unwrap();
+    dep["demoCounter"] = json!(stranger);
+    std::fs::write(chain.dir.join("deployments-odd.json"), dep.to_string()).unwrap();
+    let mut odd: Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    odd["deployments"] = json!(chain.dir.join("deployments-odd.json"));
+    let odd_cfg = chain.dir.join("owner-odd.json");
+    std::fs::write(&odd_cfg, serde_json::to_string_pretty(&odd).unwrap()).unwrap();
+    let odd_out = chain.dir.join("enrollment-odd");
+    let sim = phone_simulator(qr_file.clone(), key(9), "enroll");
+    let text = chain.ok(&[
+        &["key", "create", "--phone", "owner-phone", "--agent", odd_cfg.to_str().unwrap(), "--allow-no-attestation", "--out", odd_out.to_str().unwrap()],
+        &session[..],
+    ]
+    .concat());
+    sim.join().unwrap();
+    assert!(text.contains("names sent to the phone") && text.contains("counter (config)"), "{text}");
+    let req: Value = serde_json::from_str(&std::fs::read_to_string(odd_out.join("enroll-request.json")).unwrap()).unwrap();
+    let pins = req["laptopPins"].as_object().expect("the request carries the pins");
+    assert_eq!(pins.len(), 1, "{pins:?}");
+    let (pinned, name) = pins.iter().next().unwrap();
+    assert_eq!((pinned.to_lowercase().as_str(), name.as_str().unwrap()), (stranger, "counter (config)"));
+    // a label the phone would not show is stopped before any QR
+    let err = chain.fails(&["key", "create", "--phone", "owner\u{202e}phone", "--agent", &cfg, "--listen", "127.0.0.1:0", "--phone-timeout", "5"]);
+    assert!(err.contains("plain text"), "{err}");
     let _ = std::fs::remove_file(&qr_file);
     // the snippet it printed is a valid owner spec
     let snippet_start = text.find("{\n  \"owner\"").expect("a config snippet");
@@ -877,7 +956,9 @@ fn phone_is_enrolled_then_takes_over_root() {
 ///   cargo test -p agent-signer --features insecure-software-keys \
 ///     --test anvil_cli phone_owner_real_device -- --ignored --nocapture
 ///
-/// On the phone: "4. Enroll" for the first QR, "3. Scan and sign" for the second.
+/// On the phone: "4. Enroll" for the first QR, "3. Scan and sign" for the second
+/// (a new agent permission, whose mandate the phone shows). The app needs the
+/// test chain's facts: `OWNER_CORE_FEATURES=ffi,test-chains ./build-core.sh`.
 /// `TPMSIGN_PHONE_OUT=<dir>` keeps the enrollment (request, answer, attestation
 /// DER) after the run; the temp directory is removed otherwise.
 /// `TPMSIGN_PHONE_FINGERPRINT_CMD=<command>` supplies the phone's fingerprint
@@ -945,15 +1026,33 @@ fn phone_owner_real_device() {
     let phone_cfg = chain.dir.join("phone-owner.json");
     std::fs::write(&phone_cfg, serde_json::to_string_pretty(&v).unwrap()).unwrap();
     let phone_cfg = phone_cfg.to_str().unwrap();
-    // P2: the phone decodes what it signs and knows no contracts yet (the build-embedded
-    // facts are slice 3), so an increment on the anvil counter is refused there as an unknown
-    // call. A plain value transfer is decodable without facts: shown in bold as a payment to
-    // an unknown address, confirmed twice on the phone, then signed.
-    let recipient = "0x7000000000000000000000000000000000000007";
-    eprintln!("On the phone tap \"3. Scan the laptop's QR and sign\", scan the QR below: the review shows a payment of\n0.001 ETH to {recipient}; Sign, confirm the effect, then your fingerprint.\n");
-    let status = run(&["op", "send", "--agent", phone_cfg, "--root", "--target", recipient, "--wei", "1000000000000000"]);
-    assert!(status.success(), "the phone-signed root operation failed");
-    eprintln!("\nphone-signed root operation included on anvil; the agent still runs:");
+    // P2: the phone decodes what it signs, and its build names the project's contracts
+    // (design §6.7; the app must be built with OWNER_CORE_FEATURES=ffi,test-chains to know the
+    // anvil chain). The operation is a new agent permission: the phone shows the whole mandate.
+    let agent2 = key(3);
+    let cfg2 = chain.config(
+        "owner-perm2.json",
+        &Cfg {
+            agent: &agent2,
+            permission: "0x74657332",
+            recovery: Some(&recovery),
+            account: Some(account.clone()),
+            ..base_cfg(&owner, &agent, &counter, until)
+        },
+    );
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&cfg2).unwrap()).unwrap();
+    v["owner"] = phone_spec("owner-phone", &phone);
+    std::fs::write(&cfg2, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    eprintln!(
+        "On the phone tap \"3. Scan the laptop's QR and sign\", scan the QR below. The review shows \"Install agent\npermission 0x74657332\" with its mandate: AgentPolicy and P256Signer named by the app, the demo counter's\nincrement allowed, the agent key {}. Scroll to the end, Sign, then your fingerprint.\n",
+        fingerprint_of(&agent2)
+    );
+    let status = run(&["permission", "add", "--agent", &cfg2]);
+    assert!(status.success(), "the phone-signed permission install failed");
+    eprintln!("\nthe permission the phone installed is on-chain; the agent runs under it:");
+    let before = chain.counter();
+    chain.ok(&["demo", "--agent", &cfg2]);
+    assert_eq!(chain.counter(), before + U256::from(1), "the agent acts under the mandate the phone signed");
     chain.ok(&["demo", "--agent", phone_cfg]);
     eprintln!("done. The enrollment (request, answer, attestation DER) is in {}", out_dir.display());
 }

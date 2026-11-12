@@ -20,11 +20,19 @@
 //
 // P2: owner-core runs on the phone (uniffi, `build-core.sh`). Button 3 shows
 // the decoded operation from one parse and signs the userOpHash the core
-// recomputed — never the laptop's number (design §6, §7).
+// recomputed — never the laptop's number (design §6, §7). The core names
+// the project's contracts from its embedded table (§6.7); Sign is enabled
+// once the review has been scrolled to its end (§6.6). Button 4 opens the
+// enrollment through the core too, which splits the laptop's pins (§4.3).
 package dev.tpmsign.owner.spike
 
 import android.content.Context
+import android.graphics.Typeface
 import android.os.Build
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.StyleSpan
+import android.view.ViewTreeObserver
 import android.os.Bundle
 import androidx.appcompat.app.AlertDialog
 import android.security.keystore.KeyGenParameterSpec
@@ -34,6 +42,7 @@ import android.security.keystore.StrongBoxUnavailableException
 import android.util.Log
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import org.json.JSONArray
 import org.json.JSONObject
 import uniffi.owner_core.*
 import java.net.HttpURLConnection
@@ -64,7 +73,7 @@ class MainActivity : AppCompatActivity() {
         const val ALIAS = "tpmsign-p0-owner"
         /** One key per enrolled account (§5.1): alias by chain and account. */
         fun aliasFor(chainId: String, account: String) = "tpmsign-owner-$chainId-${account.lowercase()}"
-        const val APP_VERSION = "0.1.0-p2"
+        const val APP_VERSION = "0.2.0-p2"
         const val PREFS = "enrollments"
         /** owner-core `user_op::tests`: the golden operation's userOpHash on chain 31337 (anvil). */
         const val GOLDEN_DIGEST_HEX = "48e286b71f896beef7a0b4d23fd82d6afae60a64e7976118de492a2fba4c1947"
@@ -295,7 +304,7 @@ class MainActivity : AppCompatActivity() {
             val e = JSONObject(v.toString())
             if (!isConfirmed(v.toString())) null else FfiEnrolledAccount(
                 chainId = e.getString("chainId").toULong(), entryPoint = e.getString("entryPoint"), account = e.getString("account"),
-                validator = null, gasCapWei = defaultGasCapWei(), expertMode = false
+                validator = null, gasCapWei = defaultGasCapWei(), expertMode = false, pins = pinsOf(e)
             )
         }
         val review = openRequest(bytes, commitment, now.toULong(), enrolled)
@@ -317,10 +326,14 @@ class MainActivity : AppCompatActivity() {
             val r = review.refuse(reason, null, app)
             Thread { try { httpPost(url, r) } catch (_: Exception) {} }.start()
         }
-        // §6.6: one Sign action after the whole review; bold effects get a second confirmation in plain words
-        AlertDialog.Builder(this)
+        // §6.6: one Sign action, enabled once the whole review has been scrolled through; bold
+        // effects get a second confirmation in plain words
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val body = TextView(this).apply { this.text = render(review, warnings); textSize = 14f; setTextIsSelectable(true); setPadding(pad, pad / 2, pad, pad / 2) }
+        val scroll = ScrollView(this).apply { addView(body) }
+        val dialog = AlertDialog.Builder(this)
             .setTitle("Sign this operation?")
-            .setMessage(text + if (warnings.isEmpty()) "" else "\nWARNINGS: ${warnings.joinToString("; ")}")
+            .setView(scroll)
             .setNegativeButton("Refuse") { _, _ -> refuse("user") }
             .setPositiveButton("Sign") { _, _ ->
                 if (review.needsSecondConfirmation()) {
@@ -333,7 +346,42 @@ class MainActivity : AppCompatActivity() {
                 } else signReviewed(review, alias, url, app)
             }
             .setCancelable(false)
-            .show()
+            .create()
+        dialog.setOnShowListener {
+            val sign = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+            sign.isEnabled = false
+            val atEnd = { if (!scroll.canScrollVertically(1)) sign.isEnabled = true }
+            scroll.viewTreeObserver.addOnScrollChangedListener { atEnd() }
+            // a review that fits on the screen needs no scrolling: decide once it is laid out
+            scroll.viewTreeObserver.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
+                override fun onGlobalLayout() { scroll.viewTreeObserver.removeOnGlobalLayoutListener(this); atEnd() }
+            })
+        }
+        dialog.show()
+    }
+
+    /** The core's sections (§7.2), rendered generically: titles and effects in bold. */
+    private fun render(review: ReviewHandle, warnings: List<String>): CharSequence {
+        val out = SpannableStringBuilder()
+        fun bold(s: String) {
+            val start = out.length
+            out.append(s)
+            out.setSpan(StyleSpan(Typeface.BOLD), start, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        for (section in review.sections()) {
+            bold(section.title.uppercase() + "\n")
+            for (row in section.rows) {
+                if (row.emphasis) bold("⚠ ${row.label}: ${row.value}\n") else out.append("${row.label}: ${row.value}\n")
+            }
+            out.append("\n")
+        }
+        if (warnings.isNotEmpty()) bold("WARNINGS: ${warnings.joinToString("; ")}\n")
+        return out
+    }
+
+    private fun pinsOf(record: JSONObject): List<FfiPin> {
+        val pins = record.optJSONArray("pins") ?: return emptyList()
+        return (0 until pins.length()).map { pins.getJSONObject(it).let { p -> FfiPin(p.getString("address"), p.getString("label")) } }
     }
 
     private fun signReviewed(review: ReviewHandle, alias: String, url: String, app: FfiApp) {
@@ -376,12 +424,16 @@ class MainActivity : AppCompatActivity() {
     // ---- 4. P1: enrollment (design §2.1, §4.3, §5.2, §5.6) --------------------
 
     private fun reviewAndEnroll(bytes: ByteArray, commitment: String, url: String) {
-        val req = JSONObject(String(bytes))
-        require(req.getInt("version") == 1) { "protocol version ${req.getInt("version")} not supported" }
         val now = System.currentTimeMillis() / 1000
-        require(now <= req.getLong("expires") + 300) { "the request has expired" }
-        val chainId = req.getString("chainId"); val account = req.getString("account"); val label = req.getString("label")
-        require(label.length in 1..64) { "bad label" }
+        // owner-core checks the request (commitment, type, version, expiry, the label and the pins as
+        // plain text) and splits the laptop's pins by what this build knows itself (§4.3)
+        val e = openEnrollment(bytes, commitment, now.toULong())
+        val chainId = e.chainId.toString(); val account = e.account; val label = e.label
+        val pinsNotice = buildString {
+            if (!e.chainKnown) append("This app has no built-in facts for chain $chainId: reviews there name no contract and refuse what they cannot classify.\n\n")
+            if (e.pins.isNotEmpty()) append("Names from the laptop — unverified, and shown as such in every review:\n" + e.pins.joinToString("\n") { "${it.address} \"${it.label}\"" } + "\n\n")
+            if (e.ignoredPins.isNotEmpty()) append("Names from the laptop that are IGNORED, because this app knows these addresses itself:\n" + e.ignoredPins.joinToString("\n") + "\n\n")
+        }
         val alias = aliasFor(chainId, account)
         val unconfirmed = keyStore.containsAlias(alias) && !isConfirmed(prefs().getString(alias, null))
         require(unconfirmed || !keyStore.containsAlias(alias)) { "this phone already holds a key for $account on chain $chainId; a new key needs a handover from the current one (§5.4)" }
@@ -391,10 +443,10 @@ class MainActivity : AppCompatActivity() {
             else "NOTICE — this phone has no StrongBox. The key will live in the processor's trusted mode (TEE): " +
                 "it cannot be copied and signs only after your fingerprint, but a bug in the trusted OS or a physical " +
                 "attack on the chip could reach it. A phone with StrongBox, or an iPhone, protects an owner key better."
-        say("ENROLLMENT\n  chain $chainId\n  account $account\n  label $label\n  entryPoint ${req.getString("entryPoint")}\n  $tierNotice")
+        say("ENROLLMENT\n  chain $chainId\n  account $account\n  label $label\n  entryPoint ${e.entryPoint}\n  $tierNotice\n$pinsNotice")
         AlertDialog.Builder(this)
             .setTitle("Enroll this phone as the owner key?")
-            .setMessage("Account $account on chain $chainId, label \"$label\".\n\n$tierNotice\n\n" +
+            .setMessage("Account $account on chain $chainId, label \"$label\".\n\n$tierNotice\n\n$pinsNotice" +
                 (if (unconfirmed) "An earlier enrollment of this account was never confirmed by the laptop; its key is replaced.\n\n" else "") +
                 "A new key is created on this phone for this account. Nothing changes on-chain until the laptop hands root to it.")
             .setNegativeButton("Refuse") { _, _ ->
@@ -408,9 +460,10 @@ class MainActivity : AppCompatActivity() {
                     // only after the owner's yes: an unconfirmed key (no 200 from the laptop) was never anyone's root
                     if (unconfirmed) { keyStore.deleteEntry(alias); prefs().edit().remove(alias).apply(); say("discarded the unconfirmed enrollment for $account") }
                     // the attestation challenge binds the key to this exact request (§5.2)
-                    val challenge = sha256("TPM_sign/v1/enroll".toByteArray() + commitment.toByteArray())
+                    val challenge = e.attestationChallenge
                     val record = JSONObject().put("label", label).put("chainId", chainId).put("account", account)
-                        .put("entryPoint", req.getString("entryPoint")).put("enrolledAt", now).put("state", "pending")
+                        .put("entryPoint", e.entryPoint).put("enrolledAt", now).put("state", "pending")
+                        .put("pins", JSONArray().also { a -> e.pins.forEach { a.put(JSONObject().put("address", it.address).put("label", it.label)) } })
                     prefs().edit().putString(alias, record.toString()).apply()
                     fun discard(why: String) {
                         if (keyStore.containsAlias(alias)) keyStore.deleteEntry(alias)
