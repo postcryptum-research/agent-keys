@@ -698,7 +698,7 @@ impl Session {
         let mut enrolled = EnrolledAccount::new(d.chain_id, d.entry_point, self.account);
         enrolled.pins = crate::phone::laptop_pins(d);
         let review = open_request_with_build_facts(request, &owner_core::request::commitment(request), now, &[enrolled]);
-        eprintln!("\nwhat the phone will show (owner-core {}):\n{}", owner_core::version(), review.text());
+        eprintln!("\nwhat the phone will show (owner-core {}; pins as this config would send them now):\n{}", owner_core::version(), review.text());
         if !owner_core::facts::chains().contains(&d.chain_id) {
             eprintln!(
                 "owner-core has no facts for chain {}: the phone names nothing there and refuses what it cannot classify",

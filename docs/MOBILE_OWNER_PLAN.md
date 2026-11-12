@@ -265,7 +265,13 @@ token's own is refused. A variant's paymaster (`84532.enclave.json`) is
 not a fact, so the phone refuses operations it sponsors. The laptop's pins
 (§4.3) travel in the enrollment request for addresses the build does not
 know; the phone keeps them as unverified labels, reports the ones its
-build names itself, and never lets a pin change a verdict or an emphasis.
+build names itself or whose label is a name the build reserves, and never
+lets a pin change a verdict or an emphasis. Two rules were tightened in
+review, because with names on the screen a plain row reads as safe: a key
+installed on **any** validator is an effect, and a `grantAccess` is plain
+only for a permission's `execute` or when it takes access away; a
+validator's `execute` or `changeRootValidator` is an effect, and every
+other grant is refused.
 On the device the review is rendered from the core's sections, and Sign is
 enabled only at the end of the scroll (§6.6). A development build with
 `test-chains` knows the CLI's anvil chain, where the harness installs the

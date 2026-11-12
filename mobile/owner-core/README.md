@@ -23,7 +23,9 @@ and parsed by `build.rs` so a broken file fails the build, and a small
 token table (USDC on Base Sepolia, with its EIP-712 domain). Features:
 `ffi` is the `uniffi` surface for the apps (`src/ffi.rs`); `test-chains`
 adds the facts of the CLI's local anvil chain for development builds and
-marks the version `+test-chains` wherever it is shown — never ship it.
+marks the version `+test-chains` wherever it is shown — never ship it, and
+never let a phone with such a build hold a key for a real account: it
+trusts Base Sepolia's addresses on whatever chain calls itself 31337.
 
 Tests: `cargo test` in this directory, and again with `--features ffi` and
 `--features ffi,test-chains`. `cargo check --target aarch64-linux-android`

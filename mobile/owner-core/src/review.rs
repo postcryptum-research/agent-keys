@@ -84,8 +84,11 @@ pub struct Facts {
     pub recovery_validators: Vec<Address>,
     /// The project's demo counter: `increment()` is recognised there only.
     pub demo_counter: Option<Address>,
-    /// Policy and signer modules whose init data this build can read.
-    pub known_modules: Vec<Address>,
+    /// Policy modules whose init data this build can read, and signer
+    /// modules likewise. Kept apart: an address is readable in its own slot
+    /// only, never a signer where a policy belongs.
+    pub policy_modules: Vec<Address>,
+    pub signer_modules: Vec<Address>,
     pub tokens: BTreeMap<Address, Token>,
     /// The chain's EntryPoint, when the build knows it: a request or an
     /// enrollment naming another one is refused.
@@ -496,8 +499,14 @@ fn self_call(
                         );
                         b.row(s, "Recovery validator", b.name(v));
                     } else if b.facts.names.contains_key(&v) {
-                        b.row(s, "Install validator", b.name(v));
-                        b.row(s, "With key", fingerprint(&pk));
+                        // v1 does not know which validators the account uses: a key on any of them is an
+                        // owner-grade key, whether the validator is current or superseded
+                        b.bold(
+                            s,
+                            "Install a key on a validator",
+                            format!("{} — it controls this account once it is root or is granted access", fingerprint(&pk)),
+                        );
+                        b.row(s, "Validator", b.name(v));
                     } else {
                         // a validator the build cannot classify may be a recovery validator: say so
                         b.bold(s, "Install a key on a validator this build cannot classify", format!("{} — it may be able to take over this account", fingerprint(&pk)));
@@ -517,11 +526,27 @@ fn self_call(
         clean_permission_vid(c.vId)?;
         let who = vid_text(c.vId);
         let what = selector_name(c.selector.0);
-        let verb = if c.allow { "Allow" } else { "Forbid" };
-        if c.selector.0 == IKernel::changeRootValidatorCall::SELECTOR {
-            b.bold(s, format!("{verb} {who} to call"), format!("{what} — may take over this account"));
+        let (is_validator, is_permission) = (c.vId.0[0] == VALIDATION_TYPE_VALIDATOR, c.vId.0[0] == VALIDATION_TYPE_PERMISSION);
+        let (execute, change_root) = (c.selector.0 == IKernel::executeCall::SELECTOR, c.selector.0 == IKernel::changeRootValidatorCall::SELECTOR);
+        // Kernel lets a non-root validation call a top-level selector only when it is granted
+        // here. A permission's `execute` is bounded by its policy; nothing bounds a validator,
+        // and nothing bounds anyone on Kernel's admin selectors.
+        if !c.allow {
+            b.row(s, format!("Forbid {who} to call"), what);
+        } else if is_permission && execute {
+            b.row(s, format!("Allow {who} to call"), what);
+        } else if is_validator && change_root {
+            b.bold(s, format!("Allow {who} to call"), format!("{what} — may take over this account"));
+        } else if is_validator && execute {
+            b.bold(s, format!("Allow {who} to call"), format!("{what} — this key will be able to do anything with this account"));
+        } else if acct.expert_mode && (is_validator || is_permission) {
+            b.bold(s, format!("Allow {who} to call"), format!("{what} — nothing bounds what this grant lets it do to the account"));
+            b.warnings.push(format!("a grant of {what} to {who}, allowed by expert mode"));
         } else {
-            b.row(s, format!("{verb} {who} to call"), what);
+            return Err(format!(
+                "a grant of {what} to {who}: this version signs a permission's execute, and a validator's execute or \
+                 changeRootValidator, and no other grant (expert mode is off)"
+            ));
         }
         Ok(())
     } else if selector == IKernel::changeRootValidatorCall::SELECTOR {
@@ -600,7 +625,8 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
     // the module the build can read, or expert mode: the mandate rows are this build's reading
     // of init data that the module interprets its own way
     let module_known = |b: &mut Builder<'_>, what: &str, module: Address| -> Result<(), String> {
-        if b.facts.known_modules.contains(&module) {
+        let readable = if what == "policy" { &b.facts.policy_modules } else { &b.facts.signer_modules };
+        if readable.contains(&module) {
             return Ok(());
         }
         if !acct.expert_mode {
@@ -858,6 +884,8 @@ mod tests {
     use crate::user_op::PackedUserOp;
     use alloy_primitives::address;
 
+    type ValidationIdBytes = FixedBytes<21>;
+
     const ENTRY: Address = address!("0000000071727De22E5E9d8BAf0edAc6f37da032");
     const ACCOUNT: Address = address!("D62Dd4afD4e77cDFA6f8eaD1D2655745cF5af628");
     const COUNTER: Address = address!("1000000000000000000000000000000000000001");
@@ -887,7 +915,8 @@ mod tests {
             sponsoring_paymasters: vec![PAYMASTER],
             recovery_validators: vec![RECOVERY],
             demo_counter: Some(COUNTER),
-            known_modules: vec![POLICY, SIGNER],
+            policy_modules: vec![POLICY],
+            signer_modules: vec![SIGNER],
             tokens: BTreeMap::new(),
             entry_point: None,
         }
@@ -1407,7 +1436,7 @@ mod tests {
     fn build_facts_drive_the_review() {
         let me = ACCOUNT;
         let f = crate::facts::for_chain(84532);
-        let (policy, signer) = (f.known_modules[0], f.known_modules[1]);
+        let (policy, signer) = (f.policy_modules[0], f.signer_modules[0]);
         let usdc = *f.tokens.keys().next().unwrap();
         let open_84532 = |o: &PackedUserOp| {
             let bytes = SignRequest::new(o, ENTRY, 84532, NOW + 120, None, BTreeMap::new(), None).to_bytes();
@@ -1422,8 +1451,6 @@ mod tests {
             tokens: vec![(usdc, 20_000_000, 100_000_000, f.tokens[&usdc].domain)],
             valid_after: 0,
         };
-        // `known_modules` is in the file's key order: tell the two apart by name
-        let (policy, signer) = if f.names[&policy] == "AgentPolicy" { (policy, signer) } else { (signer, policy) };
         let pdata = kernel::permission_data(policy, &params, signer, &key(2));
         let mut o = op(kernel::execute_calldata(me, U256::ZERO, &kernel::install_permission_calldata(FixedBytes::from([1, 2, 3, 4]), pdata, 1)));
         o.gas_fees = kernel::pack_gas(1, 1);
@@ -1462,6 +1489,70 @@ mod tests {
         assert_eq!(format_units(U256::from(20_000_000), 6), "20");
         assert_eq!(format_units(U256::from(5), 0), "5");
         assert_eq!(format_ether(U256::from(10u128.pow(18))), "1");
+    }
+
+    /// The review of PR #32: `grantAccess` is what lets a non-root key call a
+    /// top-level selector, so a grant is an effect unless something bounds it,
+    /// and a key on any validator is an owner-grade key.
+    #[test]
+    fn grants_and_validator_installs_are_effects() {
+        let me = ACCOUNT;
+        let perm = FixedBytes::from([0x74, 0x65, 0x73, 0x31]);
+        let v1 = address!("a000000000000000000000000000000000000001");
+        let mut f = facts();
+        f.names.insert(v1, "P256Validator v1 (superseded)".into());
+        let open_as = |calls: Vec<Bytes>, accounts: &[EnrolledAccount]| {
+            let mut o = op(kernel::execute_batch_calldata(calls.into_iter().map(|c| (me, U256::ZERO, c)).collect()));
+            o.gas_fees = kernel::pack_gas(1, 1);
+            let (bytes, c) = request(&o);
+            open_request(&bytes, &c, NOW, accounts, &f)
+        };
+        let open_calls = |calls: Vec<Bytes>| open_as(calls, &enrolled());
+        let grant = |vid: ValidationIdBytes, selector: [u8; 4], allow: bool| -> Bytes {
+            IKernel::grantAccessCall { vId: vid, selector: FixedBytes::from(selector), allow }.abi_encode().into()
+        };
+        let (execute, change_root) = (IKernel::executeCall::SELECTOR, IKernel::changeRootValidatorCall::SELECTOR);
+        let (install, grant_sel) = (IKernel::installValidationsCall::SELECTOR, IKernel::grantAccessCall::SELECTOR);
+        let validator = kernel::validator_id(v1);
+        let permission = kernel::permission_vid(perm);
+
+        // a second owner in two plain-looking steps: a key on a superseded validator, then execute for it
+        let r = open_calls(vec![kernel::install_validator_call(validator, &key(6), 3), grant(validator, execute, true)]);
+        let t = r.text();
+        assert_eq!(r.verdict, Verdict::Sign, "{t}");
+        assert!(r.needs_second_confirmation());
+        assert!(t.contains("! Install a key on a validator:") && t.contains("P256Validator v1 (superseded)"), "{t}");
+        assert!(t.contains("to call: execute (0xe9ae5c53) — this key will be able to do anything with this account"), "{t}");
+        // the grant alone
+        let r = open_calls(vec![grant(validator, execute, true)]);
+        assert!(r.verdict == Verdict::Sign && r.needs_second_confirmation(), "{}", r.text());
+        // the recovery grant stays as it was
+        assert!(open_calls(vec![grant(validator, change_root, true)]).text().contains("changeRootValidator (0x") );
+        assert!(open_calls(vec![grant(validator, change_root, true)]).needs_second_confirmation());
+        // a permission's execute is bounded by its policy: plain
+        let r = open_calls(vec![grant(permission, execute, true)]);
+        assert!(r.verdict == Verdict::Sign && !r.needs_second_confirmation(), "{}", r.text());
+        // every other grant is refused: admin selectors to a permission or a validator, a selector nobody can name
+        for (vid, selector) in [(permission, install), (permission, grant_sel), (permission, change_root), (permission, [0xde, 0xad, 0xbe, 0xef]), (validator, install), (validator, grant_sel)] {
+            let r = open_calls(vec![grant(vid, selector, true)]);
+            assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("no other grant")), "{:?}: {:?}", selector, r.verdict);
+        }
+        // taking access away is never a takeover
+        for (vid, selector) in [(permission, execute), (validator, execute), (validator, change_root), (permission, install)] {
+            let r = open_calls(vec![grant(vid, selector, false)]);
+            assert!(r.verdict == Verdict::Sign && !r.needs_second_confirmation() && r.text().contains("Forbid"), "{}", r.text());
+        }
+        // expert mode turns the refusal into a bold row with a warning
+        let mut expert = enrolled();
+        expert[0].expert_mode = true;
+        let r = open_as(vec![grant(permission, install, true)], &expert);
+        assert!(matches!(r.verdict, Verdict::SignWithWarnings(_)) && r.needs_second_confirmation(), "{:?}", r.verdict);
+        assert!(r.text().contains("nothing bounds what this grant"), "{}", r.text());
+        // a signer module is readable as a signer only: in the policy's slot it is unknown
+        let params = kernel::PolicyParams { targets: vec![], selectors: vec![], max_value_per_op: 0, budget: 0, valid_until: NOW + 1, tokens: vec![], valid_after: 0 };
+        let swapped = kernel::permission_data(SIGNER, &params, SIGNER, &key(2));
+        let r = open_calls(vec![kernel::install_permission_calldata(perm, swapped, 1)]);
+        assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("policy module") && m.contains("not known to this build")), "{:?}", r.verdict);
     }
 
     #[test]
