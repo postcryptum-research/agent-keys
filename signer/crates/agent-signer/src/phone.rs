@@ -141,18 +141,26 @@ pub fn enroll(
     let (body, enrollment) = lan_session(&request, &headline, |body| {
         let e = EnrollResponse::verify(body, &request, allow_no_attestation)?;
         let actual = fingerprint(&e.public_key);
-        let expected = match &typed {
-            Some(t) => t.clone(),
+        let matches = match &typed {
+            Some(t) => fingerprint_matches(t, &actual),
             None => {
-                let t = match &confirm {
+                let mut t = match &confirm {
                     FingerprintSource::Command(cmd) => fingerprint_from_command(cmd, options().timeout)?,
                     _ => prompt_fingerprint()?,
                 };
-                typed = Some(t.clone());
-                t
+                // a typo and a foreign key look the same; one more try tells them apart before the value is kept
+                if !fingerprint_matches(&t, &actual) && matches!(confirm, FingerprintSource::Prompt) {
+                    eprintln!("that does not match the key in this answer. If you mistyped, type the fingerprint once more; otherwise press Enter to reject this answer.");
+                    if let Ok(again) = prompt_fingerprint() {
+                        t = again;
+                    }
+                }
+                let ok = fingerprint_matches(&t, &actual);
+                typed = Some(t);
+                ok
             }
         };
-        if !fingerprint_matches(&expected, &actual) {
+        if !matches {
             eprintln!(
                 "an answer arrived with a key whose fingerprint ({actual}) is not the one on the phone's screen; \
                  it is not the phone's key — refused, still waiting for the phone"
@@ -169,14 +177,16 @@ pub fn enroll(
 }
 
 /// `ABCDE-FGHIJ-KLMNO-PQRST` as the phone shows it, or at least its first
-/// group; case and dashes do not matter. One group is 25 bits: a host that
-/// posts its own key first does not know what the phone shows, so it
-/// matches with one chance in 2^25 per attempt, and the session allows 20.
+/// two groups; case and dashes do not matter. Why two: the phone's answer
+/// travels in cleartext, so a host in the network path can hold it, read
+/// the phone's key, and grind a key whose fingerprint starts the same way.
+/// One group (25 bits) falls to that in minutes; two (50 bits) do not
+/// within a session. All four is what to type when in doubt.
 fn normalize_fingerprint(typed: &str) -> Result<String, SignerError> {
     let t: String = typed.trim().chars().filter(|c| *c != '-' && !c.is_whitespace()).collect::<String>().to_ascii_uppercase();
-    if t.len() < 5 || t.len() > 20 || !t.bytes().all(|b| b.is_ascii_uppercase() || (b'2'..=b'7').contains(&b)) {
+    if t.len() < 10 || t.len() > 20 || !t.bytes().all(|b| b.is_ascii_uppercase() || (b'2'..=b'7').contains(&b)) {
         return Err(SignerError::Key(
-            "the fingerprint has four groups of five characters (A–Z, 2–7); type at least the first group".into(),
+            "the fingerprint has four groups of five characters (A–Z, 2–7); type at least the first two groups".into(),
         ));
     }
     Ok(t)
@@ -217,7 +227,7 @@ fn prompt_fingerprint() -> Result<String, RequestError> {
             "an answer arrived but there is no terminal to confirm the phone's fingerprint on; run interactively or pass --phone-fingerprint".into(),
         ));
     }
-    eprint!("\nthe phone shows the new key's fingerprint. Type its first group (5 characters; more is fine): ");
+    eprint!("\nthe phone shows the new key's fingerprint. Type at least its first two groups (all four when in doubt): ");
     let _ = std::io::stderr().flush();
     let mut line = String::new();
     std::io::stdin().lock().read_line(&mut line).map_err(|e| RequestError::Malformed(format!("reading the fingerprint: {e}")))?;
@@ -419,8 +429,8 @@ mod tests {
         assert!(fingerprint_matches(&normalize_fingerprint("zolh5-d2dis").unwrap(), fp));
         assert!(fingerprint_matches(&normalize_fingerprint(" ZOLH5 D2DIS 66ZBB 4T6NL ").unwrap(), fp));
         assert!(!fingerprint_matches(&normalize_fingerprint("ZOLH5-D2DIT").unwrap(), fp));
-        assert!(fingerprint_matches(&normalize_fingerprint("zolh5").unwrap(), fp), "one group is enough");
-        assert!(normalize_fingerprint("ZOLH").is_err(), "less than a group is too little");
+        assert!(normalize_fingerprint("zolh5").is_err(), "one group can be ground by a host that read the phone's key");
+        assert!(normalize_fingerprint("ZOLH5-D2DI").is_err(), "nine characters are not two groups");
         assert!(normalize_fingerprint("ZOLH5-D2DI1").is_err(), "1 is not base32");
         assert!(normalize_fingerprint("ZOLH5-D2DIS-66ZBB-4T6NL-X").is_err());
     }

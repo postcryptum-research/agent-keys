@@ -104,8 +104,9 @@ TEE-only phone the button reads "I understand, enroll". On yes it creates a
 **new** key for that account (alias by chain and account, design §5.1) with
 the attestation challenge `sha256("TPM_sign/v1/enroll" ‖ commitment)`
 (§5.2), shows the key's **fingerprint** in a dialog that stays — the laptop
-asks the owner to type its first group, because nothing else authenticates
-an enrollment answer until P3 — and posts the public key, the tier, and the
+asks the owner to type at least its first two groups, because nothing else
+authenticates an enrollment answer until P3 and a host in the path could
+grind a one-group match — and posts the public key, the tier, and the
 attestation chain as base64 DER. The laptop answers that POST only after
 the owner confirmed the fingerprint there, so the app waits up to five
 minutes for it. The enrollment record (§5.4: label, chain, account, tier,

@@ -396,9 +396,10 @@ enum KeyCmd {
         /// is refused: nothing authenticates an enrollment answer but this.
         #[arg(long, requires = "phone", conflicts_with = "phone_fingerprint_cmd")]
         phone_fingerprint: Option<String>,
-        /// Phone: a shell command that prints the fingerprint the phone shows,
-        /// run when the answer arrives and repeated until it does — for a
-        /// development phone on USB (`adb` reads the app's pending record).
+        /// Phone, development only: a shell command (`sh -c`, so not Windows)
+        /// that prints the fingerprint the phone shows, run when the answer
+        /// arrives and repeated until it does — a development phone on USB,
+        /// where `adb` reads the debug app's pending record.
         #[arg(long, requires = "phone")]
         phone_fingerprint_cmd: Option<String>,
         #[command(flatten)]

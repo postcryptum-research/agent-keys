@@ -148,6 +148,13 @@ use a health check to obtain a signature over a meaningful hash (§6.5).
 - **Secrecy is not needed.** The request becomes public on-chain anyway,
   and a signature is public. Integrity comes from the commitment, and the
   laptop verifies every signature.
+- **What "make the session fail" includes.** The token travels in the
+  phone's cleartext GET, so a host on the network can post in the phone's
+  place. An answer that does not verify is refused and the session waits
+  on; a posted *refusal* ends the session at once, so such a host can stop
+  an enrollment or a signature, never substitute one. The one answer the
+  laptop cannot verify by itself is the enrollment's (§4.3), which is why
+  the owner confirms the fingerprint there until attestation is verified.
 
 ### 3.2 QR payload
 

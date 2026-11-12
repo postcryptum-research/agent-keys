@@ -60,7 +60,7 @@ class MainActivity : AppCompatActivity() {
         const val ALIAS = "tpmsign-p0-owner"
         /** One key per enrolled account (§5.1): alias by chain and account. */
         fun aliasFor(chainId: String, account: String) = "tpmsign-owner-$chainId-${account.lowercase()}"
-        const val APP_VERSION = "0.0.5-p1"
+        const val APP_VERSION = "0.0.6-p1"
         const val PREFS = "enrollments"
         /** owner-core `user_op::tests`: the golden operation's userOpHash on chain 31337 (anvil). */
         const val GOLDEN_DIGEST_HEX = "48e286b71f896beef7a0b4d23fd82d6afae60a64e7976118de492a2fba4c1947"
@@ -358,12 +358,8 @@ class MainActivity : AppCompatActivity() {
         val chainId = req.getString("chainId"); val account = req.getString("account"); val label = req.getString("label")
         require(label.length in 1..64) { "bad label" }
         val alias = aliasFor(chainId, account)
-        // an unconfirmed key (the POST never got a 200) was never anyone's root: discard it and try again
-        if (keyStore.containsAlias(alias) && prefs().getString(alias, null)?.let { JSONObject(it).optString("state") } != "confirmed") {
-            keyStore.deleteEntry(alias); prefs().edit().remove(alias).apply()
-            say("discarded an unconfirmed enrollment for $account")
-        }
-        require(!keyStore.containsAlias(alias)) { "this phone already holds a key for $account on chain $chainId; a new key needs a handover from the current one (§5.4)" }
+        val unconfirmed = keyStore.containsAlias(alias) && !isConfirmed(prefs().getString(alias, null))
+        require(unconfirmed || !keyStore.containsAlias(alias)) { "this phone already holds a key for $account on chain $chainId; a new key needs a handover from the current one (§5.4)" }
         // the tier this phone can give, before the user confirms (§5.6): a dry look, no key yet
         val strongBox = packageManager.hasSystemFeature("android.hardware.strongbox_keystore")
         val tierNotice = if (strongBox) "This phone has StrongBox: the key will live in a separate secure chip."
@@ -373,7 +369,9 @@ class MainActivity : AppCompatActivity() {
         say("ENROLLMENT\n  chain $chainId\n  account $account\n  label $label\n  entryPoint ${req.getString("entryPoint")}\n  $tierNotice")
         AlertDialog.Builder(this)
             .setTitle("Enroll this phone as the owner key?")
-            .setMessage("Account $account on chain $chainId, label \"$label\".\n\n$tierNotice\n\nA new key is created on this phone for this account. Nothing changes on-chain until the laptop hands root to it.")
+            .setMessage("Account $account on chain $chainId, label \"$label\".\n\n$tierNotice\n\n" +
+                (if (unconfirmed) "An earlier enrollment of this account was never confirmed by the laptop; its key is replaced.\n\n" else "") +
+                "A new key is created on this phone for this account. Nothing changes on-chain until the laptop hands root to it.")
             .setNegativeButton("Refuse") { _, _ ->
                 say("enrollment refused — telling the laptop")
                 val refusal = JSONObject().put("tpmSign", "enroll-response").put("version", 1).put("request", commitment)
@@ -382,6 +380,8 @@ class MainActivity : AppCompatActivity() {
             }
             .setPositiveButton(if (strongBox) "Enroll" else "I understand, enroll") { _, _ ->
                 safely {
+                    // only after the owner's yes: an unconfirmed key (no 200 from the laptop) was never anyone's root
+                    if (unconfirmed) { keyStore.deleteEntry(alias); prefs().edit().remove(alias).apply(); say("discarded the unconfirmed enrollment for $account") }
                     // the attestation challenge binds the key to this exact request (§5.2)
                     val challenge = sha256("TPM_sign/v1/enroll".toByteArray() + commitment.toByteArray())
                     val record = JSONObject().put("label", label).put("chainId", chainId).put("account", account)
@@ -408,7 +408,7 @@ class MainActivity : AppCompatActivity() {
                     val fp = fingerprint(x, y)
                     // the fingerprint is the owner's one check on the laptop's side (P1): it must not get lost
                     prefs().edit().putString(alias, record.put("x", "0x$x").put("y", "0x$y").put("tier", tier).toString()).apply()
-                    say("new key: tier $tier, ${chain.size} attestation certificates\n  x = 0x$x\n  y = 0x$y\n\n  FINGERPRINT  $fp\n  the laptop asks for its first group; it confirms the enrollment only then (waiting up to 5 minutes)")
+                    say("new key: tier $tier, ${chain.size} attestation certificates\n  x = 0x$x\n  y = 0x$y\n\n  FINGERPRINT  $fp\n  the laptop asks for at least its first two groups; it confirms the enrollment only then (waiting up to 5 minutes)")
                     showFingerprint(fp, account)
                     Thread {
                         // the laptop answers only after the owner confirmed the fingerprint there (P1): wait for that
@@ -433,7 +433,7 @@ class MainActivity : AppCompatActivity() {
     private fun showFingerprint(fp: String, account: String) {
         AlertDialog.Builder(this)
             .setTitle("New key's fingerprint")
-            .setMessage("$fp\n\nType its first group on the laptop when agent-signer asks. Account $account.")
+            .setMessage("$fp\n\nType at least its first two groups on the laptop when agent-signer asks (all four when in doubt). Account $account.")
             .setPositiveButton("Done", null)
             .setCancelable(false)
             .show()
@@ -444,7 +444,7 @@ class MainActivity : AppCompatActivity() {
         if (all.isEmpty()) { say("no enrolled accounts"); return }
         for ((alias, v) in all) {
             val e = JSONObject(v.toString())
-            if (e.optString("state") != "confirmed") {
+            if (!isConfirmed(v.toString())) {
                 val fp = if (e.has("x")) fingerprint(e.getString("x").removePrefix("0x"), e.getString("y").removePrefix("0x")) else "?"
                 say("unconfirmed enrollment for ${e.getString("account")} (the laptop has not answered 200): fingerprint $fp. It is discarded on the next enrollment of that account")
                 if (e.has("x") && keyStore.containsAlias(alias)) showFingerprint(fp, e.getString("account"))
@@ -456,6 +456,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun prefs() = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    /** Records from before the pending state (0.0.3) have no `state` but carry the key: they were confirmed. */
+    private fun isConfirmed(record: String?): Boolean {
+        val e = JSONObject(record ?: return false)
+        return e.optString("state") == "confirmed" || (!e.has("state") && e.has("x"))
+    }
     private fun appInfo() = JSONObject().put("platform", "android").put("version", APP_VERSION).put("core", "none")
 
     /** owner-core `fingerprint`: the first 100 bits of sha256(x ‖ y), base32, four groups of five. */
