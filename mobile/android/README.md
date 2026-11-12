@@ -189,3 +189,40 @@ chain came back as five base64 DER certificates and was stored, not
 verified: that check, with the challenge
 `sha256("TPM_sign/v1/enroll" ‖ commitment)`, is P3. The test keeps the
 evidence only when `TPMSIGN_PHONE_OUT` names a directory.
+
+### P1 run record — the confirmed-fingerprint flow (2026-11-12, app 0.0.5-p1)
+
+After the review of the enrollment PR: the laptop accepts an enrollment
+answer only once the owner confirmed the fingerprint the phone shows, and
+the app keeps the record pending until the laptop answers. Two things
+surfaced on the real phone before this run passed, both fixed: the
+fingerprint was printed only into the app's text area and was lost when
+the activity was recreated (now a dialog that stays, and the pending record
+keeps it); and the app gave its POST 10 seconds while the laptop held it
+open during the prompt, so the app read the timeout as a refusal and deleted
+the key (now the POST waits for the laptop's answer).
+
+The run, with the fingerprint supplied over USB (`adb` reading the debug
+app's pending record through `--phone-fingerprint-cmd`, development only):
+
+```
+waiting up to 180s for the phone…
+an answer arrived; reading the fingerprint the phone shows through `…/phone-fingerprint-adb.sh`…
+root handed to the phone key <fingerprint>.
+…
+phone:          signed, signature verified against the owner key
+path:           root (owner key)
+included: tx 0x1db3a33b4b6bc1a25231493a81957d4930a5c4d0b95912251980bbb2eed73dc3 (block 5, 126989 gas)
+phone-signed root operation included on anvil; the agent still runs:
+test phone_owner_real_device ... ok
+```
+
+Off-device, on the kept evidence (a preview of P3; a scratch check, not in
+the repository):
+
+| Check | Result |
+|---|---|
+| `openssl verify` of the five-certificate chain | `OK` against Google's remote-provisioning root (the second entry of `https://android.googleapis.com/attestation/root`), as in P0 |
+| `attestationChallenge` in the key's certificate | equals `sha256("TPM_sign/v1/enroll" ‖ commitment)` recomputed from `enroll-request.json` |
+| `attestationSecurityLevel`, `keyMintSecurityLevel` | both `TrustedEnvironment`, matching the answer's self-reported `tee`; `attestationVersion` and `keyMintVersion` 400 |
+| `attestationApplicationId` | names the app's package |
