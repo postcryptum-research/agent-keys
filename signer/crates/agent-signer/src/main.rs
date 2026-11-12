@@ -7,7 +7,7 @@ mod keyfile;
 mod phone;
 mod x402;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use alloy::primitives::{Address, Bytes, U256};
 use alloy::sol_types::SolCall;
@@ -59,6 +59,13 @@ struct AgentArgs {
     /// own handleOps (overrides BUNDLER_URL).
     #[arg(long)]
     bundler: Option<String>,
+    #[command(flatten)]
+    phone: PhoneSessionArgs,
+}
+
+/// The phone owner's LAN session (docs/MOBILE_OWNER_DESIGN.md §3.3).
+#[derive(Args, Clone)]
+struct PhoneSessionArgs {
     /// Phone owner: the address (and port) the one-shot LAN session binds to.
     /// Default: the default-route interface, an ephemeral port.
     #[arg(long)]
@@ -71,6 +78,16 @@ struct AgentArgs {
     /// TPMSIGN_PHONE_QR_FILE.
     #[arg(long)]
     phone_qr_file: Option<PathBuf>,
+}
+
+impl PhoneSessionArgs {
+    fn configure(&self) {
+        phone::configure(phone::PhoneOptions {
+            listen: self.listen,
+            timeout: std::time::Duration::from_secs(self.phone_timeout),
+            qr_file: self.phone_qr_file.clone().or_else(|| std::env::var_os("TPMSIGN_PHONE_QR_FILE").map(PathBuf::from)),
+        });
+    }
 }
 
 #[derive(Subcommand)]
@@ -283,6 +300,15 @@ struct KeyRef {
     /// `create` asks for a passphrase and refuses to overwrite.
     #[arg(long, conflicts_with_all = ["handle", "enclave", "cng", "tropic01", "yubikey"])]
     keyfile: Option<PathBuf>,
+    /// The owner's phone, by the label the key has in the config
+    /// (docs/MOBILE_OWNER_DESIGN.md §2.1, §8.2): `create` enrolls a new key
+    /// on the phone for the config's account, `show` prints the enrolled key.
+    #[arg(long, conflicts_with_all = ["handle", "enclave", "cng", "tropic01", "yubikey", "keyfile"], requires = "agent")]
+    phone: Option<String>,
+    /// Phone: the agent config that names the account (`account` must be
+    /// pinned) and, for `show`, the enrolled key.
+    #[arg(long, requires = "phone")]
+    agent: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -326,6 +352,11 @@ enum OwnerCmd {
         /// The recovery key is root now (after `owner recover`).
         #[arg(long)]
         as_recovery: bool,
+        /// Refuse unless `--public-key` has this fingerprint (`ABCDE-FGHIJ-KLMNO-PQRST`,
+        /// as `key create --phone` prints it and the phone shows it): the
+        /// handover goes to the key the owner saw, not to a pasted one.
+        #[arg(long)]
+        expect_fingerprint: Option<String>,
         #[arg(long)]
         sponsored: bool,
     },
@@ -349,6 +380,30 @@ enum KeyCmd {
         /// file only root can read (docs/KEY_POLICY.md, rule 3).
         #[arg(long)]
         auth_file: Option<PathBuf>,
+        /// Phone: accept an enrollment without attestation evidence (a
+        /// simulator, or a platform without it). The laptop then cannot
+        /// place the key in hardware; the config snippet says so.
+        #[arg(long, requires = "phone")]
+        allow_no_attestation: bool,
+        /// Phone: write the enrollment — the request, the phone's answer and
+        /// the attestation certificates (DER) — into this directory, for the
+        /// off-device check (docs/MOBILE_OWNER_DESIGN.md §5.2) and for scripts.
+        #[arg(long, requires = "phone")]
+        out: Option<PathBuf>,
+        /// Phone: the fingerprint the phone shows after creating the key (or
+        /// its first two groups), given up front instead of typed when the
+        /// answer arrives — for scripts and tests. An answer with another key
+        /// is refused: nothing authenticates an enrollment answer but this.
+        #[arg(long, requires = "phone", conflicts_with = "phone_fingerprint_cmd")]
+        phone_fingerprint: Option<String>,
+        /// Phone, development only: a shell command (`sh -c`, so not Windows)
+        /// that prints the fingerprint the phone shows, run when the answer
+        /// arrives and repeated until it does — a development phone on USB,
+        /// where `adb` reads the debug app's pending record.
+        #[arg(long, requires = "phone")]
+        phone_fingerprint_cmd: Option<String>,
+        #[command(flatten)]
+        session: PhoneSessionArgs,
     },
     /// Print the public key.
     Show {
@@ -559,12 +614,26 @@ fn check_signer(name: String, signer: &dyn HardwareSigner) -> Result<()> {
 
 fn run_key(cmd: KeyCmd) -> Result<()> {
     let (key, op) = match cmd {
-        KeyCmd::Create { key, parent, pcrs, auth_file } => (key, KeyOp::Create { parent, pcrs, auth_file }),
+        KeyCmd::Create { key, parent, pcrs, auth_file, allow_no_attestation, out, phone_fingerprint, phone_fingerprint_cmd, session } => {
+            if let (Some(label), Some(cfg)) = (&key.phone, &key.agent) {
+                session.configure();
+                let confirm = match (phone_fingerprint, phone_fingerprint_cmd) {
+                    (Some(fp), _) => phone::FingerprintSource::Given(fp),
+                    (None, Some(cmd)) => phone::FingerprintSource::Command(cmd),
+                    (None, None) => phone::FingerprintSource::Prompt,
+                };
+                return phone_enroll(label, cfg, allow_no_attestation, out.as_deref(), confirm);
+            }
+            (key, KeyOp::Create { parent, pcrs, auth_file })
+        }
         KeyCmd::Show { key } => (key, KeyOp::Show),
         KeyCmd::Evict { key } => (key, KeyOp::Evict),
         KeyCmd::Check { key, auth_file } => (key, KeyOp::Check { auth_file }),
         KeyCmd::Attest { key, out } => return yubikey_attest(key, &out),
     };
+    if let (Some(label), Some(cfg)) = (&key.phone, &key.agent) {
+        return phone_key(label, cfg, op);
+    }
     if let Some(path) = key.keyfile {
         return keyfile_key(&path, op);
     }
@@ -577,8 +646,101 @@ fn run_key(cmd: KeyCmd) -> Result<()> {
         (None, None, Some(name), None) => cng_key(&name, op),
         (None, None, None, Some(port)) => tropic01_key(&port, key.slot, op),
         _ => bail!(
-            "give exactly one of --handle (TPM), --enclave <label> (Secure Enclave), --cng <name> (Windows TPM), --tropic01 <port> (TROPIC01), --yubikey [slot] (YubiKey PIV) or --keyfile <path>"
+            "give exactly one of --handle (TPM), --enclave <label> (Secure Enclave), --cng <name> (Windows TPM), --tropic01 <port> (TROPIC01), --yubikey [slot] (YubiKey PIV), --keyfile <path> or --phone <label> --agent <config>"
         ),
+    }
+}
+
+/// `key create --phone <label> --agent <cfg>`: the enrollment session
+/// (docs/MOBILE_OWNER_DESIGN.md §2.1). Prints the new key, its fingerprint
+/// and the config snippet; nothing on-chain. The handover is the owner's
+/// next step: `owner set-root … --expect-fingerprint <fp>`.
+fn phone_enroll(
+    label: &str,
+    cfg_path: &Path,
+    allow_no_attestation: bool,
+    out: Option<&Path>,
+    confirm: phone::FingerprintSource,
+) -> Result<()> {
+    if label.is_empty() || label.len() > 64 {
+        bail!("the phone key's label must be 1 to 64 characters");
+    }
+    let (cfg, base) = AgentConfig::load(cfg_path)?;
+    let dep = cfg.load_deployments(&base)?;
+    let account = cfg.account.context(
+        "the enrollment names an existing account: pin `account` in the config first (`account status` prints it; \
+         docs/MOBILE_OWNER_DESIGN.md §5.5)",
+    )?;
+    if matches!(confirm, phone::FingerprintSource::Prompt) && !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        bail!("the owner must confirm the fingerprint the phone shows: run this on a terminal, or pass --phone-fingerprint <fp> / --phone-fingerprint-cmd <command>");
+    }
+    let (request, answer, e) = phone::enroll(label, dep.chain_id, dep.entry_point, account, allow_no_attestation, confirm)?;
+    let fp = owner_core::fingerprint::fingerprint(&e.public_key);
+    let (x, y) = (hex32(&e.public_key.x), hex32(&e.public_key.y));
+    let evidence = if e.attestation.is_empty() {
+        "none — the laptop cannot place this key in hardware".to_string()
+    } else {
+        format!(
+            "{} certificates; verification against the platform's roots is the next step (design §5.2), so \
+             the tier above is the phone's own word for now",
+            e.attestation.len()
+        )
+    };
+    let app = e.app.as_ref().map(|a| format!("{} {} (core {})", a.platform, a.version, a.core)).unwrap_or_else(|| "unknown".into());
+    println!("enrolled phone owner key {label:?} for account {account} (chain {})", dep.chain_id);
+    println!("  public key     x = {x}\n                 y = {y}");
+    println!("  fingerprint    {fp}   (confirmed against the phone's screen)");
+    println!("  security level {} (self-reported){}", e.security_level, if e.device_credential { ", device PIN also unlocks" } else { "" });
+    println!("  attestation    {evidence}");
+    println!("  app            {app}");
+    println!();
+    println!("Nothing changed on-chain. Next, signed by the current owner key:");
+    println!("  agent-signer owner set-root --agent {} --validator <P256Validator> --public-key {x},{y} --expect-fingerprint {fp} [--retire <validator>]", cfg_path.display());
+    println!("then point the config's owner at the phone (ownerPublicKey stays the account's creation key):");
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "owner": {"phone": {"label": label, "publicKey": {"x": x, "y": y}, "fingerprint": fp}}
+        }))?
+    );
+    if let Some(dir) = out {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        std::fs::write(dir.join("enroll-request.json"), &request)?;
+        std::fs::write(dir.join("enroll-response.json"), &answer)?;
+        for (i, der) in e.attestation.iter().enumerate() {
+            std::fs::write(dir.join(format!("attest-{i}.der")), der)?;
+        }
+        eprintln!("enrollment written to {} ({} attestation certificates)", dir.display(), e.attestation.len());
+    }
+    Ok(())
+}
+
+/// `key show / check / evict --phone`: the phone's key lives on the phone;
+/// `show` reads the config, the rest is not a laptop operation.
+fn phone_key(label: &str, cfg_path: &Path, op: KeyOp) -> Result<()> {
+    use agent::KeySpec;
+    let (cfg, _) = AgentConfig::load(cfg_path)?;
+    let spec = [Some(&cfg.owner), cfg.recovery.as_ref(), Some(&cfg.agent)]
+        .into_iter()
+        .flatten()
+        .find(|k| matches!(k, KeySpec::Phone { label: l, .. } if l == label))
+        .with_context(|| format!("no phone key labelled {label:?} in {}", cfg_path.display()))?;
+    let KeySpec::Phone { public_key, fingerprint, .. } = spec else { unreachable!() };
+    match op {
+        KeyOp::Show => {
+            let pk = public_key.parse()?;
+            let actual = owner_core::fingerprint::fingerprint(&pk);
+            print_key(format!("phone {label}"), &pk)?;
+            if fingerprint.eq_ignore_ascii_case(&actual) {
+                println!("fingerprint {actual}");
+                Ok(())
+            } else {
+                bail!("the config's fingerprint {fingerprint} does not match the publicKey's ({actual})")
+            }
+        }
+        KeyOp::Create { .. } => unreachable!("handled by phone_enroll"),
+        KeyOp::Evict => bail!("a phone key is deleted on the phone, after a `set-root` away from it"),
+        KeyOp::Check { .. } => bail!("the phone health check (design §2.4) is not implemented yet; a root operation on anvil is the check today"),
     }
 }
 
@@ -773,11 +935,7 @@ fn enclave_key(label: &str, _: KeyOp) -> Result<()> {
 }
 
 async fn session(args: &AgentArgs) -> Result<Session> {
-    phone::configure(phone::PhoneOptions {
-        listen: args.listen,
-        timeout: std::time::Duration::from_secs(args.phone_timeout),
-        qr_file: args.phone_qr_file.clone().or_else(|| std::env::var_os("TPMSIGN_PHONE_QR_FILE").map(PathBuf::from)),
-    });
+    args.phone.configure();
     let env = Env::load(args.env_file.as_deref(), args.bundler.as_deref())?;
     let (cfg, base) = AgentConfig::load(&args.agent)?;
     Session::open(&env, cfg, &base).await
@@ -891,10 +1049,20 @@ async fn main() -> Result<()> {
                 let inc = s.recover(sponsored).await?;
                 println!("the recovery key is root now: tx {}; next, `owner set-root --as-recovery` to a new owner device", inc.tx);
             }
-            OwnerCmd::SetRoot { agent, validator, public_key, retire, as_recovery, sponsored } => {
-                let s = session(&agent).await?;
+            OwnerCmd::SetRoot { agent, validator, public_key, retire, as_recovery, expect_fingerprint, sponsored } => {
                 let (x, y) = public_key.split_once(',').context("--public-key x,y")?;
                 let key = hw_signer::PublicKey { x: agent::parse32(x.trim())?, y: agent::parse32(y.trim())? };
+                if !hw_signer::valid_public_key(&key) {
+                    bail!("--public-key is not a point on P-256; a handover to it would lose the account");
+                }
+                let fp = owner_core::fingerprint::fingerprint(&key);
+                if let Some(expected) = &expect_fingerprint {
+                    if !expected.eq_ignore_ascii_case(&fp) {
+                        bail!("--public-key has fingerprint {fp}, not the expected {expected}: not the key the owner saw; nothing sent");
+                    }
+                }
+                let s = session(&agent).await?;
+                eprintln!("new root key:   fingerprint {fp}");
                 let inc = s.set_root(validator, &key, retire, as_recovery, sponsored).await?;
                 println!("root handed to {validator}: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
             }

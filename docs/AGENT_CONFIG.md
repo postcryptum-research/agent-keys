@@ -108,6 +108,7 @@ Exactly one of:
 | `{"windows-tpm": "name"}` | Windows TPM through CNG | `--features windows-tpm`, Windows |
 | `{"tropic01": {"port": "/dev/ttyACM0", "slot": 1}}` | TROPIC01 USB devkit, ECC slot 0–31 | `--features tropic01` |
 | `{"keyfile": "/media/…/owner.json"}` | encrypted key file | **owner or recovery only**, refused for the agent; asks the passphrase at use |
+| `{"phone": {"label": "owner-phone", "publicKey": {"x": "0x…", "y": "0x…"}, "fingerprint": "ABCDE-FGHIJ-KLMNO-PQRST"}}` | the owner's phone ([`MOBILE_OWNER_DESIGN.md`](MOBILE_OWNER_DESIGN.md)) | **owner only**. `key create --phone <label> --agent <cfg>` enrolls the key and prints this snippet after the owner typed the fingerprint from the phone's screen (`--phone-fingerprint` for scripts); `fingerprint` is what the phone showed, and the key is refused before any session when it is not its `publicKey`'s. Every owner operation opens a one-shot LAN session behind a QR (`--listen`, `--phone-timeout`) |
 | `{"software": "0x…64 hex"}` | plaintext scalar | **tests only**: refused in every role unless built with `--features insecure-software-keys` (the integration tests' build; never a release) |
 
 ### `policy` — the mandate
@@ -173,7 +174,8 @@ its module until then; `permission show` names it.
 | `permission revoke --id` | `account` | removes a permission | owner key |
 | `owner add-recovery` | `recovery`, `account` | installs the recovery key | owner key |
 | `owner recover` | `recovery`, `account` | makes the recovery key root | recovery key |
-| `owner set-root` | `account` (+ arguments) | hands root to a new key, retires the old | current root (owner, or recovery after `recover`) |
+| `owner set-root` | `account` (+ arguments; `--expect-fingerprint` refuses a `--public-key` that is not the one the owner saw) | hands root to a new key, retires the old | current root (owner, or recovery after `recover`) |
+| `key create --phone` | `account`, `deployments` | nothing on-chain: enrolls a new key on the phone for the account and prints the `phone` key spec | — (the phone's user confirms) |
 | `account fund`, `paymaster …` | `account`, `deployments` | ETH transfers / paymaster settings | gas wallet / paymaster owner |
 
 The agent's own key can only ever do the first row. Every row that changes

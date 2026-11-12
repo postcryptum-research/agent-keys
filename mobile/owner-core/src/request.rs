@@ -407,6 +407,8 @@ pub enum RequestError {
     WrongKey,
     BadSignature,
     NotLocal(String),
+    /// An enrollment without attestation evidence (`enroll.rs`).
+    NoAttestation,
 }
 
 impl std::fmt::Display for RequestError {
@@ -429,6 +431,10 @@ impl std::fmt::Display for RequestError {
                 write!(f, "the signature does not verify against the owner key over the userOpHash")
             }
             RequestError::NotLocal(h) => write!(f, "the session host {h} is not a local address"),
+            RequestError::NoAttestation => write!(
+                f,
+                "the phone sent no attestation evidence; pass --allow-no-attestation to enroll a key the laptop cannot place in hardware"
+            ),
         }
     }
 }
