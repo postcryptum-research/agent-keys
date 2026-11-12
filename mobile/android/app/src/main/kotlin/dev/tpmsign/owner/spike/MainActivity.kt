@@ -60,7 +60,7 @@ class MainActivity : AppCompatActivity() {
         const val ALIAS = "tpmsign-p0-owner"
         /** One key per enrolled account (§5.1): alias by chain and account. */
         fun aliasFor(chainId: String, account: String) = "tpmsign-owner-$chainId-${account.lowercase()}"
-        const val APP_VERSION = "0.0.4-p1"
+        const val APP_VERSION = "0.0.5-p1"
         const val PREFS = "enrollments"
         /** owner-core `user_op::tests`: the golden operation's userOpHash on chain 31337 (anvil). */
         const val GOLDEN_DIGEST_HEX = "48e286b71f896beef7a0b4d23fd82d6afae60a64e7976118de492a2fba4c1947"
@@ -408,10 +408,11 @@ class MainActivity : AppCompatActivity() {
                     val fp = fingerprint(x, y)
                     // the fingerprint is the owner's one check on the laptop's side (P1): it must not get lost
                     prefs().edit().putString(alias, record.put("x", "0x$x").put("y", "0x$y").put("tier", tier).toString()).apply()
-                    say("new key: tier $tier, ${chain.size} attestation certificates\n  x = 0x$x\n  y = 0x$y\n\n  FINGERPRINT  $fp\n  type it on the laptop when asked")
+                    say("new key: tier $tier, ${chain.size} attestation certificates\n  x = 0x$x\n  y = 0x$y\n\n  FINGERPRINT  $fp\n  the laptop asks for its first group; it confirms the enrollment only then (waiting up to 5 minutes)")
                     showFingerprint(fp, account)
                     Thread {
-                        val outcome = try { "HTTP ${httpPost(url, resp.toString().toByteArray())}" } catch (e: Exception) { "POST failed: ${e.message}" }
+                        // the laptop answers only after the owner confirmed the fingerprint there (P1): wait for that
+                        val outcome = try { "HTTP ${httpPost(url, resp.toString().toByteArray(), readTimeoutMs = 300_000)}" } catch (e: Exception) { "POST failed: ${e.message}" }
                         runOnUiThread {
                             safely {
                                 if (outcome == "HTTP 200") {
@@ -432,7 +433,7 @@ class MainActivity : AppCompatActivity() {
     private fun showFingerprint(fp: String, account: String) {
         AlertDialog.Builder(this)
             .setTitle("New key's fingerprint")
-            .setMessage("$fp\n\nType it on the laptop (at least the first two groups) when agent-signer asks. Account $account.")
+            .setMessage("$fp\n\nType its first group on the laptop when agent-signer asks. Account $account.")
             .setPositiveButton("Done", null)
             .setCancelable(false)
             .show()
@@ -492,9 +493,10 @@ class MainActivity : AppCompatActivity() {
         } finally { c.disconnect() }
     }
 
-    private fun httpPost(url: String, body: ByteArray): Int {
+    /** `readTimeout`: a sign response is answered at once; an enrollment answer is held while the owner confirms the fingerprint on the laptop. */
+    private fun httpPost(url: String, body: ByteArray, readTimeoutMs: Int = 10000): Int {
         val c = (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"; doOutput = true; connectTimeout = 10000; readTimeout = 10000
+            requestMethod = "POST"; doOutput = true; connectTimeout = 10000; readTimeout = readTimeoutMs
             setRequestProperty("Content-Type", "application/json")
         }
         try { c.outputStream.use { it.write(body) }; return c.responseCode } finally { c.disconnect() }

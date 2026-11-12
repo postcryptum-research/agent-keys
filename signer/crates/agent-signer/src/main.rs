@@ -394,8 +394,13 @@ enum KeyCmd {
         /// its first two groups), given up front instead of typed when the
         /// answer arrives — for scripts and tests. An answer with another key
         /// is refused: nothing authenticates an enrollment answer but this.
-        #[arg(long, requires = "phone")]
+        #[arg(long, requires = "phone", conflicts_with = "phone_fingerprint_cmd")]
         phone_fingerprint: Option<String>,
+        /// Phone: a shell command that prints the fingerprint the phone shows,
+        /// run when the answer arrives and repeated until it does — for a
+        /// development phone on USB (`adb` reads the app's pending record).
+        #[arg(long, requires = "phone")]
+        phone_fingerprint_cmd: Option<String>,
         #[command(flatten)]
         session: PhoneSessionArgs,
     },
@@ -608,12 +613,13 @@ fn check_signer(name: String, signer: &dyn HardwareSigner) -> Result<()> {
 
 fn run_key(cmd: KeyCmd) -> Result<()> {
     let (key, op) = match cmd {
-        KeyCmd::Create { key, parent, pcrs, auth_file, allow_no_attestation, out, phone_fingerprint, session } => {
+        KeyCmd::Create { key, parent, pcrs, auth_file, allow_no_attestation, out, phone_fingerprint, phone_fingerprint_cmd, session } => {
             if let (Some(label), Some(cfg)) = (&key.phone, &key.agent) {
                 session.configure();
-                let confirm = match phone_fingerprint {
-                    Some(fp) => phone::FingerprintSource::Given(fp),
-                    None => phone::FingerprintSource::Prompt,
+                let confirm = match (phone_fingerprint, phone_fingerprint_cmd) {
+                    (Some(fp), _) => phone::FingerprintSource::Given(fp),
+                    (None, Some(cmd)) => phone::FingerprintSource::Command(cmd),
+                    (None, None) => phone::FingerprintSource::Prompt,
                 };
                 return phone_enroll(label, cfg, allow_no_attestation, out.as_deref(), confirm);
             }
@@ -665,7 +671,7 @@ fn phone_enroll(
          docs/MOBILE_OWNER_DESIGN.md §5.5)",
     )?;
     if matches!(confirm, phone::FingerprintSource::Prompt) && !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-        bail!("the owner must confirm the fingerprint the phone shows: run this on a terminal, or pass --phone-fingerprint <fp>");
+        bail!("the owner must confirm the fingerprint the phone shows: run this on a terminal, or pass --phone-fingerprint <fp> / --phone-fingerprint-cmd <command>");
     }
     let (request, answer, e) = phone::enroll(label, dep.chain_id, dep.entry_point, account, allow_no_attestation, confirm)?;
     let fp = owner_core::fingerprint::fingerprint(&e.public_key);

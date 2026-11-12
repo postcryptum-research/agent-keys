@@ -874,6 +874,8 @@ fn phone_is_enrolled_then_takes_over_root() {
 /// On the phone: "4. Enroll" for the first QR, "3. Scan and sign" for the second.
 /// `TPMSIGN_PHONE_OUT=<dir>` keeps the enrollment (request, answer, attestation
 /// DER) after the run; the temp directory is removed otherwise.
+/// `TPMSIGN_PHONE_FINGERPRINT_CMD=<command>` supplies the phone's fingerprint
+/// (a development phone on USB) instead of the terminal prompt.
 #[test]
 #[ignore = "needs a phone with the owner app on the same network"]
 fn phone_owner_real_device() {
@@ -905,7 +907,14 @@ fn phone_owner_real_device() {
     // 1. enrollment; the evidence survives the run when TPMSIGN_PHONE_OUT names a directory
     let out_dir = std::env::var_os("TPMSIGN_PHONE_OUT").map(PathBuf::from).unwrap_or_else(|| chain.dir.join("enrollment"));
     eprintln!("\naccount {account} on a local anvil. On the phone tap \"4. Enroll this phone for an account\", scan the QR\nbelow, read the notice, confirm; then type the fingerprint the phone shows when asked here.\n");
-    let status = run(&["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--out", out_dir.to_str().unwrap()]);
+    // TPMSIGN_PHONE_FINGERPRINT_CMD: a command that prints the fingerprint the phone shows
+    // (e.g. adb reading the debug app's pending record), instead of typing it
+    let fp_cmd = std::env::var("TPMSIGN_PHONE_FINGERPRINT_CMD").ok();
+    let mut args = vec!["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--out", out_dir.to_str().unwrap()];
+    if let Some(cmd) = &fp_cmd {
+        args.extend(["--phone-fingerprint-cmd", cmd.as_str()]);
+    }
+    let status = run(&args);
     assert!(status.success(), "the enrollment failed");
     let resp: Value = serde_json::from_str(&std::fs::read_to_string(out_dir.join("enroll-response.json")).unwrap()).unwrap();
     let phone = Key {

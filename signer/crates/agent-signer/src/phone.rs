@@ -105,6 +105,11 @@ pub enum FingerprintSource {
     Prompt,
     /// Given up front (`--phone-fingerprint`): tests and scripts.
     Given(String),
+    /// A shell command run when the first answer arrives, repeated every
+    /// second until its output holds a fingerprint (`--phone-fingerprint-cmd`):
+    /// for a development phone on USB, where `adb` can read what the phone
+    /// shows — a channel a host on the LAN does not have.
+    Command(String),
 }
 
 /// Enrollment (design §2.1): ask the phone to create a new owner key for
@@ -129,9 +134,9 @@ pub fn enroll(
          read the notice about this phone's key hardware, confirm. The phone then shows the new key's fingerprint; \
          you will be asked to type it here."
     );
-    let mut typed: Option<String> = match confirm {
-        FingerprintSource::Given(fp) => Some(normalize_fingerprint(&fp)?),
-        FingerprintSource::Prompt => None,
+    let mut typed: Option<String> = match &confirm {
+        FingerprintSource::Given(fp) => Some(normalize_fingerprint(fp)?),
+        FingerprintSource::Prompt | FingerprintSource::Command(_) => None,
     };
     let (body, enrollment) = lan_session(&request, &headline, |body| {
         let e = EnrollResponse::verify(body, &request, allow_no_attestation)?;
@@ -139,7 +144,10 @@ pub fn enroll(
         let expected = match &typed {
             Some(t) => t.clone(),
             None => {
-                let t = prompt_fingerprint()?;
+                let t = match &confirm {
+                    FingerprintSource::Command(cmd) => fingerprint_from_command(cmd, options().timeout)?,
+                    _ => prompt_fingerprint()?,
+                };
                 typed = Some(t.clone());
                 t
             }
@@ -161,15 +169,40 @@ pub fn enroll(
 }
 
 /// `ABCDE-FGHIJ-KLMNO-PQRST` as the phone shows it, or at least its first
-/// two groups; case and dashes do not matter.
+/// group; case and dashes do not matter. One group is 25 bits: a host that
+/// posts its own key first does not know what the phone shows, so it
+/// matches with one chance in 2^25 per attempt, and the session allows 20.
 fn normalize_fingerprint(typed: &str) -> Result<String, SignerError> {
     let t: String = typed.trim().chars().filter(|c| *c != '-' && !c.is_whitespace()).collect::<String>().to_ascii_uppercase();
-    if t.len() < 10 || t.len() > 20 || !t.bytes().all(|b| b.is_ascii_uppercase() || (b'2'..=b'7').contains(&b)) {
+    if t.len() < 5 || t.len() > 20 || !t.bytes().all(|b| b.is_ascii_uppercase() || (b'2'..=b'7').contains(&b)) {
         return Err(SignerError::Key(
-            "the fingerprint has four groups of five characters (A–Z, 2–7); type at least the first two groups".into(),
+            "the fingerprint has four groups of five characters (A–Z, 2–7); type at least the first group".into(),
         ));
     }
     Ok(t)
+}
+
+/// Runs `sh -c <cmd>` every second until its stdout holds a fingerprint or
+/// `deadline` passes.
+fn fingerprint_from_command(cmd: &str, deadline: Duration) -> Result<String, RequestError> {
+    let started = Instant::now();
+    eprintln!("an answer arrived; reading the fingerprint the phone shows through `{cmd}`…");
+    loop {
+        let out = std::process::Command::new("sh").arg("-c").arg(cmd).output();
+        if let Ok(out) = out {
+            let text = String::from_utf8_lossy(&out.stdout);
+            if let Some(line) = text.lines().map(str::trim).find(|l| !l.is_empty()) {
+                if let Ok(fp) = normalize_fingerprint(line) {
+                    eprintln!("fingerprint from the command: {line}");
+                    return Ok(fp);
+                }
+            }
+        }
+        if started.elapsed() > deadline {
+            return Err(RequestError::Malformed(format!("`{cmd}` produced no fingerprint within {}s", deadline.as_secs())));
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
 }
 
 fn fingerprint_matches(typed_normalized: &str, actual: &str) -> bool {
@@ -184,7 +217,7 @@ fn prompt_fingerprint() -> Result<String, RequestError> {
             "an answer arrived but there is no terminal to confirm the phone's fingerprint on; run interactively or pass --phone-fingerprint".into(),
         ));
     }
-    eprint!("\nthe phone shows the new key's fingerprint. Type it (at least the first two groups): ");
+    eprint!("\nthe phone shows the new key's fingerprint. Type its first group (5 characters; more is fine): ");
     let _ = std::io::stderr().flush();
     let mut line = String::new();
     std::io::stdin().lock().read_line(&mut line).map_err(|e| RequestError::Malformed(format!("reading the fingerprint: {e}")))?;
@@ -386,7 +419,8 @@ mod tests {
         assert!(fingerprint_matches(&normalize_fingerprint("zolh5-d2dis").unwrap(), fp));
         assert!(fingerprint_matches(&normalize_fingerprint(" ZOLH5 D2DIS 66ZBB 4T6NL ").unwrap(), fp));
         assert!(!fingerprint_matches(&normalize_fingerprint("ZOLH5-D2DIT").unwrap(), fp));
-        assert!(normalize_fingerprint("ZOLH5").is_err(), "one group is too little");
+        assert!(fingerprint_matches(&normalize_fingerprint("zolh5").unwrap(), fp), "one group is enough");
+        assert!(normalize_fingerprint("ZOLH").is_err(), "less than a group is too little");
         assert!(normalize_fingerprint("ZOLH5-D2DI1").is_err(), "1 is not base32");
         assert!(normalize_fingerprint("ZOLH5-D2DIS-66ZBB-4T6NL-X").is_err());
     }

@@ -190,9 +190,12 @@ is P2). The enrollment session is in: `key create --phone <label> --agent
 <cfg>` (design §2.1, §4.3) asks the phone for a new key per account, with
 the attestation challenge bound to the request, and prints the key, its
 fingerprint and the config snippet. An enrollment answer is the one
-message nothing authenticates until P3, so the owner types the fingerprint
-from the phone's screen (or passes `--phone-fingerprint`) and an answer
-with another key is rejected while the session waits for the phone's. The
+message nothing authenticates until P3, so the owner types the first
+group of the fingerprint from the phone's screen (5 characters, once per
+enrollment; `--phone-fingerprint` or `--phone-fingerprint-cmd` for scripts
+and a development phone on USB) and an answer with another key is rejected
+while the session waits for the phone's. P3 retires the prompt: the
+attestation with the bound challenge then authenticates the answer. The
 config's `fingerprint` is checked against its `publicKey` before any
 session, and `owner set-root --expect-fingerprint` refuses a handover to a
 key the owner did not see. The session itself answers 400 to a bad POST
