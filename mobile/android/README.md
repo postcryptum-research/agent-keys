@@ -175,6 +175,30 @@ phone-signed root operation included on anvil; the agent still runs:
 test phone_owner_real_device ... ok
 ```
 
+### P2 run record — the phone names the mandate it signs (2026-11-13, app 0.2.0-p2)
+
+The same script, with the app built as `OWNER_CORE_FEATURES=ffi,test-chains`
+(launch line: `owner-core 0.2.0+test-chains loaded`). After the enrollment
+and the handover, the operation was `permission add` for a new agent key.
+The phone's review, built from the facts embedded in owner-core, showed the
+install with its mandate; Sign became active at the end of the scroll; the
+fingerprint signed; the agent then ran under the new permission:
+
+```
+phone:          signed, signature verified against the owner key
+path:           root (owner key)
+added permission 0x74657332 (valid 0 … 1826044451): tx 0x5f2ec1b3f9a31defc3375d82b656dd19928099130ee6b922ffc725b19ed63458 (block 5, 399078 gas)
+the permission the phone installed is on-chain; the agent runs under it:
+test phone_owner_real_device ... ok
+```
+
+The phone's log had rolled over before it could be read back, so the
+screen's text is not quoted here. The laptop's preview before the QR is the
+same review on the same embedded facts, and the anvil suite asserts its
+rows for this operation: "Install agent permission", the policy and signer
+modules "verified in this build", the allowed call on the demo counter, the
+agent key's fingerprint.
+
 ### P2 run record, after review — a refusal and a payment (2026-11-12, app 0.1.0-p2)
 
 With the review's rules from PR #30 and #31 on the phone and no build facts
