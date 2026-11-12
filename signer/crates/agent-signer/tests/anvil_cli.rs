@@ -956,6 +956,7 @@ fn phone_is_enrolled_then_takes_over_root() {
     let snippet: Value = serde_json::from_str(&text[snippet_start..snippet_end]).expect("the snippet parses");
     assert_eq!(snippet["owner"]["phone"]["fingerprint"], fp);
     assert_eq!(snippet["owner"]["phone"]["attestation"], "none", "the config records that nothing places this key in hardware");
+    assert_eq!(snippet["owner"]["phone"]["revocation"], "not checked");
 
     // 3b. the answer is authenticated by the secret in the QR: a host on the network that saw
     // the session URL in the phone's GET, but never the QR, posts its own key first. With the
@@ -1016,7 +1017,7 @@ fn phone_is_enrolled_then_takes_over_root() {
     std::fs::write(&phone_cfg, serde_json::to_string_pretty(&v).unwrap()).unwrap();
     let phone_cfg = phone_cfg.to_str().unwrap();
     let shown = chain.ok(&["key", "show", "--phone", "owner-phone", "--agent", phone_cfg]);
-    assert!(shown.contains(&format!("fingerprint {fp}")) && shown.contains("attestation none"), "{shown}");
+    assert!(shown.contains(&format!("fingerprint {fp}")) && shown.contains("attestation none") && shown.contains("revocation  not checked"), "{shown}");
     let sim = phone_simulator(qr_file.clone(), key(9), "sign");
     let before = chain.counter();
     let text = chain.ok(&[

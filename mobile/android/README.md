@@ -215,44 +215,46 @@ TPMSIGN_ATTESTATION_DIR=<dir written by --out> TPMSIGN_ANDROID_APP_DIGEST=<sha25
 Phones with remotely provisioned attestation keys carry a certificate that
 lives about two weeks, so that check uses the request's own time.
 
-### P3 run record — an authenticated, attested enrollment with nothing typed (2026-11-13, app 0.3.0-p3)
+### P3 run record — an authenticated, attested enrollment (2026-11-13, app 0.3.1-p3)
 
-The same script, on the whole P3 stack as it stood before its review: the
-QR carried the session's secret, the phone's answers carried their MAC,
-the laptop verified the key attestation before it accepted the enrollment,
-and nothing was typed (at that commit the prompt was off by default; the
-same flow is now `--phone-skip-fingerprint`). The enrollment:
+The same script on the P3 stack after its review. The QR carried the
+session's secret, which the terminal no longer prints; the phone's
+answers carried their MAC; the laptop verified the key attestation and
+the revocation list before it accepted the enrollment, and answered with
+its own MAC, on which alone the app kept the key. The script passes
+`--phone-skip-fingerprint`, so nothing was typed; without it the CLI asks
+for the fingerprint. The enrollment:
 
 ```
-tpmsign:1?u=http://192.168.x.x:63459/s/<token>&h=<commitment>&k=<secret>
+tpmsign:1?u=http://192.168.x.x:52726/s/<token>&h=<commitment>&k=<in the QR only>
 waiting up to 180s for the phone…
-enrolled phone owner key "owner-phone" for account 0x5AD0Bd2964bdA2bD5fBff99518378CaB3Be2A798 (chain 31337)
-  public key     x = 0x4cfa…6fc8
-                 y = 0xc258…ba17
-  fingerprint    TLXZH-S3R6Z-KVK4W-R2KRW   ← the phone shows the same one
+enrolled phone owner key "owner-phone" for account 0x90aB6a48975CE55297c9A35CBC77F63f049E9716 (chain 31337)
+  public key     x = 0x7e5d…ac2b
+                 y = 0x45cc…b1ba
+  fingerprint    DKIWB-JLPIT-FGQ6T-MQYZA   ← not confirmed here (--phone-skip-fingerprint): the phone shows the same one
   security level tee — the processor's trusted mode, not a separate secure chip (attested)
   attestation    verified: 5 certificates to Google's remote-provisioning root (P-384); made for this request; the key is the one above; generated in the hardware, signs only after a biometric check
-  made by        dev.tpmsign.owner.spike version code 9, signing certificate <sha256 of the developer's debug certificate> (accepted by --android-app-digest)
+  made by        dev.tpmsign.owner.spike version code 10, signing certificate <sha256 of the developer's debug certificate> (accepted by --android-app-digest)
   revocation     none of the chain is on Google's list (1773 entries, fetched now)
   note           attestation is evidence of where the key lives, not of whose phone it is; that is the QR's secret
-  app            android 0.3.0-p3 (core none)
+  app            android 0.3.1-p3 (core 0.2.0+test-chains)
 
 Nothing changed on-chain. Next, signed by the current owner key:
-  agent-signer owner set-root --agent …/owner.json --validator <P256Validator> --public-key 0x4cfa…6fc8,0xc258…ba17 --expect-fingerprint TLXZH-S3R6Z-KVK4W-R2KRW [--retire <validator>]
+  agent-signer owner set-root --agent …/owner.json --validator <P256Validator> --public-key 0x7e5d…ac2b,0x45cc…b1ba --expect-fingerprint DKIWB-JLPIT-FGQ6T-MQYZA [--retire <validator>]
 then point the config's owner at the phone (ownerPublicKey stays the account's creation key):
 { "owner": { "phone": { "label": "owner-phone", "platform": "android", "attestation": "tee", "deviceCredential": false,
-                        "publicKey": { … }, "fingerprint": "TLXZH-S3R6Z-KVK4W-R2KRW" } } }
+                        "publicKey": { … }, "fingerprint": "DKIWB-JLPIT-FGQ6T-MQYZA" } } }
 ```
 
 The handover followed, then the permission install, previewed on the
 laptop and signed on the phone:
 
 ```
-root handed to the phone key TLXZH-S3R6Z-KVK4W-R2KRW.
+root handed to the phone key DKIWB-JLPIT-FGQ6T-MQYZA.
 
-what the phone will show (owner-core 0.2.0+test-chains):
+what the phone will show (owner-core 0.2.0+test-chains; pins as this config would send them now):
 ## Operation
-Account: 0x5AD0Bd2964bdA2bD5fBff99518378CaB3Be2A798
+Account: 0x90aB6a48975CE55297c9A35CBC77F63f049E9716
 Chain: 31337
 The laptop says: "owner operation (root)" (from the laptop — unverified)
 ## Call 1 of 2
@@ -262,44 +264,40 @@ Allow: 0xD2Adc331B867435b82Ceba1D4f7f715eeF9FdbC1 — demo counter (verified in 
 Max value per operation: 0.000000000000001 ETH
 Budget: 1 ETH
 Valid from: now
-Valid until: 2027-11-12 19:06:44 UTC (1826046404)
+Valid until: 2027-11-12 19:25:49 UTC (1826047549)
 Signer module: 0xa19e6061b1C193573e5fe46c39363FfDd5CCA22E — P256Signer (verified in this build)
 Agent key: OIPTD-GKQWZ-L7OXL-IVB5C
 Validation nonce: 2
 ## Call 2 of 2
 Allow permission 0x74657332 to call: execute (0xe9ae5c53)
 ## Cost
-Maximum gas cost: 0.001094076496653265 ETH
+Maximum gas cost: 0.001094076619631145 ETH
 ## Details
 nonce: key 0 (root), sequence 2
 verificationGasLimit: 300000
 callGasLimit: 409065
 preVerificationGas: 100000
-maxFeePerGas: 1352272681 wei
+maxFeePerGas: 1352272833 wei
 maxPriorityFeePerGas: 1 wei
 EntryPoint: 0x0000000071727De22E5E9d8BAf0edAc6f37da032
-expires: 2026-11-12 19:09:54 UTC (1794510594)
-userOpHash: 0xef195ef908bdca3fdff313a64fb0007ed6398270562eda163d1ec528be25f416
+expires: 2026-11-12 19:28:59 UTC (1794511739)
+userOpHash: 0x4f0a98d711d3b38c164d54b79f110aebc13055145d4de6a571fc4fcb179dbfcc
 
-tpmsign:1?u=http://192.168.x.x:63503/s/<token>&h=<commitment>&k=<secret>
+tpmsign:1?u=http://192.168.x.x:52751/s/<token>&h=<commitment>&k=<in the QR only>
 phone:          signed, signature verified against the owner key
 path:           root (owner key)
-added permission 0x74657332 (valid 0 … 1826046404): tx 0x0e2e85494d02aa010f943a6201f99fc0612f0f83360f8d1833f89e6bf10b7680 (block 5, 399078 gas)
+added permission 0x74657332 (valid 0 … 1826047549): tx 0x67374e7b3cf25711fc822b16b6944e9ee6becc54a1d6c4acacc04bff4470a664 (block 5, 399078 gas)
 the permission the phone installed is on-chain; the agent runs under it:
 test phone_owner_real_device ... ok
 ```
 
-The evidence the run kept was also verified again offline with the ignored
-test `a_real_enrollment`, at the request's own time, with the same result:
-five certificates to the remote-provisioning root, every issuer a CA, the
-record on the key's certificate only, attestation version 400, tier TEE,
-no warning.
-
-Three things this run showed, all changed since. The URI was printed with
-its secret; it is now printed as `&k=<in the QR only>`. The enrollment
-answer said `core: none`, a leftover from P1; it names the core now. And
-the review made the fingerprint prompt the default again and had the
-laptop authenticate its acceptance, so the app keeps a key only on that.
+That the phone signed at all shows the confirmation at work: the app
+keeps a new key only when the laptop's reply is its MAC under the session
+secret, and it had the key. The evidence the run kept was verified again
+offline with the ignored test `a_real_enrollment`, with the same result.
+An earlier run the same day, on the stack before its review, went the
+same way with app 0.3.0-p3; it printed the session secret under the QR
+and its enrollment answer said `core: none`, both since fixed.
 
 ### P2 run record — the phone names the mandate it signs (2026-11-13, app 0.2.0-p2)
 

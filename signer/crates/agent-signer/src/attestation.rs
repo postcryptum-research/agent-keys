@@ -215,6 +215,10 @@ impl<'a> Cert<'a> {
         } else {
             return Err("a public key that is neither EC nor RSA".into());
         };
+        // Read: basicConstraints' cA flag and the attestation record. Not read: the path
+        // length, key usage, and any other extension, critical or not. The certificates above
+        // the key's are Google's own and the device's, in a PKI with one purpose; the two rules
+        // that purpose needs are the CA flag and the record's place, both enforced by the caller.
         let (mut is_ca, mut key_description) = (false, None);
         let mut seen: Vec<&[u8]> = Vec::new();
         for field in fields {
@@ -450,7 +454,8 @@ pub fn verify_android(chain: &[Vec<u8>], roots: &[Root], expect: &Expect<'_>) ->
     if hw.no_auth_required || software.no_auth_required {
         return Err("the key can be used without user authentication".into());
     }
-    if hw.auth_timeout.is_some_and(|t| t != 0) {
+    // whichever list an implementation reports it in
+    if hw.auth_timeout.is_some_and(|t| t != 0) || software.auth_timeout.is_some_and(|t| t != 0) {
         return Err("the key stays unlocked for a time window instead of asking on every use".into());
     }
     // HardwareAuthenticatorType: 1 = the device credential, 2 = biometric
@@ -473,12 +478,15 @@ pub fn verify_android(chain: &[Vec<u8>], roots: &[Root], expect: &Expect<'_>) ->
     if !locked {
         return Err("the phone's bootloader is unlocked".into());
     }
-    // shown, not refused (§5.2): the locked bootloader is the rule, the state is information
+    // The app's identity below is asserted by the operating system, so it is worth what the
+    // boot state says of that system. Verified: Google's or the maker's. SelfSigned or
+    // Unverified: shown (§5.2), with what it means for the "made by" line. Failed: refused.
+    let unvouched = "the app's identity below is asserted by an operating system nobody vouches for, so \"made by\" and the signing digest carry no weight";
     match state {
         0 => {}
-        1 => warnings.push("verified boot state: SelfSigned — a custom operating system on a locked bootloader".to_string()),
-        2 => warnings.push("verified boot state: Unverified".to_string()),
-        s => warnings.push(format!("verified boot state: Failed ({s})")),
+        1 => warnings.push(format!("verified boot state SelfSigned, a custom operating system on a locked bootloader: {unvouched}")),
+        2 => warnings.push(format!("verified boot state Unverified: {unvouched}")),
+        s => return Err(format!("verified boot state Failed ({s}): the phone's boot verification failed")),
     }
 
     // which app made the key: asserted by the phone's operating system, hence the boot state above
@@ -698,6 +706,8 @@ mod tests {
         digests: Vec<u64>,
         user_auth_type: Option<u64>,
         auth_timeout: Option<u64>,
+        /// the same tag in the software-enforced list
+        software_auth_timeout: Option<u64>,
         no_auth: bool,
         origin: u64,
         locked: bool,
@@ -716,6 +726,7 @@ mod tests {
                 digests: vec![0, 4],
                 user_auth_type: Some(2),
                 auth_timeout: None,
+                software_auth_timeout: None,
                 no_auth: false,
                 origin: 0,
                 locked: true,
@@ -733,7 +744,12 @@ mod tests {
                 set(&[seq(&[octets(self.package.as_bytes()), uint(self.version_code)])]),
                 set(&[octets(&self.signer_digest)]),
             ]);
-            let software = seq(&[explicit(701, &uint(1_800_000_000_000)), explicit(709, &octets(&app))]);
+            let mut software = Vec::new();
+            if let Some(t) = self.software_auth_timeout {
+                software.push(explicit(505, &uint(t)));
+            }
+            software.extend([explicit(701, &uint(1_800_000_000_000)), explicit(709, &octets(&app))]);
+            let software = seq(&software);
             let ints = |v: &[u64]| set(&v.iter().map(|i| uint(*i)).collect::<Vec<_>>());
             let mut hw = vec![explicit(1, &ints(&self.purposes)), explicit(2, &uint(3)), explicit(3, &uint(256)), explicit(5, &ints(&self.digests)), explicit(10, &uint(1))];
             if self.no_auth {
@@ -867,7 +883,30 @@ mod tests {
         });
         let chain = [vec![forged], pki.chain(&Record::good(challenge))].concat();
         let e = verify_android(&chain, &pki.roots(), &expect(attacker_key.public_key(), challenge)).unwrap_err();
-        assert!(e.contains("carries an attestation record") || e.contains("is not a CA"), "{e}");
+        // both rules stand in the way; the first to fire is that the genuine key's certificate is no CA
+        assert!(e.contains("certificate 1 issued certificate 0 but is not a CA"), "{e}");
+        // the record's place, on its own: were the issuing certificate a CA, its record would still stop the chain
+        let ca_with_record = cert(CertSpec {
+            subject: "Android Keystore Key",
+            issuer: "tee",
+            key: &pki.phone,
+            signer: &pki.tee,
+            ca: true,
+            not_after: "480101000000Z",
+            key_description: Some(Record::good(challenge).der()),
+        });
+        let forged_again = cert(CertSpec {
+            subject: "Android Keystore Key",
+            issuer: "Android Keystore Key",
+            key: &attacker_key,
+            signer: &pki.phone,
+            ca: false,
+            not_after: "480101000000Z",
+            key_description: Some(Record::good(challenge).der()),
+        });
+        let chain = [vec![forged_again, ca_with_record], pki.upper()].concat();
+        let e = verify_android(&chain, &pki.roots(), &expect(attacker_key.public_key(), challenge)).unwrap_err();
+        assert!(e.contains("certificate 1 carries an attestation record"), "{e}");
         // the same with the genuine certificate's record stripped is stopped by the CA rule alone
         let genuine_no_record = cert(CertSpec {
             subject: "Android Keystore Key",
@@ -911,6 +950,8 @@ mod tests {
         refused(Record { origin: 2, ..good.clone() }, "not generated in the secure hardware");
         refused(Record { no_auth: true, ..good.clone() }, "without user authentication");
         refused(Record { auth_timeout: Some(30), ..good.clone() }, "time window");
+        refused(Record { software_auth_timeout: Some(30), ..good.clone() }, "time window");
+        refused(Record { boot_state: 3, ..good.clone() }, "boot verification failed");
         refused(Record { user_auth_type: None, ..good.clone() }, "user authentication type");
         refused(Record { user_auth_type: Some(3), ..good.clone() }, "biometric only");
         refused(Record { locked: false, ..good.clone() }, "bootloader is unlocked");
@@ -921,9 +962,9 @@ mod tests {
         let with_pin = Record { user_auth_type: Some(3), ..good.clone() };
         assert!(verify(&with_pin, &Expect { device_credential: true, ..expect(key, challenge) }).is_ok());
         assert!(verify(&good, &Expect { device_credential: true, ..expect(key, challenge) }).is_err());
-        // a boot state other than Verified is shown, not refused: a custom OS on a locked bootloader
+        // SelfSigned and Unverified are shown, not refused, and say what they do to the app's identity
         let a = verify(&Record { boot_state: 1, ..good.clone() }, &expect(key, challenge)).unwrap();
-        assert!(a.warnings[0].contains("SelfSigned"));
+        assert!(a.warnings[0].contains("SelfSigned") && a.warnings[0].contains("carry no weight"), "{:?}", a.warnings);
         assert!(verify(&Record { boot_state: 2, ..good.clone() }, &expect(key, challenge)).unwrap().warnings[0].contains("Unverified"));
         // the attested key must be the one the answer names
         let other = TestKey::p256().public_key();

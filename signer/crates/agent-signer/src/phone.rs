@@ -128,6 +128,10 @@ pub struct AttestationPolicy {
     pub signing_digests: Vec<[u8; 32]>,
     /// Refuse a key the attestation places in the TEE.
     pub require_strongbox: bool,
+    /// Refuse when Google's revocation list cannot be fetched, instead of
+    /// recording that it was not checked: anyone on the path can make the
+    /// fetch fail.
+    pub require_revocation_check: bool,
 }
 
 /// What the laptop learned about the key from its attestation.
@@ -187,6 +191,12 @@ pub fn enroll(
                 return Err(Rejection::End("--require-strongbox needs a key attestation, and the answer carries none".into()));
             }
             None
+        } else if e.app.as_ref().map(|a| a.platform.as_str()) != Some("android") {
+            // the only evidence this CLI can read today is Android's key attestation
+            return Err(Rejection::End(format!(
+                "the key attestation was not accepted: evidence from platform {:?} is not something this version can verify",
+                e.app.as_ref().map(|a| a.platform.as_str()).unwrap_or("unknown")
+            )));
         } else {
             let attested = attestation::verify_android(
                 &e.attestation,
@@ -220,6 +230,9 @@ pub fn enroll(
                     return Err(Rejection::End(format!("a certificate of the attestation chain (serial {serial}) is on Google's revocation list: {status}")));
                 }
                 Ok((entries, None)) => Ok(entries),
+                Err(why) if policy.require_revocation_check => {
+                    return Err(Rejection::End(format!("--require-revocation-check: Google's revocation list could not be fetched ({why})")));
+                }
                 Err(why) => Err(why),
             };
             Some(Evidence { attested, revocation })

@@ -381,17 +381,23 @@ builder may use it (§11.1).
   minimum (T14). A self-signed APK carries our own digest. A Play build
   carries the digest of Google's app-signing key, which puts Google in
   T6's trust root (`APP_ATTEST_ORG.md` §7, PR #6);
-- `rootOfTrust`: `deviceLocked = true`. A `verifiedBootState` other than
-  `Verified` is shown as a warning, not refused. A re-locked custom OS
-  such as GrapheneOS reports `SelfSigned`.
+- `rootOfTrust`: `deviceLocked = true`. A `verifiedBootState` of
+  `SelfSigned` or `Unverified` is shown as a warning, not refused; a
+  re-locked custom OS such as GrapheneOS reports `SelfSigned`. The warning
+  says what follows: `attestationApplicationId` is asserted by the
+  operating system, so on a system nobody vouches for, "made by" and the
+  digest pin carry no weight. `Failed` is refused.
 
 Until the project has a signing key no digest is pinned in the CLI, and a
 developer's own build is accepted by naming its certificate
 (`--android-app-digest`); a refusal prints the digest it saw.
 
 Revocation: Google publishes an attestation revocation list. The CLI checks
-it when online and says so in the result. Leaked attestation keys have
-existed, so attestation is evidence, not proof (§10, T15).
+it when online and says so in the result, and the config's phone spec
+records it (`"revocation": "checked"` or `"not checked"`), because anyone
+on the path can make the fetch fail; `--require-revocation-check` refuses
+the enrollment instead. Leaked attestation keys have existed, so
+attestation is evidence, not proof (§10, T15).
 
 **What a verified attestation does not show:** whose phone it is. Anyone
 can hold a genuine device with the published app. The answer is tied to
@@ -767,7 +773,8 @@ translation can follow.
 
 ```json
 "owner": { "phone": { "label": "owner-phone", "platform": "android",
-                      "attestation": "strongbox", "deviceCredential": false,
+                      "attestation": "strongbox", "revocation": "checked",
+                      "deviceCredential": false,
                       "fingerprint": "ABCDE-FGHIJ-KLMNO-PQRST" } },
 "ownerPublicKey": { "x": "0x…", "y": "0x…" }
 ```
@@ -785,7 +792,7 @@ translation can follow.
 
 | Command | Change |
 |---|---|
-| `key create --phone <label> --agent <cfg>` | the enrollment session (§2.1); verifies attestation, prints the public key, fingerprint, security tier and config snippet; `--allow-no-attestation` for iOS without App Attest; `--allow-dev-build` for development-signed iOS builds, test chains only (with iOS); `--require-strongbox` to refuse a TEE-only key (§5.6); `--android-app-digest <sha256>` to accept one's own build of the app; `--phone-skip-fingerprint` to rely on the QR's secret without the fingerprint prompt, `--phone-fingerprint <fp>` to give the fingerprint to a script (§3.1); `--out <dir>` to keep the request, the answer and the chain |
+| `key create --phone <label> --agent <cfg>` | the enrollment session (§2.1); verifies attestation, prints the public key, fingerprint, security tier and config snippet; `--allow-no-attestation` for iOS without App Attest; `--allow-dev-build` for development-signed iOS builds, test chains only (with iOS); `--require-strongbox` to refuse a TEE-only key (§5.6); `--android-app-digest <sha256>` to accept one's own build of the app; `--require-revocation-check` to refuse when Google's revocation list cannot be fetched; `--phone-skip-fingerprint` to rely on the QR's secret without the fingerprint prompt, `--phone-fingerprint <fp>` to give the fingerprint to a script (§3.1); `--out <dir>` to keep the request, the answer and the chain |
 | `owner set-root … --expect-fingerprint <fp>` | refuses unless `--public-key` has that fingerprint; for the first handover (§2.2) |
 | `key check --phone <label>` | the health check (§2.4) |
 | `key show --phone <label>` | prints the configured public key and fingerprint (no session) |

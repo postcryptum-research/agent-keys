@@ -322,13 +322,17 @@ answer names, generated in the hardware, EC P-256, sign only, with
 `DIGEST_NONE`, usable only after a biometric check on every use (or with
 the device PIN exactly when the enrollment chose that), both security
 levels StrongBox or both TEE, the bootloader locked; the app named by
-package, minimum version and signing-certificate digest. A boot state
-other than Verified is a warning. Google's revocation list is fetched and
-the result says whether it was checked. `--require-strongbox` decides on
+package, minimum version and signing-certificate digest. A boot state of
+SelfSigned or Unverified is a warning that says the app's identity then
+carries no weight; Failed is refused. Google's revocation list is fetched,
+the result and the config say whether it was checked, and
+`--require-revocation-check` refuses when it cannot be. `--require-strongbox` decides on
 the attested level; `--android-app-digest` accepts a developer's own build
 until the project pins a release certificate; the config's phone spec
 records `attestation`, `platform` and `deviceCredential`. A failure ends
-the session with its reason, and the phone discards the key. Signatures
+the session with its reason, and the phone discards the key. Evidence
+from a platform other than Android is refused until its verifier exists.
+Signatures
 are checked by `aws-lc-rs`, already in the tree, over bytes parsed by a
 strict DER reader of our own (`der.rs`), needed because the record's tags
 go beyond what the `der` crate holds. Tests build their own chains with a

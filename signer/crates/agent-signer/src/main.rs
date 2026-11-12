@@ -393,6 +393,11 @@ enum KeyCmd {
         /// never on the phone's own word.
         #[arg(long, requires = "phone")]
         require_strongbox: bool,
+        /// Phone: refuse the enrollment when Google's list of revoked
+        /// attestation certificates cannot be fetched. Without this the
+        /// result and the config say "not checked".
+        #[arg(long, requires = "phone", conflicts_with = "allow_no_attestation")]
+        require_revocation_check: bool,
         /// Phone: also accept the app when its signing certificate has this
         /// SHA-256 digest (hex, colons allowed) — your own build of the
         /// app. The attestation names the certificate; a digest that is
@@ -637,6 +642,7 @@ fn run_key(cmd: KeyCmd) -> Result<()> {
             auth_file,
             allow_no_attestation,
             require_strongbox,
+            require_revocation_check,
             android_app_digest,
             out,
             phone_fingerprint,
@@ -654,6 +660,7 @@ fn run_key(cmd: KeyCmd) -> Result<()> {
                     allow_none: allow_no_attestation,
                     signing_digests: android_app_digest.iter().map(|d| attestation::parse_digest(d)).collect::<Result<_, _>>().map_err(|e| anyhow::anyhow!("--android-app-digest: {e}"))?,
                     require_strongbox,
+                    require_revocation_check,
                 };
                 return phone_enroll(label, cfg, &policy, out.as_deref(), confirm);
             }
@@ -724,7 +731,12 @@ fn phone_enroll(
     println!("enrolled phone owner key {label:?} for account {account} (chain {})", dep.chain_id);
     println!("  public key     x = {x}\n                 y = {y}");
     println!("  fingerprint    {fp}   {}", if confirmed { "(confirmed against the phone's screen)" } else { "← not confirmed here (--phone-skip-fingerprint): the phone shows the same one" });
-    // what the config records about the key's hardware: the attested tier, or that there is no evidence
+    // what the config records about the key's hardware: the attested tier, or that there is no
+    // evidence; and whether the chain was checked against the revocation list at that time
+    let revocation = match &evidence {
+        Some(ev) if ev.revocation.is_ok() => "checked",
+        _ => "not checked",
+    };
     let attestation = match &evidence {
         Some(ev) => {
             let a = &ev.attested;
@@ -747,7 +759,7 @@ fn phone_enroll(
             );
             match &ev.revocation {
                 Ok(entries) => println!("  revocation     none of the chain is on Google's list ({entries} entries, fetched now)"),
-                Err(why) => println!("  revocation     NOT checked ({why}): run again online to check Google's list"),
+                Err(why) => println!("  revocation     NOT checked ({why}): the config will say so; --require-revocation-check refuses instead"),
             }
             for w in &a.warnings {
                 println!("  warning        {w}");
@@ -773,6 +785,7 @@ fn phone_enroll(
                 "label": label,
                 "platform": e.app.as_ref().map(|a| a.platform.as_str()).unwrap_or("unknown"),
                 "attestation": attestation,
+                "revocation": revocation,
                 "deviceCredential": e.device_credential,
                 "publicKey": {"x": x, "y": y},
                 "fingerprint": fp,
@@ -801,7 +814,7 @@ fn phone_key(label: &str, cfg_path: &Path, op: KeyOp) -> Result<()> {
         .flatten()
         .find(|k| matches!(k, KeySpec::Phone { label: l, .. } if l == label))
         .with_context(|| format!("no phone key labelled {label:?} in {}", cfg_path.display()))?;
-    let KeySpec::Phone { public_key, fingerprint, attestation, .. } = spec else { unreachable!() };
+    let KeySpec::Phone { public_key, fingerprint, attestation, revocation, .. } = spec else { unreachable!() };
     match op {
         KeyOp::Show => {
             let pk = public_key.parse()?;
@@ -810,6 +823,7 @@ fn phone_key(label: &str, cfg_path: &Path, op: KeyOp) -> Result<()> {
             if fingerprint.eq_ignore_ascii_case(&actual) {
                 println!("fingerprint {actual}");
                 println!("attestation {}", attestation.as_deref().unwrap_or("not recorded"));
+                println!("revocation  {}", revocation.as_deref().unwrap_or("not recorded"));
                 Ok(())
             } else {
                 bail!("the config's fingerprint {fingerprint} does not match the publicKey's ({actual})")

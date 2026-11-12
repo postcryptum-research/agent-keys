@@ -97,6 +97,10 @@ pub enum KeySpec {
         fingerprint: String,
         #[serde(default)]
         attestation: Option<String>,
+        /// Whether the attestation chain was checked against Google's
+        /// revocation list at enrollment: `checked` or `not checked`.
+        #[serde(default)]
+        revocation: Option<String>,
         /// Records of the enrollment, as `attestation`: the phone's platform,
         /// and whether the device PIN may unlock the key besides a biometric.
         #[serde(default)]
