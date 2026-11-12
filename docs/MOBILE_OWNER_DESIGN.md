@@ -345,11 +345,20 @@ Key parameters (V for the API names, plan "Verified platform facts"):
 `SHA256withECDSA` for plan B, but only `owner-core`'s WebAuthn-envelope
 builder may use it (§11.1).
 
-**What the laptop verifies** in the chain:
+**What the laptop verifies** in the chain (`agent-signer/src/attestation.rs`):
 - the chain ends at one of Google's two hardware attestation roots, both
   embedded in the CLI: the old RSA root (keys provisioned at the factory)
   and the ECDSA P-384 root used for remotely provisioned keys since
-  2026-04-10 (V per the owner's study, `MOBILE_DEV_MODE.md` §2.4, PR #7);
+  2026-04-10 (V per the owner's study, `MOBILE_DEV_MODE.md` §2.4, PR #7).
+  A root is matched by its public key, since Google has reissued the RSA
+  certificate;
+- every certificate is valid now, is signed by the next, and **every
+  issuer is a CA; only the key's own certificate may carry the attestation
+  record.** Without these two an attested key, which signs whatever its
+  owner asks, could issue a certificate with a record of its owner's
+  choosing;
+- the attested key **is the key the phone's answer names**, and its origin
+  is "generated" in the hardware, not imported;
 - `attestationChallenge` equals the expected value;
 - `attestationSecurityLevel` and `keyMintSecurityLevel` are both
   `StrongBox` or both `TrustedEnvironment`;
@@ -365,9 +374,17 @@ builder may use it (§11.1).
   `Verified` is shown as a warning, not refused. A re-locked custom OS
   such as GrapheneOS reports `SelfSigned`.
 
+Until the project has a signing key no digest is pinned in the CLI, and a
+developer's own build is accepted by naming its certificate
+(`--android-app-digest`); a refusal prints the digest it saw.
+
 Revocation: Google publishes an attestation revocation list. The CLI checks
 it when online and says so in the result. Leaked attestation keys have
 existed, so attestation is evidence, not proof (§10, T15).
+
+**What a verified attestation does not show:** whose phone it is. Anyone
+can hold a genuine device with the published app. The answer is tied to
+the owner's phone by the session secret in the QR (§3.1), not by this.
 
 ### 5.3 iOS (Secure Enclave)
 
@@ -753,7 +770,7 @@ translation can follow.
 
 | Command | Change |
 |---|---|
-| `key create --phone <label> --agent <cfg>` | the enrollment session (§2.1); verifies attestation, prints the public key, fingerprint, security tier and config snippet; `--allow-no-attestation` for iOS without App Attest; `--allow-dev-build` for development-signed iOS builds, test chains only; `--require-strongbox` to refuse a TEE-only key (§5.6) |
+| `key create --phone <label> --agent <cfg>` | the enrollment session (§2.1); verifies attestation, prints the public key, fingerprint, security tier and config snippet; `--allow-no-attestation` for iOS without App Attest; `--allow-dev-build` for development-signed iOS builds, test chains only (with iOS); `--require-strongbox` to refuse a TEE-only key (§5.6); `--android-app-digest <sha256>` to accept one's own build of the app; `--phone-confirm-fingerprint` to be asked for the phone's fingerprint (§3.1); `--out <dir>` to keep the request, the answer and the chain |
 | `owner set-root … --expect-fingerprint <fp>` | refuses unless `--public-key` has that fingerprint; for the first handover (§2.2) |
 | `key check --phone <label>` | the health check (§2.4) |
 | `key show --phone <label>` | prints the configured public key and fingerprint (no session) |

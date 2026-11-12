@@ -595,7 +595,8 @@ fn http_get(url: &str) -> Vec<u8> {
 /// The phone side of the protocol with a software key. Modes: `sign`,
 /// `wrong-hash`, `refuse` answer a sign request; `enroll` and `enroll-refuse`
 /// answer an enrollment request with `key` as the new key (no attestation:
-/// a simulator has none). Every answer carries the MAC of the QR's secret,
+/// a simulator has none; `enroll-fake-attestation` claims a hardware key with
+/// evidence that is not a chain). Every answer carries the MAC of the QR's secret,
 /// as the app's does; a mode ending in `-nomac` posts without it — a host on
 /// the network that saw the session URL but never the QR.
 fn phone_simulator(qr_file: std::path::PathBuf, key: Key, mode: &'static str) -> std::thread::JoinHandle<()> {
@@ -642,6 +643,8 @@ fn phone_simulator_after(qr_file: std::path::PathBuf, key: Key, mode: &'static s
             assert!(!req.label.is_empty());
             let resp = match mode {
                 "enroll" => EnrollResponse::enrolled(&qr.commitment, &pk, "simulator", false, &[], app),
+                // claims a hardware key and attaches something DER-shaped as its evidence
+                "enroll-fake-attestation" => EnrollResponse::enrolled(&qr.commitment, &pk, "tee", false, &[vec![0x30, 0x03, 0x02, 0x01, 0x01]], app),
                 "enroll-refuse" => EnrollResponse::refused(&qr.commitment, "user", Some("declined on the phone".into()), app),
                 other => panic!("mode {other}"),
             };
@@ -873,13 +876,34 @@ fn phone_is_enrolled_then_takes_over_root() {
     assert!(err.contains("no answer from the phone within"), "the session kept waiting after the rejected answer: {err}");
     let _ = std::fs::remove_file(&qr_file);
 
+    // 2a. an answer that claims a hardware key must prove it (P3): evidence that is not a
+    //     chain to an attestation root ends the session with the reason, and nothing is enrolled.
+    //     Before the verifier, this answer was accepted as "tee".
+    let sim = phone_simulator(qr_file.clone(), key(9), "enroll-fake-attestation");
+    let err = chain.fails(&[&["key", "create", "--phone", "owner-phone", "--agent", &cfg], &session[..]].concat());
+    sim.join().unwrap();
+    assert!(err.contains("the key attestation was not accepted"), "{err}");
+    assert!(!err.contains("enrolled phone owner key"), "{err}");
+    let _ = std::fs::remove_file(&qr_file);
+    // StrongBox cannot be required of an answer without evidence, and the two flags exclude each other
+    let sim = phone_simulator(qr_file.clone(), key(9), "enroll");
+    let err = chain.fails(&[&["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--require-strongbox", "--phone-timeout", "4"], &session[..4], &session[6..]].concat());
+    sim.join().unwrap();
+    assert!(err.contains("no attestation evidence"), "{err}");
+    let _ = std::fs::remove_file(&qr_file);
+    let err = chain.fails(&["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--require-strongbox", "--allow-no-attestation"]);
+    assert!(err.contains("cannot be used with"), "{err}");
+    let err = chain.fails(&["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--android-app-digest", "abcd"]);
+    assert!(err.contains("--android-app-digest") && err.contains("32 bytes"), "{err}");
+
     // 3. enrolled: the key, its fingerprint, the next step, the config snippet
     let sim = phone_simulator(qr_file.clone(), key(9), "enroll");
     let text = chain.ok(&[&["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--allow-no-attestation", "--out", out], &session[..]].concat());
     sim.join().unwrap();
     assert!(text.contains(&format!("x = {}", phone.x)), "{text}");
     assert!(text.contains(&format!("fingerprint    {fp}   (confirmed")), "{text}");
-    assert!(text.contains("security level simulator (self-reported)"), "{text}");
+    assert!(text.contains("security level simulator (the phone's own word)"), "{text}");
+    assert!(text.contains("attestation    none"), "{text}");
     assert!(text.contains("Nothing changed on-chain"), "{text}");
     assert!(text.contains(&format!("--expect-fingerprint {fp}")), "{text}");
     let saved: Value = serde_json::from_str(&std::fs::read_to_string(out_dir.join("enroll-response.json")).unwrap()).unwrap();
@@ -924,6 +948,7 @@ fn phone_is_enrolled_then_takes_over_root() {
     let snippet_end = snippet_start + text[snippet_start..].find("\n}").expect("the snippet's end") + 2;
     let snippet: Value = serde_json::from_str(&text[snippet_start..snippet_end]).expect("the snippet parses");
     assert_eq!(snippet["owner"]["phone"]["fingerprint"], fp);
+    assert_eq!(snippet["owner"]["phone"]["attestation"], "none", "the config records that nothing places this key in hardware");
 
     // 3b. the answer is authenticated by the secret in the QR: a host on the network that saw
     // the session URL in the phone's GET, but never the QR, posts its own key first. Without
@@ -983,7 +1008,7 @@ fn phone_is_enrolled_then_takes_over_root() {
     std::fs::write(&phone_cfg, serde_json::to_string_pretty(&v).unwrap()).unwrap();
     let phone_cfg = phone_cfg.to_str().unwrap();
     let shown = chain.ok(&["key", "show", "--phone", "owner-phone", "--agent", phone_cfg]);
-    assert!(shown.contains(&format!("fingerprint {fp}")), "{shown}");
+    assert!(shown.contains(&format!("fingerprint {fp}")) && shown.contains("attestation none"), "{shown}");
     let sim = phone_simulator(qr_file.clone(), key(9), "sign");
     let before = chain.counter();
     let text = chain.ok(&[
@@ -1010,6 +1035,9 @@ fn phone_is_enrolled_then_takes_over_root() {
 /// On the phone: "4. Enroll" for the first QR, "3. Scan and sign" for the second
 /// (a new agent permission, whose mandate the phone shows). The app needs the
 /// test chain's facts: `OWNER_CORE_FEATURES=ffi,test-chains ./build-core.sh`.
+/// The enrollment verifies the phone's key attestation against Google's roots;
+/// `TPMSIGN_ANDROID_APP_DIGEST=<sha256>` names the certificate your own build
+/// of the app is signed with (the CLI prints the digest it saw when it refuses).
 /// `TPMSIGN_PHONE_OUT=<dir>` keeps the enrollment (request, answer, attestation
 /// DER) after the run; the temp directory is removed otherwise.
 #[test]
@@ -1043,7 +1071,14 @@ fn phone_owner_real_device() {
     // 1. enrollment; the evidence survives the run when TPMSIGN_PHONE_OUT names a directory
     let out_dir = std::env::var_os("TPMSIGN_PHONE_OUT").map(PathBuf::from).unwrap_or_else(|| chain.dir.join("enrollment"));
     eprintln!("\naccount {account} on a local anvil. On the phone tap \"4. Enroll this phone for an account\", scan the QR\nbelow, read the notice, confirm. The phone and this terminal then show the same fingerprint.\n");
-    let status = run(&["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--out", out_dir.to_str().unwrap()]);
+    // the attestation names the certificate the app was signed with; a development build is the
+    // developer's own, so its digest comes from the environment (docs/MOBILE_DEV_MODE.md §2.2)
+    let digest = std::env::var("TPMSIGN_ANDROID_APP_DIGEST").ok();
+    let mut args = vec!["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--out", out_dir.to_str().unwrap()];
+    if let Some(d) = &digest {
+        args.extend(["--android-app-digest", d.as_str()]);
+    }
+    let status = run(&args);
     assert!(status.success(), "the enrollment failed");
     let resp: Value = serde_json::from_str(&std::fs::read_to_string(out_dir.join("enroll-response.json")).unwrap()).unwrap();
     let phone = Key {

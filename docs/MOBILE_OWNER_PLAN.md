@@ -296,6 +296,34 @@ gone. Tests: the MAC against RFC 4231; in the anvil suite an intruder
 without the secret posts its own key first and is ignored, and a forged
 refusal does not stop a signature.
 
+P3 status (2026-11-13, slice 2): the laptop verifies the Android key
+attestation at enrollment (`agent-signer/src/attestation.rs`, design §5.2).
+The chain must end at one of Google's two roots, embedded as published and
+matched by public key; every certificate valid now and signed by the next;
+every issuer a CA and only the key's certificate carrying the record, so
+an attested key cannot issue attestations. The record must be made for
+this request (the challenge bound to its commitment), for the key the
+answer names, generated in the hardware, EC P-256, sign only, with
+`DIGEST_NONE`, usable only after a biometric check on every use (or with
+the device PIN exactly when the enrollment chose that), both security
+levels StrongBox or both TEE, the bootloader locked; the app named by
+package, minimum version and signing-certificate digest. A boot state
+other than Verified is a warning. Google's revocation list is fetched and
+the result says whether it was checked. `--require-strongbox` decides on
+the attested level; `--android-app-digest` accepts a developer's own build
+until the project pins a release certificate; the config's phone spec
+records `attestation`, `platform` and `deviceCredential`. A failure ends
+the session with its reason, and the phone discards the key. Signatures
+are checked by `aws-lc-rs`, already in the tree, over bytes parsed by a
+strict DER reader of our own (`der.rs`), needed because the record's tags
+go beyond what the `der` crate holds. Tests build their own chains with a
+P-384 and an RSA root and vary every rule, including the forged
+certificate signed by an attested key; Google's two roots verify their own
+signatures; an ignored test runs a real enrollment's evidence from a
+directory outside the repository, and one such run passed: five
+certificates to the remote-provisioning root, tier TEE. Not done: iOS
+(App Attest, design §5.3), which waits for the organization account.
+
 ## Threat model, briefly
 
 - **The laptop is compromised.** It can request a malicious operation, but

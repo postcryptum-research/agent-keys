@@ -187,6 +187,32 @@ the same fingerprint, and asks for it only with
 `--phone-confirm-fingerprint`. The app needs agent-signer of the same
 version: a QR without `k` is refused.
 
+### P3: what the laptop checks in the attestation
+
+The app has returned the Keystore's certificate chain since P1. From P3 on
+`agent-signer key create --phone` verifies it (design §5.2) before it
+accepts the answer: the chain to Google's root, the challenge bound to the
+enrollment request, the key itself, where it lives (StrongBox or TEE), that
+it was generated there and signs only after a biometric check, the locked
+bootloader, and which app made it. A refusal ends the session with its
+reason and the app deletes the key.
+
+The attestation names the certificate the app was signed with. A debug
+build is signed with the developer's own debug key, which no CLI can pin,
+so the developer names it: the CLI prints the digest it saw when it
+refuses, and `--android-app-digest <sha256>` accepts it. For the
+real-device test, `TPMSIGN_ANDROID_APP_DIGEST` carries it. To check a kept
+enrollment again offline:
+
+```sh
+cd signer
+TPMSIGN_ATTESTATION_DIR=<dir written by --out> TPMSIGN_ANDROID_APP_DIGEST=<sha256> \
+  cargo test -p agent-signer a_real_enrollment -- --ignored --nocapture
+```
+
+Phones with remotely provisioned attestation keys carry a certificate that
+lives about two weeks, so that check uses the request's own time.
+
 ### P2 run record — the phone names the mandate it signs (2026-11-13, app 0.2.0-p2)
 
 The same script, with the app built as `OWNER_CORE_FEATURES=ffi,test-chains`
