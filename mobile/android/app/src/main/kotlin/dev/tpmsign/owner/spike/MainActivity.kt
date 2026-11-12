@@ -55,6 +55,7 @@ class MainActivity : AppCompatActivity() {
         const val GOLDEN_MESSAGE = "TPM_sign: P0 golden userOpHash (owner-core user_op test, chain 31337)"
         val P256_N = BigInteger("FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551", 16)
         val P256_HALF_N: BigInteger = P256_N.shiftRight(1)
+        const val MAX_REQUEST_BYTES = 64 * 1024
     }
 
     private lateinit var out: TextView
@@ -297,15 +298,25 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    /** §3.2: an IP literal (no name, so no DNS and no rebinding) that is private, link-local or ULA. */
     private fun isLocalHost(host: String): Boolean {
-        val a = try { InetAddress.getByName(host.trim('[', ']')) } catch (_: Exception) { return false }
-        return a.isSiteLocalAddress || a.isLinkLocalAddress || a.isLoopbackAddress ||
+        val h = host.trim('[', ']')
+        val literal = h.matches(Regex("^[0-9.]+$")) || h.matches(Regex("^[0-9a-fA-F:]+$"))
+        if (!literal) return false
+        val a = try { InetAddress.getByName(h) } catch (_: Exception) { return false }
+        return a.isSiteLocalAddress || a.isLinkLocalAddress ||
             (a is java.net.Inet6Address && (a.address[0].toInt() and 0xfe) == 0xfc)
     }
 
+    /** The request is a few KiB; anything past 64 KiB is not ours. */
     private fun httpGet(url: String): ByteArray {
         val c = (URL(url).openConnection() as HttpURLConnection).apply { connectTimeout = 10000; readTimeout = 10000; useCaches = false }
-        try { require(c.responseCode == 200) { "HTTP ${c.responseCode}" }; return c.inputStream.readBytes() } finally { c.disconnect() }
+        try {
+            require(c.responseCode == 200) { "HTTP ${c.responseCode}" }
+            val body = c.inputStream.readNBytes(MAX_REQUEST_BYTES + 1)
+            require(body.size <= MAX_REQUEST_BYTES) { "the request exceeds ${MAX_REQUEST_BYTES / 1024} KiB; refusing" }
+            return body
+        } finally { c.disconnect() }
     }
 
     private fun httpPost(url: String, body: ByteArray): Int {

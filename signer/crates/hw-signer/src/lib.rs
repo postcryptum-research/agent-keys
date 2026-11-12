@@ -99,6 +99,12 @@ pub trait HardwareSigner {
     fn sign_user_op(&self, ctx: &UserOpContext<'_>) -> Result<Signature, SignerError> {
         self.sign_digest(&ctx.user_op_hash)
     }
+
+    /// Whether `sign_user_op` needs `UserOpContext::request`. A chip signs
+    /// the hash and never looks at it; a signer with a human behind it does.
+    fn needs_request(&self) -> bool {
+        false
+    }
 }
 
 /// Off-chain P-256 verification, mirroring what the on-chain validator checks:

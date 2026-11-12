@@ -429,6 +429,10 @@ impl Session {
         user_op_hash: B256,
         sign_as: SignAs,
     ) -> Result<hw_signer::Signature> {
+        if !signer.needs_request() {
+            // a chip: the hash alone, exactly as before the phone existed
+            return Ok(signer.sign_user_op(&hw_signer::UserOpContext { user_op_hash: user_op_hash.0, request: None })?);
+        }
         let packed = Self::packed(op);
         let mut labels = std::collections::BTreeMap::new();
         labels.insert(self.dep.demo_counter, "demo counter".to_string());
@@ -1016,6 +1020,9 @@ impl Session {
                         let bump = floor.saturating_sub(priority);
                         op.gasFees = kernel::pack_gas(floor, max_fee.saturating_add(bump));
                         eprintln!("bundler wants maxPriorityFeePerGas ≥ {floor} wei: repricing and signing once more");
+                        if signer.needs_request() {
+                            eprintln!("the owner will see a second QR: the same operation with the higher fee, a new userOpHash");
+                        }
                         user_op_hash = self.user_op_hash_checked(&ep, &op).await?;
                         op.signature = frame(&self.sign_op(signer.as_ref(), &op, user_op_hash, sign_as)?);
                         eprintln!("userOpHash:     {user_op_hash}");

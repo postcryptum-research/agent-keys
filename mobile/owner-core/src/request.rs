@@ -333,19 +333,58 @@ impl QrPayload {
         if commitment.len() != 43 || !commitment.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
             return Err(RequestError::Malformed("h= is not a base64url SHA-256".into()));
         }
-        let host = url
-            .strip_prefix("http://")
-            .and_then(|s| s.split('/').next())
-            .and_then(|hp| hp.rsplit_once(':').map(|(h, _)| h).or(Some(hp)))
-            .ok_or_else(|| RequestError::Malformed("u= is not an http:// URL".into()))?;
-        if !is_local_host(host) {
-            return Err(RequestError::NotLocal(host.to_string()));
+        let host = session_host(&url)?;
+        if !is_local_host(&host) {
+            return Err(RequestError::NotLocal(host));
         }
         Ok(Self { url, commitment })
     }
 }
 
+/// The host of a session URL (§3.2): `http://`, then an authority that is an
+/// IP literal — dotted IPv4 or a bracketed IPv6 — with an optional port that
+/// fits a `u16`, then a path. No userinfo (`user@host` would let the checked
+/// host differ from the one a client connects to), no names (no DNS, so no
+/// rebinding). Returns the host without brackets.
+pub fn session_host(url: &str) -> Result<String, RequestError> {
+    let rest = url.strip_prefix("http://").ok_or_else(|| RequestError::Malformed("u= is not an http:// URL".into()))?;
+    let authority = rest.split('/').next().unwrap_or("");
+    if authority.contains('@') {
+        return Err(RequestError::Malformed("u= carries a userinfo part; refusing".into()));
+    }
+    let (host, port) = if let Some(after_bracket) = authority.strip_prefix('[') {
+        let (host, rest) = after_bracket
+            .split_once(']')
+            .ok_or_else(|| RequestError::Malformed("u= has an unterminated IPv6 literal".into()))?;
+        let port = match rest {
+            "" => None,
+            p => Some(p.strip_prefix(':').ok_or_else(|| RequestError::Malformed("u= has text after the IPv6 literal".into()))?),
+        };
+        if host.parse::<std::net::Ipv6Addr>().is_err() {
+            return Err(RequestError::Malformed(format!("u= host {host:?} is not an IPv6 address")));
+        }
+        (host, port)
+    } else {
+        let (host, port) = match authority.split_once(':') {
+            Some((h, p)) => (h, Some(p)),
+            None => (authority, None),
+        };
+        if host.parse::<std::net::Ipv4Addr>().is_err() {
+            return Err(RequestError::Malformed(format!("u= host {host:?} is not an IP address (names are not allowed)")));
+        }
+        (host, port)
+    };
+    if let Some(p) = port {
+        if p.is_empty() || p.parse::<u16>().is_err() {
+            return Err(RequestError::Malformed(format!("u= port {p:?} is not a port number")));
+        }
+    }
+    Ok(host.to_string())
+}
+
 /// Private (RFC 1918), link-local, loopback, or IPv6 ULA / link-local.
+/// Loopback is for the laptop's own tests (`--listen 127.0.0.1:0` with a
+/// simulated phone); on a phone it names the phone itself.
 pub fn is_local_host(host: &str) -> bool {
     let host = host.trim_start_matches('[').trim_end_matches(']');
     if let Ok(v4) = host.parse::<std::net::Ipv4Addr>() {
@@ -486,6 +525,26 @@ mod tests {
         assert!(matches!(QrPayload::parse("tpmsign:1?u=http://10.0.0.1:1/s/x&h=short"), Err(RequestError::Malformed(_))));
         let public = format!("tpmsign:1?u=http://93.184.216.34:80/s/x&h={}", "A".repeat(43));
         assert!(matches!(QrPayload::parse(&public), Err(RequestError::NotLocal(_))));
+        // the authority must be an IP literal and nothing else (per review of PR #27)
+        let h = "A".repeat(43);
+        let userinfo = format!("tpmsign:1?u=http://10.0.0.1:80@93.184.216.34/s/x&h={h}");
+        assert!(matches!(QrPayload::parse(&userinfo), Err(RequestError::Malformed(m)) if m.contains("userinfo")));
+        let v6 = format!("tpmsign:1?u=http://[fe80::1]/s/x&h={h}");
+        assert!(QrPayload::parse(&v6).is_ok(), "a bracketed IPv6 literal without a port is a valid local host");
+        let v6_port = format!("tpmsign:1?u=http://[fd00::1]:8080/s/x&h={h}");
+        assert!(QrPayload::parse(&v6_port).is_ok());
+        let v6_public = format!("tpmsign:1?u=http://[2001:db8::1]:80/s/x&h={h}");
+        assert!(matches!(QrPayload::parse(&v6_public), Err(RequestError::NotLocal(_))));
+        let big_port = format!("tpmsign:1?u=http://10.0.0.1:99999999/s/x&h={h}");
+        assert!(matches!(QrPayload::parse(&big_port), Err(RequestError::Malformed(m)) if m.contains("port")));
+        let name = format!("tpmsign:1?u=http://laptop.local:80/s/x&h={h}");
+        assert!(matches!(QrPayload::parse(&name), Err(RequestError::Malformed(m)) if m.contains("not an IP address")));
+        let bad_v6 = format!("tpmsign:1?u=http://[fe80::1/s/x&h={h}");
+        assert!(QrPayload::parse(&bad_v6).is_err());
+        let v6_trailing = format!("tpmsign:1?u=http://[fe80::1]x/s/x&h={h}");
+        assert!(QrPayload::parse(&v6_trailing).is_err());
+        assert_eq!(session_host("http://192.168.1.2/s/x").unwrap(), "192.168.1.2");
+        assert_eq!(session_host("http://[fe80::1]:1/s/x").unwrap(), "fe80::1");
         assert!(is_local_host("10.0.0.1") && is_local_host("172.16.5.5") && is_local_host("fe80::1") && is_local_host("fd00::1"));
         assert!(!is_local_host("8.8.8.8") && !is_local_host("example.com"));
     }
