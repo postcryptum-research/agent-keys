@@ -537,8 +537,8 @@ Kernel admin call:
 | Call | Shown as |
 |---|---|
 | `installValidations` of a **permission** id (type `0x02`) | "Install agent permission `<id>`", with the full mandate: the signer module and the policy module, each marked as in §6.7 (including "superseded version", a build fact); the agent key fingerprint; every allow entry (target, selector, and the name where known); value cap, budget, validity window, token caps and x402 flags |
-| `installValidations` of a **validator** (type `0x01`) | "Install validator `<address>` with key `<fingerprint>`". For the pinned recovery validator: "Install a recovery key — **it will be able to take over this account**" |
-| `grantAccess(vId, selector, allow)` | "Allow `<vId>` to call `<selector name>`". For `changeRootValidator`: "**may take over this account**" |
+| `installValidations` of a **validator** (type `0x01`) | always an effect, since v1 does not know which validators the account uses: "**Install a key on a validator** `<fingerprint>` — it controls this account once it is root or is granted access", whether the validator is current, superseded or unknown to the build. For a recovery validator: "Install a recovery key — **it will be able to take over this account**" |
+| `grantAccess(vId, selector, allow)` | Kernel lets a non-root validation call a top-level selector only when it is granted here, so a grant is judged by what bounds it. Plain: a **permission's** `execute` (its policy bounds it), and any grant with `allow = false`. Bold: a **validator's** `changeRootValidator` ("**may take over this account**") and a validator's `execute` ("**this key will be able to do anything with this account**"). Every other grant — an admin selector to a permission or a validator, a selector the build cannot name — is **refused**; expert mode turns the refusal into a bold row |
 | `changeRootValidator(...)` | "**Hand control of this account to** validator `<address>`". In a `set-root` batch, the summary names the key: "**Hand control of this account to key `<fingerprint>`**" (§2.2) |
 | `uninstallValidation(vId, …)` | "Remove permission `<id>`" or "Remove validator `<address>`". If that validator holds this phone's key: "**this phone will no longer control the account**" |
 | any other self-call | **refused** (v1) |
@@ -648,7 +648,11 @@ one (T19). So the facts come from the **build**:
 - **Laptop pins** are accepted only for addresses the build does not know,
   and are shown as "from the laptop — unverified" (§4.3). A pin is a label
   and nothing more: it never makes a call decodable, a module readable, a
-  paymaster acceptable or an effect plain.
+  paymaster acceptable or an effect plain. A pin whose label is a name the
+  build gives to what it verifies ("AgentPolicy", "USDC", with or without
+  a version) is refused and reported, so a stranger cannot be made to look
+  like a known contract; the CLI labels its pins by role ("policy module
+  (config)").
 - **Development builds** may add the CLI's local anvil chain (feature
   `test-chains`), where the test harness installs the same code at the
   same addresses. Such a build shows `+test-chains` in its version and is

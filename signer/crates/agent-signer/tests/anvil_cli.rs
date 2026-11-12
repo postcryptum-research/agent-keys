@@ -909,12 +909,12 @@ fn phone_is_enrolled_then_takes_over_root() {
     ]
     .concat());
     sim.join().unwrap();
-    assert!(text.contains("names sent to the phone") && text.contains("demo counter"), "{text}");
+    assert!(text.contains("names sent to the phone") && text.contains("counter (config)"), "{text}");
     let req: Value = serde_json::from_str(&std::fs::read_to_string(odd_out.join("enroll-request.json")).unwrap()).unwrap();
     let pins = req["laptopPins"].as_object().expect("the request carries the pins");
     assert_eq!(pins.len(), 1, "{pins:?}");
     let (pinned, name) = pins.iter().next().unwrap();
-    assert_eq!((pinned.to_lowercase().as_str(), name.as_str().unwrap()), (stranger, "demo counter"));
+    assert_eq!((pinned.to_lowercase().as_str(), name.as_str().unwrap()), (stranger, "counter (config)"));
     // a label the phone would not show is stopped before any QR
     let err = chain.fails(&["key", "create", "--phone", "owner\u{202e}phone", "--agent", &cfg, "--listen", "127.0.0.1:0", "--phone-timeout", "5"]);
     assert!(err.contains("plain text"), "{err}");

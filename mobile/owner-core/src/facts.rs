@@ -71,7 +71,8 @@ fn from_deployments(json: &str, chain_id: u64, canonical: bool) -> Facts {
         f.names.insert(addr, name);
         match key.as_str() {
             // the modules whose init data this build decodes: the current versions only
-            "agentPolicy" | "p256Signer" => f.known_modules.push(addr),
+            "agentPolicy" => f.policy_modules.push(addr),
+            "p256Signer" => f.signer_modules.push(addr),
             "demoCounter" => f.demo_counter = Some(addr),
             // no `postOp`, so it cannot charge the account (§6.4); the current instance only
             "whitelistPaymaster" => f.sponsoring_paymasters.push(addr),
@@ -89,28 +90,49 @@ fn from_deployments(json: &str, chain_id: u64, canonical: bool) -> Facts {
     f
 }
 
+/// The keys of a deployments file the review names: `(key, display name,
+/// whether superseded instances follow as key + "V<n>")`. A key that is not
+/// here — a new kind of contract, or a suffix on a base that is not
+/// versioned — is not a fact until someone adds it; a test accounts for
+/// every key of the embedded file.
+const CONTRACTS: &[(&str, &str, bool)] = &[
+    ("agentPolicy", "AgentPolicy", true),
+    ("p256Signer", "P256Signer", true),
+    ("p256Validator", "P256Validator", true),
+    ("p256RecoveryValidator", "P256RecoveryValidator", true),
+    ("whitelistPaymaster", "WhitelistPaymaster", true),
+    ("safeNonceAssert", "SafeNonceAssert", false),
+    ("demoCounter", "demo counter", false),
+    ("entryPoint", "EntryPoint v0.7", false),
+];
+
 /// The display name for a key of a deployments file, and whether it is a
 /// superseded version: `agentPolicyV5` → `AgentPolicy v5 (superseded)`.
 /// `None` for a key the review does not name.
 fn contract_name(key: &str) -> Option<(String, bool)> {
-    let (base, version) = match key.rfind('V') {
-        Some(i) if i + 1 < key.len() && key[i + 1..].bytes().all(|b| b.is_ascii_digit()) => (&key[..i], Some(&key[i + 1..])),
-        _ => (key, None),
+    CONTRACTS.iter().find_map(|(base, name, versioned)| {
+        if key == *base {
+            return Some((name.to_string(), false));
+        }
+        let version = key.strip_prefix(base)?.strip_prefix('V')?;
+        (*versioned && !version.is_empty() && version.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| (format!("{name} v{version} (superseded)"), true))
+    })
+}
+
+/// Whether `label` is a name this build gives to contracts and tokens it
+/// verifies, with or without a version: a laptop's pin may not look like
+/// one (§6.7), whatever address it is attached to.
+pub fn is_build_name(label: &str) -> bool {
+    let label = label.trim().to_ascii_lowercase();
+    let label = label.strip_suffix(" (superseded)").unwrap_or(&label).trim_end();
+    let base = match label.rsplit_once(" v") {
+        Some((base, version)) if !version.is_empty() && version.bytes().all(|b| b.is_ascii_digit() || b == b'.') => base,
+        _ => label,
     };
-    let name = match base {
-        "agentPolicy" => "AgentPolicy",
-        "p256Signer" => "P256Signer",
-        "p256Validator" => "P256Validator",
-        "p256RecoveryValidator" => "P256RecoveryValidator",
-        "whitelistPaymaster" => "WhitelistPaymaster",
-        "safeNonceAssert" => "SafeNonceAssert",
-        "demoCounter" => "demo counter",
-        "entryPoint" => "EntryPoint v0.7",
-        _ => return None,
-    };
-    Some(match version {
-        Some(v) => (format!("{name} v{v} (superseded)"), true),
-        None => (name.to_string(), false),
+    CONTRACTS.iter().map(|c| c.1).chain(TOKENS.iter().map(|t| t.2)).any(|name| {
+        let name = name.to_ascii_lowercase();
+        name == label || name == base || name.rsplit_once(" v").is_some_and(|(n, _)| n == label || n == base)
     })
 }
 
@@ -141,17 +163,36 @@ mod tests {
     }
 
     #[test]
+    fn names_follow_the_table_and_only_listed_bases_have_versions() {
+        assert_eq!(contract_name("agentPolicy"), Some(("AgentPolicy".to_string(), false)));
+        assert_eq!(contract_name("agentPolicyV12"), Some(("AgentPolicy v12 (superseded)".to_string(), true)));
+        assert_eq!(contract_name("p256RecoveryValidatorV1"), Some(("P256RecoveryValidator v1 (superseded)".to_string(), true)));
+        // a suffix on a base that is not versioned, a version that is not a number, an unknown base
+        assert_eq!(contract_name("entryPointV07"), None);
+        assert_eq!(contract_name("demoCounterV2"), None);
+        assert_eq!(contract_name("agentPolicyV"), None);
+        assert_eq!(contract_name("agentPolicyVx"), None);
+        assert_eq!(contract_name("usdcV2"), None);
+        // the names a laptop's pin may not carry
+        for reserved in ["AgentPolicy", "agentpolicy", " P256Validator ", "P256Validator v1", "AgentPolicy v6 (superseded)", "demo counter", "USDC", "EntryPoint", "EntryPoint v0.7"] {
+            assert!(is_build_name(reserved), "{reserved:?}");
+        }
+        for free in ["policy module (config)", "my vault", "AgentPolicy2", "paymaster (config)", "counter"] {
+            assert!(!is_build_name(free), "{free:?}");
+        }
+    }
+
+    #[test]
     fn base_sepolia() {
         let f = for_chain(84532);
         let policy = address!("dd544A6F0220778Fff16F51B468656e73E32ae85");
         let signer = address!("a19e6061b1C193573e5fe46c39363FfDd5CCA22E");
         assert_eq!(f.names[&policy], "AgentPolicy");
-        assert_eq!(f.known_modules.len(), 2, "the current policy and signer only");
-        assert!(f.known_modules.contains(&policy) && f.known_modules.contains(&signer));
+        assert_eq!((&f.policy_modules, &f.signer_modules), (&vec![policy], &vec![signer]), "the current policy and signer only, each in its slot");
         // superseded versions are named as such and are not readable modules
         let v6 = address!("8347dBC3d7A71DAFDeED5975ce85638494865F73");
         assert_eq!(f.names[&v6], "AgentPolicy v6 (superseded)");
-        assert!(!f.known_modules.contains(&v6));
+        assert!(!f.policy_modules.contains(&v6));
         assert_eq!(f.names[&address!("68544284bfDbbd6bDB9F6A1D80D05C387015daA9")], "P256Signer v1 (superseded)");
         // both recovery validators can take over; only the current paymaster sponsors
         assert_eq!(f.recovery_validators.len(), 2);
@@ -183,11 +224,11 @@ mod tests {
     #[test]
     fn unknown_chains_have_no_facts_and_the_test_chain_is_opt_in() {
         let none = for_chain(1);
-        assert!(none.names.is_empty() && none.known_modules.is_empty() && none.sponsoring_paymasters.is_empty());
+        assert!(none.names.is_empty() && none.policy_modules.is_empty() && none.sponsoring_paymasters.is_empty());
         let anvil = for_chain(31337);
         if cfg!(feature = "test-chains") {
             assert_eq!(chains(), vec![84532, 31337]);
-            assert!(anvil.demo_counter.is_some() && anvil.known_modules.len() == 2);
+            assert!(anvil.demo_counter.is_some() && anvil.policy_modules.len() == 1 && anvil.signer_modules.len() == 1);
             assert!(anvil.sponsoring_paymasters.is_empty() && anvil.tokens.is_empty(), "the harness deploys those afresh");
             assert!(anvil.names.values().all(|n| !n.contains("superseded")));
         } else {
