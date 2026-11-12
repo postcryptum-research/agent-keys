@@ -48,11 +48,46 @@ pub fn verify_answer_mac(secret: &str, body: &[u8], mac: &str) -> bool {
     expected.verify_slice(&given).is_ok()
 }
 
-fn mac_over(secret: &str, body: &[u8]) -> Result<Hmac<Sha256>, RequestError> {
+/// What the laptop answers when it accepts an answer, base64url:
+/// `HMAC-SHA256(secret, "TPM_sign/v1/accepted" ‖ HMAC-SHA256(secret, body))`.
+/// The phone takes only this as "the laptop has it": a bare `200` can be
+/// written by any host in the path that dropped the real POST, and a phone
+/// that believed it would keep a key the laptop never saw.
+pub fn confirmation_mac(secret: &str, answer_body: &[u8]) -> Result<String, RequestError> {
+    Ok(B64URL.encode(confirmation_over(secret, answer_body)?.finalize().into_bytes()))
+}
+
+/// Constant-time check of [`confirmation_mac`].
+pub fn verify_confirmation_mac(secret: &str, answer_body: &[u8], confirmation: &str) -> bool {
+    let (Ok(expected), Ok(given)) = (confirmation_over(secret, answer_body), B64URL.decode(confirmation.trim())) else {
+        return false;
+    };
+    expected.verify_slice(&given).is_ok()
+}
+
+fn keyed(secret: &str) -> Result<Hmac<Sha256>, RequestError> {
     let key = B64URL.decode(secret).ok().filter(|k| k.len() == SESSION_SECRET_BYTES);
     let key = key.ok_or_else(|| RequestError::Malformed("the session secret is not 16 bytes of base64url".into()))?;
-    let mut mac = Hmac::<Sha256>::new_from_slice(&key).expect("HMAC takes a key of any length");
+    Ok(Hmac::<Sha256>::new_from_slice(&key).expect("HMAC takes a key of any length"))
+}
+
+/// The body alone is enough to cover: the key is fresh for each session
+/// and used for nothing else, and the body names the request it answers by
+/// its commitment, so a MAC cannot be replayed into another session or
+/// onto another request.
+fn mac_over(secret: &str, body: &[u8]) -> Result<Hmac<Sha256>, RequestError> {
+    let mut mac = keyed(secret)?;
     mac.update(body);
+    Ok(mac)
+}
+
+/// A different input shape from an answer's (a JSON body), so one can never
+/// stand in for the other.
+fn confirmation_over(secret: &str, answer_body: &[u8]) -> Result<Hmac<Sha256>, RequestError> {
+    let answer = mac_over(secret, answer_body)?.finalize().into_bytes();
+    let mut mac = keyed(secret)?;
+    mac.update(b"TPM_sign/v1/accepted");
+    mac.update(&answer);
     Ok(mac)
 }
 
@@ -611,5 +646,13 @@ mod tests {
         assert!(!verify_answer_mac(&secret, b"answer", ""), "no MAC is not a MAC");
         assert!(!verify_answer_mac(&secret, b"answer", &mac[..42]));
         assert!(answer_mac("AAAA", b"answer").is_err() && !verify_answer_mac("AAAA", b"answer", &mac), "a short secret is refused");
+        // the laptop's confirmation: bound to the secret and to the answer, and not an answer's MAC
+        let confirmation = confirmation_mac(&secret, b"answer").unwrap();
+        assert!(verify_confirmation_mac(&secret, b"answer", &confirmation));
+        assert!(verify_confirmation_mac(&secret, b"answer", &format!("{confirmation}\n")), "a trailing newline from the transport is not part of it");
+        assert!(!verify_confirmation_mac(&secret, b"another answer", &confirmation));
+        assert!(!verify_confirmation_mac(&other, b"answer", &confirmation));
+        assert!(!verify_confirmation_mac(&secret, b"answer", "ok") && !verify_confirmation_mac(&secret, b"answer", ""), "a bare ok is not a confirmation");
+        assert!(!verify_confirmation_mac(&secret, b"answer", &mac) && !verify_answer_mac(&secret, b"answer", &confirmation), "the two MACs do not stand in for each other");
     }
 }

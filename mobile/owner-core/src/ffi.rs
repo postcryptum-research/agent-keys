@@ -214,6 +214,14 @@ pub fn answer_mac_header() -> String {
     crate::request::MAC_HEADER.to_string()
 }
 
+/// Whether the laptop's reply to a POST is its confirmation of that answer
+/// (§3.3). Only this means the laptop has the answer: any host in the path
+/// can write a bare `200`.
+#[uniffi::export]
+pub fn verify_confirmation(secret: String, answer_body: Vec<u8>, reply: String) -> bool {
+    crate::request::verify_confirmation_mac(&secret, &answer_body, &reply)
+}
+
 /// §2.1 step 3: the commitment, the type, the version, the expiry with the
 /// clock tolerance, the label and the pins; the pins split by what this
 /// build knows.
@@ -503,5 +511,8 @@ mod tests {
         let mac = answer_mac(qr.secret.clone(), refused.clone()).unwrap();
         assert!(crate::request::verify_answer_mac(&qr.secret, &refused, &mac));
         assert_eq!(answer_mac_header(), "X-TpmSign-Mac");
+        let confirmation = crate::request::confirmation_mac(&qr.secret, &refused).unwrap();
+        assert!(verify_confirmation(qr.secret.clone(), refused.clone(), confirmation));
+        assert!(!verify_confirmation(qr.secret.clone(), refused.clone(), "ok".into()));
     }
 }

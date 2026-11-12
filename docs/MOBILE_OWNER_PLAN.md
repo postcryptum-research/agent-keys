@@ -287,20 +287,29 @@ the phone learning which validator holds its key (v2, §14).
 P3 status (2026-11-13, slice 1): every answer of a session is now
 authenticated. The QR carries a 128-bit secret next to the commitment
 (`tpmsign:1?u=…&h=…&k=…`); it reaches the phone through the camera and is
-never sent over the network. The phone puts `HMAC-SHA256(k, body)` on every
-POST (`X-TpmSign-Mac`), and the laptop ignores an answer without it —
-enrollment answers, sign responses and refusals alike — so a host on the
-network can no longer answer an enrollment with its own key or stop a
-session with a forged refusal; it can only make the session time out. This
-is what retires the typed fingerprint, not attestation: an attestation
-shows that a genuine device running our app made the key for this request,
-and anyone can hold such a device. The fingerprint is still shown on both
-sides; `--phone-confirm-fingerprint` asks for it, for the case where the
-QR itself was seen by someone who is also on the network, and
-`--phone-fingerprint` checks a known one. `--phone-fingerprint-cmd` is
-gone. Tests: the MAC against RFC 4231; in the anvil suite an intruder
-without the secret posts its own key first and is ignored, and a forged
-refusal does not stop a signature.
+never sent over the network, and the CLI prints the URI without it. The
+phone puts `HMAC-SHA256(k, body)` on every POST (`X-TpmSign-Mac`), and the
+laptop ignores an answer without it — enrollment answers, sign responses
+and refusals alike — so a host on the network can no longer answer an
+enrollment with its own key or stop a session with a forged refusal. The
+laptop's acceptance is authenticated too: its `200` carries a confirmation
+MAC, and the app keeps a new key only on that, since a bare `200` can come
+from any host in the path. What is left to a network attacker is denial of
+service. This, not attestation, is what answers "is it the owner's phone":
+an attestation shows that a genuine device running our app made the key
+for this request, and anyone can hold such a device. The owner's decision
+on the fingerprint: **the CLI still asks for it at enrollment by default**
+(two groups at least), because the secret assumes nobody else read the QR
+and an enrollment is followed by a root handover; `--phone-skip-fingerprint`
+relies on the secret alone, and `--phone-fingerprint` serves scripts.
+`--phone-fingerprint-cmd` is gone. The protocol version stays `1` while
+the QR and the answers change incompatibly: nothing has been distributed,
+and version 1 is frozen only at the first distributed build. Tests: the
+MACs against RFC 4231 and against each other; in the anvil suite an
+intruder without the secret posts its own key first, is ignored and gets
+no confirmation, a forged refusal does not stop a signature, the secret is
+not in the printed text, and an intruder with the secret is rejected by
+the fingerprint.
 
 ## Threat model, briefly
 
