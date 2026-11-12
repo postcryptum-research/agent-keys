@@ -169,6 +169,33 @@ phone-signed root operation included on anvil; the agent still runs:
 test phone_owner_real_device ... ok
 ```
 
+### P2 run record, after review — a refusal and a payment (2026-11-12, app 0.1.0-p2)
+
+With the review's rules from PR #30 and #31 on the phone and no build facts
+yet, two runs of the same script:
+
+- the counter increment was **refused on the phone**, and the laptop
+  printed the phone's reason verbatim, before anything was signed:
+
+  ```
+  Error: key unavailable: phone "owner-phone": the phone refused: core (a call to 0x… with
+  function 0xd09de08a this version cannot decode; from the root key it can move everything the
+  account holds (expert mode is off))
+  ```
+
+- a payment of 0.001 ETH to an address the build does not know was shown
+  in bold, needed the second confirmation, then the fingerprint, and
+  landed:
+
+  ```
+  phone:          signed, signature verified against the owner key
+  included: tx 0x4efc7ada24cbbefe054772bd9aa07b3b75c862c1c229dcf1174fc982a3b861b5 (block 5, 151714 gas)
+  test phone_owner_real_device ... ok
+  ```
+
+The real-device test now sends that payment; the increment comes back
+once slice 3 lets the phone know the counter.
+
 ### P1 run record — a real root operation on anvil, signed on the phone
 
 `~/… phone-anvil-run.sh` (the ignored test `phone_owner_real_device`, the
