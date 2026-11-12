@@ -31,3 +31,5 @@ mobile/android/build/
 mobile/android/app/build/
 mobile/android/local.properties
 mobile/android/p0-out/
+# owner-core built for the phone (build-core.sh)
+mobile/android/app/src/main/jniLibs/

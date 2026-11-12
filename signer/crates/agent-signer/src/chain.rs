@@ -457,6 +457,7 @@ impl Session {
             Some(env!("CARGO_PKG_VERSION").to_string()),
         )
         .to_bytes();
+        self.preview_review(&request);
         debug_assert_eq!(owner_core::user_op::user_op_hash(&packed, self.dep.entry_point, self.dep.chain_id), user_op_hash);
         let ctx = hw_signer::UserOpContext { user_op_hash: user_op_hash.0, request: Some(&request) };
         Ok(signer.sign_user_op(&ctx)?)
@@ -682,6 +683,44 @@ impl Session {
             );
         }
         Ok(())
+    }
+
+    /// What the phone will show for this request, from the same `owner-core`
+    /// review (docs/MOBILE_OWNER_DESIGN.md §6), printed on the laptop before
+    /// the QR: the owner compares screens, and a refusal is known before the
+    /// phone is asked. The facts are this deployment's names.
+    fn preview_review(&self, request: &[u8]) {
+        use owner_core::review::{open_request, EnrolledAccount, Facts, Verdict};
+        let d = &self.dep;
+        let mut facts = Facts::default();
+        let mut name = |a: Option<Address>, n: &str| {
+            if let Some(a) = a {
+                facts.names.insert(a, n.to_string());
+            }
+        };
+        name(Some(d.p256_validator), "P256Validator");
+        name(Some(d.p256_signer), "P256Signer");
+        name(Some(d.agent_policy), "AgentPolicy");
+        name(Some(d.demo_counter), "demo counter");
+        name(d.whitelist_paymaster, "WhitelistPaymaster");
+        name(d.p256_recovery_validator, "P256RecoveryValidator");
+        name(d.p256_validator_v1, "P256Validator v1 (superseded)");
+        name(d.p256_recovery_validator_v1, "P256RecoveryValidator v1 (superseded)");
+        name(d.safe_nonce_assert, "SafeNonceAssert");
+        facts.sponsoring_paymasters.extend(d.whitelist_paymaster);
+        facts.recovery_validators.extend(d.p256_recovery_validator);
+        facts.recovery_validators.extend(d.p256_recovery_validator_v1);
+        facts.demo_counter = Some(d.demo_counter);
+        facts.known_modules = vec![d.agent_policy, d.p256_signer];
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|t| t.as_secs()).unwrap_or(0);
+        let enrolled = [EnrolledAccount::new(d.chain_id, d.entry_point, self.account)];
+        let review = open_request(request, &owner_core::request::commitment(request), now, &enrolled, &facts);
+        eprintln!("\nwhat the phone will show:\n{}", review.text());
+        match &review.verdict {
+            Verdict::Sign => {}
+            Verdict::SignWithWarnings(w) => eprintln!("the phone will warn: {}", w.join("; ")),
+            Verdict::Refuse(why) => eprintln!("the phone will REFUSE this operation (default settings): {why}"),
+        }
     }
 
     /// Before the recovery key signs on its own path (`owner recover`): it
