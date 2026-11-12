@@ -642,7 +642,12 @@ fn external_call(
         let amount = U256::from_be_slice(&data[36..68]);
         let amount = if amount == U256::MAX { "unlimited".to_string() } else { format!("{amount} (raw units, unverified decimals)") };
         if selector == SELECTOR_ERC20_TRANSFER {
-            b.row(s, "Call", format!("ERC-20 transfer to {}: {amount}", who.to_checksum(None)));
+            // tokens are payments too: plain only to a contract the build knows
+            if b.facts.names.contains_key(&who) {
+                b.row(s, "Call", format!("ERC-20 transfer to {}: {amount}", b.facts.name(who)));
+            } else {
+                b.bold(s, "ERC-20 transfer", format!("{amount} to {}, an address this build does not know", who.to_checksum(None)));
+            }
         } else {
             // an approval hands spending rights to a third party
             b.bold(s, "ERC-20 approve", format!("{} may spend {amount} of this token", who.to_checksum(None)));
@@ -1141,7 +1146,13 @@ mod tests {
         transfer.extend_from_slice(&[0u8; 12]);
         transfer.extend_from_slice(PAYMASTER.as_slice());
         transfer.extend_from_slice(&U256::from(5).to_be_bytes::<32>());
-        assert_eq!(open(&quiet(kernel::execute_calldata(SIGNER, U256::ZERO, &transfer))).verdict, Verdict::Sign);
+        let r = open(&quiet(kernel::execute_calldata(SIGNER, U256::ZERO, &transfer)));
+        assert_eq!(r.verdict, Verdict::Sign);
+        assert!(r.text().contains("Call: ERC-20 transfer to 0x6000000000000000000000000000000000000006 — WhitelistPaymaster (verified in this build): 5"), "a known recipient stays plain: {}", r.text());
+        let mut to_unknown = transfer.clone();
+        to_unknown[16..36].copy_from_slice(address!("7000000000000000000000000000000000000007").as_slice());
+        let r = open(&quiet(kernel::execute_calldata(SIGNER, U256::ZERO, &to_unknown)));
+        assert!(r.needs_second_confirmation() && r.text().contains("! ERC-20 transfer: 5 (raw units, unverified decimals) to 0x7000000000000000000000000000000000000007, an address this build does not know"), "{}", r.text());
         let mut padded = transfer.clone();
         padded[4] = 1;
         assert!(matches!(open(&quiet(kernel::execute_calldata(SIGNER, U256::ZERO, &padded))).verdict, Verdict::Refuse(ref m) if m.contains("address word")));
