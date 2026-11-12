@@ -15,12 +15,14 @@ android {
         applicationId = "dev.tpmsign.owner.spike"
         minSdk = 30          // Android 11: setUserAuthenticationParameters (design D7)
         targetSdk = 34
-        versionCode = 6
-        versionName = "0.0.6-p1"
+        versionCode = 7
+        versionName = "0.1.0-p2"
     }
     buildTypes {
         release { isMinifyEnabled = false }
     }
+    // owner-core's generated Kotlin bindings and its arm64 library (build-core.sh)
+    sourceSets["main"].kotlin.srcDir("build/generated/uniffi")
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -40,4 +42,6 @@ dependencies {
     // (docs/MOBILE_LICENSE_STUDY.md §3).
     implementation("com.journeyapps:zxing-android-embedded:4.3.0") { isTransitive = false }
     implementation("com.google.zxing:core:3.5.4")
+    // uniffi's Kotlin bindings load owner-core through JNA (Apache-2.0 / LGPL dual)
+    implementation("net.java.dev.jna:jna:5.17.0@aar")
 }

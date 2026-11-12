@@ -7,7 +7,23 @@ description = "Kernel v3.3 encodings and ERC-4337 hashing shared by agent-signer
 # Deliberately no `license` field and not a member of the signer/ workspace.
 publish = false
 
+[lib]
+# cdylib for the phone apps (uniffi); rlib for agent-signer.
+crate-type = ["lib", "cdylib"]
+
+[features]
+# The uniffi surface for the phone apps (src/ffi.rs); off for the CLI's build.
+ffi = ["dep:uniffi"]
+# `cargo run --features cli --bin uniffi-bindgen` generates the bindings.
+cli = ["ffi", "uniffi/cli"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+required-features = ["cli"]
+
 [dependencies]
+uniffi = { version = "0.32", optional = true }
 alloy-primitives = { version = "1.7", default-features = false, features = ["std", "serde"] }
 alloy-sol-types = { version = "1.7", default-features = false, features = ["std"] }
 hw-signer = { path = "../../signer/crates/hw-signer", default-features = false }

@@ -97,6 +97,9 @@ pub struct Review {
     pub sections: Vec<Section>,
     /// The request's commitment, echoed in the response.
     pub request_commitment: String,
+    /// The account and chain the request names (zero until parsed).
+    pub account: Address,
+    pub chain_id: u64,
     digest: Option<B256>,
 }
 
@@ -128,7 +131,7 @@ impl Review {
     }
 
     fn refused(request_commitment: String, sections: Vec<Section>, why: impl Into<String>) -> Self {
-        Self { verdict: Verdict::Refuse(why.into()), sections, request_commitment, digest: None }
+        Self { verdict: Verdict::Refuse(why.into()), sections, request_commitment, account: Address::ZERO, chain_id: 0, digest: None }
     }
 }
 
@@ -186,8 +189,9 @@ pub fn open_request(
             ),
         );
     };
+    let refused = |c: String, sections: Vec<Section>, why: String| Review { account: op.sender, chain_id, ..Review::refused(c, sections, why) };
     if !op.init_code.is_empty() {
-        return Review::refused(c, vec![], "the operation carries initCode; v1 signs for existing accounts only");
+        return refused(c, vec![], "the operation carries initCode; v1 signs for existing accounts only".into());
     }
     if op.nonce >> 64 != U256::ZERO {
         return Review::refused(c, vec![], "the nonce key is not the root key; this phone signs root operations only");
@@ -285,7 +289,7 @@ pub fn open_request(
     b.row(s, "userOpHash", format!("{digest}"));
 
     let verdict = if b.warnings.is_empty() { Verdict::Sign } else { Verdict::SignWithWarnings(b.warnings) };
-    Review { verdict, sections: b.sections, request_commitment: c, digest: Some(digest) }
+    Review { verdict, sections: b.sections, request_commitment: c, account: op.sender, chain_id, digest: Some(digest) }
 }
 
 /// §6.3 top level: `execute` (single or batch, default exec type) or a direct

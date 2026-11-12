@@ -16,7 +16,11 @@
 // the laptop's enrollment QR — a NEW key per account (§5.1), attested with a
 // challenge bound to the request (§5.2), the §5.6 notice acknowledged first;
 // button 3 signs a root operation for an enrolled account behind the
-// fingerprint prompt (blind until P2 decodes on the phone).
+// fingerprint prompt.
+//
+// P2: owner-core runs on the phone (uniffi, `build-core.sh`). Button 3 shows
+// the decoded operation from one parse and signs the userOpHash the core
+// recomputed — never the laptop's number (design §6, §7).
 package dev.tpmsign.owner.spike
 
 import android.content.Context
@@ -31,6 +35,7 @@ import android.util.Log
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import org.json.JSONObject
+import uniffi.owner_core.*
 import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.URL
@@ -60,7 +65,7 @@ class MainActivity : AppCompatActivity() {
         const val ALIAS = "tpmsign-p0-owner"
         /** One key per enrolled account (§5.1): alias by chain and account. */
         fun aliasFor(chainId: String, account: String) = "tpmsign-owner-$chainId-${account.lowercase()}"
-        const val APP_VERSION = "0.0.6-p1"
+        const val APP_VERSION = "0.1.0-p2"
         const val PREFS = "enrollments"
         /** owner-core `user_op::tests`: the golden operation's userOpHash on chain 31337 (anvil). */
         const val GOLDEN_DIGEST_HEX = "48e286b71f896beef7a0b4d23fd82d6afae60a64e7976118de492a2fba4c1947"
@@ -90,7 +95,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(ScrollView(this).apply { addView(column) })
 
         savedInstanceState?.getCharSequence("out")?.let { out.text = it }
-        say("Android API ${Build.VERSION.SDK_INT}")
+        say("Android API ${Build.VERSION.SDK_INT}; owner-core ${coreVersion()} loaded")
         say("StrongBox feature: ${packageManager.hasSystemFeature("android.hardware.strongbox_keystore")}")
         val bm = BiometricManager.from(this).canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG)
         say("BIOMETRIC_STRONG available: ${bm == BiometricManager.BIOMETRIC_SUCCESS} (code $bm)")
@@ -288,44 +293,69 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
+    /** P2: owner-core parses the request once; the screen, the verdict and the digest come from that parse (§6.1). */
     private fun reviewAndSign(bytes: ByteArray, commitment: String, url: String) {
-        val req = JSONObject(String(bytes))
-        require(req.getString("tpmSign") == "sign-request") { "not a sign request" }
-        require(req.getInt("version") == 1) { "protocol version ${req.getInt("version")} not supported" }
         val now = System.currentTimeMillis() / 1000
-        require(now <= req.getLong("expires") + 300) { "the request has expired" }
-        val op = req.getJSONObject("userOp")
-        val nonce = java.math.BigInteger(op.getString("nonce"))
-        require(nonce.shiftRight(64).signum() == 0) { "not a root-path operation (nonce key != 0); refusing" }
-        require(op.getString("initCode") == "0x") { "operations with initCode are refused (v1)" }
-        val laptop = req.getJSONObject("laptop")
-        val hashHex = laptop.getString("userOpHash").removePrefix("0x")
-        require(hashHex.length == 64) { "bad userOpHash" }
-        // the key enrolled for this account (§5.1); the P0 key as the fallback for accounts enrolled by hand
-        val enrolled = aliasFor(req.getString("chainId"), op.getString("sender"))
-        val alias = if (keyStore.containsAlias(enrolled)) enrolled else ALIAS
+        val enrolled = prefs().all.mapNotNull { (_, v) ->
+            val e = JSONObject(v.toString())
+            if (!isConfirmed(v.toString())) null else FfiEnrolledAccount(
+                chainId = e.getString("chainId").toULong(), entryPoint = e.getString("entryPoint"), account = e.getString("account"),
+                validator = null, gasCapWei = defaultGasCapWei(), expertMode = false
+            )
+        }
+        val review = openRequest(bytes, commitment, now.toULong(), enrolled)
+        val text = review.text()
+        val app = FfiApp(platform = "android", version = APP_VERSION)
+        val verdict = review.verdict()
+        if (verdict is FfiVerdict.Refuse) {
+            say("REFUSED by owner-core: ${verdict.reason}\n\n$text")
+            val refusal = review.refuse("core", verdict.reason, app)
+            Thread { try { httpPost(url, refusal) } catch (_: Exception) {} }.start()
+            return
+        }
+        val warnings = (verdict as? FfiVerdict.SignWithWarnings)?.warnings ?: emptyList()
+        say("REVIEW (owner-core ${coreVersion()})\n$text" + if (warnings.isEmpty()) "" else "\nWARNINGS: ${warnings.joinToString("; ")}")
+        val alias = aliasFor(review.chainId().toString(), review.account())
         require(keyStore.containsAlias(alias)) { "no key for this account on this phone: enroll it first (button 4)" }
-        // P1 shows what it has; P2 decodes the calldata and recomputes the hash on the phone.
-        say("REVIEW (P1, blind)\n  chain ${req.getString("chainId")}\n  account ${op.getString("sender")}\n  key ${if (alias == ALIAS) "P0 key" else "enrolled key"}\n  nonce $nonce\n  callData ${op.getString("callData").take(74)}…\n  laptop says: ${laptop.optString("command", "?")}\n  userOpHash 0x$hashHex")
+        val refuse = { reason: String ->
+            say("refused on the phone ($reason) — telling the laptop")
+            val r = review.refuse(reason, null, app)
+            Thread { try { httpPost(url, r) } catch (_: Exception) {} }.start()
+        }
+        // §6.6: one Sign action after the whole review; bold effects get a second confirmation in plain words
+        AlertDialog.Builder(this)
+            .setTitle("Sign this operation?")
+            .setMessage(text + if (warnings.isEmpty()) "" else "\nWARNINGS: ${warnings.joinToString("; ")}")
+            .setNegativeButton("Refuse") { _, _ -> refuse("user") }
+            .setPositiveButton("Sign") { _, _ ->
+                if (review.needsSecondConfirmation()) {
+                    AlertDialog.Builder(this)
+                        .setTitle("Are you sure?")
+                        .setMessage("This operation:\n\n" + review.effects().joinToString("\n\n"))
+                        .setNegativeButton("Refuse") { _, _ -> refuse("user") }
+                        .setPositiveButton("Yes, sign") { _, _ -> signReviewed(review, alias, url, app) }
+                        .setCancelable(false).show()
+                } else signReviewed(review, alias, url, app)
+            }
+            .setCancelable(false)
+            .show()
+    }
+
+    private fun signReviewed(review: ReviewHandle, alias: String, url: String, app: FfiApp) {
+        val digest = review.digestToSign()
         val priv = keyStore.getKey(alias, null) as PrivateKey
         val sig = Signature.getInstance("NONEwithECDSA").apply { initSign(priv) }
         val prompt = BiometricPrompt(this, ContextCompat.getMainExecutor(this), object : BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                 safely {
                     val s = result.cryptoObject!!.signature!!
-                    s.update(hashHex.hexToBytes())
-                    val (r, sv) = derToRs(s.sign())
-                    val sLow = if (sv > P256_HALF_N) P256_N.subtract(sv) else sv
+                    s.update(digest)
                     val (x, y) = publicXY(alias)
-                    val resp = JSONObject()
-                        .put("tpmSign", "sign-response").put("version", 1).put("request", commitment)
-                        .put("result", "signed").put("userOpHash", "0x$hashHex")
-                        .put("signature", "0x${r.hex32()}${sLow.hex32()}")
-                        .put("publicKey", JSONObject().put("x", "0x$x").put("y", "0x$y"))
-                        .put("app", appInfo())
+                    // owner-core converts DER to r‖s, normalizes low-s and verifies before it builds the response
+                    val resp = review.finish(s.sign(), (x + y).hexToBytes(), app)
                     Thread {
                         try {
-                            val code = httpPost(url, resp.toString().toByteArray())
+                            val code = httpPost(url, resp)
                             runOnUiThread { say("signed and posted: HTTP $code") }
                         } catch (e: Exception) { runOnUiThread { say("POST failed: ${e.message}") } }
                     }.start()
@@ -333,12 +363,12 @@ class MainActivity : AppCompatActivity() {
             }
             override fun onAuthenticationError(code: Int, msg: CharSequence) {
                 say("biometric error $code: $msg — telling the laptop")
-                val refusal = JSONObject().put("tpmSign", "sign-response").put("version", 1).put("request", commitment)
-                    .put("result", "refused").put("reason", "user").put("detail", msg.toString())
-                Thread { try { httpPost(url, refusal.toString().toByteArray()) } catch (_: Exception) {} }.start()
+                val refusal = review.refuse("user", msg.toString(), app)
+                Thread { try { httpPost(url, refusal) } catch (_: Exception) {} }.start()
             }
             override fun onAuthenticationFailed() { say("biometric not recognised, try again") }
         })
+        val hashHex = digest.joinToString("") { "%02x".format(it) }
         prompt.authenticate(
             BiometricPrompt.PromptInfo.Builder().setTitle("Sign a root operation")
                 .setSubtitle("userOpHash 0x${hashHex.take(8)}…${hashHex.takeLast(6)}")

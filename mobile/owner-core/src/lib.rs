@@ -3,6 +3,8 @@
 
 pub mod abi;
 pub mod enroll;
+#[cfg(feature = "ffi")]
+pub mod ffi;
 pub mod fingerprint;
 pub mod kernel;
 pub mod request;
@@ -10,3 +12,6 @@ pub mod review;
 pub mod user_op;
 
 pub use hw_signer::{PublicKey, Signature};
+
+#[cfg(feature = "ffi")]
+uniffi::setup_scaffolding!();

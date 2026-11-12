@@ -18,6 +18,7 @@ is provisional (`docs/APP_ATTEST_ORG.md` §8).
 export ANDROID_HOME=/opt/homebrew/share/android-commandlinetools   # or your SDK
 export JAVA_HOME=$(/usr/libexec/java_home -v 21)                   # JDK 17 or 21
 cd mobile/android
+./build-core.sh          # owner-core for arm64 + its Kotlin bindings (cargo-ndk, the NDK; CARGO="cargo +1.94" if needed)
 ./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb shell am start -n dev.tpmsign.owner.spike/.MainActivity
@@ -120,6 +121,29 @@ back to the P0 key for accounts enrolled by hand (to go with P2).
 
 The laptop writes the enrollment (request, answer, `attest-*.der`) with
 `--out <dir>`; verifying the chain there is P3.
+
+## P2: owner-core on the phone (version 0.1.0-p2)
+
+`build-core.sh` builds `mobile/owner-core` with `--features ffi` for
+`arm64-v8a` through `cargo-ndk` (about 1.2 MB, into `app/src/main/jniLibs`,
+not committed) and generates the Kotlin bindings with `uniffi` 0.32 into
+`app/build/generated/uniffi` (a source set of the app). The bindings load
+the library through JNA. The surface is design §7.2: `parseQr`,
+`openRequest` → a `ReviewHandle` with `verdict`, `sections`, `text`,
+`needsSecondConfirmation`, `effects`, `digestToSign`, `finish` and
+`refuse`; `fingerprintOf`, `attestationChallenge`, `defaultGasCapWei`,
+`coreVersion`.
+
+Button **3** now does what §6 asks: owner-core parses the request once,
+with the phone's confirmed enrollments as the enrolled accounts; a refusal
+posts a refusal with the core's reason; otherwise the decoded operation is
+shown in a dialog with one Sign action, bold effects get a second
+confirmation in plain words, and the fingerprint prompt signs the
+`userOpHash` the core recomputed — never the laptop's number. The core
+converts the DER signature, normalizes low-s, verifies it and builds the
+response. The P0-key fallback is gone: an account must be enrolled. The
+build-embedded names of §6.7 are slice 3, so on the phone addresses show
+in full without names today.
 
 ### P1 run record — a real root operation on anvil, signed on the phone
 
