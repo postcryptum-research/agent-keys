@@ -213,6 +213,42 @@ TPMSIGN_ATTESTATION_DIR=<dir written by --out> TPMSIGN_ANDROID_APP_DIGEST=<sha25
 Phones with remotely provisioned attestation keys carry a certificate that
 lives about two weeks, so that check uses the request's own time.
 
+### P3 run record — an authenticated, attested enrollment with nothing typed (2026-11-13, app 0.3.0-p3)
+
+The same script, on the whole P3 stack. The QR carried the session's
+secret; the phone's enrollment answer came with its MAC and its key
+attestation, which the laptop verified before it accepted the answer;
+nothing was typed; the handover followed; the permission install was
+signed on the phone, its response under the same kind of MAC:
+
+```
+tpmsign:1?u=http://192.168.x.x:63503/s/<token>&h=<commitment>&k=<secret>
+waiting up to 180s for the phone…
+phone:          signed, signature verified against the owner key
+path:           root (owner key)
+added permission 0x74657332 (valid 0 … 1826046404): tx 0x0e2e85494d02aa010f943a6201f99fc0612f0f83360f8d1833f89e6bf10b7680 (block 5, 399078 gas)
+the permission the phone installed is on-chain; the agent runs under it:
+test phone_owner_real_device ... ok
+```
+
+The enrollment's own lines were not kept from that terminal. The evidence
+the run kept was verified again offline with the ignored test
+`a_real_enrollment`, at the request's own time; the live check had to
+reach the same result to accept the answer:
+
+| Check | Result |
+|---|---|
+| chain | five certificates to Google's remote-provisioning root (P-384); every issuer a CA, the record on the key's certificate only |
+| record | attestation version 400; made for this request (challenge bound to its commitment); the key the answer names |
+| tier | TEE, attested, and equal to the phone's own report |
+| key | EC P-256, sign only, `DIGEST_NONE` allowed, generated in the hardware, a biometric check on every use |
+| device | bootloader locked, boot state Verified: no warning |
+| app | the owner app's package, version code 9, signed with the developer's debug certificate, named by `--android-app-digest` |
+| revocation | none of the five serials on Google's list (1,773 entries that day) |
+
+One fault showed in the kept answer and is fixed: the enrollment answer
+still said `core: none`, a leftover from P1; it now names the core.
+
 ### P2 run record — the phone names the mandate it signs (2026-11-13, app 0.2.0-p2)
 
 The same script, with the app built as `OWNER_CORE_FEATURES=ffi,test-chains`

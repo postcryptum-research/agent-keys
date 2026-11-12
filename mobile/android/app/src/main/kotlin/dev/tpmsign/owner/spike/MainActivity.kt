@@ -544,7 +544,7 @@ class MainActivity : AppCompatActivity() {
         val e = JSONObject(record ?: return false)
         return e.optString("state") == "confirmed" || (!e.has("state") && e.has("x"))
     }
-    private fun appInfo() = JSONObject().put("platform", "android").put("version", APP_VERSION).put("core", "none")
+    private fun appInfo() = JSONObject().put("platform", "android").put("version", APP_VERSION).put("core", coreVersion())
 
     /** owner-core `fingerprint`: the first 100 bits of sha256(x ‖ y), base32, four groups of five. */
     private fun fingerprint(xHex: String, yHex: String): String {
