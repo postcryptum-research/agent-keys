@@ -89,12 +89,18 @@ class MainActivity : AppCompatActivity() {
         column.addView(create); column.addView(sign); column.addView(scan); column.addView(enroll); column.addView(wipe); column.addView(wipeTest); column.addView(out)
         setContentView(ScrollView(this).apply { addView(column) })
 
+        savedInstanceState?.getCharSequence("out")?.let { out.text = it }
         say("Android API ${Build.VERSION.SDK_INT}")
         say("StrongBox feature: ${packageManager.hasSystemFeature("android.hardware.strongbox_keystore")}")
         val bm = BiometricManager.from(this).canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG)
         say("BIOMETRIC_STRONG available: ${bm == BiometricManager.BIOMETRIC_SUCCESS} (code $bm)")
         if (keyStore.containsAlias(ALIAS)) { say("key $ALIAS exists"); describeKey() } else say("no key yet")
         listEnrollments()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putCharSequence("out", out.text)
     }
 
     // ---- 1. key creation (design §5.2) -------------------------------------
@@ -400,7 +406,10 @@ class MainActivity : AppCompatActivity() {
                         .put("securityLevel", tier).put("deviceCredential", false)
                         .put("attestation", attestation).put("app", appInfo())
                     val fp = fingerprint(x, y)
+                    // the fingerprint is the owner's one check on the laptop's side (P1): it must not get lost
+                    prefs().edit().putString(alias, record.put("x", "0x$x").put("y", "0x$y").put("tier", tier).toString()).apply()
                     say("new key: tier $tier, ${chain.size} attestation certificates\n  x = 0x$x\n  y = 0x$y\n\n  FINGERPRINT  $fp\n  type it on the laptop when asked")
+                    showFingerprint(fp, account)
                     Thread {
                         val outcome = try { "HTTP ${httpPost(url, resp.toString().toByteArray())}" } catch (e: Exception) { "POST failed: ${e.message}" }
                         runOnUiThread {
@@ -419,12 +428,27 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    /** A dialog the owner reads the fingerprint from while typing it on the laptop; it stays until dismissed. */
+    private fun showFingerprint(fp: String, account: String) {
+        AlertDialog.Builder(this)
+            .setTitle("New key's fingerprint")
+            .setMessage("$fp\n\nType it on the laptop (at least the first two groups) when agent-signer asks. Account $account.")
+            .setPositiveButton("Done", null)
+            .setCancelable(false)
+            .show()
+    }
+
     private fun listEnrollments() {
         val all = prefs().all
         if (all.isEmpty()) { say("no enrolled accounts"); return }
         for ((alias, v) in all) {
             val e = JSONObject(v.toString())
-            if (e.optString("state") != "confirmed") { say("unconfirmed enrollment for ${e.getString("account")} (the laptop never answered 200); it is discarded on the next enrollment of that account"); continue }
+            if (e.optString("state") != "confirmed") {
+                val fp = if (e.has("x")) fingerprint(e.getString("x").removePrefix("0x"), e.getString("y").removePrefix("0x")) else "?"
+                say("unconfirmed enrollment for ${e.getString("account")} (the laptop has not answered 200): fingerprint $fp. It is discarded on the next enrollment of that account")
+                if (e.has("x") && keyStore.containsAlias(alias)) showFingerprint(fp, e.getString("account"))
+                continue
+            }
             val present = if (keyStore.containsAlias(alias)) "" else " (KEY MISSING — biometric re-enrolled or key deleted)"
             say("enrolled: ${e.getString("label")} — account ${e.getString("account")} on chain ${e.getString("chainId")}, tier ${e.getString("tier")}$present\n  fingerprint ${fingerprint(e.getString("x").removePrefix("0x"), e.getString("y").removePrefix("0x"))}")
         }
