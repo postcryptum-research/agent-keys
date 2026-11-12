@@ -145,27 +145,41 @@ use a health check to obtain a signature over a meaningful hash (§6.5).
   a SHA-256 **commitment** to the exact request bytes. The phone refuses
   any fetched request that does not match. Plain HTTP is then acceptable:
   a network attacker can only make the session fail.
-- **Secrecy is not needed.** The request becomes public on-chain anyway,
-  and a signature is public. Integrity comes from the commitment, and the
-  laptop verifies every signature.
-- **What "make the session fail" includes.** The token travels in the
-  phone's cleartext GET, so a host on the network can post in the phone's
-  place. An answer that does not verify is refused and the session waits
-  on; a posted *refusal* ends the session at once, so such a host can stop
-  an enrollment or a signature, never substitute one. The one answer the
-  laptop cannot verify by itself is the enrollment's (§4.3), which is why
-  the owner confirms the fingerprint there until attestation is verified.
+- **Secrecy of the traffic is not needed.** The request becomes public
+  on-chain anyway, and a signature is public. Integrity of the request
+  comes from the commitment, and the laptop verifies every signature.
+- **The answer is authenticated by a secret in the QR.** The session token
+  travels in the phone's cleartext GET, so a host on the network can post
+  in the phone's place. The QR therefore also carries a 128-bit secret
+  that is never sent anywhere: the phone puts `HMAC-SHA256(secret, body)`
+  on every answer, and the laptop ignores an answer without it, whatever
+  it says. That covers the one answer the laptop cannot verify by itself,
+  the enrollment's (§4.3): a signature proves itself against the enrolled
+  key, a new key proves nothing. Key attestation does not replace this.
+  It shows that a genuine device running our app made the key for this
+  request, not that it was the owner's device: anyone can hold a genuine
+  phone with the published app.
+- **What a network attacker can still do:** delay or drop traffic, so the
+  session times out. Not substitute an answer, and not end the session
+  early with a refusal: an unauthenticated one is ignored like any other.
+- **What the secret assumes:** the QR is seen by the owner's phone only.
+  Someone who can read the laptop's screen — over a shoulder, through a
+  camera, on a shared screen — and is on the network at that moment has
+  the secret too. Against that, the phone and the laptop both show the new
+  key's fingerprint at enrollment; `--phone-confirm-fingerprint` makes the
+  laptop ask for it and refuse another key.
 
 ### 3.2 QR payload
 
-A URI of about 110 bytes. In byte mode that needs a **version 6** QR
-(41 × 41 modules) at error-correction level L: about 21 terminal lines with
-half-block characters, which a phone camera reads well (I, P1). If it must
-shrink, the token can be dropped and the path derived from `h`, or `h` can
-be uppercase base32 to use the denser alphanumeric mode.
+A URI of about 136 bytes. In byte mode that needs a **version 7** QR
+(45 × 45 modules) at error-correction level L: about 23 terminal lines with
+half-block characters, which a phone camera reads well (V, P1 and P3 on a
+real phone). If it must shrink, the token can be dropped and the path
+derived from `k`, or `h` can be uppercase base32 to use the denser
+alphanumeric mode.
 
 ```
-tpmsign:1?u=http://192.168.1.23:49731/s/<token>&h=<commitment>
+tpmsign:1?u=http://192.168.1.23:49731/s/<token>&h=<commitment>&k=<secret>
 ```
 
 | Field | Content |
@@ -174,6 +188,7 @@ tpmsign:1?u=http://192.168.1.23:49731/s/<token>&h=<commitment>
 | `u` | session URL; the host must be a private, link-local or ULA address, else the phone refuses |
 | `<token>` | 128 random bits, base64url (22 characters) |
 | `h` | SHA-256 of the exact request bytes the URL serves, base64url (43 characters) |
+| `k` | the session's secret: 128 random bits, base64url (22 characters). The key of the answer MAC (§3.3). The phone never sends it and never stores it |
 
 The phone registers the `tpmsign:` scheme, but in-app scanning is the main
 path, because a system camera may open the URI in another app.
@@ -186,10 +201,10 @@ path, because a system camera may open the URI in another app.
 | Port | random ephemeral, unless given |
 | Lifetime | 120 s from the QR being shown (`--phone-timeout`), or until a valid response arrives |
 | `GET /s/<token>` | returns the request bytes (`application/json`). Allowed again within the lifetime, so the phone can retry |
-| `POST /s/<token>` | body = response (§4.2). The first well-formed response ends the session |
-| Wrong token | `404`, compared in constant time; 20 wrong tokens end the session |
-| After the end | every path returns `410`; the port closes |
-| Body limits | request ≤ 64 KiB; response ≤ 4 KiB |
+| `POST /s/<token>` | body = response (§4.2, §4.3), with the header `X-TpmSign-Mac: base64url(HMAC-SHA256(k, body))`. Without a valid MAC: `401`, the answer is ignored and the session waits on. With one: an answer that fails its checks gets `400` and the session waits on; the phone's refusal ends the session; the first accepted answer ends it |
+| Wrong token | `404`, compared in constant time; 20 wrong tokens, unauthenticated or rejected answers end the session |
+| After the end | the port closes |
+| Body limits | request ≤ 64 KiB; answer ≤ 64 KiB (an enrollment carries a certificate chain); the body is read under the session's deadline |
 
 **CLI-side errors**, each with a plain message and a non-zero exit:
 timeout, a refusal reported by the phone (with its reason), a malformed
@@ -890,7 +905,7 @@ signed on the laptop's word.
 |---|---|---|---|
 | T1 | **The laptop is compromised** and requests a malicious operation | the phone decodes, recomputes the hash and shows the real effect; laptop labels are marked as such; addresses are shown in full; gas cap | a user who approves without reading. The bold second confirmation targets the dangerous cases |
 | T2 | **The laptop is compromised during a handover** and substitutes its own key in `set-root` | phone to phone: the current phone decodes the `set-root` and shows the new key's fingerprint, which prevents it (§2.2). First handover: `--expect-fingerprint`, a clean machine, and a check from a **third** device of `P256Validator.publicKeys(account)` | the first handover is signed blind. Between a substituted `set-root` landing and the third-device check, the attacker holds root and can rotate again or drain. v2 adds on-chain checks by the phone itself (§14) |
-| T3 | **A LAN attacker** swaps the request or the response | QR commitment; the laptop verifies the signature against its own hash | denial of service only |
+| T3 | **A LAN attacker** swaps the request or the response, or answers an enrollment with its own key | QR commitment; every answer carries a MAC under the QR's secret (§3.1); the laptop verifies the signature against its own hash | denial of service by dropping traffic only. An attacker who can also read the QR off the laptop's screen has the secret: the fingerprint comparison at enrollment (`--phone-confirm-fingerprint`) covers that |
 | T4 | **A foreign QR** (another screen, a poster) | unenrolled accounts are refused; for an enrolled one, the normal review applies | as T1 |
 | T5 | **Malware on the phone** (user level) | Keystore and keychain keys are bound to our app; use needs biometrics enforced by hardware | a rooted or jailbroken phone. Treat a phone that cannot pass attestation as untrusted. On a TEE-only phone, a bug in the trusted OS reaches the key; the app says so (§5.6) |
 | T6 | **Our app itself is malicious or compromised** (supply chain, a bad update) | open source; minimal dependencies; release signing; the Android attestation names our signing certificate; custody of the signing keys and release roles (`APP_ATTEST_ORG.md` §4) | it could show one operation and sign another. Mitigation by reproducible Android builds (P5); none on iOS beyond App Store review. Store distribution also puts the store operator in this root (Google signs Play builds, Apple re-signs App Store builds). The largest residual risk; say so in user docs |

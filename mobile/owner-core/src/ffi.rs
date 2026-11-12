@@ -35,6 +35,8 @@ fn failed(e: impl std::fmt::Display) -> CoreError {
 pub struct FfiQr {
     pub url: String,
     pub commitment: String,
+    /// The session's secret, for [`answer_mac`]: never sent anywhere.
+    pub secret: String,
 }
 
 /// §5.4, the part the review needs. Addresses as 0x-hex; the cap in wei as
@@ -196,7 +198,20 @@ pub fn parse_qr(uri: String) -> Result<FfiQr, CoreError> {
     if loopback {
         return Err(CoreError::Failed("the session host is this phone itself; refused".into()));
     }
-    Ok(FfiQr { url: q.url, commitment: q.commitment })
+    Ok(FfiQr { url: q.url, commitment: q.commitment, secret: q.secret })
+}
+
+/// The value of the [`answer_mac_header`] header for a POST body (§3.3):
+/// `HMAC-SHA256` under the secret the QR carried, so the laptop knows the
+/// answer comes from the device that scanned it.
+#[uniffi::export]
+pub fn answer_mac(secret: String, body: Vec<u8>) -> Result<String, CoreError> {
+    crate::request::answer_mac(&secret, &body).map_err(failed)
+}
+
+#[uniffi::export]
+pub fn answer_mac_header() -> String {
+    crate::request::MAC_HEADER.to_string()
 }
 
 /// §2.1 step 3: the commitment, the type, the version, the expiry with the
@@ -481,7 +496,12 @@ mod tests {
         let refused = review.refuse("user".into(), None, app());
         assert!(matches!(SignResponse::verify(&refused, &bytes, &pk, expected), Err(crate::request::RequestError::Refused { .. })));
         // loopback is this phone
-        assert!(parse_qr("tpmsign:1?u=http://127.0.0.1:1/s/x&h=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into()).is_err());
-        assert!(parse_qr("tpmsign:1?u=http://10.0.0.1:1/s/x&h=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into()).is_ok());
+        let k = "BwcHBwcHBwcHBwcHBwcHBw"; // 16 bytes, base64url
+        assert!(parse_qr(format!("tpmsign:1?u=http://127.0.0.1:1/s/x&h=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&k={k}")).is_err());
+        let qr = parse_qr(format!("tpmsign:1?u=http://10.0.0.1:1/s/x&h=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&k={k}")).unwrap();
+        // the phone's MAC over an answer is what the laptop verifies
+        let mac = answer_mac(qr.secret.clone(), refused.clone()).unwrap();
+        assert!(crate::request::verify_answer_mac(&qr.secret, &refused, &mac));
+        assert_eq!(answer_mac_header(), "X-TpmSign-Mac");
     }
 }

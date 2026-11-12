@@ -1,12 +1,14 @@
 //! The wire format between the laptop and the phone
 //! (docs/MOBILE_OWNER_DESIGN.md §3.2, §4): the sign request the laptop
 //! serves, the response the phone posts, the QR payload that commits to the
-//! request bytes, and the checks each side runs. JSON, UTF-8; byte strings
+//! request bytes and carries the session's secret, the MAC that secret puts
+//! on every answer, and the checks each side runs. JSON, UTF-8; byte strings
 //! as 0x-hex; integers that can exceed 2^53 as decimal strings.
 
 use alloy_primitives::{Address, Bytes, B256, U256};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use base64::Engine;
+use hmac::{Hmac, Mac};
 use hw_signer::{normalize_low_s, verify_p256, PublicKey, Signature};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -22,6 +24,36 @@ pub const SIGN_RESPONSE: &str = "sign-response";
 /// QR carries and what the response echoes.
 pub fn commitment(request_bytes: &[u8]) -> String {
     B64URL.encode(Sha256::digest(request_bytes))
+}
+
+/// The HTTP header that carries [`answer_mac`] on every POST of a session.
+pub const MAC_HEADER: &str = "X-TpmSign-Mac";
+/// The session secret is 128 random bits, base64url (22 characters).
+pub const SESSION_SECRET_BYTES: usize = 16;
+
+/// `HMAC-SHA256(secret, body)`, base64url. The secret travels only in the QR
+/// — from the laptop's screen to the phone's camera — and never over the
+/// network, so an answer that carries this MAC comes from the device that
+/// scanned the QR. A host on the LAN sees the session URL and its token in
+/// the phone's cleartext GET; it does not see this.
+pub fn answer_mac(secret: &str, body: &[u8]) -> Result<String, RequestError> {
+    Ok(B64URL.encode(mac_over(secret, body)?.finalize().into_bytes()))
+}
+
+/// Constant-time check of [`answer_mac`].
+pub fn verify_answer_mac(secret: &str, body: &[u8], mac: &str) -> bool {
+    let (Ok(expected), Ok(given)) = (mac_over(secret, body), B64URL.decode(mac)) else {
+        return false;
+    };
+    expected.verify_slice(&given).is_ok()
+}
+
+fn mac_over(secret: &str, body: &[u8]) -> Result<Hmac<Sha256>, RequestError> {
+    let key = B64URL.decode(secret).ok().filter(|k| k.len() == SESSION_SECRET_BYTES);
+    let key = key.ok_or_else(|| RequestError::Malformed("the session secret is not 16 bytes of base64url".into()))?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(&key).expect("HMAC takes a key of any length");
+    mac.update(body);
+    Ok(mac)
 }
 
 /// The packed v0.7 operation without its signature, as JSON (§4.1).
@@ -300,16 +332,18 @@ impl SignResponse {
     }
 }
 
-/// `tpmsign:1?u=<session url>&h=<commitment>` (§3.2).
+/// `tpmsign:1?u=<session url>&h=<commitment>&k=<secret>` (§3.2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QrPayload {
     pub url: String,
     pub commitment: String,
+    /// The key of [`answer_mac`]; in the QR only.
+    pub secret: String,
 }
 
 impl QrPayload {
     pub fn to_uri(&self) -> String {
-        format!("tpmsign:{PROTOCOL_VERSION}?u={}&h={}", self.url, self.commitment)
+        format!("tpmsign:{PROTOCOL_VERSION}?u={}&h={}&k={}", self.url, self.commitment, self.secret)
     }
 
     /// Parse; the URL's host must be a private, link-local or unique-local
@@ -318,18 +352,23 @@ impl QrPayload {
         let rest = uri
             .strip_prefix(&format!("tpmsign:{PROTOCOL_VERSION}?"))
             .ok_or_else(|| RequestError::Malformed("not a tpmsign:1 URI".into()))?;
-        let (mut url, mut h) = (None, None);
+        let (mut url, mut h, mut k) = (None, None, None);
         for part in rest.split('&') {
             match part.split_once('=') {
                 Some(("u", v)) => url = Some(v.to_string()),
                 Some(("h", v)) => h = Some(v.to_string()),
+                Some(("k", v)) => k = Some(v.to_string()),
                 _ => {}
             }
         }
-        let (url, commitment) = (
+        let (url, commitment, secret) = (
             url.ok_or_else(|| RequestError::Malformed("no u= in the QR".into()))?,
             h.ok_or_else(|| RequestError::Malformed("no h= in the QR".into()))?,
+            k.ok_or_else(|| RequestError::Malformed("no k= in the QR (an older agent-signer?)".into()))?,
         );
+        if B64URL.decode(&secret).map(|b| b.len()).ok() != Some(SESSION_SECRET_BYTES) {
+            return Err(RequestError::Malformed("k= is not 16 bytes of base64url".into()));
+        }
         if commitment.len() != 43 || !commitment.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
             return Err(RequestError::Malformed("h= is not a base64url SHA-256".into()));
         }
@@ -337,7 +376,7 @@ impl QrPayload {
         if !is_local_host(&host) {
             return Err(RequestError::NotLocal(host));
         }
-        Ok(Self { url, commitment })
+        Ok(Self { url, commitment, secret })
     }
 }
 
@@ -526,32 +565,51 @@ mod tests {
 
     #[test]
     fn qr_payload() {
-        let q = QrPayload { url: "http://192.168.1.23:49731/s/abc".into(), commitment: "A".repeat(43) };
-        assert_eq!(QrPayload::parse(&q.to_uri()).unwrap(), q);
-        assert!(matches!(QrPayload::parse("tpmsign:1?u=http://10.0.0.1:1/s/x&h=short"), Err(RequestError::Malformed(_))));
-        let public = format!("tpmsign:1?u=http://93.184.216.34:80/s/x&h={}", "A".repeat(43));
-        assert!(matches!(QrPayload::parse(&public), Err(RequestError::NotLocal(_))));
-        // the authority must be an IP literal and nothing else (per review of PR #27)
+        let k = B64URL.encode([7u8; SESSION_SECRET_BYTES]);
         let h = "A".repeat(43);
-        let userinfo = format!("tpmsign:1?u=http://10.0.0.1:80@93.184.216.34/s/x&h={h}");
-        assert!(matches!(QrPayload::parse(&userinfo), Err(RequestError::Malformed(m)) if m.contains("userinfo")));
-        let v6 = format!("tpmsign:1?u=http://[fe80::1]/s/x&h={h}");
-        assert!(QrPayload::parse(&v6).is_ok(), "a bracketed IPv6 literal without a port is a valid local host");
-        let v6_port = format!("tpmsign:1?u=http://[fd00::1]:8080/s/x&h={h}");
-        assert!(QrPayload::parse(&v6_port).is_ok());
-        let v6_public = format!("tpmsign:1?u=http://[2001:db8::1]:80/s/x&h={h}");
-        assert!(matches!(QrPayload::parse(&v6_public), Err(RequestError::NotLocal(_))));
-        let big_port = format!("tpmsign:1?u=http://10.0.0.1:99999999/s/x&h={h}");
-        assert!(matches!(QrPayload::parse(&big_port), Err(RequestError::Malformed(m)) if m.contains("port")));
-        let name = format!("tpmsign:1?u=http://laptop.local:80/s/x&h={h}");
-        assert!(matches!(QrPayload::parse(&name), Err(RequestError::Malformed(m)) if m.contains("not an IP address")));
-        let bad_v6 = format!("tpmsign:1?u=http://[fe80::1/s/x&h={h}");
-        assert!(QrPayload::parse(&bad_v6).is_err());
-        let v6_trailing = format!("tpmsign:1?u=http://[fe80::1]x/s/x&h={h}");
-        assert!(QrPayload::parse(&v6_trailing).is_err());
+        let q = QrPayload { url: "http://192.168.1.23:49731/s/abc".into(), commitment: h.clone(), secret: k.clone() };
+        assert_eq!(QrPayload::parse(&q.to_uri()).unwrap(), q);
+        let uri = |url: &str| format!("tpmsign:1?u={url}&h={h}&k={k}");
+        assert!(matches!(QrPayload::parse(&format!("tpmsign:1?u=http://10.0.0.1:1/s/x&h=short&k={k}")), Err(RequestError::Malformed(_))));
+        assert!(matches!(QrPayload::parse(&uri("http://93.184.216.34:80/s/x")), Err(RequestError::NotLocal(_))));
+        // the session secret is required, and is 16 bytes
+        assert!(matches!(QrPayload::parse(&format!("tpmsign:1?u=http://10.0.0.1:1/s/x&h={h}")), Err(RequestError::Malformed(m)) if m.contains("k=")));
+        assert!(matches!(QrPayload::parse(&format!("tpmsign:1?u=http://10.0.0.1:1/s/x&h={h}&k=AAAA")), Err(RequestError::Malformed(m)) if m.contains("16 bytes")));
+        // the authority must be an IP literal and nothing else (per review of PR #27)
+        assert!(matches!(QrPayload::parse(&uri("http://10.0.0.1:80@93.184.216.34/s/x")), Err(RequestError::Malformed(m)) if m.contains("userinfo")));
+        assert!(QrPayload::parse(&uri("http://[fe80::1]/s/x")).is_ok(), "a bracketed IPv6 literal without a port is a valid local host");
+        assert!(QrPayload::parse(&uri("http://[fd00::1]:8080/s/x")).is_ok());
+        assert!(matches!(QrPayload::parse(&uri("http://[2001:db8::1]:80/s/x")), Err(RequestError::NotLocal(_))));
+        assert!(matches!(QrPayload::parse(&uri("http://10.0.0.1:99999999/s/x")), Err(RequestError::Malformed(m)) if m.contains("port")));
+        assert!(matches!(QrPayload::parse(&uri("http://laptop.local:80/s/x")), Err(RequestError::Malformed(m)) if m.contains("not an IP address")));
+        assert!(QrPayload::parse(&uri("http://[fe80::1/s/x")).is_err());
+        assert!(QrPayload::parse(&uri("http://[fe80::1]x/s/x")).is_err());
         assert_eq!(session_host("http://192.168.1.2/s/x").unwrap(), "192.168.1.2");
         assert_eq!(session_host("http://[fe80::1]:1/s/x").unwrap(), "fe80::1");
         assert!(is_local_host("10.0.0.1") && is_local_host("172.16.5.5") && is_local_host("fe80::1") && is_local_host("fd00::1"));
         assert!(!is_local_host("8.8.8.8") && !is_local_host("example.com"));
+    }
+
+    /// The answer MAC: HMAC-SHA256 under the QR's secret (RFC 4231's test
+    /// case 2 pins the primitive; the rest pins our use of it).
+    #[test]
+    fn answers_are_authenticated_by_the_qr_secret() {
+        // RFC 4231, test case 2: key "Jefe", data "what do ya want for nothing?"
+        let mut rfc = Hmac::<Sha256>::new_from_slice(b"Jefe").unwrap();
+        rfc.update(b"what do ya want for nothing?");
+        assert_eq!(
+            alloy_primitives::hex::encode(rfc.finalize().into_bytes()),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+        let secret = B64URL.encode([7u8; SESSION_SECRET_BYTES]);
+        let other = B64URL.encode([8u8; SESSION_SECRET_BYTES]);
+        let mac = answer_mac(&secret, b"answer").unwrap();
+        assert_eq!(mac.len(), 43);
+        assert!(verify_answer_mac(&secret, b"answer", &mac));
+        assert!(!verify_answer_mac(&secret, b"another answer", &mac), "the body is covered");
+        assert!(!verify_answer_mac(&other, b"answer", &mac), "another session's secret does not verify");
+        assert!(!verify_answer_mac(&secret, b"answer", ""), "no MAC is not a MAC");
+        assert!(!verify_answer_mac(&secret, b"answer", &mac[..42]));
+        assert!(answer_mac("AAAA", b"answer").is_err() && !verify_answer_mac("AAAA", b"answer", &mac), "a short secret is refused");
     }
 }

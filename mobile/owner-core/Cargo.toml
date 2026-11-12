@@ -34,6 +34,8 @@ hw-signer = { path = "../../signer/crates/hw-signer", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
+# The answer MAC (request.rs). Already in the tree through p256's RFC 6979.
+hmac = "0.12"
 base64 = "0.22"
 
 [build-dependencies]

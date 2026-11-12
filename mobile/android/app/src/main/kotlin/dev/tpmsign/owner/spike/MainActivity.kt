@@ -73,7 +73,7 @@ class MainActivity : AppCompatActivity() {
         const val ALIAS = "tpmsign-p0-owner"
         /** One key per enrolled account (§5.1): alias by chain and account. */
         fun aliasFor(chainId: String, account: String) = "tpmsign-owner-$chainId-${account.lowercase()}"
-        const val APP_VERSION = "0.2.0-p2"
+        const val APP_VERSION = "0.3.0-p3"
         const val PREFS = "enrollments"
         /** owner-core `user_op::tests`: the golden operation's userOpHash on chain 31337 (anvil). */
         const val GOLDEN_DIGEST_HEX = "48e286b71f896beef7a0b4d23fd82d6afae60a64e7976118de492a2fba4c1947"
@@ -255,6 +255,8 @@ class MainActivity : AppCompatActivity() {
     // the operation (P2) come with owner-core on the phone.
 
     private var enrollOnly = false
+    /** The current session's secret, from its QR (§3.2). */
+    private var sessionSecret = ""
     private val scanLauncher = registerForActivityResult(ScanContract()) { result ->
         val text = result.contents
         if (text == null) say("scan cancelled") else safely { handleQr(text) }
@@ -275,6 +277,8 @@ class MainActivity : AppCompatActivity() {
         val qr = parseQr(uri)
         val url = qr.url
         val commitment = qr.commitment
+        // the secret came through the camera and goes nowhere: it only keys the MAC on this session's answers
+        sessionSecret = qr.secret
         say("session: $url")
         Thread {
             try {
@@ -486,7 +490,7 @@ class MainActivity : AppCompatActivity() {
                     val fp = fingerprint(x, y)
                     // the fingerprint is the owner's one check on the laptop's side (P1): it must not get lost
                     prefs().edit().putString(alias, record.put("x", "0x$x").put("y", "0x$y").put("tier", tier).toString()).apply()
-                    say("new key: tier $tier, ${chain.size} attestation certificates\n  x = 0x$x\n  y = 0x$y\n\n  FINGERPRINT  $fp\n  the laptop asks for at least its first two groups; it confirms the enrollment only then (waiting up to 5 minutes)")
+                    say("new key: tier $tier, ${chain.size} attestation certificates\n  x = 0x$x\n  y = 0x$y\n\n  FINGERPRINT  $fp\n  the laptop shows the same one once it has checked this answer (waiting up to 5 minutes)")
                     showFingerprint(fp, account)
                     Thread {
                         // the laptop answers only after the owner confirmed the fingerprint there (P1): wait for that
@@ -511,7 +515,7 @@ class MainActivity : AppCompatActivity() {
     private fun showFingerprint(fp: String, account: String) {
         AlertDialog.Builder(this)
             .setTitle("New key's fingerprint")
-            .setMessage("$fp\n\nType at least its first two groups on the laptop when agent-signer asks (all four when in doubt). Account $account.")
+            .setMessage("$fp\n\nThe laptop shows the same fingerprint once it has checked this phone's answer: compare them. If agent-signer asks for it, type at least the first two groups. Account $account.")
             .setPositiveButton("Done", null)
             .setCancelable(false)
             .show()
@@ -567,11 +571,16 @@ class MainActivity : AppCompatActivity() {
         } finally { c.disconnect() }
     }
 
-    /** `readTimeout`: a sign response is answered at once; an enrollment answer is held while the owner confirms the fingerprint on the laptop. */
+    /**
+     * Every answer of a session carries the MAC of the QR's secret (§3.3), so the laptop knows it comes
+     * from the phone that scanned the QR. `readTimeout`: a sign response is answered at once; an
+     * enrollment answer may be held while the owner confirms the fingerprint on the laptop.
+     */
     private fun httpPost(url: String, body: ByteArray, readTimeoutMs: Int = 10000): Int {
         val c = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"; doOutput = true; connectTimeout = 10000; readTimeout = readTimeoutMs
             setRequestProperty("Content-Type", "application/json")
+            setRequestProperty(answerMacHeader(), answerMac(sessionSecret, body))
         }
         try { c.outputStream.use { it.write(body) }; return c.responseCode } finally { c.disconnect() }
     }

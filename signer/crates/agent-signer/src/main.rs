@@ -390,18 +390,18 @@ enum KeyCmd {
         /// off-device check (docs/MOBILE_OWNER_DESIGN.md §5.2) and for scripts.
         #[arg(long, requires = "phone")]
         out: Option<PathBuf>,
-        /// Phone: the fingerprint the phone shows after creating the key (or
-        /// its first two groups), given up front instead of typed when the
-        /// answer arrives — for scripts and tests. An answer with another key
-        /// is refused: nothing authenticates an enrollment answer but this.
-        #[arg(long, requires = "phone", conflicts_with = "phone_fingerprint_cmd")]
+        /// Phone: also refuse an answer whose key does not have this
+        /// fingerprint (`ABCDE-FGHIJ-…`, at least two groups). The answer
+        /// is already authenticated by the session's secret from the QR;
+        /// this is for scripts that know the key they expect.
+        #[arg(long, requires = "phone", conflicts_with = "phone_confirm_fingerprint")]
         phone_fingerprint: Option<String>,
-        /// Phone, development only: a shell command (`sh -c`, so not Windows)
-        /// that prints the fingerprint the phone shows, run when the answer
-        /// arrives and repeated until it does — a development phone on USB,
-        /// where `adb` reads the debug app's pending record.
+        /// Phone: when the answer arrives, ask for the fingerprint the phone
+        /// shows (at least two groups) and refuse another key. An extra
+        /// check for an owner whose screen may have been seen by someone
+        /// who is also on the network; needs a terminal.
         #[arg(long, requires = "phone")]
-        phone_fingerprint_cmd: Option<String>,
+        phone_confirm_fingerprint: bool,
         #[command(flatten)]
         session: PhoneSessionArgs,
     },
@@ -614,13 +614,13 @@ fn check_signer(name: String, signer: &dyn HardwareSigner) -> Result<()> {
 
 fn run_key(cmd: KeyCmd) -> Result<()> {
     let (key, op) = match cmd {
-        KeyCmd::Create { key, parent, pcrs, auth_file, allow_no_attestation, out, phone_fingerprint, phone_fingerprint_cmd, session } => {
+        KeyCmd::Create { key, parent, pcrs, auth_file, allow_no_attestation, out, phone_fingerprint, phone_confirm_fingerprint, session } => {
             if let (Some(label), Some(cfg)) = (&key.phone, &key.agent) {
                 session.configure();
-                let confirm = match (phone_fingerprint, phone_fingerprint_cmd) {
+                let confirm = match (phone_fingerprint, phone_confirm_fingerprint) {
                     (Some(fp), _) => phone::FingerprintSource::Given(fp),
-                    (None, Some(cmd)) => phone::FingerprintSource::Command(cmd),
-                    (None, None) => phone::FingerprintSource::Prompt,
+                    (None, true) => phone::FingerprintSource::Prompt,
+                    (None, false) => phone::FingerprintSource::NotAsked,
                 };
                 return phone_enroll(label, cfg, allow_no_attestation, out.as_deref(), confirm);
             }
@@ -672,7 +672,7 @@ fn phone_enroll(
          docs/MOBILE_OWNER_DESIGN.md §5.5)",
     )?;
     if matches!(confirm, phone::FingerprintSource::Prompt) && !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-        bail!("the owner must confirm the fingerprint the phone shows: run this on a terminal, or pass --phone-fingerprint <fp> / --phone-fingerprint-cmd <command>");
+        bail!("--phone-confirm-fingerprint asks on a terminal, and this is not one; pass --phone-fingerprint <fp> instead, or leave both out");
     }
     let pins = phone::laptop_pins(&dep);
     if !pins.is_empty() {
@@ -681,6 +681,7 @@ fn phone_enroll(
             eprintln!("  {address}  {name}");
         }
     }
+    let confirmed = !matches!(confirm, phone::FingerprintSource::NotAsked);
     let (request, answer, e) = phone::enroll(label, dep.chain_id, dep.entry_point, account, pins, allow_no_attestation, confirm)?;
     let fp = owner_core::fingerprint::fingerprint(&e.public_key);
     let (x, y) = (hex32(&e.public_key.x), hex32(&e.public_key.y));
@@ -696,7 +697,7 @@ fn phone_enroll(
     let app = e.app.as_ref().map(|a| format!("{} {} (core {})", a.platform, a.version, a.core)).unwrap_or_else(|| "unknown".into());
     println!("enrolled phone owner key {label:?} for account {account} (chain {})", dep.chain_id);
     println!("  public key     x = {x}\n                 y = {y}");
-    println!("  fingerprint    {fp}   (confirmed against the phone's screen)");
+    println!("  fingerprint    {fp}   {}", if confirmed { "(confirmed against the phone's screen)" } else { "← the phone shows the same one" });
     println!("  security level {} (self-reported){}", e.security_level, if e.device_credential { ", device PIN also unlocks" } else { "" });
     println!("  attestation    {evidence}");
     println!("  app            {app}");

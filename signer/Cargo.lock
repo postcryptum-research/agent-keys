@@ -3490,6 +3490,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
  "base64 0.22.1",
+ "hmac 0.12.1",
  "hw-signer",
  "serde",
  "serde_json",

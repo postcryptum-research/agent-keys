@@ -194,8 +194,7 @@ message nothing authenticates until P3, so the owner types at least the
 first two groups of the fingerprint from the phone's screen (once per
 enrollment; two because a host in the path can read the phone's key from
 its cleartext answer and grind a one-group match within a session;
-`--phone-fingerprint` for scripts, `--phone-fingerprint-cmd` for a
-development phone on USB) and an answer with another key is rejected
+`--phone-fingerprint` for scripts; superseded in P3, see below) and an answer with another key is rejected
 while the session waits for the phone's. P3 retires the prompt: the
 attestation with the bound challenge then authenticates the answer. The
 config's `fingerprint` is checked against its `publicKey` before any
@@ -278,6 +277,24 @@ a tampered request is visibly different or refused. Not done in P2 and
 moved on: the enrollment options on the phone (gas cap, expert mode,
 device PIN — §5.4), the Safe `execTransaction` decoder named in §6.3, and
 the phone learning which validator holds its key (v2, §14).
+
+P3 status (2026-11-13, slice 1): every answer of a session is now
+authenticated. The QR carries a 128-bit secret next to the commitment
+(`tpmsign:1?u=…&h=…&k=…`); it reaches the phone through the camera and is
+never sent over the network. The phone puts `HMAC-SHA256(k, body)` on every
+POST (`X-TpmSign-Mac`), and the laptop ignores an answer without it —
+enrollment answers, sign responses and refusals alike — so a host on the
+network can no longer answer an enrollment with its own key or stop a
+session with a forged refusal; it can only make the session time out. This
+is what retires the typed fingerprint, not attestation: an attestation
+shows that a genuine device running our app made the key for this request,
+and anyone can hold such a device. The fingerprint is still shown on both
+sides; `--phone-confirm-fingerprint` asks for it, for the case where the
+QR itself was seen by someone who is also on the network, and
+`--phone-fingerprint` checks a known one. `--phone-fingerprint-cmd` is
+gone. Tests: the MAC against RFC 4231; in the anvil suite an intruder
+without the secret posts its own key first and is ignored, and a forged
+refusal does not stop a signature.
 
 ## Threat model, briefly
 
