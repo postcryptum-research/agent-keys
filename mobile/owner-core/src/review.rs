@@ -101,6 +101,9 @@ pub struct Review {
     pub sections: Vec<Section>,
     /// The request's commitment, echoed in the response.
     pub request_commitment: String,
+    /// The account and chain the request names (zero until parsed).
+    pub account: Address,
+    pub chain_id: u64,
     digest: Option<B256>,
 }
 
@@ -145,7 +148,7 @@ impl Review {
     }
 
     fn refused(request_commitment: String, sections: Vec<Section>, why: impl Into<String>) -> Self {
-        Self { verdict: Verdict::Refuse(why.into()), sections, request_commitment, digest: None }
+        Self { verdict: Verdict::Refuse(why.into()), sections, request_commitment, account: Address::ZERO, chain_id: 0, digest: None }
     }
 }
 
@@ -206,8 +209,9 @@ pub fn open_request(
             ),
         );
     };
+    let refused = |c: String, sections: Vec<Section>, why: String| Review { account: op.sender, chain_id, ..Review::refused(c, sections, why) };
     if !op.init_code.is_empty() {
-        return Review::refused(c, vec![], "the operation carries initCode; v1 signs for existing accounts only");
+        return refused(c, vec![], "the operation carries initCode; v1 signs for existing accounts only".into());
     }
     if op.nonce >> 64 != U256::ZERO {
         return Review::refused(c, vec![], "the nonce key is not the root key; this phone signs root operations only");
@@ -312,7 +316,7 @@ pub fn open_request(
     b.row(s, "userOpHash", format!("{digest}"));
 
     let verdict = if b.warnings.is_empty() { Verdict::Sign } else { Verdict::SignWithWarnings(b.warnings) };
-    Review { verdict, sections: b.sections, request_commitment: c, digest: Some(digest) }
+    Review { verdict, sections: b.sections, request_commitment: c, account: op.sender, chain_id, digest: Some(digest) }
 }
 
 /// §6.3 top level: `execute` (single or batch, default exec type) or a direct
@@ -432,9 +436,13 @@ fn self_call(
                             format!("{} — it will be able to take over this account", fingerprint(&pk)),
                         );
                         b.row(s, "Recovery validator", b.facts.name(v));
-                    } else {
+                    } else if b.facts.names.contains_key(&v) {
                         b.row(s, "Install validator", b.facts.name(v));
                         b.row(s, "With key", fingerprint(&pk));
+                    } else {
+                        // a validator the build cannot classify may be a recovery validator: say so
+                        b.bold(s, "Install a key on a validator this build cannot classify", format!("{} — it may be able to take over this account", fingerprint(&pk)));
+                        b.row(s, "Validator", v.to_checksum(None));
                     }
                     b.row(s, "Validation nonce", cfg.nonce.to_string());
                 }
@@ -502,10 +510,13 @@ fn self_call(
                     return Err("uninstallValidation of a validator with data; refused".into());
                 }
                 let v = Address::from_slice(&c.vId.0[1..21]);
-                if acct.validator == Some(v) {
-                    b.bold(s, "Remove validator", format!("{} — this phone will no longer control the account", b.facts.name(v)));
-                } else {
-                    b.row(s, "Remove validator", b.facts.name(v));
+                match acct.validator {
+                    Some(mine) if mine == v => {
+                        b.bold(s, "Remove validator", format!("{} — this phone will no longer control the account", b.facts.name(v)))
+                    }
+                    Some(_) => b.row(s, "Remove validator", b.facts.name(v)),
+                    // not knowing which validator holds this phone's key, every removal may be that one
+                    None => b.bold(s, "Remove validator", format!("{} — this may be the validator holding this phone's key", b.facts.name(v))),
                 }
             }
             other => return Err(format!("uninstallValidation of validation type 0x{other:02x}; refused")),
@@ -1175,6 +1186,46 @@ mod tests {
         expert[0].expert_mode = true;
         let r = open_request(&bytes, &c, NOW, &expert, &facts());
         assert!(matches!(r.verdict, Verdict::SignWithWarnings(_)) && r.text().contains("! Unknown policy module"), "{}", r.text());
+    }
+
+    /// The review of PR #31: on the phone the facts are empty and the enrollment
+    /// does not know its validator until slice 3. When the review cannot tell,
+    /// it emphasises.
+    #[test]
+    fn empty_facts_emphasise_what_cannot_be_classified() {
+        let me = ACCOUNT;
+        let bare = [EnrolledAccount::new(31337, ENTRY, ACCOUNT)];
+        let quiet = |cd: Bytes| {
+            let mut o = op(cd);
+            o.gas_fees = kernel::pack_gas(1, 1);
+            o
+        };
+        let open_bare = |o: &PackedUserOp| {
+            let (bytes, c) = request(o);
+            open_request(&bytes, &c, NOW, &bare, &Facts::default())
+        };
+        // the handover batch: the removal of the old validator and the root change are bold
+        let r = open_bare(&quiet(kernel::execute_batch_calldata(vec![
+            (me, U256::ZERO, kernel::change_root_calldata(RECOVERY, None)),
+            (me, U256::ZERO, kernel::uninstall_validator_call(VALIDATOR)),
+            (me, U256::ZERO, kernel::install_validator_call(kernel::validator_id(VALIDATOR), &key(9), 3)),
+            (me, U256::ZERO, kernel::change_root_calldata(VALIDATOR, None)),
+        ])));
+        let t = r.text();
+        assert_eq!(r.verdict, Verdict::Sign, "{t}");
+        assert!(t.contains("! Remove validator: 0x2000000000000000000000000000000000000002 — this may be the validator holding this phone's key"), "{t}");
+        assert!(t.contains("! Install a key on a validator this build cannot classify"), "{t}");
+        assert!(t.contains("! Hand control of this account to key"), "{t}");
+        // add-recovery: the install is bold even without knowing the recovery validator
+        let r = open_bare(&quiet(kernel::add_recovery_calldata(me, RECOVERY, &key(4), 2)));
+        assert!(r.text().contains("! Install a key on a validator this build cannot classify") && r.text().contains("may take over this account"), "{}", r.text());
+        // a permission install is unsignable without known modules (expert mode off)
+        let params = kernel::PolicyParams { targets: vec![], selectors: vec![], max_value_per_op: 0, budget: 0, valid_until: NOW + 1, tokens: vec![], valid_after: 0 };
+        let pdata = kernel::permission_data(POLICY, &params, SIGNER, &key(2));
+        let r = open_bare(&quiet(kernel::execute_calldata(me, U256::ZERO, &kernel::install_permission_calldata(FixedBytes::from([1, 2, 3, 4]), pdata, 1))));
+        assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("not known to this build")), "{:?}", r.verdict);
+        // and a plain increment on an unknown counter is refused: the phone knows no contracts yet
+        assert!(matches!(open_bare(&quiet(kernel::execute_calldata(COUNTER, U256::ZERO, &SELECTOR_INCREMENT))).verdict, Verdict::Refuse(_)));
     }
 
     #[test]

@@ -945,11 +945,14 @@ fn phone_owner_real_device() {
     let phone_cfg = chain.dir.join("phone-owner.json");
     std::fs::write(&phone_cfg, serde_json::to_string_pretty(&v).unwrap()).unwrap();
     let phone_cfg = phone_cfg.to_str().unwrap();
-    eprintln!("On the phone tap \"3. Scan the laptop's QR and sign\", scan the QR below, review, confirm with your fingerprint.\n");
-    let before = chain.counter();
-    let status = run(&["op", "send", "--agent", phone_cfg, "--root", "--target", &counter, "--data", INCREMENT]);
+    // P2: the phone decodes what it signs and knows no contracts yet (the build-embedded
+    // facts are slice 3), so an increment on the anvil counter is refused there as an unknown
+    // call. A plain value transfer is decodable without facts: shown in bold as a payment to
+    // an unknown address, confirmed twice on the phone, then signed.
+    let recipient = "0x7000000000000000000000000000000000000007";
+    eprintln!("On the phone tap \"3. Scan the laptop's QR and sign\", scan the QR below: the review shows a payment of\n0.001 ETH to {recipient}; Sign, confirm the effect, then your fingerprint.\n");
+    let status = run(&["op", "send", "--agent", phone_cfg, "--root", "--target", recipient, "--wei", "1000000000000000"]);
     assert!(status.success(), "the phone-signed root operation failed");
-    assert_eq!(chain.counter(), before + U256::from(1), "the counter moved by the phone-signed root operation");
     eprintln!("\nphone-signed root operation included on anvil; the agent still runs:");
     chain.ok(&["demo", "--agent", phone_cfg]);
     eprintln!("done. The enrollment (request, answer, attestation DER) is in {}", out_dir.display());

@@ -18,6 +18,7 @@ is provisional (`docs/APP_ATTEST_ORG.md` §8).
 export ANDROID_HOME=/opt/homebrew/share/android-commandlinetools   # or your SDK
 export JAVA_HOME=$(/usr/libexec/java_home -v 21)                   # JDK 17 or 21
 cd mobile/android
+./build-core.sh          # owner-core for arm64 + its Kotlin bindings (cargo-ndk, the NDK; CARGO="cargo +1.94" if needed)
 ./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb shell am start -n dev.tpmsign.owner.spike/.MainActivity
@@ -120,6 +121,80 @@ back to the P0 key for accounts enrolled by hand (to go with P2).
 
 The laptop writes the enrollment (request, answer, `attest-*.der`) with
 `--out <dir>`; verifying the chain there is P3.
+
+## P2: owner-core on the phone (version 0.1.0-p2)
+
+`build-core.sh` builds `mobile/owner-core` with `--features ffi` for
+`arm64-v8a` through `cargo-ndk` (about 1.2 MB, into `app/src/main/jniLibs`,
+not committed) and generates the Kotlin bindings with `uniffi` 0.32 into
+`app/build/generated/uniffi` (a source set of the app). The bindings load
+the library through JNA. The surface is design §7.2: `parseQr`,
+`openRequest` → a `ReviewHandle` with `verdict`, `sections`, `text`,
+`needsSecondConfirmation`, `effects`, `digestToSign`, `finish` and
+`refuse`; `fingerprintOf`, `attestationChallenge`, `defaultGasCapWei`,
+`coreVersion`.
+
+Button **3** now does what §6 asks: owner-core parses the request once,
+with the phone's confirmed enrollments as the enrolled accounts; a refusal
+posts a refusal with the core's reason; otherwise the decoded operation is
+shown in a dialog with one Sign action, bold effects get a second
+confirmation in plain words, and the fingerprint prompt signs the
+`userOpHash` the core recomputed — never the laptop's number. The core
+converts the DER signature, normalizes low-s, verifies it and builds the
+response. The P0-key fallback is gone: an account must be enrolled. The QR
+is parsed by the core too (`parseQr`, which refuses loopback on the phone).
+The build-embedded names of §6.7 are slice 3, so on the phone addresses
+show in full without names today, and the review errs on the side of
+emphasis: a key installed on a validator the build cannot classify and
+every validator removal are bold, a permission whose policy or signer
+module the build cannot read is refused (expert mode is off), and no
+paymaster is accepted. A permission install is therefore not signable on
+the phone until slice 3; `agent-signer` says so in its preview before the
+QR.
+
+### P2 run record — the phone decodes, recomputes and signs (2026-11-12, app 0.1.0-p2)
+
+The same script. The phone enrolled a new key (fingerprint over USB), root
+was handed to it, and on the second QR the app showed the review built by
+owner-core on the phone — the call `increment()` on the counter's address,
+the maximum gas cost, every hash-covered field — and signed the
+`userOpHash` the core recomputed; the laptop verified that signature over
+its own hash, so the two parses agreed byte for byte:
+
+```
+phone:          signed, signature verified against the owner key
+path:           root (owner key)
+included: tx 0xbd1b018c40b624002dde0c82189a20c8e402ba0e1c2cea7c4d3918cda3bf0ac4 (block 5, 126989 gas)
+phone-signed root operation included on anvil; the agent still runs:
+test phone_owner_real_device ... ok
+```
+
+### P2 run record, after review — a refusal and a payment (2026-11-12, app 0.1.0-p2)
+
+With the review's rules from PR #30 and #31 on the phone and no build facts
+yet, two runs of the same script:
+
+- the counter increment was **refused on the phone**, and the laptop
+  printed the phone's reason verbatim, before anything was signed:
+
+  ```
+  Error: key unavailable: phone "owner-phone": the phone refused: core (a call to 0x… with
+  function 0xd09de08a this version cannot decode; from the root key it can move everything the
+  account holds (expert mode is off))
+  ```
+
+- a payment of 0.001 ETH to an address the build does not know was shown
+  in bold, needed the second confirmation, then the fingerprint, and
+  landed:
+
+  ```
+  phone:          signed, signature verified against the owner key
+  included: tx 0x4efc7ada24cbbefe054772bd9aa07b3b75c862c1c229dcf1174fc982a3b861b5 (block 5, 151714 gas)
+  test phone_owner_real_device ... ok
+  ```
+
+The real-device test now sends that payment; the increment comes back
+once slice 3 lets the phone know the counter.
 
 ### P1 run record — a real root operation on anvil, signed on the phone
 

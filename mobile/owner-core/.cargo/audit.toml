@@ -1,0 +1,15 @@
+# `cargo audit` for owner-core (run from this directory). Accepted advisories,
+# with the reasons; the same list as signer/.cargo/audit.toml where it overlaps.
+[advisories]
+ignore = [
+    # RUSTSEC-2026-0387: timing variability in `crypto-bigint` 0.5.5, through
+    # `p256` 0.13. owner-core verifies signatures (public data) and never holds
+    # a private key; the phone's key signs inside the Keystore. Migration to
+    # `p256` 0.14 together with hw-signer and agent-signer after P1 (issue #16).
+    "RUSTSEC-2026-0387",
+]
+# Also reported, not ignored here because it is a warning, not a vulnerability:
+# RUSTSEC-2026-0374 (`basic-toml` unmaintained) and RUSTSEC-2024-0388
+# (`derivative` unmaintained) reach the tree through `uniffi`'s bindings
+# generator (`--features cli`), which runs on the developer's machine and is
+# not part of the phone library.

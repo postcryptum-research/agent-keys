@@ -242,9 +242,19 @@ changes the screen *without its hash row* or is refused; both outcomes
 counted), the hidden-field cases from the review of PR #30, the §6.2 and
 §6.5 cases, the admin calls. The CLI prints the same review on the laptop before
 the QR, so the owner compares screens and a refusal is known before the
-phone is asked; the anvil phone case asserts it on a real request. Next,
-slice 2: `owner-core` on the phone through `uniffi`, the app rendering the
-sections and signing the hash it recomputed.
+phone is asked; the anvil phone case asserts it on a real request.
+Slice 2 (2026-11-12): `owner-core` runs on the phone — `src/ffi.rs` behind
+`--features ffi` is the §7.2 surface, `mobile/android/build-core.sh`
+builds the arm64 library with `cargo-ndk` and the Kotlin bindings with
+`uniffi`, and the app's button 3 renders the review from one parse, asks
+the second confirmation for bold effects, signs the recomputed hash and
+lets the core build the response (DER → r‖s, low-s, self-verified). Blind
+signing is gone. With no build facts yet the phone's review emphasises
+what it cannot classify (a key on an unknown validator, every validator
+removal) and refuses a permission whose modules it cannot read, so a
+permission install is not signable on the phone until slice 3. Still open
+in P2 (slice 3): the build-embedded deployments and token table (§6.7),
+laptop pins, and the device-side "Sign only after scrolling" of §6.6.
 
 ## Threat model, briefly
 
