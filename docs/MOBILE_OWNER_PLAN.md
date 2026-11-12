@@ -189,9 +189,15 @@ after checking the request's shape; decoding and recomputing on the phone
 is P2). The enrollment session is in: `key create --phone <label> --agent
 <cfg>` (design §2.1, §4.3) asks the phone for a new key per account, with
 the attestation challenge bound to the request, and prints the key, its
-fingerprint and the config snippet; the config's `fingerprint` is checked
-against its `publicKey` before any session, and `owner set-root
---expect-fingerprint` refuses a handover to a key the owner did not see.
+fingerprint and the config snippet. An enrollment answer is the one
+message nothing authenticates until P3, so the owner types the fingerprint
+from the phone's screen (or passes `--phone-fingerprint`) and an answer
+with another key is rejected while the session waits for the phone's. The
+config's `fingerprint` is checked against its `publicKey` before any
+session, and `owner set-root --expect-fingerprint` refuses a handover to a
+key the owner did not see. The session itself answers 400 to a bad POST
+and keeps waiting, reads the body under the session's deadline, and
+refuses to run without a network route.
 What P1 still lacks: the attestation chain the phone returns is stored, not
 verified — that is P3, and until then the security tier is the phone's own
 word; the phone health check (design §2.4); and the Base Sepolia run with
@@ -199,8 +205,9 @@ the owner's yes. Tests: the anvil cases `phone_owner_signs_a_root_operation`
 (a simulated phone: sign, a wrong signature, a refusal, the agent-role
 refusal, a wrong config fingerprint) and
 `phone_is_enrolled_then_takes_over_root` (enrollment refused, without
-evidence, accepted; the handover with the fingerprint check and an off-curve
-key refused; a root operation through the session; the old key refused), and
+evidence, accepted; an intruder's answer rejected and the phone's taken; the
+handover with the fingerprint check and an off-curve key refused; a root
+operation through the session; the old key refused), and
 the ignored real-device case `phone_owner_real_device` (enrollment, handover,
 a phone-signed operation).
 

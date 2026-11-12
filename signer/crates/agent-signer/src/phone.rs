@@ -9,7 +9,7 @@
 //! it is used.
 
 use std::io::Read;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -21,7 +21,7 @@ use alloy::primitives::Address;
 use hw_signer::{HardwareSigner, PublicKey, Signature, SignerError, UserOpContext};
 use owner_core::enroll::{EnrollRequest, EnrollResponse, Enrollment};
 use owner_core::fingerprint::fingerprint;
-use owner_core::request::{commitment, QrPayload, SignResponse};
+use owner_core::request::{commitment, QrPayload, RequestError, SignResponse};
 use rand_core::{OsRng, RngCore};
 
 /// Session settings, set once from the command line.
@@ -83,15 +83,28 @@ impl HardwareSigner for PhoneSigner {
             self.label,
             fingerprint(&self.public_key)
         );
-        let body = lan_session(request, &headline)?;
-        match SignResponse::verify(&body, request, &self.public_key, hash) {
-            Ok(sig) => {
-                eprintln!("phone:          signed, signature verified against the owner key");
-                Ok(sig)
-            }
-            Err(e) => Err(SignerError::Key(format!("phone {:?}: {e}", self.label))),
-        }
+        let sig = lan_session(request, &headline, |body| SignResponse::verify(body, request, &self.public_key, hash))
+            .map_err(|e| match e {
+                SessionError::Refused(e) => SignerError::Key(format!("phone {:?}: {e}", self.label)),
+                SessionError::Backend(m) => SignerError::Backend(m),
+            })?;
+        eprintln!("phone:          signed, signature verified against the owner key");
+        Ok(sig)
     }
+}
+
+/// How the owner confirms the fingerprint the phone shows at enrollment.
+/// An enrollment answer is the one message nothing authenticates, so
+/// whoever posts first with the session token could name their own key;
+/// the owner's comparison with the phone's screen is the whole defence
+/// until P3 verifies the attestation. The CLI therefore asks for it and
+/// refuses an answer that does not carry the fingerprint typed in.
+pub enum FingerprintSource {
+    /// Ask on the terminal when the first answer arrives (the phone shows
+    /// its fingerprint once the key exists).
+    Prompt,
+    /// Given up front (`--phone-fingerprint`): tests and scripts.
+    Given(String),
 }
 
 /// Enrollment (design §2.1): ask the phone to create a new owner key for
@@ -104,6 +117,7 @@ pub fn enroll(
     entry_point: Address,
     account: Address,
     allow_no_attestation: bool,
+    confirm: FingerprintSource,
 ) -> Result<(Vec<u8>, Vec<u8>, Enrollment), SignerError> {
     let mut challenge = [0u8; 32];
     OsRng.fill_bytes(&mut challenge);
@@ -112,58 +126,143 @@ pub fn enroll(
     let request = EnrollRequest::new(chain_id, entry_point, account, label, B256::from(challenge), expires).to_bytes();
     let headline = format!(
         "enrolling phone owner key {label:?} for account {account} on chain {chain_id}: scan this with the owner app, \
-         read the notice about this phone's key hardware, confirm."
+         read the notice about this phone's key hardware, confirm. The phone then shows the new key's fingerprint; \
+         you will be asked to type it here."
     );
-    let body = lan_session(&request, &headline)?;
-    let enrollment = EnrollResponse::verify(&body, &request, allow_no_attestation)
-        .map_err(|e| SignerError::Key(format!("enrollment of {label:?}: {e}")))?;
+    let mut typed: Option<String> = match confirm {
+        FingerprintSource::Given(fp) => Some(normalize_fingerprint(&fp)?),
+        FingerprintSource::Prompt => None,
+    };
+    let (body, enrollment) = lan_session(&request, &headline, |body| {
+        let e = EnrollResponse::verify(body, &request, allow_no_attestation)?;
+        let actual = fingerprint(&e.public_key);
+        let expected = match &typed {
+            Some(t) => t.clone(),
+            None => {
+                let t = prompt_fingerprint()?;
+                typed = Some(t.clone());
+                t
+            }
+        };
+        if !fingerprint_matches(&expected, &actual) {
+            eprintln!(
+                "an answer arrived with a key whose fingerprint ({actual}) is not the one on the phone's screen; \
+                 it is not the phone's key — refused, still waiting for the phone"
+            );
+            return Err(RequestError::Malformed("the key is not the one on the phone's screen".into()));
+        }
+        Ok((body.to_vec(), e))
+    })
+    .map_err(|e| match e {
+        SessionError::Refused(e) => SignerError::Key(format!("enrollment of {label:?}: {e}")),
+        SessionError::Backend(m) => SignerError::Backend(m),
+    })?;
     Ok((request, body, enrollment))
 }
 
+/// `ABCDE-FGHIJ-KLMNO-PQRST` as the phone shows it, or at least its first
+/// two groups; case and dashes do not matter.
+fn normalize_fingerprint(typed: &str) -> Result<String, SignerError> {
+    let t: String = typed.trim().chars().filter(|c| *c != '-' && !c.is_whitespace()).collect::<String>().to_ascii_uppercase();
+    if t.len() < 10 || t.len() > 20 || !t.bytes().all(|b| b.is_ascii_uppercase() || (b'2'..=b'7').contains(&b)) {
+        return Err(SignerError::Key(
+            "the fingerprint has four groups of five characters (A–Z, 2–7); type at least the first two groups".into(),
+        ));
+    }
+    Ok(t)
+}
+
+fn fingerprint_matches(typed_normalized: &str, actual: &str) -> bool {
+    let a: String = actual.chars().filter(|c| *c != '-').collect();
+    a.starts_with(typed_normalized)
+}
+
+fn prompt_fingerprint() -> Result<String, RequestError> {
+    use std::io::{BufRead, IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        return Err(RequestError::Malformed(
+            "an answer arrived but there is no terminal to confirm the phone's fingerprint on; run interactively or pass --phone-fingerprint".into(),
+        ));
+    }
+    eprint!("\nthe phone shows the new key's fingerprint. Type it (at least the first two groups): ");
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line).map_err(|e| RequestError::Malformed(format!("reading the fingerprint: {e}")))?;
+    normalize_fingerprint(&line).map_err(|e| RequestError::Malformed(e.to_string()))
+}
+
+enum SessionError {
+    /// The phone said no, or the session ended without a usable answer.
+    Refused(RequestError),
+    Backend(String),
+}
+
+impl From<RequestError> for SessionError {
+    fn from(e: RequestError) -> Self {
+        SessionError::Refused(e)
+    }
+}
+
 /// One session: a random token, the QR on the terminal (and in the QR file,
-/// if configured), the request served to the phone, the first well-formed
-/// answer returned as raw bytes. The caller verifies the answer.
-fn lan_session(request: &[u8], headline: &str) -> Result<Vec<u8>, SignerError> {
+/// if configured), the request served to the phone, and the first answer
+/// that `verify` accepts. An answer it rejects gets a 400 and the session
+/// keeps waiting — the token travels in the phone's cleartext GET, so a
+/// host on the LAN can post garbage first — unless the phone itself
+/// refused, which ends the session. Rejected answers and wrong tokens count
+/// against one cap.
+fn lan_session<T>(
+    request: &[u8],
+    headline: &str,
+    mut verify: impl FnMut(&[u8]) -> Result<T, RequestError>,
+) -> Result<T, SessionError> {
     let opts = options();
     let mut token = [0u8; 16];
     OsRng.fill_bytes(&mut token);
     let token = B64URL.encode(token);
-    let bind = opts.listen.unwrap_or_else(|| SocketAddr::new(default_route_ip(), 0));
-    let server = tiny_http::Server::http(bind).map_err(|e| SignerError::Backend(format!("LAN session on {bind}: {e}")))?;
-    let local = server.server_addr().to_ip().ok_or_else(|| SignerError::Backend("no socket address".into()))?;
-    let host = match local.ip() {
-        IpAddr::V4(ip) if ip.is_unspecified() => default_route_ip(),
-        ip => ip,
+    let bind = match opts.listen {
+        Some(addr) => addr,
+        None => SocketAddr::new(default_route_ip().ok_or_else(no_network)?, 0),
     };
-    let url = format!("http://{host}:{}/s/{token}", local.port());
+    let server = tiny_http::Server::http(bind).map_err(|e| SessionError::Backend(format!("LAN session on {bind}: {e}")))?;
+    let local = server.server_addr().to_ip().ok_or_else(|| SessionError::Backend("no socket address".into()))?;
+    let host = if local.ip().is_unspecified() { default_route_ip().ok_or_else(no_network)? } else { local.ip() };
+    let url = match host {
+        IpAddr::V4(ip) => format!("http://{ip}:{}/s/{token}", local.port()),
+        IpAddr::V6(ip) => format!("http://[{ip}]:{}/s/{token}", local.port()),
+    };
     let qr = QrPayload { url: url.clone(), commitment: commitment(request) };
     let uri = qr.to_uri();
 
     eprintln!();
     eprintln!("{headline}");
-    eprintln!("{}", render_qr(&uri)?);
+    eprintln!("{}", render_qr(&uri).map_err(|e| SessionError::Backend(e.to_string()))?);
     eprintln!("{uri}");
     eprintln!("waiting up to {}s for the phone…", opts.timeout.as_secs());
     if let Some(path) = &opts.qr_file {
-        std::fs::write(path, &uri).map_err(|e| SignerError::Backend(format!("writing {}: {e}", path.display())))?;
+        std::fs::write(path, &uri).map_err(|e| SessionError::Backend(format!("writing {}: {e}", path.display())))?;
     }
 
     let started = Instant::now();
     let path = format!("/s/{token}");
-    let mut wrong = 0u32;
-    let body = loop {
-        let remaining = opts.timeout.checked_sub(started.elapsed()).ok_or_else(|| {
-            SignerError::Backend(format!("no answer from the phone within {}s", opts.timeout.as_secs()))
-        })?;
-        let Some(mut req) = server.recv_timeout(remaining).map_err(|e| SignerError::Backend(format!("session: {e}")))? else {
+    let mut strikes = 0u32;
+    let strike = |strikes: &mut u32| -> Result<(), SessionError> {
+        *strikes += 1;
+        if *strikes >= MAX_WRONG_TOKENS {
+            return Err(SessionError::Backend("too many wrong or rejected requests; session closed".into()));
+        }
+        Ok(())
+    };
+    let remaining = || opts.timeout.checked_sub(started.elapsed());
+    loop {
+        let Some(left) = remaining() else {
+            return Err(SessionError::Backend(format!("no answer from the phone within {}s", opts.timeout.as_secs())));
+        };
+        let Some(req) = server.recv_timeout(left).map_err(|e| SessionError::Backend(format!("session: {e}")))? else {
             continue;
         };
         if !eq_ct(req.url().as_bytes(), path.as_bytes()) {
-            wrong += 1;
             let _ = req.respond(tiny_http::Response::empty(404));
-            if wrong >= MAX_WRONG_TOKENS {
-                return Err(SignerError::Backend("too many requests with a wrong session token; session closed".into()));
-            }
+            strike(&mut strikes)?;
             continue;
         }
         match req.method() {
@@ -173,36 +272,83 @@ fn lan_session(request: &[u8], headline: &str) -> Result<Vec<u8>, SignerError> {
                 let _ = req.respond(r);
             }
             tiny_http::Method::Post => {
-                let mut buf = Vec::new();
-                let n = req
-                    .as_reader()
-                    .take(MAX_RESPONSE_BYTES as u64 + 1)
-                    .read_to_end(&mut buf)
-                    .map_err(|e| SignerError::Backend(format!("reading the phone's answer: {e}")))?;
-                if n > MAX_RESPONSE_BYTES {
-                    let _ = req.respond(tiny_http::Response::from_string("too large").with_status_code(413));
-                    return Err(SignerError::Backend(format!("the phone's answer exceeds {} KiB", MAX_RESPONSE_BYTES / 1024)));
+                let Some(left) = remaining() else { continue };
+                let Some((req, body)) = read_body(req, left) else {
+                    eprintln!("a client opened an answer and stalled past the session's deadline; dropped");
+                    continue;
+                };
+                let body = match body {
+                    Ok(b) => b,
+                    Err(why) => {
+                        let _ = req.respond(tiny_http::Response::from_string(why).with_status_code(400));
+                        strike(&mut strikes)?;
+                        continue;
+                    }
+                };
+                match verify(&body) {
+                    Ok(t) => {
+                        let _ = req.respond(tiny_http::Response::from_string("ok"));
+                        drop(server); // the port closes; later requests get nothing
+                        return Ok(t);
+                    }
+                    Err(e @ RequestError::Refused { .. }) => {
+                        let _ = req.respond(tiny_http::Response::from_string("ok"));
+                        return Err(SessionError::Refused(e));
+                    }
+                    Err(e) => {
+                        eprintln!("an answer was rejected ({e}); still waiting for the phone");
+                        let _ = req.respond(tiny_http::Response::from_string(e.to_string()).with_status_code(400));
+                        strike(&mut strikes)?;
+                    }
                 }
-                let _ = req.respond(tiny_http::Response::from_string("ok"));
-                break buf;
             }
             _ => {
                 let _ = req.respond(tiny_http::Response::empty(405));
             }
         }
-    };
-    drop(server); // the port closes; later requests get nothing
-    Ok(body)
+    }
+}
+
+fn no_network() -> SessionError {
+    SessionError::Backend("no network interface for the LAN session (no default route); give one with --listen <ip:port>".into())
+}
+
+/// The POST body, at most `MAX_RESPONSE_BYTES`, within `deadline`. The read
+/// runs on its own thread: a client that opens the POST and stalls must not
+/// hold the session past its timeout. `None` on the deadline; the thread
+/// then ends with the connection, and the request is answered by nobody.
+fn read_body(mut req: tiny_http::Request, deadline: Duration) -> Option<(tiny_http::Request, Result<Vec<u8>, String>)> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let result = req
+            .as_reader()
+            .take(MAX_RESPONSE_BYTES as u64 + 1)
+            .read_to_end(&mut buf)
+            .map_err(|e| format!("reading the answer: {e}"))
+            .and_then(|n| {
+                if n > MAX_RESPONSE_BYTES {
+                    Err(format!("the answer exceeds {} KiB", MAX_RESPONSE_BYTES / 1024))
+                } else {
+                    Ok(buf)
+                }
+            });
+        let _ = tx.send((req, result));
+    });
+    rx.recv_timeout(deadline).ok()
 }
 
 /// The address of the interface that carries the default route — where a
-/// phone on the same network reaches us. No packet is sent.
-fn default_route_ip() -> IpAddr {
-    UdpSocket::bind("0.0.0.0:0")
+/// phone on the same network reaches us. No packet is sent. `None` when
+/// there is no route: a QR pointing at loopback would be accepted by the
+/// phone and never reach us.
+fn default_route_ip() -> Option<IpAddr> {
+    let ip = UdpSocket::bind("0.0.0.0:0")
         .and_then(|s| s.connect("192.0.2.1:9").map(|_| s))
         .and_then(|s| s.local_addr())
         .map(|a| a.ip())
-        .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .ok()?;
+    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
 }
 
 fn render_qr(uri: &str) -> Result<String, SignerError> {
@@ -232,6 +378,17 @@ mod tests {
         let s = PhoneSigner::new("p".into(), PublicKey { x: [1; 32], y: [2; 32] });
         assert!(s.sign_digest(&[0; 32]).is_err());
         assert!(s.sign_user_op(&UserOpContext { user_op_hash: [0; 32], request: None }).is_err());
+    }
+
+    #[test]
+    fn fingerprints_are_typed_loosely_and_matched_as_a_prefix() {
+        let fp = "ZOLH5-D2DIS-66ZBB-4T6NL";
+        assert!(fingerprint_matches(&normalize_fingerprint("zolh5-d2dis").unwrap(), fp));
+        assert!(fingerprint_matches(&normalize_fingerprint(" ZOLH5 D2DIS 66ZBB 4T6NL ").unwrap(), fp));
+        assert!(!fingerprint_matches(&normalize_fingerprint("ZOLH5-D2DIT").unwrap(), fp));
+        assert!(normalize_fingerprint("ZOLH5").is_err(), "one group is too little");
+        assert!(normalize_fingerprint("ZOLH5-D2DI1").is_err(), "1 is not base32");
+        assert!(normalize_fingerprint("ZOLH5-D2DIS-66ZBB-4T6NL-X").is_err());
     }
 
     #[test]

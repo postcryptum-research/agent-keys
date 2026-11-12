@@ -60,7 +60,7 @@ class MainActivity : AppCompatActivity() {
         const val ALIAS = "tpmsign-p0-owner"
         /** One key per enrolled account (§5.1): alias by chain and account. */
         fun aliasFor(chainId: String, account: String) = "tpmsign-owner-$chainId-${account.lowercase()}"
-        const val APP_VERSION = "0.0.3-p1"
+        const val APP_VERSION = "0.0.4-p1"
         const val PREFS = "enrollments"
         /** owner-core `user_op::tests`: the golden operation's userOpHash on chain 31337 (anvil). */
         const val GOLDEN_DIGEST_HEX = "48e286b71f896beef7a0b4d23fd82d6afae60a64e7976118de492a2fba4c1947"
@@ -352,6 +352,11 @@ class MainActivity : AppCompatActivity() {
         val chainId = req.getString("chainId"); val account = req.getString("account"); val label = req.getString("label")
         require(label.length in 1..64) { "bad label" }
         val alias = aliasFor(chainId, account)
+        // an unconfirmed key (the POST never got a 200) was never anyone's root: discard it and try again
+        if (keyStore.containsAlias(alias) && prefs().getString(alias, null)?.let { JSONObject(it).optString("state") } != "confirmed") {
+            keyStore.deleteEntry(alias); prefs().edit().remove(alias).apply()
+            say("discarded an unconfirmed enrollment for $account")
+        }
         require(!keyStore.containsAlias(alias)) { "this phone already holds a key for $account on chain $chainId; a new key needs a handover from the current one (§5.4)" }
         // the tier this phone can give, before the user confirms (§5.6): a dry look, no key yet
         val strongBox = packageManager.hasSystemFeature("android.hardware.strongbox_keystore")
@@ -373,7 +378,18 @@ class MainActivity : AppCompatActivity() {
                 safely {
                     // the attestation challenge binds the key to this exact request (§5.2)
                     val challenge = sha256("TPM_sign/v1/enroll".toByteArray() + commitment.toByteArray())
-                    generateKey(alias, challenge)
+                    val record = JSONObject().put("label", label).put("chainId", chainId).put("account", account)
+                        .put("entryPoint", req.getString("entryPoint")).put("enrolledAt", now).put("state", "pending")
+                    prefs().edit().putString(alias, record.toString()).apply()
+                    fun discard(why: String) {
+                        if (keyStore.containsAlias(alias)) keyStore.deleteEntry(alias)
+                        prefs().edit().remove(alias).apply()
+                        say("enrollment not confirmed ($why): the key and the record are deleted; scan a new QR to try again")
+                    }
+                    try {
+                        generateKey(alias, challenge)
+                        require(tier == "strongbox" || tier == "tee") { "key tier $tier is not one the laptop accepts" }
+                    } catch (e: Exception) { discard(e.message ?: e::class.java.simpleName); return@safely }
                     val (x, y) = publicXY(alias)
                     val chain = keyStore.getCertificateChain(alias)
                     val attestation = org.json.JSONArray().also { arr -> chain.forEach { arr.put(Base64.getEncoder().encodeToString(it.encoded)) } }
@@ -383,16 +399,19 @@ class MainActivity : AppCompatActivity() {
                         .put("publicKey", JSONObject().put("x", "0x$x").put("y", "0x$y"))
                         .put("securityLevel", tier).put("deviceCredential", false)
                         .put("attestation", attestation).put("app", appInfo())
-                    // the enrollment record (§5.4): nothing secret
-                    prefs().edit().putString(alias, JSONObject().put("label", label).put("chainId", chainId).put("account", account)
-                        .put("entryPoint", req.getString("entryPoint")).put("tier", tier).put("x", "0x$x").put("y", "0x$y")
-                        .put("enrolledAt", now).toString()).apply()
-                    say("enrolled: tier $tier, ${chain.size} attestation certificates\n  x = 0x$x\n  y = 0x$y\n  fingerprint ${fingerprint(x, y)}  ← compare with the laptop")
+                    val fp = fingerprint(x, y)
+                    say("new key: tier $tier, ${chain.size} attestation certificates\n  x = 0x$x\n  y = 0x$y\n\n  FINGERPRINT  $fp\n  type it on the laptop when asked")
                     Thread {
-                        try {
-                            val code = httpPost(url, resp.toString().toByteArray())
-                            runOnUiThread { say("enrollment posted: HTTP $code. Next, on the laptop: owner set-root … --expect-fingerprint ${fingerprint(x, y)}") }
-                        } catch (e: Exception) { runOnUiThread { say("POST failed: ${e.message}") } }
+                        val outcome = try { "HTTP ${httpPost(url, resp.toString().toByteArray())}" } catch (e: Exception) { "POST failed: ${e.message}" }
+                        runOnUiThread {
+                            safely {
+                                if (outcome == "HTTP 200") {
+                                    // confirmed: the record (§5.4) becomes permanent
+                                    prefs().edit().putString(alias, record.put("state", "confirmed").put("tier", tier).put("x", "0x$x").put("y", "0x$y").toString()).apply()
+                                    say("enrollment confirmed by the laptop. Next there: owner set-root … --expect-fingerprint $fp")
+                                } else discard(outcome)
+                            }
+                        }
                     }.start()
                 }
             }
@@ -405,6 +424,7 @@ class MainActivity : AppCompatActivity() {
         if (all.isEmpty()) { say("no enrolled accounts"); return }
         for ((alias, v) in all) {
             val e = JSONObject(v.toString())
+            if (e.optString("state") != "confirmed") { say("unconfirmed enrollment for ${e.getString("account")} (the laptop never answered 200); it is discarded on the next enrollment of that account"); continue }
             val present = if (keyStore.containsAlias(alias)) "" else " (KEY MISSING — biometric re-enrolled or key deleted)"
             say("enrolled: ${e.getString("label")} — account ${e.getString("account")} on chain ${e.getString("chainId")}, tier ${e.getString("tier")}$present\n  fingerprint ${fingerprint(e.getString("x").removePrefix("0x"), e.getString("y").removePrefix("0x"))}")
         }

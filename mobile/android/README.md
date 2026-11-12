@@ -103,12 +103,16 @@ the account, the label and the §5.6 notice for this phone's tier; on a
 TEE-only phone the button reads "I understand, enroll". On yes it creates a
 **new** key for that account (alias by chain and account, design §5.1) with
 the attestation challenge `sha256("TPM_sign/v1/enroll" ‖ commitment)`
-(§5.2), posts the public key, the tier, and the attestation chain as base64
-DER, shows the key's fingerprint for the owner to compare with the laptop,
-and keeps an enrollment record (§5.4: label, chain, account, tier, key —
-nothing secret) that the app lists at launch, flagging a missing key. On no
-it posts a refusal. Button 3 then signs with the account's enrolled key and
-falls back to the P0 key for accounts enrolled by hand.
+(§5.2), shows the key's **fingerprint** — the laptop asks the owner to type
+it, because nothing else authenticates an enrollment answer until P3 — and
+posts the public key, the tier, and the attestation chain as base64 DER.
+The enrollment record (§5.4: label, chain, account, tier, key — nothing
+secret) is *pending* until the laptop answers 200; on any failure (a
+timeout, a rejected answer, a tier the laptop would refuse) the key and the
+record are deleted, so the account can be enrolled again. Confirmed records
+are listed at launch, a missing key flagged. On no it posts a refusal.
+Button 3 then signs with the account's enrolled key and, for now, falls
+back to the P0 key for accounts enrolled by hand (to go with P2).
 
 The laptop writes the enrollment (request, answer, `attest-*.der`) with
 `--out <dir>`; verifying the chain there is P3.

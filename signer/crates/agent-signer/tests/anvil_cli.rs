@@ -592,6 +592,11 @@ fn http_get(url: &str) -> Vec<u8> {
 /// answer an enrollment request with `key` as the new key (no attestation:
 /// a simulator has none).
 fn phone_simulator(qr_file: std::path::PathBuf, key: Key, mode: &'static str) -> std::thread::JoinHandle<()> {
+    phone_simulator_after(qr_file, key, mode, Duration::ZERO)
+}
+
+/// `delay` holds the answer back, so another "phone" can post first.
+fn phone_simulator_after(qr_file: std::path::PathBuf, key: Key, mode: &'static str, delay: Duration) -> std::thread::JoinHandle<()> {
     use owner_core::enroll::{EnrollRequest, EnrollResponse};
     use owner_core::request::{commitment, AppInfo, QrPayload, SignRequest, SignResponse};
     std::thread::spawn(move || {
@@ -608,6 +613,7 @@ fn phone_simulator(qr_file: std::path::PathBuf, key: Key, mode: &'static str) ->
         let qr = QrPayload::parse(&uri).expect("a valid QR payload");
         let bytes = http_get(&qr.url);
         assert_eq!(commitment(&bytes), qr.commitment, "the served request must match the QR's commitment");
+        std::thread::sleep(delay);
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
         let app = AppInfo { platform: "simulator".into(), version: "0".into(), core: "0".into() };
         let pk = hw_signer::PublicKey {
@@ -680,15 +686,17 @@ fn phone_owner_signs_a_root_operation() {
     assert_eq!(chain.counter(), before + U256::from(1));
     let _ = std::fs::remove_file(&qr_file);
 
-    // 2. a signature over another hash is refused by the CLI, nothing sent
+    // 2. a signature over another hash is rejected (400) and the session keeps waiting
+    //    for the phone — a host on the LAN with the token can only make it fail; nothing sent
     let sim = phone_simulator(qr_file.clone(), key(7), "wrong-hash");
     let before = chain.counter();
     let err = chain.fails(&[
         "op", "send", "--agent", &cfg_path, "--root", "--target", &counter, "--data", INCREMENT,
-        "--listen", "127.0.0.1:0", "--phone-qr-file", qr, "--phone-timeout", "60",
+        "--listen", "127.0.0.1:0", "--phone-qr-file", qr, "--phone-timeout", "4",
     ]);
     sim.join().unwrap();
     assert!(err.contains("does not verify"), "{err}");
+    assert!(err.contains("no answer from the phone within 4s"), "the session waited on after the bad answer: {err}");
     assert_eq!(chain.counter(), before);
     let _ = std::fs::remove_file(&qr_file);
 
@@ -749,30 +757,39 @@ fn phone_is_enrolled_then_takes_over_root() {
     let err = chain.fails(&["key", "create", "--phone", "owner-phone", "--agent", &unpinned, "--listen", "127.0.0.1:0", "--phone-timeout", "5"]);
     assert!(err.contains("pin `account`"), "{err}");
 
+    let fp = fingerprint_of(&phone);
+    let two_groups = fp[..11].to_lowercase(); // what the owner types from the phone's screen
+    let session = ["--listen", "127.0.0.1:0", "--phone-qr-file", qr, "--phone-timeout", "60", "--phone-fingerprint", &two_groups];
+
+    // the label is checked before any QR
+    let err = chain.fails(&["key", "create", "--phone", "", "--agent", &cfg, "--listen", "127.0.0.1:0", "--phone-timeout", "5"]);
+    assert!(err.contains("label must be 1 to 64"), "{err}");
+    // without a terminal the fingerprint must be given up front, before any QR
+    let err = chain.fails(&["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--listen", "127.0.0.1:0", "--phone-timeout", "5"]);
+    assert!(err.contains("--phone-fingerprint"), "{err}");
+    assert!(!err.contains("tpmsign:1?"), "no session: {err}");
+
     // 1. the phone declines
     let sim = phone_simulator(qr_file.clone(), key(9), "enroll-refuse");
-    let err = chain.fails(&["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--listen", "127.0.0.1:0", "--phone-qr-file", qr, "--phone-timeout", "60"]);
+    let err = chain.fails(&[&["key", "create", "--phone", "owner-phone", "--agent", &cfg], &session[..]].concat());
     sim.join().unwrap();
     assert!(err.contains("the phone refused: user"), "{err}");
     let _ = std::fs::remove_file(&qr_file);
 
-    // 2. a simulator has no attestation: refused unless allowed
+    // 2. a simulator has no attestation: rejected (400, the session waits on) unless allowed
     let sim = phone_simulator(qr_file.clone(), key(9), "enroll");
-    let err = chain.fails(&["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--listen", "127.0.0.1:0", "--phone-qr-file", qr, "--phone-timeout", "60"]);
+    let err = chain.fails(&[&["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--phone-timeout", "4"], &session[..4], &session[6..]].concat());
     sim.join().unwrap();
     assert!(err.contains("no attestation evidence"), "{err}");
+    assert!(err.contains("no answer from the phone within"), "the session kept waiting after the rejected answer: {err}");
     let _ = std::fs::remove_file(&qr_file);
 
     // 3. enrolled: the key, its fingerprint, the next step, the config snippet
     let sim = phone_simulator(qr_file.clone(), key(9), "enroll");
-    let text = chain.ok(&[
-        "key", "create", "--phone", "owner-phone", "--agent", &cfg, "--allow-no-attestation", "--out", out,
-        "--listen", "127.0.0.1:0", "--phone-qr-file", qr, "--phone-timeout", "60",
-    ]);
+    let text = chain.ok(&[&["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--allow-no-attestation", "--out", out], &session[..]].concat());
     sim.join().unwrap();
-    let fp = fingerprint_of(&phone);
     assert!(text.contains(&format!("x = {}", phone.x)), "{text}");
-    assert!(text.contains(&format!("fingerprint    {fp}")), "{text}");
+    assert!(text.contains(&format!("fingerprint    {fp}   (confirmed")), "{text}");
     assert!(text.contains("security level simulator (self-reported)"), "{text}");
     assert!(text.contains("Nothing changed on-chain"), "{text}");
     assert!(text.contains(&format!("--expect-fingerprint {fp}")), "{text}");
@@ -787,6 +804,20 @@ fn phone_is_enrolled_then_takes_over_root() {
     let snippet_end = snippet_start + text[snippet_start..].find("\n}").expect("the snippet's end") + 2;
     let snippet: Value = serde_json::from_str(&text[snippet_start..snippet_end]).expect("the snippet parses");
     assert_eq!(snippet["owner"]["phone"]["fingerprint"], fp);
+
+    // 3b. the race from the review of #29: a host on the LAN posts its own key first. The
+    // fingerprint the owner typed from the phone's screen rejects it (400), the session
+    // waits on, and the phone's answer is the one accepted.
+    let _ = std::fs::remove_file(&qr_file);
+    let intruder = phone_simulator_after(qr_file.clone(), key(8), "enroll", Duration::ZERO);
+    let real = phone_simulator_after(qr_file.clone(), key(9), "enroll", Duration::from_millis(1500));
+    let text = chain.ok(&[&["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--allow-no-attestation"], &session[..]].concat());
+    intruder.join().unwrap();
+    real.join().unwrap();
+    assert!(text.contains("is not the one on the phone's screen"), "the intruder's key was rejected: {text}");
+    assert!(text.contains(&format!("fingerprint    {fp}   (confirmed")), "the phone's key was enrolled: {text}");
+    assert!(!text.contains(&key(8).x), "no line names the intruder's key as the owner's: {text}");
+    let _ = std::fs::remove_file(&qr_file);
 
     // 4. the handover goes only to the key the owner saw
     let validator = chain.addr("p256Validator");
@@ -873,7 +904,7 @@ fn phone_owner_real_device() {
 
     // 1. enrollment; the evidence survives the run when TPMSIGN_PHONE_OUT names a directory
     let out_dir = std::env::var_os("TPMSIGN_PHONE_OUT").map(PathBuf::from).unwrap_or_else(|| chain.dir.join("enrollment"));
-    eprintln!("\naccount {account} on a local anvil. On the phone tap \"4. Enroll this phone for an account\", scan the QR\nbelow, read the notice, confirm.\n");
+    eprintln!("\naccount {account} on a local anvil. On the phone tap \"4. Enroll this phone for an account\", scan the QR\nbelow, read the notice, confirm; then type the fingerprint the phone shows when asked here.\n");
     let status = run(&["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--out", out_dir.to_str().unwrap()]);
     assert!(status.success(), "the enrollment failed");
     let resp: Value = serde_json::from_str(&std::fs::read_to_string(out_dir.join("enroll-response.json")).unwrap()).unwrap();

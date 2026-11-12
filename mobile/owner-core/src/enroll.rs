@@ -220,6 +220,9 @@ impl EnrollResponse {
         if attestation.is_empty() && !allow_no_attestation {
             return Err(RequestError::NoAttestation);
         }
+        if security_level == "simulator" && !allow_no_attestation {
+            return Err(RequestError::Malformed("securityLevel \"simulator\" is accepted only with --allow-no-attestation".into()));
+        }
         Ok(Enrollment {
             public_key,
             security_level,
@@ -300,5 +303,9 @@ mod tests {
         // an unknown tier
         let odd = EnrollResponse::enrolled(&c, &pk, "cloud", false, &[], app()).to_bytes();
         assert!(EnrollResponse::verify(&odd, &bytes, true).is_err());
+        // a simulator's tier never passes as a real enrollment, evidence or not
+        let fake = EnrollResponse::enrolled(&c, &pk, "simulator", false, &[vec![0x30, 0x00]], app()).to_bytes();
+        assert!(EnrollResponse::verify(&fake, &bytes, false).is_err());
+        assert!(EnrollResponse::verify(&fake, &bytes, true).is_ok());
     }
 }

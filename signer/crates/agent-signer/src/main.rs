@@ -390,6 +390,12 @@ enum KeyCmd {
         /// off-device check (docs/MOBILE_OWNER_DESIGN.md §5.2) and for scripts.
         #[arg(long, requires = "phone")]
         out: Option<PathBuf>,
+        /// Phone: the fingerprint the phone shows after creating the key (or
+        /// its first two groups), given up front instead of typed when the
+        /// answer arrives — for scripts and tests. An answer with another key
+        /// is refused: nothing authenticates an enrollment answer but this.
+        #[arg(long, requires = "phone")]
+        phone_fingerprint: Option<String>,
         #[command(flatten)]
         session: PhoneSessionArgs,
     },
@@ -602,10 +608,14 @@ fn check_signer(name: String, signer: &dyn HardwareSigner) -> Result<()> {
 
 fn run_key(cmd: KeyCmd) -> Result<()> {
     let (key, op) = match cmd {
-        KeyCmd::Create { key, parent, pcrs, auth_file, allow_no_attestation, out, session } => {
+        KeyCmd::Create { key, parent, pcrs, auth_file, allow_no_attestation, out, phone_fingerprint, session } => {
             if let (Some(label), Some(cfg)) = (&key.phone, &key.agent) {
                 session.configure();
-                return phone_enroll(label, cfg, allow_no_attestation, out.as_deref());
+                let confirm = match phone_fingerprint {
+                    Some(fp) => phone::FingerprintSource::Given(fp),
+                    None => phone::FingerprintSource::Prompt,
+                };
+                return phone_enroll(label, cfg, allow_no_attestation, out.as_deref(), confirm);
             }
             (key, KeyOp::Create { parent, pcrs, auth_file })
         }
@@ -638,25 +648,28 @@ fn run_key(cmd: KeyCmd) -> Result<()> {
 /// (docs/MOBILE_OWNER_DESIGN.md §2.1). Prints the new key, its fingerprint
 /// and the config snippet; nothing on-chain. The handover is the owner's
 /// next step: `owner set-root … --expect-fingerprint <fp>`.
-fn phone_enroll(label: &str, cfg_path: &Path, allow_no_attestation: bool, out: Option<&Path>) -> Result<()> {
+fn phone_enroll(
+    label: &str,
+    cfg_path: &Path,
+    allow_no_attestation: bool,
+    out: Option<&Path>,
+    confirm: phone::FingerprintSource,
+) -> Result<()> {
+    if label.is_empty() || label.len() > 64 {
+        bail!("the phone key's label must be 1 to 64 characters");
+    }
     let (cfg, base) = AgentConfig::load(cfg_path)?;
     let dep = cfg.load_deployments(&base)?;
     let account = cfg.account.context(
         "the enrollment names an existing account: pin `account` in the config first (`account status` prints it; \
          docs/MOBILE_OWNER_DESIGN.md §5.5)",
     )?;
-    let (request, answer, e) = phone::enroll(label, dep.chain_id, dep.entry_point, account, allow_no_attestation)?;
+    if matches!(confirm, phone::FingerprintSource::Prompt) && !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        bail!("the owner must confirm the fingerprint the phone shows: run this on a terminal, or pass --phone-fingerprint <fp>");
+    }
+    let (request, answer, e) = phone::enroll(label, dep.chain_id, dep.entry_point, account, allow_no_attestation, confirm)?;
     let fp = owner_core::fingerprint::fingerprint(&e.public_key);
     let (x, y) = (hex32(&e.public_key.x), hex32(&e.public_key.y));
-    if let Some(dir) = out {
-        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-        std::fs::write(dir.join("enroll-request.json"), &request)?;
-        std::fs::write(dir.join("enroll-response.json"), &answer)?;
-        for (i, der) in e.attestation.iter().enumerate() {
-            std::fs::write(dir.join(format!("attest-{i}.der")), der)?;
-        }
-        eprintln!("enrollment written to {} ({} attestation certificates)", dir.display(), e.attestation.len());
-    }
     let evidence = if e.attestation.is_empty() {
         "none — the laptop cannot place this key in hardware".to_string()
     } else {
@@ -669,7 +682,7 @@ fn phone_enroll(label: &str, cfg_path: &Path, allow_no_attestation: bool, out: O
     let app = e.app.as_ref().map(|a| format!("{} {} (core {})", a.platform, a.version, a.core)).unwrap_or_else(|| "unknown".into());
     println!("enrolled phone owner key {label:?} for account {account} (chain {})", dep.chain_id);
     println!("  public key     x = {x}\n                 y = {y}");
-    println!("  fingerprint    {fp}   ← compare with the phone's screen");
+    println!("  fingerprint    {fp}   (confirmed against the phone's screen)");
     println!("  security level {} (self-reported){}", e.security_level, if e.device_credential { ", device PIN also unlocks" } else { "" });
     println!("  attestation    {evidence}");
     println!("  app            {app}");
@@ -683,6 +696,15 @@ fn phone_enroll(label: &str, cfg_path: &Path, allow_no_attestation: bool, out: O
             "owner": {"phone": {"label": label, "publicKey": {"x": x, "y": y}, "fingerprint": fp}}
         }))?
     );
+    if let Some(dir) = out {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        std::fs::write(dir.join("enroll-request.json"), &request)?;
+        std::fs::write(dir.join("enroll-response.json"), &answer)?;
+        for (i, der) in e.attestation.iter().enumerate() {
+            std::fs::write(dir.join(format!("attest-{i}.der")), der)?;
+        }
+        eprintln!("enrollment written to {} ({} attestation certificates)", dir.display(), e.attestation.len());
+    }
     Ok(())
 }
 
