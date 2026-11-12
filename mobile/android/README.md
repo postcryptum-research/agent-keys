@@ -141,9 +141,16 @@ shown in a dialog with one Sign action, bold effects get a second
 confirmation in plain words, and the fingerprint prompt signs the
 `userOpHash` the core recomputed — never the laptop's number. The core
 converts the DER signature, normalizes low-s, verifies it and builds the
-response. The P0-key fallback is gone: an account must be enrolled. The
-build-embedded names of §6.7 are slice 3, so on the phone addresses show
-in full without names today.
+response. The P0-key fallback is gone: an account must be enrolled. The QR
+is parsed by the core too (`parseQr`, which refuses loopback on the phone).
+The build-embedded names of §6.7 are slice 3, so on the phone addresses
+show in full without names today, and the review errs on the side of
+emphasis: a key installed on a validator the build cannot classify and
+every validator removal are bold, a permission whose policy or signer
+module the build cannot read is refused (expert mode is off), and no
+paymaster is accepted. A permission install is therefore not signable on
+the phone until slice 3; `agent-signer` says so in its preview before the
+QR.
 
 ### P2 run record — the phone decodes, recomputes and signs (2026-11-12, app 0.1.0-p2)
 

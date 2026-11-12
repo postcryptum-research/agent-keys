@@ -73,7 +73,7 @@ Three facts shape the choice:
 | `hw-signer` (types only, no backends) | Apache-2.0 | ours |
 | **`uniffi`** (bindings generator and its runtime support code) | **MPL-2.0** (V, crates.io) | the generated Swift/Kotlin bindings embed uniffi's support code. MPL-2.0 covers *files*; the generated files are derived from MPL templates. **To confirm (I):** whether the uniffi project treats generated bindings as unencumbered output. If not, those generated files stay MPL-2.0, which the stores accept, and the rest of the app keeps its own licence |
 | AndroidX (`biometric`, `camera`, `core`) | Apache-2.0 (V) | |
-| JNA (uniffi's Kotlin runtime) | **LGPL-2.1 OR Apache-2.0** (V) | choose Apache-2.0 |
+| JNA (uniffi's Kotlin runtime) | **LGPL-2.1 OR Apache-2.0** (V) | choose Apache-2.0. **In use since P2** (2026-11-12): `uniffi` 0.32 (MPL-2.0) generates the Kotlin bindings of `owner-core` and JNA 5.17 loads the library, taken under its Apache-2.0 option. Both appear in the Android app only; the CLI's build does not enable `owner-core`'s `ffi` feature |
 | A QR scanner on Android | ZXing: Apache-2.0 (V). ML Kit: Google proprietary terms (V) | prefer ZXing, or CameraX + ZXing; avoid ML Kit for licence simplicity and to keep Google out of the app |
 | iOS frameworks (CryptoKit, Security, AVFoundation, DeviceCheck) | Apple SDK terms | unavoidable; not redistributed |
 | Swift / Kotlin standard libraries | Apache-2.0 | |

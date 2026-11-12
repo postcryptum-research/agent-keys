@@ -8,7 +8,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 core="$here/../owner-core"
 : "${CARGO:=cargo}"
 if [ -z "${ANDROID_NDK_HOME:-}" ] && [ -n "${ANDROID_HOME:-}" ]; then
-  ANDROID_NDK_HOME=$(ls -d "$ANDROID_HOME"/ndk/* | tail -1); export ANDROID_NDK_HOME
+  ANDROID_NDK_HOME=$(ls -d "$ANDROID_HOME"/ndk/* | sort -V | tail -1); export ANDROID_NDK_HOME
 fi
 cd "$core"
 # 1. the phone library (arm64 only for the development builds; armeabi-v7a comes with P5)

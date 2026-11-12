@@ -37,7 +37,6 @@ import com.journeyapps.barcodescanner.ScanOptions
 import org.json.JSONObject
 import uniffi.owner_core.*
 import java.net.HttpURLConnection
-import java.net.InetAddress
 import java.net.URL
 import java.util.Base64
 import android.widget.Button
@@ -262,15 +261,11 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
-    /** `tpmsign:1?u=<url>&h=<commitment>`; the host must be a local address (§3.2). */
+    /** `tpmsign:1?u=<url>&h=<commitment>`: owner-core's parser, one implementation of the §3.2 host rule. */
     private fun handleQr(uri: String) {
-        require(uri.startsWith("tpmsign:1?")) { "not a tpmsign:1 QR" }
-        val params = uri.removePrefix("tpmsign:1?").split("&")
-            .mapNotNull { it.split("=", limit = 2).takeIf { p -> p.size == 2 } }.associate { it[0] to it[1] }
-        val url = params["u"] ?: error("no u= in the QR")
-        val commitment = params["h"] ?: error("no h= in the QR")
-        val host = URL(url).host
-        require(URL(url).protocol == "http" && isLocalHost(host)) { "session host $host is not a local address; refusing" }
+        val qr = parseQr(uri)
+        val url = qr.url
+        val commitment = qr.commitment
         say("session: $url")
         Thread {
             try {
@@ -506,16 +501,6 @@ class MainActivity : AppCompatActivity() {
             sb.append(alphabet[(acc shr bits) and 31])
         }
         return sb.chunked(5).joinToString("-")
-    }
-
-    /** §3.2: an IP literal (no name, so no DNS and no rebinding) that is private, link-local or ULA. */
-    private fun isLocalHost(host: String): Boolean {
-        val h = host.trim('[', ']')
-        val literal = h.matches(Regex("^[0-9.]+$")) || h.matches(Regex("^[0-9a-fA-F:]+$"))
-        if (!literal) return false
-        val a = try { InetAddress.getByName(h) } catch (_: Exception) { return false }
-        return a.isSiteLocalAddress || a.isLinkLocalAddress ||
-            (a is java.net.Inet6Address && (a.address[0].toInt() and 0xfe) == 0xfc)
     }
 
     /** The request is a few KiB; anything past 64 KiB is not ours. */

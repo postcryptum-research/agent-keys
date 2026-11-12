@@ -158,10 +158,16 @@ impl ReviewHandle {
     }
 }
 
-/// `tpmsign:1?u=…&h=…`; refuses a non-local host (§3.2).
+/// `tpmsign:1?u=…&h=…`; refuses a non-local host (§3.2). Loopback, which
+/// `is_local_host` keeps for the laptop's own tests, is the phone itself here.
 #[uniffi::export]
 pub fn parse_qr(uri: String) -> Result<FfiQr, CoreError> {
     let q = QrPayload::parse(&uri).map_err(failed)?;
+    let host = crate::request::session_host(&q.url).map_err(failed)?;
+    let loopback = host.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false);
+    if loopback {
+        return Err(CoreError::Failed("the session host is this phone itself; refused".into()));
+    }
     Ok(FfiQr { url: q.url, commitment: q.commitment })
 }
 
@@ -244,6 +250,7 @@ fn der_to_rs(der: &[u8]) -> Option<([u8; 32], [u8; 32])> {
     (i == der.len()).then_some((r, s))
 }
 
+/// Strict: the short form below 128, the one-byte long form at or above it.
 fn der_len(der: &[u8], i: &mut usize) -> Option<usize> {
     let b = *der.get(*i)?;
     *i += 1;
@@ -253,7 +260,7 @@ fn der_len(der: &[u8], i: &mut usize) -> Option<usize> {
     if b == 0x81 {
         let l = *der.get(*i)? as usize;
         *i += 1;
-        return Some(l);
+        return (l >= 0x80).then_some(l);
     }
     None
 }
@@ -266,8 +273,12 @@ fn der_int(der: &[u8], i: &mut usize) -> Option<[u8; 32]> {
     let len = der_len(der, i)?;
     let bytes = der.get(*i..*i + len)?;
     *i += len;
+    // minimal: no leading zero unless the next byte needs it, never empty or negative
     let bytes = match bytes {
-        [0x00, rest @ ..] if rest.len() == 32 => rest,
+        [] => return None,
+        [0x00, rest @ ..] if rest.first().map_or(false, |b| *b & 0x80 != 0) && rest.len() <= 32 => rest,
+        [0x00, ..] => return None,
+        [first, ..] if *first & 0x80 != 0 => return None,
         b if b.len() <= 32 => b,
         _ => return None,
     };
@@ -292,6 +303,11 @@ mod tests {
         assert_eq!(s[0], 0);
         assert_eq!(&s[1..], &[0x11; 31]);
         assert!(der_to_rs(&der[..der.len() - 1]).is_none(), "truncated");
+        // non-minimal encodings are refused
+        assert!(der_to_rs(&[0x30, 0x81, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01]).is_none(), "long form for a short length");
+        assert!(der_to_rs(&[0x30, 0x08, 0x02, 0x02, 0x00, 0x01, 0x02, 0x02, 0x00, 0x01]).is_none(), "a needless leading zero");
+        assert!(der_to_rs(&[0x30, 0x06, 0x02, 0x01, 0x81, 0x02, 0x01, 0x01]).is_none(), "a negative integer");
+        assert_eq!(der_to_rs(&[0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x7f]).unwrap().1[31], 0x7f);
         let mut trailing = der.clone();
         trailing.push(0);
         assert!(der_to_rs(&trailing).is_none(), "trailing byte");
@@ -312,5 +328,67 @@ mod tests {
         assert_eq!(&s[..], es.as_slice());
         assert_eq!(fingerprint_of(xy.clone()).unwrap().len(), 23);
         assert!(fingerprint_of(vec![1; 64]).is_err(), "off the curve");
+    }
+
+    /// `finish` over a reviewed request: a good signature becomes a verified
+    /// response; one over another digest, or by another key, is refused.
+    #[test]
+    fn finish_builds_a_verified_response_or_refuses() {
+        use crate::kernel;
+        use crate::request::{SignRequest, SignResponse};
+        use crate::user_op::PackedUserOp;
+        use alloy_primitives::{address, Bytes, U256};
+        use p256::ecdsa::signature::hazmat::PrehashSigner;
+        let entry = address!("0000000071727De22E5E9d8BAf0edAc6f37da032");
+        let account = address!("D62Dd4afD4e77cDFA6f8eaD1D2655745cF5af628");
+        let other = address!("7000000000000000000000000000000000000007");
+        let op = PackedUserOp {
+            sender: account,
+            nonce: U256::from(1),
+            init_code: Bytes::new(),
+            call_data: kernel::execute_calldata(other, U256::from(1), &[]),
+            account_gas_limits: kernel::pack_gas(300_000, 150_000),
+            pre_verification_gas: U256::from(60_000),
+            gas_fees: kernel::pack_gas(1, 1),
+            paymaster_and_data: Bytes::new(),
+        };
+        let bytes = SignRequest::new(&op, entry, 31337, 2_000_000_000, None, Default::default(), None).to_bytes();
+        let commitment = crate::request::commitment(&bytes);
+        let enrolled = vec![FfiEnrolledAccount {
+            chain_id: 31337,
+            entry_point: format!("{entry}"),
+            account: format!("{account}"),
+            validator: None,
+            gas_cap_wei: default_gas_cap_wei(),
+            expert_mode: false,
+        }];
+        let review = open_request(bytes.clone(), commitment, 1_999_999_000, enrolled).unwrap();
+        assert!(matches!(review.verdict(), FfiVerdict::Sign));
+        assert!(review.needs_second_confirmation(), "value to an unknown address is an effect");
+        let digest = review.digest_to_sign().unwrap();
+        let key = |n: u8| {
+            let sk = p256::ecdsa::SigningKey::from_bytes(&[n; 32].into()).unwrap();
+            let p = sk.verifying_key().to_encoded_point(false);
+            (sk, [p.x().unwrap().as_slice(), p.y().unwrap().as_slice()].concat())
+        };
+        let (sk, xy) = key(5);
+        let app = || FfiApp { platform: "test".into(), version: "0".into() };
+        let sig: p256::ecdsa::Signature = sk.sign_prehash(&digest).unwrap();
+        let resp = review.finish(sig.to_der().as_bytes().to_vec(), xy.clone(), app()).unwrap();
+        let pk = parse_key(&xy).unwrap();
+        let expected = alloy_primitives::B256::from_slice(&digest);
+        assert!(SignResponse::verify(&resp, &bytes, &pk, expected).is_ok(), "the laptop accepts what finish built");
+        // a signature over another digest
+        let wrong: p256::ecdsa::Signature = sk.sign_prehash(&[9u8; 32]).unwrap();
+        assert!(review.finish(wrong.to_der().as_bytes().to_vec(), xy.clone(), app()).is_err());
+        // the right digest, another key
+        let (_, xy2) = key(6);
+        assert!(review.finish(sig.to_der().as_bytes().to_vec(), xy2, app()).is_err());
+        // a refusal names the request
+        let refused = review.refuse("user".into(), None, app());
+        assert!(matches!(SignResponse::verify(&refused, &bytes, &pk, expected), Err(crate::request::RequestError::Refused { .. })));
+        // loopback is this phone
+        assert!(parse_qr("tpmsign:1?u=http://127.0.0.1:1/s/x&h=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into()).is_err());
+        assert!(parse_qr("tpmsign:1?u=http://10.0.0.1:1/s/x&h=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into()).is_ok());
     }
 }
