@@ -1,5 +1,6 @@
 {
   "backend": "android-keystore",
+  "tier": "tee",
   "message": "TPM_sign: Android Keystore P-256 vector (the owner-core golden userOpHash, chain 31337)",
   "digest": "0x48e286b71f896beef7a0b4d23fd82d6afae60a64e7976118de492a2fba4c1947",
   "r": "0x0ee9d1848e4f599d43dda93e55bf4d7781b64d563dcdf2253c62480ed7cce519",

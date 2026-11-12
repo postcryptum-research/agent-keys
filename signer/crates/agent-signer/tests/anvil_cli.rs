@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use alloy::primitives::{Address, Bytes, U256};
+use alloy::primitives::{Address, Bytes, B256, U256};
 use alloy::sol;
 use alloy::sol_types::{SolCall, SolValue};
 use base64::engine::general_purpose::STANDARD as B64;
@@ -552,6 +552,170 @@ fn owner_rotates_its_key_on_the_root_validator() {
     assert!(refused.contains("not the account's root key"), "{refused}");
     // and the agent permission survived
     chain.ok(&["demo", "--agent", &new_cfg]);
+}
+
+// ---------------------------------------------------------------- phone owner (P1)
+
+/// GET over the harness's bare TCP client (the CLI's LAN session is plain HTTP).
+fn http_get(url: &str) -> Vec<u8> {
+    let rest = url.strip_prefix("http://").unwrap();
+    let (host, path) = rest.split_once('/').map(|(h, p)| (h, format!("/{p}"))).unwrap_or((rest, "/".into()));
+    let mut s = TcpStream::connect(host).unwrap();
+    write!(s, "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").unwrap();
+    let mut resp = Vec::new();
+    s.read_to_end(&mut resp).unwrap();
+    let sep = resp.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    resp[sep + 4..].to_vec()
+}
+
+/// What the phone does, in a thread: wait for the QR the CLI writes to
+/// `qr_file`, fetch the request, check the commitment, recompute the hash,
+/// sign with `key` (or misbehave as `mode` says), post the answer.
+fn phone_simulator(qr_file: std::path::PathBuf, key: Key, mode: &'static str) -> std::thread::JoinHandle<()> {
+    use owner_core::request::{commitment, AppInfo, QrPayload, SignRequest, SignResponse};
+    std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        let uri = loop {
+            if let Ok(u) = std::fs::read_to_string(&qr_file) {
+                if u.starts_with("tpmsign:") {
+                    break u;
+                }
+            }
+            assert!(started.elapsed() < Duration::from_secs(30), "the CLI never showed a QR");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let qr = QrPayload::parse(&uri).expect("a valid QR payload");
+        let bytes = http_get(&qr.url);
+        assert_eq!(commitment(&bytes), qr.commitment, "the served request must match the QR's commitment");
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let req = SignRequest::parse(&bytes, now, 300).expect("a well-formed request");
+        assert_eq!(req.nonce_key().unwrap(), U256::ZERO, "the phone signs root operations only");
+        let hash = req.user_op_hash().unwrap();
+        let app = AppInfo { platform: "simulator".into(), version: "0".into(), core: "0".into() };
+        let mut scalar = [0u8; 32];
+        scalar.copy_from_slice(&hex::decode(&key.scalar[2..]).unwrap());
+        let sk = SigningKey::from_bytes(&scalar.into()).unwrap();
+        let pk = hw_signer::PublicKey {
+            x: hex::decode(&key.x[2..]).unwrap().try_into().unwrap(),
+            y: hex::decode(&key.y[2..]).unwrap().try_into().unwrap(),
+        };
+        let sign = |h: &B256| {
+            use p256::ecdsa::signature::hazmat::PrehashSigner;
+            let s: p256::ecdsa::Signature = sk.sign_prehash(&h.0).unwrap();
+            let (r, s) = s.split_bytes();
+            hw_signer::Signature { r: r.into(), s: s.into() }
+        };
+        let resp = match mode {
+            "sign" => SignResponse::signed(&qr.commitment, hash, &sign(&hash), &pk, app),
+            "wrong-hash" => SignResponse::signed(&qr.commitment, hash, &sign(&B256::repeat_byte(0x42)), &pk, app),
+            "refuse" => SignResponse::refused(&qr.commitment, "user", Some("declined on the phone".into()), app),
+            other => panic!("mode {other}"),
+        };
+        http_post(&qr.url, std::str::from_utf8(&resp.to_bytes()).unwrap());
+    })
+}
+
+/// A phone as the owner key: the CLI serves the operation on the LAN behind
+/// a QR, the (simulated) phone recomputes the hash and signs it, the CLI
+/// verifies the signature and submits. A wrong signature and a refusal both
+/// stop the operation before anything is sent; the agent role is refused.
+#[test]
+fn phone_owner_signs_a_root_operation() {
+    let chain = chain_or_skip!("phone");
+    let (phone, agent) = (key(7), key(2));
+    let counter = chain.addr("demoCounter");
+    let until = far_future(&chain);
+    // the config, with the owner replaced by the phone key spec
+    let cfg_path = chain.config("phone.json", &base_cfg(&phone, &agent, &counter, until));
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+    v["owner"] = json!({"phone": {"label": "sim-phone", "publicKey": {"x": phone.x, "y": phone.y}}});
+    std::fs::write(&cfg_path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    let account = chain.deploy(&cfg_path); // the agent's first operation; no owner signature needed
+    let qr_file = chain.dir.join("phone.qr");
+    let qr = qr_file.to_str().unwrap();
+
+    // 1. a real root operation, signed on the "phone"
+    let sim = phone_simulator(qr_file.clone(), key(7), "sign");
+    let before = chain.counter();
+    let out = chain.ok(&[
+        "op", "send", "--agent", &cfg_path, "--root", "--target", &counter, "--data", INCREMENT,
+        "--listen", "127.0.0.1:0", "--phone-qr-file", qr, "--phone-timeout", "60",
+    ]);
+    sim.join().unwrap();
+    assert!(out.contains("path:           root (owner key)"), "{out}");
+    assert!(out.contains("phone:          signed, signature verified"), "{out}");
+    assert_eq!(chain.counter(), before + U256::from(1));
+    let _ = std::fs::remove_file(&qr_file);
+
+    // 2. a signature over another hash is refused by the CLI, nothing sent
+    let sim = phone_simulator(qr_file.clone(), key(7), "wrong-hash");
+    let before = chain.counter();
+    let err = chain.fails(&[
+        "op", "send", "--agent", &cfg_path, "--root", "--target", &counter, "--data", INCREMENT,
+        "--listen", "127.0.0.1:0", "--phone-qr-file", qr, "--phone-timeout", "60",
+    ]);
+    sim.join().unwrap();
+    assert!(err.contains("does not verify"), "{err}");
+    assert_eq!(chain.counter(), before);
+    let _ = std::fs::remove_file(&qr_file);
+
+    // 3. the phone refuses: the CLI reports it and sends nothing
+    let sim = phone_simulator(qr_file.clone(), key(7), "refuse");
+    let err = chain.fails(&[
+        "op", "send", "--agent", &cfg_path, "--root", "--target", &counter, "--data", INCREMENT,
+        "--listen", "127.0.0.1:0", "--phone-qr-file", qr, "--phone-timeout", "60",
+    ]);
+    sim.join().unwrap();
+    assert!(err.contains("the phone refused: user"), "{err}");
+    assert_eq!(chain.counter(), before);
+
+    // 4. a phone can never be the agent key
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+    v["owner"] = json!({"software": key(1).scalar});
+    v["agent"] = json!({"phone": {"label": "sim-phone", "publicKey": {"x": phone.x, "y": phone.y}}});
+    v["account"] = json!(account);
+    let bad = chain.dir.join("phone-as-agent.json");
+    std::fs::write(&bad, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    let err = chain.fails(&["demo", "--agent", bad.to_str().unwrap()]);
+    assert!(err.contains("signs only owner operations"), "{err}");
+}
+
+/// The same loop with a real phone: the owner app on it holds the key whose
+/// public coordinates are in `TPMSIGN_PHONE_X` / `TPMSIGN_PHONE_Y`. Run from
+/// a terminal (the QR must be on screen), with `--nocapture`:
+///   TPMSIGN_PHONE_X=0x… TPMSIGN_PHONE_Y=0x… cargo test -p agent-signer \
+///     --features insecure-software-keys --test anvil_cli phone_owner_real_device -- --ignored --nocapture
+#[test]
+#[ignore = "needs a phone with the owner app on the same network"]
+fn phone_owner_real_device() {
+    let (Ok(x), Ok(y)) = (std::env::var("TPMSIGN_PHONE_X"), std::env::var("TPMSIGN_PHONE_Y")) else {
+        panic!("set TPMSIGN_PHONE_X and TPMSIGN_PHONE_Y to the phone key's public coordinates");
+    };
+    let chain = chain_or_skip!("phone-real");
+    let agent = key(2);
+    let counter = chain.addr("demoCounter");
+    let until = far_future(&chain);
+    let phone = Key { scalar: String::new(), x, y };
+    let cfg_path = chain.config("phone-real.json", &base_cfg(&phone, &agent, &counter, until));
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+    v["owner"] = json!({"phone": {"label": "owner-phone", "publicKey": {"x": phone.x, "y": phone.y}}});
+    std::fs::write(&cfg_path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    let account = chain.deploy(&cfg_path);
+    eprintln!("\naccount {account} on a local anvil; its owner key is the phone's. Open the owner app, tap\n\"3. Scan the laptop's QR and sign\", scan the QR below, review, confirm with your fingerprint.\n");
+    let before = chain.counter();
+    // inherit stdio so the QR shows on the terminal
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agent-signer"));
+    cmd.args(["op", "send", "--agent", &cfg_path, "--root", "--target", &counter, "--data", INCREMENT, "--phone-timeout", "180"])
+        .args(["--env-file", chain.dir.join(".env").to_str().unwrap()])
+        .env_remove("BASE_SEPOLIA_RPC_URL")
+        .env_remove("BUNDLER_URL")
+        .env_remove("GAS_WALLET_KEYFILE");
+    let status = cmd.status().expect("run agent-signer");
+    assert!(status.success(), "the phone-signed root operation failed");
+    assert_eq!(chain.counter(), before + U256::from(1), "the counter moved by the phone-signed root operation");
+    eprintln!("\nphone-signed root operation included on anvil; the agent still runs:");
+    chain.ok(&["demo", "--agent", &cfg_path]);
+    eprintln!("done.");
 }
 
 // ---------------------------------------------------------------- x402

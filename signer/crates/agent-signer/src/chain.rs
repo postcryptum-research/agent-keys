@@ -410,25 +410,69 @@ impl Session {
         ep: &IEntryPoint::IEntryPointInstance<P>,
         op: &IEntryPoint::PackedUserOperation,
     ) -> Result<B256> {
-        let local = owner_core::user_op::user_op_hash(
-            &owner_core::user_op::PackedUserOp {
-                sender: op.sender,
-                nonce: op.nonce,
-                init_code: op.initCode.clone(),
-                call_data: op.callData.clone(),
-                account_gas_limits: op.accountGasLimits,
-                pre_verification_gas: op.preVerificationGas,
-                gas_fees: op.gasFees,
-                paymaster_and_data: op.paymasterAndData.clone(),
-            },
-            self.dep.entry_point,
-            self.dep.chain_id,
-        );
+        let local = owner_core::user_op::user_op_hash(&Self::packed(op), self.dep.entry_point, self.dep.chain_id);
         let on_chain = ep.getUserOpHash(op.clone()).call().await?;
         if local != on_chain {
             bail!("userOpHash mismatch: computed {local}, EntryPoint says {on_chain}; not signing");
         }
         Ok(local)
+    }
+
+    /// Sign through the hardware signer's operation hook: chips sign the
+    /// hash; a phone owner gets the whole operation as a sign request
+    /// (owner-core's wire format), shows it, and signs only what it showed
+    /// (docs/MOBILE_OWNER_DESIGN.md §8.3).
+    fn sign_op(
+        &self,
+        signer: &dyn hw_signer::HardwareSigner,
+        op: &IEntryPoint::PackedUserOperation,
+        user_op_hash: B256,
+        sign_as: SignAs,
+    ) -> Result<hw_signer::Signature> {
+        if !signer.needs_request() {
+            // a chip: the hash alone, exactly as before the phone existed
+            return Ok(signer.sign_user_op(&hw_signer::UserOpContext { user_op_hash: user_op_hash.0, request: None })?);
+        }
+        let packed = Self::packed(op);
+        let mut labels = std::collections::BTreeMap::new();
+        labels.insert(self.dep.demo_counter, "demo counter".to_string());
+        let expires = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+            + crate::phone::options().timeout.as_secs();
+        let command = match sign_as {
+            SignAs::Agent => "agent operation",
+            SignAs::Owner => "owner operation (root)",
+            SignAs::Recovery => "recovery: take root",
+            SignAs::RecoveryAsRoot => "owner operation (recovery key as root)",
+        };
+        let request = owner_core::request::SignRequest::new(
+            &packed,
+            self.dep.entry_point,
+            self.dep.chain_id,
+            expires,
+            Some(command.to_string()),
+            labels,
+            Some(env!("CARGO_PKG_VERSION").to_string()),
+        )
+        .to_bytes();
+        debug_assert_eq!(owner_core::user_op::user_op_hash(&packed, self.dep.entry_point, self.dep.chain_id), user_op_hash);
+        let ctx = hw_signer::UserOpContext { user_op_hash: user_op_hash.0, request: Some(&request) };
+        Ok(signer.sign_user_op(&ctx)?)
+    }
+
+    fn packed(op: &IEntryPoint::PackedUserOperation) -> owner_core::user_op::PackedUserOp {
+        owner_core::user_op::PackedUserOp {
+            sender: op.sender,
+            nonce: op.nonce,
+            init_code: op.initCode.clone(),
+            call_data: op.callData.clone(),
+            account_gas_limits: op.accountGasLimits,
+            pre_verification_gas: op.preVerificationGas,
+            gas_fees: op.gasFees,
+            paymaster_and_data: op.paymasterAndData.clone(),
+        }
     }
 
     /// Owner operation: install the cold recovery key and grant it only
@@ -951,7 +995,7 @@ impl Session {
             );
         }
         let mut user_op_hash = self.user_op_hash_checked(&ep, &op).await?;
-        op.signature = frame(&signer.sign_digest(&user_op_hash.0)?);
+        op.signature = frame(&self.sign_op(signer.as_ref(), &op, user_op_hash, sign_as)?);
         eprintln!(
             "path:           {}",
             match sign_as {
@@ -976,8 +1020,11 @@ impl Session {
                         let bump = floor.saturating_sub(priority);
                         op.gasFees = kernel::pack_gas(floor, max_fee.saturating_add(bump));
                         eprintln!("bundler wants maxPriorityFeePerGas ≥ {floor} wei: repricing and signing once more");
+                        if signer.needs_request() {
+                            eprintln!("the owner will see a second QR: the same operation with the higher fee, a new userOpHash");
+                        }
                         user_op_hash = self.user_op_hash_checked(&ep, &op).await?;
-                        op.signature = frame(&signer.sign_digest(&user_op_hash.0)?);
+                        op.signature = frame(&self.sign_op(signer.as_ref(), &op, user_op_hash, sign_as)?);
                         eprintln!("userOpHash:     {user_op_hash}");
                         bundler.send(&op).await?
                     }

@@ -1,4 +1,4 @@
-# Android owner app — P0 spike
+# Android owner app — P0 spike, P1 signing loop
 
 The first phase of [`docs/MOBILE_OWNER_PLAN.md`](../../docs/MOBILE_OWNER_PLAN.md):
 does the phone's secure hardware sign a raw 32-byte digest with a P-256 key,
@@ -73,3 +73,47 @@ form `P256Validator` accepts; the laptop can verify from the attestation
 where the key lives and which challenge it was created for. What it does not
 yet do: the phone signs a **real** root operation on anvil through the CLI.
 That needs the signing hook of the design's §8.3 (P1).
+
+## P1: the signing loop with the laptop (2026-11-11)
+
+Button **3. Scan the laptop's QR and sign** (version 0.0.2-p1): the app
+scans the QR `agent-signer` prints for a `phone` owner key, refuses a
+session host that is not a private / link-local address, fetches the sign
+request, checks the SHA-256 commitment from the QR, checks the request's
+shape (type, version, expiry, a root-path nonce, no `initCode`), shows the
+account, nonce, calldata prefix and the laptop's `userOpHash`, signs that
+hash with `NONEwithECDSA` behind the fingerprint prompt, and posts the
+response. This is P1's **blind** signing: the phone does not yet decode the
+calldata or recompute the hash itself — that is P2, with `owner-core` on
+the phone through `uniffi`. A refused biometric prompt posts a refusal, so
+the laptop stops at once instead of waiting for the timeout.
+
+QR scanning is `zxing-android-embedded` + `zxing:core` (Apache-2.0); the
+LAN session is plain HTTP, permitted in `res/xml/network_security_config.xml`
+because the QR commitment provides the integrity (design §3.1). An update
+of an already installed app goes through `adb install -r`; only a fresh
+install trips the vendor's USB-install guard.
+
+### P1 run record — a real root operation on anvil, signed on the phone
+
+`~/… phone-anvil-run.sh` (the ignored test `phone_owner_real_device`, the
+phone's P0 key as the owner of a fresh anvil account, the Mac and the phone
+on one Wi-Fi):
+
+```
+tpmsign:1?u=http://192.168.x.x:56181/s/<token>&h=<commitment>
+waiting up to 180s for the phone…
+phone:          signed, signature verified against the owner key
+path:           root (owner key)
+gas paid by:    the account
+userOpHash:     0xa728e32c6a39e5b1c49f54772d2360878826cc6800c9c67e863ca56f7e95f32b
+delivery:       self-bundled via handleOps
+included: tx 0x139037bb13352c1ab52d3f27adf119eb2fd2e3188512ef39960efd5c4b1e2e41 (block 3, 144077 gas)
+
+phone-signed root operation included on anvil; the agent still runs:
+done.
+test phone_owner_real_device ... ok
+```
+
+On the phone: the QR scanned at once, the review showed the account, nonce
+and hash, the fingerprint prompt signed, `signed and posted: HTTP 200`.

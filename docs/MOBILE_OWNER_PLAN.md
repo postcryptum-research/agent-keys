@@ -176,8 +176,22 @@ P0 status (2026-11-07, PR #18): run on a TEE-only Android phone — the key
 with §5.2's parameters, the biometric-gated signature over the golden
 `userOpHash`, the attestation chain to Google's root, and the committed
 vector `contracts/test/vectors/p256_android.json` (run record in
-`mobile/android/README.md`). The anvil root operation, the other half of
-P0's "done when", is the first step of P1: the signing hook of design §8.3.
+`mobile/android/README.md`). **P0 closed on 2026-11-11:** with P1's signing
+hook, the phone signed a real root operation on a local anvil through the
+CLI (`mobile/android/README.md`, "P1 run record").
+
+P1 status (2026-11-11): the QR → LAN loop works with the real CLI and the
+real phone — `owner-core` carries the wire format and the checks, the CLI
+has the `phone` owner key, the one-shot LAN session and
+`HardwareSigner::sign_user_op`, the app scans, checks the commitment and
+signs behind the fingerprint (blind: it signs the laptop's `userOpHash`
+after checking the request's shape; decoding and recomputing on the phone
+is P2). Still open in P1: the enrollment session (`key create --phone`,
+design §2.1, §4.3) — today the phone's key goes into the config by hand —
+and the config's `fingerprint` check. Tests: the anvil case
+`phone_owner_signs_a_root_operation` (a simulated phone: sign, a wrong
+signature, a refusal, the agent-role refusal) and the ignored real-device
+case `phone_owner_real_device`.
 
 ## Threat model, briefly
 

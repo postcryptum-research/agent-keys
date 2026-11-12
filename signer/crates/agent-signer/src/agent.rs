@@ -79,6 +79,17 @@ pub enum KeySpec {
     /// (docs/YUBIKEY.md); the PIN is asked at use.
     #[serde(rename = "yubikey")]
     YubiKey { slot: String, serial: Option<u32> },
+    /// The owner's phone (docs/MOBILE_OWNER_DESIGN.md): its key never leaves
+    /// the phone's secure hardware; an operation goes to it over the local
+    /// network behind a QR code, and comes back signed. `publicKey` is the
+    /// enrolled key, so read-only commands and the pre-signature root check
+    /// need no session. Owner role only.
+    #[serde(rename = "phone")]
+    Phone {
+        label: String,
+        #[serde(rename = "publicKey")]
+        public_key: PublicKeyJson,
+    },
     /// 32-byte hex scalar in this file. **Insecure**: refused in every role
     /// unless built with `--features insecure-software-keys` (tests only;
     /// docs/KEY_POLICY.md rule 5).
@@ -350,6 +361,15 @@ pub fn open_signer(spec: &KeySpec, role: Role) -> Result<Box<dyn HardwareSigner>
                 let _ = serial;
                 anyhow::bail!("key in YubiKey PIV slot {slot}: needs `--features yubikey`")
             }
+        }
+        KeySpec::Phone { label, public_key } => {
+            if role != Role::Owner {
+                anyhow::bail!(
+                    "phone key {label:?}: a phone signs only owner operations (a human confirms each one); \
+                     it cannot be the agent key, and recovery on a phone is not supported yet"
+                );
+            }
+            Ok(Box::new(crate::phone::PhoneSigner::new(label.clone(), public_key.parse()?)))
         }
         KeySpec::Keyfile(path) => {
             if role == Role::Agent {
