@@ -25,8 +25,11 @@ yubikey = ["hw-signer/yubikey-piv"]
 # Accept software (plaintext) keys from the config, in every role. Tests only:
 # the integration tests (tests/anvil_cli.rs) drive owner and recovery
 # operations on a local chain with them. A build without this feature refuses
-# a software key in every role (docs/KEY_POLICY.md rule 5).
-insecure-software-keys = []
+# a software key in every role (docs/KEY_POLICY.md rule 5). The same test
+# build gives owner-core its facts for that local chain (31337), so the phone
+# review the CLI previews, and the simulated phone runs, knows the contracts
+# the harness installs.
+insecure-software-keys = ["owner-core/test-chains"]
 
 [dependencies]
 hw-signer = { path = "../hw-signer" }

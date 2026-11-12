@@ -5,8 +5,9 @@
 //! `sections` generically; every word comes from here.
 //!
 //! Facts come from the caller: which accounts this phone is enrolled for,
-//! and which contracts the build knows (§6.7). Nothing here touches the
-//! network.
+//! and which contracts the build knows (§6.7; `facts.rs` holds the embedded
+//! table, and [`open_request_with_build_facts`] is what the phone and the
+//! laptop's preview run). Nothing here touches the network.
 
 use std::collections::BTreeMap;
 
@@ -42,17 +43,39 @@ pub struct EnrolledAccount {
     pub gas_cap_wei: u128,
     /// D4: unknown external calls are refused unless this is on.
     pub expert_mode: bool,
+    /// Names the laptop gave at enrollment to addresses the build does not
+    /// know (§4.3, §6.7). Labels only: shown as unverified, never a reason
+    /// to accept, emphasise less or decode anything.
+    pub pins: BTreeMap<Address, String>,
 }
 
 impl EnrolledAccount {
     pub fn new(chain_id: u64, entry_point: Address, account: Address) -> Self {
-        Self { chain_id, entry_point, account, validator: None, gas_cap_wei: DEFAULT_GAS_CAP_WEI, expert_mode: false }
+        Self {
+            chain_id,
+            entry_point,
+            account,
+            validator: None,
+            gas_cap_wei: DEFAULT_GAS_CAP_WEI,
+            expert_mode: false,
+            pins: BTreeMap::new(),
+        }
     }
 }
 
+/// A token the build knows (§6.7): amounts are scaled only with these
+/// decimals, and an x402 mandate must carry this signing domain.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Token {
+    pub symbol: String,
+    pub decimals: u8,
+    /// The token's EIP-712 domain separator on its chain.
+    pub domain: B256,
+}
+
 /// What the build knows (§6.7): names for the project's contracts, the
-/// paymasters known to charge nothing, the recovery validators. Slice 1
-/// takes them from the caller; the build-embedded table follows.
+/// paymasters known to charge nothing, the recovery validators, the tokens.
+/// `facts::for_chain` builds it from the embedded table; tests build their own.
 #[derive(Clone, Debug, Default)]
 pub struct Facts {
     pub names: BTreeMap<Address, String>,
@@ -63,15 +86,10 @@ pub struct Facts {
     pub demo_counter: Option<Address>,
     /// Policy and signer modules whose init data this build can read.
     pub known_modules: Vec<Address>,
-}
-
-impl Facts {
-    fn name(&self, a: Address) -> String {
-        match self.names.get(&a) {
-            Some(n) => format!("{} — {n} (verified in this build)", a.to_checksum(None)),
-            None => a.to_checksum(None),
-        }
-    }
+    pub tokens: BTreeMap<Address, Token>,
+    /// The chain's EntryPoint, when the build knows it: a request or an
+    /// enrollment naming another one is refused.
+    pub entry_point: Option<Address>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -154,11 +172,28 @@ impl Review {
 
 struct Builder<'a> {
     facts: &'a Facts,
+    pins: &'a BTreeMap<Address, String>,
     sections: Vec<Section>,
     warnings: Vec<String>,
 }
 
 impl Builder<'_> {
+    /// The address in full, with the build's name, or else the laptop's pin
+    /// marked as such. A pin never replaces a build name (§6.7).
+    fn name(&self, a: Address) -> String {
+        match (self.facts.names.get(&a), self.pins.get(&a)) {
+            (Some(n), _) => format!("{} — {n} (verified in this build)", a.to_checksum(None)),
+            (None, Some(p)) => format!("{} \"{p}\" (pinned by the laptop at enrollment — unverified)", a.to_checksum(None)),
+            (None, None) => a.to_checksum(None),
+        }
+    }
+    /// Scaled with the build's decimals, or raw units (§6.3).
+    fn token_amount(&self, token: Address, amount: U256) -> String {
+        match self.facts.tokens.get(&token) {
+            Some(t) => format!("{} {}", format_units(amount, t.decimals), t.symbol),
+            None => format!("{amount} (raw units, unverified decimals)"),
+        }
+    }
     fn section(&mut self, title: impl Into<String>) -> usize {
         self.sections.push(Section { title: title.into(), rows: Vec::new() });
         self.sections.len() - 1
@@ -178,6 +213,22 @@ pub fn open_request(
     now: u64,
     enrolled: &[EnrolledAccount],
     facts: &Facts,
+) -> Review {
+    open_with(bytes, expected_commitment, now, enrolled, |_| facts.clone())
+}
+
+/// The same parse with the facts this build embeds for the request's chain
+/// (§6.7): what the phone runs, and what the laptop previews.
+pub fn open_request_with_build_facts(bytes: &[u8], expected_commitment: &str, now: u64, enrolled: &[EnrolledAccount]) -> Review {
+    open_with(bytes, expected_commitment, now, enrolled, crate::facts::for_chain)
+}
+
+fn open_with(
+    bytes: &[u8],
+    expected_commitment: &str,
+    now: u64,
+    enrolled: &[EnrolledAccount],
+    facts_for: impl FnOnce(u64) -> Facts,
 ) -> Review {
     let c = commitment(bytes);
     if c != expected_commitment {
@@ -222,7 +273,15 @@ pub fn open_request(
         Err(e) => return Review::refused(c, vec![], e.to_string()),
     };
 
-    let mut b = Builder { facts, sections: Vec::new(), warnings: Vec::new() };
+    let facts = &facts_for(chain_id);
+    if facts.entry_point.is_some_and(|known| known != req.entry_point) {
+        return refused(
+            c,
+            vec![],
+            format!("EntryPoint {} is not the one this build knows for chain {chain_id}", req.entry_point.to_checksum(None)),
+        );
+    }
+    let mut b = Builder { facts, pins: &acct.pins, sections: Vec::new(), warnings: Vec::new() };
     let s = b.section("Operation");
     b.row(s, "Account", op.sender.to_checksum(None));
     b.row(s, "Chain", chain_id.to_string());
@@ -285,7 +344,7 @@ pub fn open_request(
             );
         }
         pm_gas = pm_verification + pm_post_op;
-        b.row(s, "Gas", format!("sponsored by {}", facts.name(pm)));
+        b.row(s, "Gas", format!("sponsored by {}", b.name(pm)));
         b.row(s, "Paymaster gas limits", format!("verification {pm_verification}, postOp {pm_post_op}"));
     }
     let total_gas = U256::from(verification_gas) + U256::from(call_gas) + op.pre_verification_gas + U256::from(pm_gas);
@@ -435,9 +494,9 @@ fn self_call(
                             "Install a recovery key",
                             format!("{} — it will be able to take over this account", fingerprint(&pk)),
                         );
-                        b.row(s, "Recovery validator", b.facts.name(v));
+                        b.row(s, "Recovery validator", b.name(v));
                     } else if b.facts.names.contains_key(&v) {
-                        b.row(s, "Install validator", b.facts.name(v));
+                        b.row(s, "Install validator", b.name(v));
                         b.row(s, "With key", fingerprint(&pk));
                     } else {
                         // a validator the build cannot classify may be a recovery validator: say so
@@ -483,9 +542,9 @@ fn self_call(
         let key = decode_pubkey(&c.validatorData).or_else(|| installed_keys.get(&c.rootValidator).copied());
         match key {
             Some(pk) => b.bold(s, "Hand control of this account to key", fingerprint(&pk)),
-            None => b.bold(s, "Hand control of this account to validator", b.facts.name(v)),
+            None => b.bold(s, "Hand control of this account to validator", b.name(v)),
         }
-        b.row(s, "Root validator", b.facts.name(v));
+        b.row(s, "Root validator", b.name(v));
         Ok(())
     } else if selector == IKernel::uninstallValidationCall::SELECTOR {
         let c = IKernel::uninstallValidationCall::abi_decode_validate(data).map_err(|e| format!("uninstallValidation: {e}"))?;
@@ -512,11 +571,11 @@ fn self_call(
                 let v = Address::from_slice(&c.vId.0[1..21]);
                 match acct.validator {
                     Some(mine) if mine == v => {
-                        b.bold(s, "Remove validator", format!("{} — this phone will no longer control the account", b.facts.name(v)))
+                        b.bold(s, "Remove validator", format!("{} — this phone will no longer control the account", b.name(v)))
                     }
-                    Some(_) => b.row(s, "Remove validator", b.facts.name(v)),
+                    Some(_) => b.row(s, "Remove validator", b.name(v)),
                     // not knowing which validator holds this phone's key, every removal may be that one
-                    None => b.bold(s, "Remove validator", format!("{} — this may be the validator holding this phone's key", b.facts.name(v))),
+                    None => b.bold(s, "Remove validator", format!("{} — this may be the validator holding this phone's key", b.name(v))),
                 }
             }
             other => return Err(format!("uninstallValidation of validation type 0x{other:02x}; refused")),
@@ -563,7 +622,7 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
             return Err(format!("a policy entry with flag 0x{}; a permission that skips its policy is refused", hex(&p[..2])));
         }
         let module = Address::from_slice(&p[2..22]);
-        b.row(s, "Policy module", b.facts.name(module));
+        b.row(s, "Policy module", b.name(module));
         module_known(b, "policy", module)?;
         type PolicyInit = (Vec<Address>, Vec<FixedBytes<4>>, U256, U256, U256, Vec<(Address, U256, U256, B256)>, U256);
         let decoded = PolicyInit::abi_decode_params_validate(&p[22..]).map_err(|e| format!("policy parameters: {e}"))?;
@@ -577,22 +636,34 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
         let secs = |v: U256, what: &str| u64::try_from(v).map_err(|_| format!("{what} does not fit a timestamp; refused"));
         let (until, after) = (secs(until, "validUntil")?, secs(after, "validAfter")?);
         for (t, sel) in targets.iter().zip(&selectors) {
-            b.row(s, "Allow", format!("{} · {}", b.facts.name(*t), selector_name(sel.0)));
+            b.row(s, "Allow", format!("{} · {}", b.name(*t), selector_name(sel.0)));
         }
         b.row(s, "Max value per operation", format!("{} ETH", format_ether(max_value)));
         b.row(s, "Budget", format!("{} ETH", format_ether(budget)));
         b.row(s, "Valid from", if after == 0 { "now".to_string() } else { format!("{} UTC ({after})", utc(after)) });
         b.row(s, "Valid until", format!("{} UTC ({until})", utc(until)));
         for (token, max, budget, domain) in &tokens {
-            b.row(
-                s,
-                "Token cap",
-                format!(
-                    "{}: max {max} per operation, budget {budget} (raw units, unverified decimals){}",
-                    b.facts.name(*token),
-                    if domain.is_zero() { String::new() } else { format!(", x402 payments allowed (domain {domain})") }
+            let known = b.facts.tokens.get(token);
+            let caps = match known {
+                Some(t) => format!(
+                    "max {} {sym} per operation, budget {} {sym}",
+                    format_units(*max, t.decimals),
+                    format_units(*budget, t.decimals),
+                    sym = t.symbol
                 ),
-            );
+                None => format!("max {max} per operation, budget {budget} (raw units, unverified decimals)"),
+            };
+            let x402 = match (domain.is_zero(), known) {
+                (true, _) => String::new(),
+                // the policy checks payment signatures against this domain: for a token the
+                // build knows it must be that token's own, or the cap would guard another contract
+                (false, Some(t)) if t.domain == *domain => ", x402 payments allowed (the token's own signing domain)".to_string(),
+                (false, Some(t)) => {
+                    return Err(format!("the x402 signing domain in this mandate is not {}'s own; refused", t.symbol));
+                }
+                (false, None) => format!(", x402 payments allowed (domain {domain})"),
+            };
+            b.row(s, "Token cap", format!("{}: {caps}{x402}", b.name(*token)));
         }
     }
     if signer.len() < 22 {
@@ -602,7 +673,7 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
         return Err(format!("a signer entry with flag 0x{}; a permission that skips its signature is refused", hex(&signer[..2])));
     }
     let module = Address::from_slice(&signer[2..22]);
-    b.row(s, "Signer module", b.facts.name(module));
+    b.row(s, "Signer module", b.name(module));
     module_known(b, "signer", module)?;
     let pk = decode_pubkey(&signer[22..]).ok_or("signer data is not a P-256 key; refused")?;
     b.row(s, "Agent key", fingerprint(&pk));
@@ -618,7 +689,7 @@ fn external_call(
     acct: &EnrolledAccount,
     labels: &BTreeMap<Address, String>,
 ) -> Result<(), String> {
-    let mut to = b.facts.name(target);
+    let mut to = b.name(target);
     if let Some(l) = labels.get(&target) {
         to.push_str(&format!(" \"{l}\" (from the laptop — unverified)"));
     }
@@ -651,11 +722,15 @@ fn external_call(
         }
         let who = Address::from_slice(&data[16..36]);
         let amount = U256::from_be_slice(&data[36..68]);
-        let amount = if amount == U256::MAX { "unlimited".to_string() } else { format!("{amount} (raw units, unverified decimals)") };
+        let amount = match (amount == U256::MAX, b.facts.tokens.get(&target)) {
+            (true, Some(t)) => format!("unlimited {}", t.symbol),
+            (true, None) => "unlimited".to_string(),
+            (false, _) => b.token_amount(target, amount),
+        };
         if selector == SELECTOR_ERC20_TRANSFER {
             // tokens are payments too: plain only to a contract the build knows
             if b.facts.names.contains_key(&who) {
-                b.row(s, "Call", format!("ERC-20 transfer to {}: {amount}", b.facts.name(who)));
+                b.row(s, "Call", format!("ERC-20 transfer to {}: {amount}", b.name(who)));
             } else {
                 b.bold(s, "ERC-20 transfer", format!("{amount} to {}, an address this build does not know", who.to_checksum(None)));
             }
@@ -725,16 +800,28 @@ fn selector_name(sel: [u8; 4]) -> String {
 }
 
 /// §6.3 text rules: printable ASCII plus spaces, at most 32 characters.
-fn clean_label(l: &str) -> Option<String> {
-    let ok = !l.is_empty() && l.len() <= 32 && l.bytes().all(|b| (0x20..=0x7e).contains(&b));
-    ok.then(|| l.to_string())
+pub(crate) fn clean_label(l: &str) -> Option<String> {
+    (l.len() <= 32 && plain_text(l)).then(|| l.to_string())
+}
+
+/// Printable ASCII, not empty: no homoglyphs, no bidirectional controls.
+pub(crate) fn plain_text(l: &str) -> bool {
+    !l.is_empty() && l.bytes().all(|b| (0x20..=0x7e).contains(&b))
 }
 
 /// Wei as ETH, without trailing zeros: `0.00102 ETH`, `1 ETH`.
 fn format_ether(wei: U256) -> String {
-    let s = alloy_primitives::utils::format_ether(wei);
-    let s = s.trim_end_matches('0').trim_end_matches('.');
-    if s.is_empty() { "0".into() } else { s.to_string() }
+    format_units(wei, 18)
+}
+
+/// An integer amount with `decimals` decimal places, without trailing zeros.
+fn format_units(amount: U256, decimals: u8) -> String {
+    let d = decimals as usize;
+    let digits = amount.to_string();
+    let digits = if digits.len() <= d { format!("{}{digits}", "0".repeat(d + 1 - digits.len())) } else { digits };
+    let (int, frac) = digits.split_at(digits.len() - d);
+    let frac = frac.trim_end_matches('0');
+    if frac.is_empty() { int.to_string() } else { format!("{int}.{frac}") }
 }
 
 fn split(word: B256) -> (u128, u128) {
@@ -801,6 +888,8 @@ mod tests {
             recovery_validators: vec![RECOVERY],
             demo_counter: Some(COUNTER),
             known_modules: vec![POLICY, SIGNER],
+            tokens: BTreeMap::new(),
+            entry_point: None,
         }
     }
 
@@ -1226,6 +1315,153 @@ mod tests {
         assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("not known to this build")), "{:?}", r.verdict);
         // and a plain increment on an unknown counter is refused: the phone knows no contracts yet
         assert!(matches!(open_bare(&quiet(kernel::execute_calldata(COUNTER, U256::ZERO, &SELECTOR_INCREMENT))).verdict, Verdict::Refuse(_)));
+    }
+
+    /// §6.7: a token the build knows is scaled with the build's decimals and
+    /// named; its x402 domain in a mandate must be the token's own.
+    #[test]
+    fn known_tokens_are_scaled_and_their_x402_domain_is_checked() {
+        let me = ACCOUNT;
+        let token = address!("8000000000000000000000000000000000000008");
+        let domain = B256::repeat_byte(0xd0);
+        let mut f = facts();
+        f.names.insert(token, "USDC".into());
+        f.tokens.insert(token, Token { symbol: "USDC".into(), decimals: 6, domain });
+        let open_f = |cd: Bytes| {
+            let mut o = op(cd);
+            o.gas_fees = kernel::pack_gas(1, 1);
+            let (bytes, c) = request(&o);
+            open_request(&bytes, &c, NOW, &enrolled(), &f)
+        };
+        let erc20 = |on: Address, selector: [u8; 4], who: Address, amount: U256| {
+            let mut d = selector.to_vec();
+            d.extend_from_slice(&[0u8; 12]);
+            d.extend_from_slice(who.as_slice());
+            d.extend_from_slice(&amount.to_be_bytes::<32>());
+            kernel::execute_calldata(on, U256::ZERO, &d)
+        };
+        let t = open_f(erc20(token, SELECTOR_ERC20_TRANSFER, PAYMASTER, U256::from(20_500_000))).text();
+        assert!(t.contains("USDC (verified in this build)") && t.contains(": 20.5 USDC"), "{t}");
+        let t = open_f(erc20(token, SELECTOR_ERC20_APPROVE, PAYMASTER, U256::MAX)).text();
+        assert!(t.contains("may spend unlimited USDC of this token"), "{t}");
+        // the same amount on a token the build does not know stays raw
+        let t = open_f(erc20(SIGNER, SELECTOR_ERC20_TRANSFER, PAYMASTER, U256::from(20_500_000))).text();
+        assert!(t.contains("20500000 (raw units, unverified decimals)"), "{t}");
+
+        let mandate = |token_domain: B256| {
+            let params = kernel::PolicyParams {
+                targets: vec![COUNTER],
+                selectors: vec![FixedBytes::from(SELECTOR_INCREMENT)],
+                max_value_per_op: 0,
+                budget: 0,
+                valid_until: NOW + 10,
+                tokens: vec![(token, 20_000_000, 100_000_000, token_domain)],
+                valid_after: 0,
+            };
+            let pdata = kernel::permission_data(POLICY, &params, SIGNER, &key(2));
+            open_f(kernel::execute_calldata(me, U256::ZERO, &kernel::install_permission_calldata(FixedBytes::from([1, 2, 3, 4]), pdata, 1)))
+        };
+        let r = mandate(domain);
+        assert_eq!(r.verdict, Verdict::Sign, "{}", r.text());
+        assert!(
+            r.text().contains("max 20 USDC per operation, budget 100 USDC, x402 payments allowed (the token's own signing domain)"),
+            "{}",
+            r.text()
+        );
+        let r = mandate(B256::ZERO);
+        assert!(r.text().contains("budget 100 USDC\n"), "no x402 without a domain: {}", r.text());
+        // a mandate whose x402 domain is another contract's would guard the wrong thing
+        assert!(matches!(mandate(B256::repeat_byte(1)).verdict, Verdict::Refuse(ref m) if m.contains("not USDC's own")));
+    }
+
+    /// §4.3, §6.7: a laptop pin is a label, marked as such; it changes no verdict
+    /// and no emphasis, and it never replaces a name the build has.
+    #[test]
+    fn laptop_pins_are_labels_only() {
+        let vault = address!("7000000000000000000000000000000000000007");
+        let fake_counter = address!("9000000000000000000000000000000000000009");
+        let mut pinned = enrolled();
+        pinned[0].pins.insert(vault, "my vault".into());
+        pinned[0].pins.insert(fake_counter, "demo counter".into());
+        pinned[0].pins.insert(COUNTER, "not the counter".into());
+        let open_p = |cd: Bytes| {
+            let mut o = op(cd);
+            o.gas_fees = kernel::pack_gas(1, 1);
+            let (bytes, c) = request(&o);
+            open_request(&bytes, &c, NOW, &pinned, &facts())
+        };
+        let r = open_p(kernel::execute_calldata(vault, U256::from(10u128.pow(18)), &[]));
+        let t = r.text();
+        assert!(t.contains("To: 0x7000000000000000000000000000000000000007 \"my vault\" (pinned by the laptop at enrollment — unverified)"), "{t}");
+        assert!(t.contains("! Send: 1 ETH to an address this build does not know") && r.needs_second_confirmation(), "a pin does not make a payment plain: {t}");
+        // a pin named like a known contract does not make its calls known
+        assert!(matches!(open_p(kernel::execute_calldata(fake_counter, U256::ZERO, &SELECTOR_INCREMENT)).verdict, Verdict::Refuse(ref m) if m.contains("cannot decode")));
+        // and the build's name wins over a pin
+        let t = open_p(kernel::execute_calldata(COUNTER, U256::ZERO, &SELECTOR_INCREMENT)).text();
+        assert!(t.contains("demo counter (verified in this build)") && !t.contains("not the counter"), "{t}");
+    }
+
+    /// The phone's path: the facts embedded for the request's chain. On Base
+    /// Sepolia the project's own contracts are known, a variant's paymaster is not.
+    #[test]
+    fn build_facts_drive_the_review() {
+        let me = ACCOUNT;
+        let f = crate::facts::for_chain(84532);
+        let (policy, signer) = (f.known_modules[0], f.known_modules[1]);
+        let usdc = *f.tokens.keys().next().unwrap();
+        let open_84532 = |o: &PackedUserOp| {
+            let bytes = SignRequest::new(o, ENTRY, 84532, NOW + 120, None, BTreeMap::new(), None).to_bytes();
+            open_request_with_build_facts(&bytes, &commitment(&bytes), NOW, &[EnrolledAccount::new(84532, ENTRY, ACCOUNT)])
+        };
+        let params = kernel::PolicyParams {
+            targets: vec![f.demo_counter.unwrap()],
+            selectors: vec![FixedBytes::from(SELECTOR_INCREMENT)],
+            max_value_per_op: 0,
+            budget: 0,
+            valid_until: NOW + 10,
+            tokens: vec![(usdc, 20_000_000, 100_000_000, f.tokens[&usdc].domain)],
+            valid_after: 0,
+        };
+        // `known_modules` is in the file's key order: tell the two apart by name
+        let (policy, signer) = if f.names[&policy] == "AgentPolicy" { (policy, signer) } else { (signer, policy) };
+        let pdata = kernel::permission_data(policy, &params, signer, &key(2));
+        let mut o = op(kernel::execute_calldata(me, U256::ZERO, &kernel::install_permission_calldata(FixedBytes::from([1, 2, 3, 4]), pdata, 1)));
+        o.gas_fees = kernel::pack_gas(1, 1);
+        let r = open_84532(&o);
+        let t = r.text();
+        assert_eq!(r.verdict, Verdict::Sign, "{t}");
+        assert!(t.contains("AgentPolicy (verified in this build)") && t.contains("P256Signer (verified in this build)"), "{t}");
+        assert!(t.contains("demo counter (verified in this build) · increment") && t.contains("max 20 USDC per operation"), "{t}");
+        // sponsored by the canonical paymaster: accepted; by a variant's paymaster: refused
+        let sponsored_by = |pm: Address| {
+            let mut s = o.clone();
+            let mut pd = pm.to_vec();
+            pd.extend_from_slice(&[0u8; 32]);
+            s.paymaster_and_data = pd.into();
+            open_84532(&s)
+        };
+        assert!(sponsored_by(f.sponsoring_paymasters[0]).text().contains("sponsored by") );
+        let enclave_paymaster = address!("05a97329397200dF8795A882da0b5b1aD894EB97");
+        assert!(matches!(sponsored_by(enclave_paymaster).verdict, Verdict::Refuse(ref m) if m.contains("paymaster")));
+        // the EntryPoint is a build fact: an enrollment made for another one signs nothing
+        let other_entry = address!("0000000000000000000000000000000000000Ee1");
+        let bytes = SignRequest::new(&o, other_entry, 84532, NOW + 120, None, BTreeMap::new(), None).to_bytes();
+        let r = open_request_with_build_facts(&bytes, &commitment(&bytes), NOW, &[EnrolledAccount::new(84532, other_entry, ACCOUNT)]);
+        assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("EntryPoint")), "{:?}", r.verdict);
+        // a chain the build does not know: the same request names nothing and is refused
+        let bytes = SignRequest::new(&o, ENTRY, 1, NOW + 120, None, BTreeMap::new(), None).to_bytes();
+        let r = open_request_with_build_facts(&bytes, &commitment(&bytes), NOW, &[EnrolledAccount::new(1, ENTRY, ACCOUNT)]);
+        assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("not known to this build")), "{:?}", r.verdict);
+    }
+
+    #[test]
+    fn amounts_are_formatted_without_trailing_zeros() {
+        assert_eq!(format_units(U256::ZERO, 6), "0");
+        assert_eq!(format_units(U256::from(1), 18), "0.000000000000000001");
+        assert_eq!(format_units(U256::from(1_500_000), 6), "1.5");
+        assert_eq!(format_units(U256::from(20_000_000), 6), "20");
+        assert_eq!(format_units(U256::from(5), 0), "5");
+        assert_eq!(format_ether(U256::from(10u128.pow(18))), "1");
     }
 
     #[test]

@@ -624,8 +624,20 @@ one (T19). So the facts come from the **build**:
   developer's wallet, are not.
 - **Build-embedded tokens.** A small reviewed table in `owner-core`
   (address, symbol, decimals per chain), today USDC on Base Sepolia.
+- **The EntryPoint is a build fact too.** Where the build knows a chain,
+  an enrollment or a request naming another EntryPoint is refused.
+- **A known token's signing domain.** The table carries the token's
+  EIP-712 domain separator; a mandate that allows x402 payments in that
+  token under another domain is refused, since the policy would then
+  check payment signatures for a different contract.
 - **Laptop pins** are accepted only for addresses the build does not know,
-  and are shown as "from the laptop — unverified" (§4.3).
+  and are shown as "from the laptop — unverified" (§4.3). A pin is a label
+  and nothing more: it never makes a call decodable, a module readable, a
+  paymaster acceptable or an effect plain.
+- **Development builds** may add the CLI's local anvil chain (feature
+  `test-chains`), where the test harness installs the same code at the
+  same addresses. Such a build shows `+test-chains` in its version and is
+  never distributed.
 - **Trade-off.** A new deployment or a new chain needs a new app release.
   Until then the laptop may pin the new addresses, always marked as
   unverified. The durable answer is the on-chain Registry in v2 (§14).

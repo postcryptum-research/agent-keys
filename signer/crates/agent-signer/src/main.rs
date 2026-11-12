@@ -662,8 +662,8 @@ fn phone_enroll(
     out: Option<&Path>,
     confirm: phone::FingerprintSource,
 ) -> Result<()> {
-    if label.is_empty() || label.len() > 64 {
-        bail!("the phone key's label must be 1 to 64 characters");
+    if !owner_core::enroll::valid_key_label(label) {
+        bail!("the phone key's label must be 1 to 64 characters of plain text (printable ASCII): the phone shows it");
     }
     let (cfg, base) = AgentConfig::load(cfg_path)?;
     let dep = cfg.load_deployments(&base)?;
@@ -674,7 +674,14 @@ fn phone_enroll(
     if matches!(confirm, phone::FingerprintSource::Prompt) && !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
         bail!("the owner must confirm the fingerprint the phone shows: run this on a terminal, or pass --phone-fingerprint <fp> / --phone-fingerprint-cmd <command>");
     }
-    let (request, answer, e) = phone::enroll(label, dep.chain_id, dep.entry_point, account, allow_no_attestation, confirm)?;
+    let pins = phone::laptop_pins(&dep);
+    if !pins.is_empty() {
+        eprintln!("names sent to the phone for addresses its build does not know (it shows them as unverified):");
+        for (address, name) in &pins {
+            eprintln!("  {address}  {name}");
+        }
+    }
+    let (request, answer, e) = phone::enroll(label, dep.chain_id, dep.entry_point, account, pins, allow_no_attestation, confirm)?;
     let fp = owner_core::fingerprint::fingerprint(&e.public_key);
     let (x, y) = (hex32(&e.public_key.x), hex32(&e.public_key.y));
     let evidence = if e.attestation.is_empty() {

@@ -19,6 +19,7 @@ export ANDROID_HOME=/opt/homebrew/share/android-commandlinetools   # or your SDK
 export JAVA_HOME=$(/usr/libexec/java_home -v 21)                   # JDK 17 or 21
 cd mobile/android
 ./build-core.sh          # owner-core for arm64 + its Kotlin bindings (cargo-ndk, the NDK; CARGO="cargo +1.94" if needed)
+                         # OWNER_CORE_FEATURES=ffi,test-chains for a development phone that signs on the local anvil
 ./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb shell am start -n dev.tpmsign.owner.spike/.MainActivity
@@ -143,14 +144,19 @@ confirmation in plain words, and the fingerprint prompt signs the
 converts the DER signature, normalizes low-s, verifies it and builds the
 response. The P0-key fallback is gone: an account must be enrolled. The QR
 is parsed by the core too (`parseQr`, which refuses loopback on the phone).
-The build-embedded names of §6.7 are slice 3, so on the phone addresses
-show in full without names today, and the review errs on the side of
-emphasis: a key installed on a validator the build cannot classify and
-every validator removal are bold, a permission whose policy or signer
-module the build cannot read is refused (expert mode is off), and no
-paymaster is accepted. A permission install is therefore not signable on
-the phone until slice 3; `agent-signer` says so in its preview before the
-QR.
+
+Since 0.2.0-p2 the core names the project's contracts from the table it
+embeds (`owner-core/src/facts.rs`, design §6.7): on Base Sepolia the
+canonical deployments and USDC; in a development build
+(`OWNER_CORE_FEATURES=ffi,test-chains`) also the CLI's local anvil chain,
+and the launch line then shows `+test-chains`. Where the build has no
+facts the review errs on the side of emphasis and refusal, as before.
+Button 4 opens the enrollment through the core (`openEnrollment`): the
+dialog lists the laptop's pins as unverified names and the ones ignored
+because the app knows those addresses itself, and says when the app has
+no facts for the chain. The review dialog renders the core's sections
+with titles and effects in bold, and its Sign button is enabled only once
+the text has been scrolled to its end (§6.6).
 
 ### P2 run record — the phone decodes, recomputes and signs (2026-11-12, app 0.1.0-p2)
 

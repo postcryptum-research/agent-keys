@@ -5,6 +5,8 @@
 //! on-chain: the handover to the new key is a separate `set-root`, and the
 //! laptop checks that key's fingerprint against this enrollment.
 
+use std::collections::BTreeMap;
+
 use alloy_primitives::{Address, B256};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
@@ -13,6 +15,16 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::request::{commitment, AppInfo, PublicKeyJson, RequestError, PROTOCOL_VERSION};
+use crate::review::{clean_label, plain_text, Facts};
+
+/// More pins than this is not an enrollment a person can read.
+pub const MAX_LAPTOP_PINS: usize = 32;
+
+/// A key's label: 1 to 64 characters of printable ASCII (it is shown on the
+/// phone, so no homoglyphs and no bidirectional controls).
+pub fn valid_key_label(label: &str) -> bool {
+    label.len() <= 64 && plain_text(label)
+}
 
 pub const ENROLL_REQUEST: &str = "enroll-request";
 pub const ENROLL_RESPONSE: &str = "enroll-response";
@@ -47,9 +59,46 @@ pub struct EnrollRequest {
     pub label: String,
     /// 32 random bytes, so two enrollments never share a commitment.
     pub challenge: B256,
+    /// Names for addresses the phone's build does not know (§4.3, §6.7):
+    /// shown as "from the laptop — unverified" for the life of the
+    /// enrollment, never trusted.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub laptop_pins: BTreeMap<Address, String>,
+}
+
+/// A pin the phone did not take, because its build already names the address.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IgnoredPin {
+    pub address: Address,
+    pub laptop_label: String,
+    pub build_name: String,
 }
 
 impl EnrollRequest {
+    pub fn with_pins(mut self, pins: BTreeMap<Address, String>) -> Self {
+        self.laptop_pins = pins;
+        self
+    }
+
+    /// The pins to keep, and those ignored because the build knows the
+    /// address — reported, since a laptop renaming a known contract is
+    /// either stale or lying (§4.3).
+    pub fn split_pins(&self, facts: &Facts) -> (BTreeMap<Address, String>, Vec<IgnoredPin>) {
+        let mut kept = BTreeMap::new();
+        let mut ignored = Vec::new();
+        for (address, label) in &self.laptop_pins {
+            match facts.names.get(address) {
+                Some(build_name) => {
+                    ignored.push(IgnoredPin { address: *address, laptop_label: label.clone(), build_name: build_name.clone() })
+                }
+                None => {
+                    kept.insert(*address, label.clone());
+                }
+            }
+        }
+        (kept, ignored)
+    }
+
     pub fn new(chain_id: u64, entry_point: Address, account: Address, label: &str, challenge: B256, expires: u64) -> Self {
         Self {
             tpm_sign: ENROLL_REQUEST.into(),
@@ -60,6 +109,7 @@ impl EnrollRequest {
             account,
             label: label.into(),
             challenge,
+            laptop_pins: BTreeMap::new(),
         }
     }
 
@@ -79,8 +129,14 @@ impl EnrollRequest {
         if now > req.expires.saturating_add(clock_tolerance) {
             return Err(RequestError::Expired);
         }
-        if req.label.is_empty() || req.label.len() > 64 {
-            return Err(RequestError::Malformed("label must be 1 to 64 characters".into()));
+        if !valid_key_label(&req.label) {
+            return Err(RequestError::Malformed("label must be 1 to 64 characters of plain text".into()));
+        }
+        if req.laptop_pins.len() > MAX_LAPTOP_PINS {
+            return Err(RequestError::Malformed(format!("more than {MAX_LAPTOP_PINS} laptop pins")));
+        }
+        if req.laptop_pins.values().any(|l| clean_label(l).is_none()) {
+            return Err(RequestError::Malformed("a laptop pin is not plain text of at most 32 characters".into()));
         }
         req.chain_id()?;
         Ok(req)
@@ -275,6 +331,32 @@ mod tests {
         let mut other = bytes.clone();
         other.push(b' ');
         assert_ne!(attestation_challenge(&bytes), attestation_challenge(&other));
+    }
+
+    #[test]
+    fn laptop_pins_travel_checked_and_split_by_what_the_build_knows() {
+        let known = address!("dd544A6F0220778Fff16F51B468656e73E32ae85"); // AgentPolicy on Base Sepolia
+        let unknown = address!("05a97329397200dF8795A882da0b5b1aD894EB97");
+        let with = |pins: Vec<(Address, &str)>, label: &str| {
+            EnrollRequest::new(84532, known, unknown, label, B256::ZERO, 2_000_000_000)
+                .with_pins(pins.into_iter().map(|(a, l)| (a, l.to_string())).collect())
+                .to_bytes()
+        };
+        // no pins: the field is not on the wire, so older phones read the same bytes
+        assert!(!String::from_utf8(with(vec![], "p")).unwrap().contains("laptopPins"));
+        let bytes = with(vec![(known, "MyPolicy"), (unknown, "test paymaster")], "owner-phone");
+        let req = EnrollRequest::parse(&bytes, 0, 0).unwrap();
+        let (kept, ignored) = req.split_pins(&crate::facts::for_chain(84532));
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[&unknown], "test paymaster");
+        assert_eq!(ignored.len(), 1);
+        assert_eq!((ignored[0].address, ignored[0].laptop_label.as_str(), ignored[0].build_name.as_str()), (known, "MyPolicy", "AgentPolicy"));
+        // text rules: a pin or a label with a bidi control or too long is refused
+        assert!(EnrollRequest::parse(&with(vec![(unknown, "pay\u{202e}retsam")], "p"), 0, 0).is_err());
+        assert!(EnrollRequest::parse(&with(vec![(unknown, &"x".repeat(33))], "p"), 0, 0).is_err());
+        assert!(EnrollRequest::parse(&with(vec![], "phone\u{202e}"), 0, 0).is_err());
+        let many: Vec<(Address, &str)> = (0..=MAX_LAPTOP_PINS as u8).map(|i| (Address::with_last_byte(i), "x")).collect();
+        assert!(EnrollRequest::parse(&with(many, "p"), 0, 0).is_err());
     }
 
     #[test]

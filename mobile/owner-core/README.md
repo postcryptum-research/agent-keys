@@ -17,5 +17,14 @@ crate has no `license` field and `publish = false`. Code moved here from
 `agent-signer` (`kernel.rs`) was Apache-2.0 there and stays Apache-2.0,
 whatever the study decides for the rest of the crate.
 
-Tests: `cargo test` in this directory. `cargo check --target
-aarch64-linux-android` type-checks the phone build.
+What the phone knows by itself is in `src/facts.rs` (design §6.7): the
+canonical `contracts/deployments/84532.json`, embedded with `include_str!`
+and parsed by `build.rs` so a broken file fails the build, and a small
+token table (USDC on Base Sepolia, with its EIP-712 domain). Features:
+`ffi` is the `uniffi` surface for the apps (`src/ffi.rs`); `test-chains`
+adds the facts of the CLI's local anvil chain for development builds and
+marks the version `+test-chains` wherever it is shown — never ship it.
+
+Tests: `cargo test` in this directory, and again with `--features ffi` and
+`--features ffi,test-chains`. `cargo check --target aarch64-linux-android`
+type-checks the phone build.
