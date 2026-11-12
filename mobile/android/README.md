@@ -145,6 +145,23 @@ response. The P0-key fallback is gone: an account must be enrolled. The
 build-embedded names of §6.7 are slice 3, so on the phone addresses show
 in full without names today.
 
+### P2 run record — the phone decodes, recomputes and signs (2026-11-12, app 0.1.0-p2)
+
+The same script. The phone enrolled a new key (fingerprint over USB), root
+was handed to it, and on the second QR the app showed the review built by
+owner-core on the phone — the call `increment()` on the counter's address,
+the maximum gas cost, every hash-covered field — and signed the
+`userOpHash` the core recomputed; the laptop verified that signature over
+its own hash, so the two parses agreed byte for byte:
+
+```
+phone:          signed, signature verified against the owner key
+path:           root (owner key)
+included: tx 0xbd1b018c40b624002dde0c82189a20c8e402ba0e1c2cea7c4d3918cda3bf0ac4 (block 5, 126989 gas)
+phone-signed root operation included on anvil; the agent still runs:
+test phone_owner_real_device ... ok
+```
+
 ### P1 run record — a real root operation on anvil, signed on the phone
 
 `~/… phone-anvil-run.sh` (the ignored test `phone_owner_real_device`, the
