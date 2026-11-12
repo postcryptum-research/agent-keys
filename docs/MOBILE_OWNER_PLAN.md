@@ -229,10 +229,18 @@ effects that need the second confirmation, unknown external calls refused
 unless expert mode, the maximum gas cost against the enrollment's cap and
 the no-charge paymaster rule, every hash-covered field under details, and
 the label rules. The facts (names, paymasters, recovery validators) come
-from the caller for now; the build-embedded table is slice 3. Tests: the
-§9.2 tamper test (every field and every calldata byte either changes the
-screen or is refused, the swapped gas limits named), the §6.2 and §6.5
-cases, the admin calls. The CLI prints the same review on the laptop before
+from the caller for now; the build-embedded table is slice 3. Decoding is
+strict: a call whose re-encoding does not reproduce its bytes, a permission
+whose pass flags are not zero (Kernel would skip the policy or the
+signature), a hook, hook data or deinit data, a non-canonical ERC-20
+address word — all refused, because the screen cannot show what they do;
+`increment()` is recognised on the demo counter only, and a policy or
+signer module the build cannot read refuses the install unless expert
+mode. Tests: the §9.2 tamper test over a batch that exercises every
+decoder (every field and every calldata byte, two flips each, either
+changes the screen *without its hash row* or is refused; both outcomes
+counted), the hidden-field cases from the review of PR #30, the §6.2 and
+§6.5 cases, the admin calls. The CLI prints the same review on the laptop before
 the QR, so the owner compares screens and a refusal is known before the
 phone is asked; the anvil phone case asserts it on a real request.
 Slice 2 (2026-11-12): `owner-core` runs on the phone — `src/ffi.rs` behind
