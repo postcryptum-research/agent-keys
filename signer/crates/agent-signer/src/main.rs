@@ -405,18 +405,19 @@ enum KeyCmd {
         /// off-device check (docs/MOBILE_OWNER_DESIGN.md §5.2) and for scripts.
         #[arg(long, requires = "phone")]
         out: Option<PathBuf>,
-        /// Phone: also refuse an answer whose key does not have this
-        /// fingerprint (`ABCDE-FGHIJ-…`, at least two groups). The answer
-        /// is already authenticated by the session's secret from the QR;
-        /// this is for scripts that know the key they expect.
-        #[arg(long, requires = "phone", conflicts_with = "phone_confirm_fingerprint")]
+        /// Phone: the fingerprint the phone will show (`ABCDE-FGHIJ-…`, at
+        /// least two groups), given up front instead of typed when the
+        /// answer arrives: an answer with another key is refused. For
+        /// scripts that know the key they expect.
+        #[arg(long, requires = "phone", conflicts_with = "phone_skip_fingerprint")]
         phone_fingerprint: Option<String>,
-        /// Phone: when the answer arrives, ask for the fingerprint the phone
-        /// shows (at least two groups) and refuse another key. An extra
-        /// check for an owner whose screen may have been seen by someone
-        /// who is also on the network; needs a terminal.
+        /// Phone: do not ask for the fingerprint the phone shows. The answer
+        /// is still authenticated by the secret in the QR, which a host on
+        /// the network does not have; what is skipped is the check against
+        /// someone who could also read the QR. By default the CLI asks,
+        /// because an enrollment is followed by a root handover.
         #[arg(long, requires = "phone")]
-        phone_confirm_fingerprint: bool,
+        phone_skip_fingerprint: bool,
         #[command(flatten)]
         session: PhoneSessionArgs,
     },
@@ -639,15 +640,15 @@ fn run_key(cmd: KeyCmd) -> Result<()> {
             android_app_digest,
             out,
             phone_fingerprint,
-            phone_confirm_fingerprint,
+            phone_skip_fingerprint,
             session,
         } => {
             if let (Some(label), Some(cfg)) = (&key.phone, &key.agent) {
                 session.configure();
-                let confirm = match (phone_fingerprint, phone_confirm_fingerprint) {
+                let confirm = match (phone_fingerprint, phone_skip_fingerprint) {
                     (Some(fp), _) => phone::FingerprintSource::Given(fp),
-                    (None, true) => phone::FingerprintSource::Prompt,
-                    (None, false) => phone::FingerprintSource::NotAsked,
+                    (None, true) => phone::FingerprintSource::Skipped,
+                    (None, false) => phone::FingerprintSource::Prompt,
                 };
                 let policy = phone::AttestationPolicy {
                     allow_none: allow_no_attestation,
@@ -704,7 +705,7 @@ fn phone_enroll(
          docs/MOBILE_OWNER_DESIGN.md §5.5)",
     )?;
     if matches!(confirm, phone::FingerprintSource::Prompt) && !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-        bail!("--phone-confirm-fingerprint asks on a terminal, and this is not one; pass --phone-fingerprint <fp> instead, or leave both out");
+        bail!("the owner confirms the fingerprint the phone shows, and this is not a terminal to ask on: pass --phone-fingerprint <fp>, or --phone-skip-fingerprint to rely on the QR's secret alone");
     }
     let pins = phone::laptop_pins(&dep);
     if !pins.is_empty() {
@@ -713,7 +714,7 @@ fn phone_enroll(
             eprintln!("  {address}  {name}");
         }
     }
-    let confirmed = !matches!(confirm, phone::FingerprintSource::NotAsked);
+    let confirmed = !matches!(confirm, phone::FingerprintSource::Skipped);
     let phone::Enrolled { request, answer, enrollment: e, evidence } =
         phone::enroll(label, dep.chain_id, dep.entry_point, account, pins, policy, confirm)?;
     let fp = owner_core::fingerprint::fingerprint(&e.public_key);
@@ -722,7 +723,7 @@ fn phone_enroll(
     let pin = if e.device_credential { ", device PIN also unlocks" } else { "" };
     println!("enrolled phone owner key {label:?} for account {account} (chain {})", dep.chain_id);
     println!("  public key     x = {x}\n                 y = {y}");
-    println!("  fingerprint    {fp}   {}", if confirmed { "(confirmed against the phone's screen)" } else { "← the phone shows the same one" });
+    println!("  fingerprint    {fp}   {}", if confirmed { "(confirmed against the phone's screen)" } else { "← not confirmed here (--phone-skip-fingerprint): the phone shows the same one" });
     // what the config records about the key's hardware: the attested tier, or that there is no evidence
     let attestation = match &evidence {
         Some(ev) => {

@@ -175,17 +175,19 @@ phone-signed root operation included on anvil; the agent still runs:
 test phone_owner_real_device ... ok
 ```
 
-## P3: authenticated answers (version 0.3.0-p3)
+## P3: authenticated answers (version 0.3.1-p3)
 
 The QR now carries the session's secret (`&k=…`, design §3.2). The core's
 `parseQr` returns it, the app keeps it in memory for the session only, and
 every POST — a signature, a refusal, an enrollment answer — carries
 `X-TpmSign-Mac`, computed by the core's `answerMac` over the exact body.
-The laptop ignores an answer without it. The fingerprint dialog after an
-enrollment therefore says "compare" instead of "type": the laptop shows
-the same fingerprint, and asks for it only with
-`--phone-confirm-fingerprint`. The app needs agent-signer of the same
-version: a QR without `k` is refused.
+The laptop ignores an answer without it, and answers an accepted one with
+a confirmation MAC under the same secret: the app keeps a new key only on
+that (`verifyConfirmation`), never on a bare `200`, and shows the laptop's
+reason when an answer is turned down. The laptop still asks for the
+fingerprint at enrollment by default, so the dialog says "type"; with
+`--phone-skip-fingerprint` nothing is typed. The app needs agent-signer of
+the same version: a QR without `k` is refused.
 
 ### P3: what the laptop checks in the attestation
 

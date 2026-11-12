@@ -599,14 +599,18 @@ fn http_get(url: &str) -> Vec<u8> {
 /// evidence that is not a chain). Every answer carries the MAC of the QR's secret,
 /// as the app's does; a mode ending in `-nomac` posts without it — a host on
 /// the network that saw the session URL but never the QR.
-fn phone_simulator(qr_file: std::path::PathBuf, key: Key, mode: &'static str) -> std::thread::JoinHandle<()> {
+///
+/// The thread returns whether the laptop **confirmed** the answer: its reply
+/// was the confirmation MAC under the session's secret, the only thing the
+/// app takes as "the laptop has it".
+fn phone_simulator(qr_file: std::path::PathBuf, key: Key, mode: &'static str) -> std::thread::JoinHandle<bool> {
     phone_simulator_after(qr_file, key, mode, Duration::ZERO)
 }
 
 /// `delay` holds the answer back, so another "phone" can post first.
-fn phone_simulator_after(qr_file: std::path::PathBuf, key: Key, mode: &'static str, delay: Duration) -> std::thread::JoinHandle<()> {
+fn phone_simulator_after(qr_file: std::path::PathBuf, key: Key, mode: &'static str, delay: Duration) -> std::thread::JoinHandle<bool> {
     use owner_core::enroll::{EnrollRequest, EnrollResponse};
-    use owner_core::request::{answer_mac, commitment, AppInfo, QrPayload, SignRequest, SignResponse, MAC_HEADER};
+    use owner_core::request::{answer_mac, commitment, verify_confirmation_mac, AppInfo, QrPayload, SignRequest, SignResponse, MAC_HEADER};
     let (mode, with_mac) = match mode.strip_suffix("-nomac") {
         Some(m) => (m, false),
         None => (mode, true),
@@ -626,7 +630,8 @@ fn phone_simulator_after(qr_file: std::path::PathBuf, key: Key, mode: &'static s
         let post = |body: Vec<u8>| {
             let body = String::from_utf8(body).unwrap();
             let headers = if with_mac { format!("{MAC_HEADER}: {}\r\n", answer_mac(&qr.secret, body.as_bytes()).unwrap()) } else { String::new() };
-            http_post_with(&qr.url, &body, &headers)
+            let reply = http_post_with(&qr.url, &body, &headers);
+            verify_confirmation_mac(&qr.secret, body.as_bytes(), &reply)
         };
         let bytes = http_get(&qr.url);
         assert_eq!(commitment(&bytes), qr.commitment, "the served request must match the QR's commitment");
@@ -648,8 +653,7 @@ fn phone_simulator_after(qr_file: std::path::PathBuf, key: Key, mode: &'static s
                 "enroll-refuse" => EnrollResponse::refused(&qr.commitment, "user", Some("declined on the phone".into()), app),
                 other => panic!("mode {other}"),
             };
-            post(resp.to_bytes());
-            return;
+            return post(resp.to_bytes());
         }
         let req = SignRequest::parse(&bytes, now, 300).expect("a well-formed request");
         assert_eq!(req.nonce_key().unwrap(), U256::ZERO, "the phone signs root operations only");
@@ -659,8 +663,7 @@ fn phone_simulator_after(qr_file: std::path::PathBuf, key: Key, mode: &'static s
         let review = owner_core::review::open_request_with_build_facts(&bytes, &qr.commitment, now, &[me]);
         if let owner_core::review::Verdict::Refuse(why) = &review.verdict {
             let resp = SignResponse::refused(&qr.commitment, "core", Some(why.clone()), app);
-            post(resp.to_bytes());
-            return;
+            return post(resp.to_bytes());
         }
         let hash = review.digest_to_sign().unwrap();
         assert_eq!(hash, req.user_op_hash().unwrap());
@@ -679,7 +682,7 @@ fn phone_simulator_after(qr_file: std::path::PathBuf, key: Key, mode: &'static s
             "refuse" => SignResponse::refused(&qr.commitment, "user", Some("declined on the phone".into()), app),
             other => panic!("mode {other}"),
         };
-        post(resp.to_bytes());
+        post(resp.to_bytes())
     })
 }
 
@@ -854,11 +857,9 @@ fn phone_is_enrolled_then_takes_over_root() {
     // the label is checked before any QR
     let err = chain.fails(&["key", "create", "--phone", "", "--agent", &cfg, "--listen", "127.0.0.1:0", "--phone-timeout", "5"]);
     assert!(err.contains("label must be 1 to 64"), "{err}");
-    // asking for the fingerprint needs a terminal: said before any QR
-    let err = chain.fails(&[
-        "key", "create", "--phone", "owner-phone", "--agent", &cfg, "--phone-confirm-fingerprint", "--listen", "127.0.0.1:0", "--phone-timeout", "5",
-    ]);
-    assert!(err.contains("--phone-confirm-fingerprint asks on a terminal"), "{err}");
+    // the fingerprint is asked for by default, which needs a terminal: said before any QR
+    let err = chain.fails(&["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--listen", "127.0.0.1:0", "--phone-timeout", "5"]);
+    assert!(err.contains("--phone-fingerprint") && err.contains("--phone-skip-fingerprint"), "{err}");
     assert!(!err.contains("tpmsign:1?"), "no session: {err}");
 
     // 1. the phone declines
@@ -899,7 +900,13 @@ fn phone_is_enrolled_then_takes_over_root() {
     // 3. enrolled: the key, its fingerprint, the next step, the config snippet
     let sim = phone_simulator(qr_file.clone(), key(9), "enroll");
     let text = chain.ok(&[&["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--allow-no-attestation", "--out", out], &session[..]].concat());
-    sim.join().unwrap();
+    assert!(sim.join().unwrap(), "the laptop's reply is its confirmation under the session's secret, not a bare 200");
+    // the secret is in the QR and the QR file, never in the text the terminal keeps
+    let shown_uri = text.lines().find(|l| l.starts_with("tpmsign:1?")).expect("the URI line");
+    assert!(shown_uri.ends_with("&k=<in the QR only>"), "{shown_uri}");
+    let real_uri = std::fs::read_to_string(&qr_file).unwrap();
+    let secret = real_uri.rsplit("&k=").next().unwrap();
+    assert!(secret.len() == 22 && !text.contains(secret), "the session secret is not printed");
     assert!(text.contains(&format!("x = {}", phone.x)), "{text}");
     assert!(text.contains(&format!("fingerprint    {fp}   (confirmed")), "{text}");
     assert!(text.contains("security level simulator (the phone's own word)"), "{text}");
@@ -933,12 +940,12 @@ fn phone_is_enrolled_then_takes_over_root() {
     ]
     .concat());
     sim.join().unwrap();
-    assert!(text.contains("names sent to the phone") && text.contains("demo counter"), "{text}");
+    assert!(text.contains("names sent to the phone") && text.contains("counter (config)"), "{text}");
     let req: Value = serde_json::from_str(&std::fs::read_to_string(odd_out.join("enroll-request.json")).unwrap()).unwrap();
     let pins = req["laptopPins"].as_object().expect("the request carries the pins");
     assert_eq!(pins.len(), 1, "{pins:?}");
     let (pinned, name) = pins.iter().next().unwrap();
-    assert_eq!((pinned.to_lowercase().as_str(), name.as_str().unwrap()), (stranger, "demo counter"));
+    assert_eq!((pinned.to_lowercase().as_str(), name.as_str().unwrap()), (stranger, "counter (config)"));
     // a label the phone would not show is stopped before any QR
     let err = chain.fails(&["key", "create", "--phone", "owner\u{202e}phone", "--agent", &cfg, "--listen", "127.0.0.1:0", "--phone-timeout", "5"]);
     assert!(err.contains("plain text"), "{err}");
@@ -951,19 +958,20 @@ fn phone_is_enrolled_then_takes_over_root() {
     assert_eq!(snippet["owner"]["phone"]["attestation"], "none", "the config records that nothing places this key in hardware");
 
     // 3b. the answer is authenticated by the secret in the QR: a host on the network that saw
-    // the session URL in the phone's GET, but never the QR, posts its own key first. Without
-    // any fingerprint given, it is ignored (no MAC) and the phone's answer is the one accepted.
+    // the session URL in the phone's GET, but never the QR, posts its own key first. With the
+    // fingerprint check skipped, it is still ignored (no MAC), gets no confirmation, and the
+    // phone's answer is the one accepted and confirmed.
     let _ = std::fs::remove_file(&qr_file);
     let intruder = phone_simulator(qr_file.clone(), key(8), "enroll-nomac");
     let real = phone_simulator_after(qr_file.clone(), key(9), "enroll", Duration::from_millis(1500));
     let text = chain.ok(&[
-        "key", "create", "--phone", "owner-phone", "--agent", &cfg, "--allow-no-attestation",
+        "key", "create", "--phone", "owner-phone", "--agent", &cfg, "--allow-no-attestation", "--phone-skip-fingerprint",
         "--listen", "127.0.0.1:0", "--phone-qr-file", qr, "--phone-timeout", "60",
     ]);
-    intruder.join().unwrap();
-    real.join().unwrap();
+    assert!(!intruder.join().unwrap(), "the intruder got no confirmation");
+    assert!(real.join().unwrap(), "the phone did");
     assert!(text.contains("without this session's secret was ignored"), "{text}");
-    assert!(text.contains(&format!("fingerprint    {fp}   ← the phone shows the same one")), "{text}");
+    assert!(text.contains(&format!("fingerprint    {fp}   ← not confirmed here (--phone-skip-fingerprint)")), "{text}");
     assert!(!text.contains(&key(8).x), "no line names the intruder's key: {text}");
 
     // 3c. someone who could read the QR (so they have the secret) and is on the network too:
@@ -1071,10 +1079,11 @@ fn phone_owner_real_device() {
     // 1. enrollment; the evidence survives the run when TPMSIGN_PHONE_OUT names a directory
     let out_dir = std::env::var_os("TPMSIGN_PHONE_OUT").map(PathBuf::from).unwrap_or_else(|| chain.dir.join("enrollment"));
     eprintln!("\naccount {account} on a local anvil. On the phone tap \"4. Enroll this phone for an account\", scan the QR\nbelow, read the notice, confirm. The phone and this terminal then show the same fingerprint.\n");
-    // the attestation names the certificate the app was signed with; a development build is the
+    // a test run does not type: the answer is authenticated by the QR's secret (the default asks).
+    // The attestation names the certificate the app was signed with; a development build is the
     // developer's own, so its digest comes from the environment (docs/MOBILE_DEV_MODE.md §2.2)
     let digest = std::env::var("TPMSIGN_ANDROID_APP_DIGEST").ok();
-    let mut args = vec!["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--out", out_dir.to_str().unwrap()];
+    let mut args = vec!["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--phone-skip-fingerprint", "--out", out_dir.to_str().unwrap()];
     if let Some(d) = &digest {
         args.extend(["--android-app-digest", d.as_str()]);
     }

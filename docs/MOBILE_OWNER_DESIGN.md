@@ -159,15 +159,26 @@ use a health check to obtain a signature over a meaningful hash (§6.5).
   It shows that a genuine device running our app made the key for this
   request, not that it was the owner's device: anyone can hold a genuine
   phone with the published app.
-- **What a network attacker can still do:** delay or drop traffic, so the
-  session times out. Not substitute an answer, and not end the session
-  early with a refusal: an unauthenticated one is ignored like any other.
+- **The laptop's "accepted" is authenticated the same way.** It answers an
+  accepted POST with `HMAC-SHA256(secret, "TPM_sign/v1/accepted" ‖ the
+  answer's MAC)`, and the phone takes nothing else as confirmation. A bare
+  `200` can be written by a host in the path that dropped the real POST; a
+  phone that believed it would keep, as confirmed, a key the laptop never
+  saw, and that key would block a new enrollment of the account.
+- **What a network attacker can still do** is deny service: delay or drop
+  traffic so the session times out, or send enough wrong tokens (20) or
+  unauthenticated answers (200) to close it. Not substitute an answer, not
+  end the session with a refusal, not make the phone believe the laptop
+  accepted.
 - **What the secret assumes:** the QR is seen by the owner's phone only.
-  Someone who can read the laptop's screen — over a shoulder, through a
-  camera, on a shared screen — and is on the network at that moment has
-  the secret too. Against that, the phone and the laptop both show the new
-  key's fingerprint at enrollment; `--phone-confirm-fingerprint` makes the
-  laptop ask for it and refuse another key.
+  Someone who can read it — over a shoulder, through a camera, on a shared
+  screen — and is on the network within the session has the secret too.
+  The CLI therefore prints the session URI with the secret left out, and
+  **at enrollment it asks the owner for the fingerprint the phone shows**
+  (two groups at least) and refuses another key: an enrollment is followed
+  by a root handover, so the ten characters are spent once where they
+  matter. `--phone-skip-fingerprint` relies on the secret alone;
+  `--phone-fingerprint` gives the expected one to a script.
 
 ### 3.2 QR payload
 
@@ -201,8 +212,8 @@ path, because a system camera may open the URI in another app.
 | Port | random ephemeral, unless given |
 | Lifetime | 120 s from the QR being shown (`--phone-timeout`), or until a valid response arrives |
 | `GET /s/<token>` | returns the request bytes (`application/json`). Allowed again within the lifetime, so the phone can retry |
-| `POST /s/<token>` | body = response (§4.2, §4.3), with the header `X-TpmSign-Mac: base64url(HMAC-SHA256(k, body))`. Without a valid MAC: `401`, the answer is ignored and the session waits on. With one: an answer that fails its checks gets `400` and the session waits on; the phone's refusal ends the session; the first accepted answer ends it |
-| Wrong token | `404`, compared in constant time; 20 wrong tokens, unauthenticated or rejected answers end the session |
+| `POST /s/<token>` | body = response (§4.2, §4.3), with the header `X-TpmSign-Mac: base64url(HMAC-SHA256(k, body))`. Without a valid MAC: `401`, the answer is ignored and the session waits on. With one: an answer that fails its checks gets `400` and the session waits on; the phone's refusal ends the session; the first accepted answer ends it, and its `200` carries the laptop's confirmation, `base64url(HMAC-SHA256(k, "TPM_sign/v1/accepted" ‖ that MAC))`, as its body |
+| Wrong token | `404`, compared in constant time; 20 wrong tokens or rejected answers end the session; unauthenticated answers have their own cap of 200 |
 | After the end | the port closes |
 | Body limits | request ≤ 64 KiB; answer ≤ 64 KiB (an enrollment carries a certificate chain); the body is read under the session's deadline |
 
@@ -554,8 +565,8 @@ Kernel admin call:
 | Call | Shown as |
 |---|---|
 | `installValidations` of a **permission** id (type `0x02`) | "Install agent permission `<id>`", with the full mandate: the signer module and the policy module, each marked as in §6.7 (including "superseded version", a build fact); the agent key fingerprint; every allow entry (target, selector, and the name where known); value cap, budget, validity window, token caps and x402 flags |
-| `installValidations` of a **validator** (type `0x01`) | "Install validator `<address>` with key `<fingerprint>`". For the pinned recovery validator: "Install a recovery key — **it will be able to take over this account**" |
-| `grantAccess(vId, selector, allow)` | "Allow `<vId>` to call `<selector name>`". For `changeRootValidator`: "**may take over this account**" |
+| `installValidations` of a **validator** (type `0x01`) | always an effect, since v1 does not know which validators the account uses: "**Install a key on a validator** `<fingerprint>` — it controls this account once it is root or is granted access", whether the validator is current, superseded or unknown to the build. For a recovery validator: "Install a recovery key — **it will be able to take over this account**" |
+| `grantAccess(vId, selector, allow)` | Kernel lets a non-root validation call a top-level selector only when it is granted here, so a grant is judged by what bounds it. Plain: a **permission's** `execute` (its policy bounds it), and any grant with `allow = false`. Bold: a **validator's** `changeRootValidator` ("**may take over this account**") and a validator's `execute` ("**this key will be able to do anything with this account**"). Every other grant — an admin selector to a permission or a validator, a selector the build cannot name — is **refused**; expert mode turns the refusal into a bold row |
 | `changeRootValidator(...)` | "**Hand control of this account to** validator `<address>`". In a `set-root` batch, the summary names the key: "**Hand control of this account to key `<fingerprint>`**" (§2.2) |
 | `uninstallValidation(vId, …)` | "Remove permission `<id>`" or "Remove validator `<address>`". If that validator holds this phone's key: "**this phone will no longer control the account**" |
 | any other self-call | **refused** (v1) |
@@ -665,7 +676,11 @@ one (T19). So the facts come from the **build**:
 - **Laptop pins** are accepted only for addresses the build does not know,
   and are shown as "from the laptop — unverified" (§4.3). A pin is a label
   and nothing more: it never makes a call decodable, a module readable, a
-  paymaster acceptable or an effect plain.
+  paymaster acceptable or an effect plain. A pin whose label is a name the
+  build gives to what it verifies ("AgentPolicy", "USDC", with or without
+  a version) is refused and reported, so a stranger cannot be made to look
+  like a known contract; the CLI labels its pins by role ("policy module
+  (config)").
 - **Development builds** may add the CLI's local anvil chain (feature
   `test-chains`), where the test harness installs the same code at the
   same addresses. Such a build shows `+test-chains` in its version and is
@@ -922,7 +937,7 @@ signed on the laptop's word.
 |---|---|---|---|
 | T1 | **The laptop is compromised** and requests a malicious operation | the phone decodes, recomputes the hash and shows the real effect; laptop labels are marked as such; addresses are shown in full; gas cap | a user who approves without reading. The bold second confirmation targets the dangerous cases |
 | T2 | **The laptop is compromised during a handover** and substitutes its own key in `set-root` | phone to phone: the current phone decodes the `set-root` and shows the new key's fingerprint, which prevents it (§2.2). First handover: `--expect-fingerprint`, a clean machine, and a check from a **third** device of `P256Validator.publicKeys(account)` | the first handover is signed blind. Between a substituted `set-root` landing and the third-device check, the attacker holds root and can rotate again or drain. v2 adds on-chain checks by the phone itself (§14) |
-| T3 | **A LAN attacker** swaps the request or the response, or answers an enrollment with its own key | QR commitment; every answer carries a MAC under the QR's secret (§3.1); the laptop verifies the signature against its own hash | denial of service by dropping traffic only. An attacker who can also read the QR off the laptop's screen has the secret: the fingerprint comparison at enrollment (`--phone-confirm-fingerprint`) covers that |
+| T3 | **A LAN attacker** swaps the request or the response, or answers an enrollment with its own key | QR commitment; every answer carries a MAC under the QR's secret (§3.1); the laptop verifies the signature against its own hash | denial of service by dropping traffic only. An attacker who can also read the QR has the secret: the fingerprint the CLI asks for at enrollment covers that, unless the owner skips it (`--phone-skip-fingerprint`) |
 | T4 | **A foreign QR** (another screen, a poster) | unenrolled accounts are refused; for an enrolled one, the normal review applies | as T1 |
 | T5 | **Malware on the phone** (user level) | Keystore and keychain keys are bound to our app; use needs biometrics enforced by hardware | a rooted or jailbroken phone. Treat a phone that cannot pass attestation as untrusted. On a TEE-only phone, a bug in the trusted OS reaches the key; the app says so (§5.6) |
 | T6 | **Our app itself is malicious or compromised** (supply chain, a bad update) | open source; minimal dependencies; release signing; the Android attestation names our signing certificate; custody of the signing keys and release roles (`APP_ATTEST_ORG.md` §4) | it could show one operation and sign another. Mitigation by reproducible Android builds (P5); none on iOS beyond App Store review. Store distribution also puts the store operator in this root (Google signs Play builds, Apple re-signs App Store builds). The largest residual risk; say so in user docs |

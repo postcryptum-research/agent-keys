@@ -66,12 +66,13 @@ pub struct EnrollRequest {
     pub laptop_pins: BTreeMap<Address, String>,
 }
 
-/// A pin the phone did not take, because its build already names the address.
+/// A pin the phone did not take, and why: its build already names the
+/// address, or the label is a name the build reserves for what it verifies.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IgnoredPin {
     pub address: Address,
     pub laptop_label: String,
-    pub build_name: String,
+    pub why: String,
 }
 
 impl EnrollRequest {
@@ -80,17 +81,20 @@ impl EnrollRequest {
         self
     }
 
-    /// The pins to keep, and those ignored because the build knows the
-    /// address — reported, since a laptop renaming a known contract is
-    /// either stale or lying (§4.3).
+    /// The pins to keep, and those ignored — reported, since a laptop that
+    /// renames a known contract, or gives a stranger a known contract's
+    /// name, is either stale or lying (§4.3, §6.7).
     pub fn split_pins(&self, facts: &Facts) -> (BTreeMap<Address, String>, Vec<IgnoredPin>) {
         let mut kept = BTreeMap::new();
         let mut ignored = Vec::new();
         for (address, label) in &self.laptop_pins {
-            match facts.names.get(address) {
-                Some(build_name) => {
-                    ignored.push(IgnoredPin { address: *address, laptop_label: label.clone(), build_name: build_name.clone() })
-                }
+            let why = match facts.names.get(address) {
+                Some(build_name) => Some(format!("this build knows the address as {build_name}")),
+                None if crate::facts::is_build_name(label) => Some("the label is a name this build gives only to what it verifies".to_string()),
+                None => None,
+            };
+            match why {
+                Some(why) => ignored.push(IgnoredPin { address: *address, laptop_label: label.clone(), why }),
                 None => {
                     kept.insert(*address, label.clone());
                 }
@@ -344,13 +348,18 @@ mod tests {
         };
         // no pins: the field is not on the wire, so older phones read the same bytes
         assert!(!String::from_utf8(with(vec![], "p")).unwrap().contains("laptopPins"));
-        let bytes = with(vec![(known, "MyPolicy"), (unknown, "test paymaster")], "owner-phone");
+        let lookalike = address!("9000000000000000000000000000000000000009");
+        let bytes = with(vec![(known, "MyPolicy"), (unknown, "test paymaster"), (lookalike, "agentpolicy v7")], "owner-phone");
         let req = EnrollRequest::parse(&bytes, 0, 0).unwrap();
         let (kept, ignored) = req.split_pins(&crate::facts::for_chain(84532));
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[&unknown], "test paymaster");
-        assert_eq!(ignored.len(), 1);
-        assert_eq!((ignored[0].address, ignored[0].laptop_label.as_str(), ignored[0].build_name.as_str()), (known, "MyPolicy", "AgentPolicy"));
+        assert_eq!(ignored.len(), 2);
+        let why = |a: Address| ignored.iter().find(|p| p.address == a).unwrap().why.clone();
+        assert_eq!(why(known), "this build knows the address as AgentPolicy");
+        // a stranger may not be given a name the build reserves, on any chain
+        assert!(why(lookalike).contains("only to what it verifies"));
+        assert_eq!(req.split_pins(&Facts::default()).1.len(), 1, "the reserved name is refused where the build has no facts too");
         // text rules: a pin or a label with a bidi control or too long is refused
         assert!(EnrollRequest::parse(&with(vec![(unknown, "pay\u{202e}retsam")], "p"), 0, 0).is_err());
         assert!(EnrollRequest::parse(&with(vec![(unknown, &"x".repeat(33))], "p"), 0, 0).is_err());

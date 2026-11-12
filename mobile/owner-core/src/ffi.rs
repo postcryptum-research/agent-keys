@@ -214,6 +214,14 @@ pub fn answer_mac_header() -> String {
     crate::request::MAC_HEADER.to_string()
 }
 
+/// Whether the laptop's reply to a POST is its confirmation of that answer
+/// (§3.3). Only this means the laptop has the answer: any host in the path
+/// can write a bare `200`.
+#[uniffi::export]
+pub fn verify_confirmation(secret: String, answer_body: Vec<u8>, reply: String) -> bool {
+    crate::request::verify_confirmation_mac(&secret, &answer_body, &reply)
+}
+
 /// §2.1 step 3: the commitment, the type, the version, the expiry with the
 /// clock tolerance, the label and the pins; the pins split by what this
 /// build knows.
@@ -240,7 +248,7 @@ pub fn open_enrollment(bytes: Vec<u8>, commitment: String, now: u64) -> Result<F
         pins: kept.iter().map(|(a, l)| FfiPin { address: a.to_checksum(None), label: l.clone() }).collect(),
         ignored_pins: ignored
             .iter()
-            .map(|p| format!("{}: the laptop says \"{}\", this build knows it as {}", p.address.to_checksum(None), p.laptop_label, p.build_name))
+            .map(|p| format!("{}: the laptop says \"{}\" — {}", p.address.to_checksum(None), p.laptop_label, p.why))
             .collect(),
         chain_known: crate::facts::chains().contains(&chain_id),
         attestation_challenge: crate::enroll::attestation_challenge(&bytes).to_vec(),
@@ -426,7 +434,7 @@ mod tests {
         assert_eq!(e.pins.len(), 1);
         assert_eq!((e.pins[0].address.as_str(), e.pins[0].label.as_str()), ("0x05a97329397200dF8795A882da0b5b1aD894EB97", "test paymaster"));
         assert_eq!(e.ignored_pins.len(), 1);
-        assert!(e.ignored_pins[0].contains("the laptop says \"MyPolicy\", this build knows it as AgentPolicy"), "{}", e.ignored_pins[0]);
+        assert!(e.ignored_pins[0].contains("the laptop says \"MyPolicy\" — this build knows the address as AgentPolicy"), "{}", e.ignored_pins[0]);
         assert_eq!(e.attestation_challenge, crate::enroll::attestation_challenge(&bytes).to_vec());
         // the commitment and the expiry are checked here, not in the app
         assert!(open_enrollment(bytes.clone(), "x".into(), 1_999_999_000).is_err());
@@ -503,5 +511,8 @@ mod tests {
         let mac = answer_mac(qr.secret.clone(), refused.clone()).unwrap();
         assert!(crate::request::verify_answer_mac(&qr.secret, &refused, &mac));
         assert_eq!(answer_mac_header(), "X-TpmSign-Mac");
+        let confirmation = crate::request::confirmation_mac(&qr.secret, &refused).unwrap();
+        assert!(verify_confirmation(qr.secret.clone(), refused.clone(), confirmation));
+        assert!(!verify_confirmation(qr.secret.clone(), refused.clone(), "ok".into()));
     }
 }
