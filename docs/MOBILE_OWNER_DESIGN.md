@@ -785,7 +785,7 @@ translation can follow.
 
 | Command | Change |
 |---|---|
-| `key create --phone <label> --agent <cfg>` | the enrollment session (§2.1); verifies attestation, prints the public key, fingerprint, security tier and config snippet; `--allow-no-attestation` for iOS without App Attest; `--allow-dev-build` for development-signed iOS builds, test chains only (with iOS); `--require-strongbox` to refuse a TEE-only key (§5.6); `--android-app-digest <sha256>` to accept one's own build of the app; `--phone-confirm-fingerprint` to be asked for the phone's fingerprint (§3.1); `--out <dir>` to keep the request, the answer and the chain |
+| `key create --phone <label> --agent <cfg>` | the enrollment session (§2.1); verifies attestation, prints the public key, fingerprint, security tier and config snippet; `--allow-no-attestation` for iOS without App Attest; `--allow-dev-build` for development-signed iOS builds, test chains only (with iOS); `--require-strongbox` to refuse a TEE-only key (§5.6); `--android-app-digest <sha256>` to accept one's own build of the app; `--phone-skip-fingerprint` to rely on the QR's secret without the fingerprint prompt, `--phone-fingerprint <fp>` to give the fingerprint to a script (§3.1); `--out <dir>` to keep the request, the answer and the chain |
 | `owner set-root … --expect-fingerprint <fp>` | refuses unless `--public-key` has that fingerprint; for the first handover (§2.2) |
 | `key check --phone <label>` | the health check (§2.4) |
 | `key show --phone <label>` | prints the configured public key and fingerprint (no session) |

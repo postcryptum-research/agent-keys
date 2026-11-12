@@ -56,8 +56,9 @@ pub const STATUS_URL: &str = "https://android.googleapis.com/attestation/status"
 /// (docs/APP_ATTEST_ORG.md §8).
 pub const ANDROID_PACKAGES: &[&str] = &["dev.tpmsign.owner.spike"];
 
-/// T14: the first `versionCode` whose answers carry the session MAC.
-pub const MIN_ANDROID_VERSION_CODE: u64 = 9;
+/// T14: the first `versionCode` whose answers carry the session MAC and that
+/// keeps a key only on the laptop's authenticated confirmation.
+pub const MIN_ANDROID_VERSION_CODE: u64 = 10;
 
 /// SHA-256 digests of the signing certificates of distributed builds, per
 /// channel (§5.2, docs/MOBILE_DEV_MODE.md §2.2). Empty until the project
@@ -720,7 +721,7 @@ mod tests {
                 locked: true,
                 boot_state: 0,
                 package: PACKAGE.into(),
-                version_code: 9,
+                version_code: 10,
                 signer_digest: SIGNER_DIGEST,
             }
         }
@@ -798,7 +799,7 @@ mod tests {
             now: NOW,
             packages: &[PACKAGE],
             signing_digests: &[SIGNER_DIGEST],
-            min_version_code: 9,
+            min_version_code: 10,
         }
     }
 
@@ -809,7 +810,7 @@ mod tests {
             let (key, challenge) = pki.expect();
             let a = verify_android(&pki.chain(&Record::good(challenge)), &pki.roots(), &expect(key, challenge)).unwrap();
             assert_eq!((a.tier, a.chain_len, a.attestation_version), (Tier::Tee, 4, 400));
-            assert_eq!((a.package.as_str(), a.version_code, a.signing_digest), (PACKAGE, 9, SIGNER_DIGEST));
+            assert_eq!((a.package.as_str(), a.version_code, a.signing_digest), (PACKAGE, 10, SIGNER_DIGEST));
             assert!(a.warnings.is_empty() && a.serials.len() == 4);
         }
         // StrongBox is read from the record, and both levels must say it
@@ -914,7 +915,7 @@ mod tests {
         refused(Record { user_auth_type: Some(3), ..good.clone() }, "biometric only");
         refused(Record { locked: false, ..good.clone() }, "bootloader is unlocked");
         refused(Record { package: "com.example.other".into(), ..good.clone() }, "not by the owner app");
-        refused(Record { version_code: 8, ..good.clone() }, "below the minimum");
+        refused(Record { version_code: 9, ..good.clone() }, "below the minimum");
         refused(Record { signer_digest: [9; 32], ..good.clone() }, "--android-app-digest 0909");
         // the PIN opt-in is accepted exactly when the enrollment chose it
         let with_pin = Record { user_auth_type: Some(3), ..good.clone() };

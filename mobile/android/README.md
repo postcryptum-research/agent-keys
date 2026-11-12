@@ -217,15 +217,71 @@ lives about two weeks, so that check uses the request's own time.
 
 ### P3 run record — an authenticated, attested enrollment with nothing typed (2026-11-13, app 0.3.0-p3)
 
-The same script, on the whole P3 stack. The QR carried the session's
-secret; the phone's enrollment answer came with its MAC and its key
-attestation, which the laptop verified before it accepted the answer;
-nothing was typed; the handover followed; the permission install was
-signed on the phone, its response under the same kind of MAC:
+The same script, on the whole P3 stack as it stood before its review: the
+QR carried the session's secret, the phone's answers carried their MAC,
+the laptop verified the key attestation before it accepted the enrollment,
+and nothing was typed (at that commit the prompt was off by default; the
+same flow is now `--phone-skip-fingerprint`). The enrollment:
 
 ```
-tpmsign:1?u=http://192.168.x.x:63503/s/<token>&h=<commitment>&k=<secret>
+tpmsign:1?u=http://192.168.x.x:63459/s/<token>&h=<commitment>&k=<secret>
 waiting up to 180s for the phone…
+enrolled phone owner key "owner-phone" for account 0x5AD0Bd2964bdA2bD5fBff99518378CaB3Be2A798 (chain 31337)
+  public key     x = 0x4cfa…6fc8
+                 y = 0xc258…ba17
+  fingerprint    TLXZH-S3R6Z-KVK4W-R2KRW   ← the phone shows the same one
+  security level tee — the processor's trusted mode, not a separate secure chip (attested)
+  attestation    verified: 5 certificates to Google's remote-provisioning root (P-384); made for this request; the key is the one above; generated in the hardware, signs only after a biometric check
+  made by        dev.tpmsign.owner.spike version code 9, signing certificate <sha256 of the developer's debug certificate> (accepted by --android-app-digest)
+  revocation     none of the chain is on Google's list (1773 entries, fetched now)
+  note           attestation is evidence of where the key lives, not of whose phone it is; that is the QR's secret
+  app            android 0.3.0-p3 (core none)
+
+Nothing changed on-chain. Next, signed by the current owner key:
+  agent-signer owner set-root --agent …/owner.json --validator <P256Validator> --public-key 0x4cfa…6fc8,0xc258…ba17 --expect-fingerprint TLXZH-S3R6Z-KVK4W-R2KRW [--retire <validator>]
+then point the config's owner at the phone (ownerPublicKey stays the account's creation key):
+{ "owner": { "phone": { "label": "owner-phone", "platform": "android", "attestation": "tee", "deviceCredential": false,
+                        "publicKey": { … }, "fingerprint": "TLXZH-S3R6Z-KVK4W-R2KRW" } } }
+```
+
+The handover followed, then the permission install, previewed on the
+laptop and signed on the phone:
+
+```
+root handed to the phone key TLXZH-S3R6Z-KVK4W-R2KRW.
+
+what the phone will show (owner-core 0.2.0+test-chains):
+## Operation
+Account: 0x5AD0Bd2964bdA2bD5fBff99518378CaB3Be2A798
+Chain: 31337
+The laptop says: "owner operation (root)" (from the laptop — unverified)
+## Call 1 of 2
+Install agent permission: 0x74657332
+Policy module: 0xdd544A6F0220778Fff16F51B468656e73E32ae85 — AgentPolicy (verified in this build)
+Allow: 0xD2Adc331B867435b82Ceba1D4f7f715eeF9FdbC1 — demo counter (verified in this build) · increment (0xd09de08a)
+Max value per operation: 0.000000000000001 ETH
+Budget: 1 ETH
+Valid from: now
+Valid until: 2027-11-12 19:06:44 UTC (1826046404)
+Signer module: 0xa19e6061b1C193573e5fe46c39363FfDd5CCA22E — P256Signer (verified in this build)
+Agent key: OIPTD-GKQWZ-L7OXL-IVB5C
+Validation nonce: 2
+## Call 2 of 2
+Allow permission 0x74657332 to call: execute (0xe9ae5c53)
+## Cost
+Maximum gas cost: 0.001094076496653265 ETH
+## Details
+nonce: key 0 (root), sequence 2
+verificationGasLimit: 300000
+callGasLimit: 409065
+preVerificationGas: 100000
+maxFeePerGas: 1352272681 wei
+maxPriorityFeePerGas: 1 wei
+EntryPoint: 0x0000000071727De22E5E9d8BAf0edAc6f37da032
+expires: 2026-11-12 19:09:54 UTC (1794510594)
+userOpHash: 0xef195ef908bdca3fdff313a64fb0007ed6398270562eda163d1ec528be25f416
+
+tpmsign:1?u=http://192.168.x.x:63503/s/<token>&h=<commitment>&k=<secret>
 phone:          signed, signature verified against the owner key
 path:           root (owner key)
 added permission 0x74657332 (valid 0 … 1826046404): tx 0x0e2e85494d02aa010f943a6201f99fc0612f0f83360f8d1833f89e6bf10b7680 (block 5, 399078 gas)
@@ -233,23 +289,17 @@ the permission the phone installed is on-chain; the agent runs under it:
 test phone_owner_real_device ... ok
 ```
 
-The enrollment's own lines were not kept from that terminal. The evidence
-the run kept was verified again offline with the ignored test
-`a_real_enrollment`, at the request's own time; the live check had to
-reach the same result to accept the answer:
+The evidence the run kept was also verified again offline with the ignored
+test `a_real_enrollment`, at the request's own time, with the same result:
+five certificates to the remote-provisioning root, every issuer a CA, the
+record on the key's certificate only, attestation version 400, tier TEE,
+no warning.
 
-| Check | Result |
-|---|---|
-| chain | five certificates to Google's remote-provisioning root (P-384); every issuer a CA, the record on the key's certificate only |
-| record | attestation version 400; made for this request (challenge bound to its commitment); the key the answer names |
-| tier | TEE, attested, and equal to the phone's own report |
-| key | EC P-256, sign only, `DIGEST_NONE` allowed, generated in the hardware, a biometric check on every use |
-| device | bootloader locked, boot state Verified: no warning |
-| app | the owner app's package, version code 9, signed with the developer's debug certificate, named by `--android-app-digest` |
-| revocation | none of the five serials on Google's list (1,773 entries that day) |
-
-One fault showed in the kept answer and is fixed: the enrollment answer
-still said `core: none`, a leftover from P1; it now names the core.
+Three things this run showed, all changed since. The URI was printed with
+its secret; it is now printed as `&k=<in the QR only>`. The enrollment
+answer said `core: none`, a leftover from P1; it names the core now. And
+the review made the fingerprint prompt the default again and had the
+laptop authenticate its acceptance, so the app keeps a key only on that.
 
 ### P2 run record — the phone names the mandate it signs (2026-11-13, app 0.2.0-p2)
 
