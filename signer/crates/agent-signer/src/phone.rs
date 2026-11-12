@@ -71,6 +71,10 @@ impl HardwareSigner for PhoneSigner {
         )))
     }
 
+    fn needs_request(&self) -> bool {
+        true
+    }
+
     fn sign_user_op(&self, ctx: &UserOpContext<'_>) -> Result<Signature, SignerError> {
         let request = ctx.request.ok_or_else(|| SignerError::Key("no sign request attached for the phone".into()))?;
         let hash = B256::from(ctx.user_op_hash);

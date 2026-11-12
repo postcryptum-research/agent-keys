@@ -99,6 +99,12 @@ pub trait HardwareSigner {
     fn sign_user_op(&self, ctx: &UserOpContext<'_>) -> Result<Signature, SignerError> {
         self.sign_digest(&ctx.user_op_hash)
     }
+
+    /// Whether `sign_user_op` needs `UserOpContext::request`. A chip signs
+    /// the hash and never looks at it; a signer with a human behind it does.
+    fn needs_request(&self) -> bool {
+        false
+    }
 }
 
 /// Whether `(x, y)` is a point on P-256 (not the identity). A key that is
