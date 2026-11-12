@@ -189,6 +189,116 @@ fingerprint at enrollment by default, so the dialog says "type"; with
 `--phone-skip-fingerprint` nothing is typed. The app needs agent-signer of
 the same version: a QR without `k` is refused.
 
+### P3: what the laptop checks in the attestation
+
+The app has returned the Keystore's certificate chain since P1. From P3 on
+`agent-signer key create --phone` verifies it (design §5.2) before it
+accepts the answer: the chain to Google's root, the challenge bound to the
+enrollment request, the key itself, where it lives (StrongBox or TEE), that
+it was generated there and signs only after a biometric check, the locked
+bootloader, and which app made it. A refusal ends the session with its
+reason and the app deletes the key.
+
+The attestation names the certificate the app was signed with. A debug
+build is signed with the developer's own debug key, which no CLI can pin,
+so the developer names it: the CLI prints the digest it saw when it
+refuses, and `--android-app-digest <sha256>` accepts it. For the
+real-device test, `TPMSIGN_ANDROID_APP_DIGEST` carries it. To check a kept
+enrollment again offline:
+
+```sh
+cd signer
+TPMSIGN_ATTESTATION_DIR=<dir written by --out> TPMSIGN_ANDROID_APP_DIGEST=<sha256> \
+  cargo test -p agent-signer a_real_enrollment -- --ignored --nocapture
+```
+
+Phones with remotely provisioned attestation keys carry a certificate that
+lives about two weeks, so that check uses the request's own time.
+
+### P3 run record — an authenticated, attested enrollment (2026-11-13, app 0.3.1-p3)
+
+The same script on the P3 stack after its review. The QR carried the
+session's secret, which the terminal no longer prints; the phone's
+answers carried their MAC; the laptop verified the key attestation and
+the revocation list before it accepted the enrollment, and answered with
+its own MAC, on which alone the app kept the key. The script passes
+`--phone-skip-fingerprint`, so nothing was typed; without it the CLI asks
+for the fingerprint. The enrollment:
+
+```
+tpmsign:1?u=http://192.168.x.x:52726/s/<token>&h=<commitment>&k=<in the QR only>
+waiting up to 180s for the phone…
+enrolled phone owner key "owner-phone" for account 0x90aB6a48975CE55297c9A35CBC77F63f049E9716 (chain 31337)
+  public key     x = 0x7e5d…ac2b
+                 y = 0x45cc…b1ba
+  fingerprint    DKIWB-JLPIT-FGQ6T-MQYZA   ← not confirmed here (--phone-skip-fingerprint): the phone shows the same one
+  security level tee — the processor's trusted mode, not a separate secure chip (attested)
+  attestation    verified: 5 certificates to Google's remote-provisioning root (P-384); made for this request; the key is the one above; generated in the hardware, signs only after a biometric check
+  made by        dev.tpmsign.owner.spike version code 10, signing certificate <sha256 of the developer's debug certificate> (accepted by --android-app-digest)
+  revocation     none of the chain is on Google's list (1773 entries, fetched now)
+  note           attestation is evidence of where the key lives, not of whose phone it is; that is the QR's secret
+  app            android 0.3.1-p3 (core 0.2.0+test-chains)
+
+Nothing changed on-chain. Next, signed by the current owner key:
+  agent-signer owner set-root --agent …/owner.json --validator <P256Validator> --public-key 0x7e5d…ac2b,0x45cc…b1ba --expect-fingerprint DKIWB-JLPIT-FGQ6T-MQYZA [--retire <validator>]
+then point the config's owner at the phone (ownerPublicKey stays the account's creation key):
+{ "owner": { "phone": { "label": "owner-phone", "platform": "android", "attestation": "tee", "deviceCredential": false,
+                        "publicKey": { … }, "fingerprint": "DKIWB-JLPIT-FGQ6T-MQYZA" } } }
+```
+
+The handover followed, then the permission install, previewed on the
+laptop and signed on the phone:
+
+```
+root handed to the phone key DKIWB-JLPIT-FGQ6T-MQYZA.
+
+what the phone will show (owner-core 0.2.0+test-chains; pins as this config would send them now):
+## Operation
+Account: 0x90aB6a48975CE55297c9A35CBC77F63f049E9716
+Chain: 31337
+The laptop says: "owner operation (root)" (from the laptop — unverified)
+## Call 1 of 2
+Install agent permission: 0x74657332
+Policy module: 0xdd544A6F0220778Fff16F51B468656e73E32ae85 — AgentPolicy (verified in this build)
+Allow: 0xD2Adc331B867435b82Ceba1D4f7f715eeF9FdbC1 — demo counter (verified in this build) · increment (0xd09de08a)
+Max value per operation: 0.000000000000001 ETH
+Budget: 1 ETH
+Valid from: now
+Valid until: 2027-11-12 19:25:49 UTC (1826047549)
+Signer module: 0xa19e6061b1C193573e5fe46c39363FfDd5CCA22E — P256Signer (verified in this build)
+Agent key: OIPTD-GKQWZ-L7OXL-IVB5C
+Validation nonce: 2
+## Call 2 of 2
+Allow permission 0x74657332 to call: execute (0xe9ae5c53)
+## Cost
+Maximum gas cost: 0.001094076619631145 ETH
+## Details
+nonce: key 0 (root), sequence 2
+verificationGasLimit: 300000
+callGasLimit: 409065
+preVerificationGas: 100000
+maxFeePerGas: 1352272833 wei
+maxPriorityFeePerGas: 1 wei
+EntryPoint: 0x0000000071727De22E5E9d8BAf0edAc6f37da032
+expires: 2026-11-12 19:28:59 UTC (1794511739)
+userOpHash: 0x4f0a98d711d3b38c164d54b79f110aebc13055145d4de6a571fc4fcb179dbfcc
+
+tpmsign:1?u=http://192.168.x.x:52751/s/<token>&h=<commitment>&k=<in the QR only>
+phone:          signed, signature verified against the owner key
+path:           root (owner key)
+added permission 0x74657332 (valid 0 … 1826047549): tx 0x67374e7b3cf25711fc822b16b6944e9ee6becc54a1d6c4acacc04bff4470a664 (block 5, 399078 gas)
+the permission the phone installed is on-chain; the agent runs under it:
+test phone_owner_real_device ... ok
+```
+
+That the phone signed at all shows the confirmation at work: the app
+keeps a new key only when the laptop's reply is its MAC under the session
+secret, and it had the key. The evidence the run kept was verified again
+offline with the ignored test `a_real_enrollment`, with the same result.
+An earlier run the same day, on the stack before its review, went the
+same way with app 0.3.0-p3; it printed the session secret under the QR
+and its enrollment answer said `core: none`, both since fixed.
+
 ### P2 run record — the phone names the mandate it signs (2026-11-13, app 0.2.0-p2)
 
 The same script, with the app built as `OWNER_CORE_FEATURES=ffi,test-chains`

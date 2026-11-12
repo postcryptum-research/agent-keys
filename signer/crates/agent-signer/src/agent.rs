@@ -85,13 +85,28 @@ pub enum KeySpec {
     /// enrolled key, so read-only commands and the pre-signature root check
     /// need no session; `fingerprint` is the one the owner read on the
     /// phone's screen at enrollment (`key create --phone`), and the key is
-    /// refused before any prompt when the two disagree. Owner role only.
+    /// refused before any prompt when the two disagree. `attestation` is
+    /// what the enrollment verified about the key's hardware (`strongbox`,
+    /// `tee`, or `none`): a record for the reader, shown by `key show`.
+    /// Owner role only.
     #[serde(rename = "phone")]
     Phone {
         label: String,
         #[serde(rename = "publicKey")]
         public_key: PublicKeyJson,
         fingerprint: String,
+        #[serde(default)]
+        attestation: Option<String>,
+        /// Whether the attestation chain was checked against Google's
+        /// revocation list at enrollment: `checked` or `not checked`.
+        #[serde(default)]
+        revocation: Option<String>,
+        /// Records of the enrollment, as `attestation`: the phone's platform,
+        /// and whether the device PIN may unlock the key besides a biometric.
+        #[serde(default)]
+        platform: Option<String>,
+        #[serde(default, rename = "deviceCredential")]
+        device_credential: Option<bool>,
     },
     /// 32-byte hex scalar in this file. **Insecure**: refused in every role
     /// unless built with `--features insecure-software-keys` (tests only;
@@ -365,7 +380,7 @@ pub fn open_signer(spec: &KeySpec, role: Role) -> Result<Box<dyn HardwareSigner>
                 anyhow::bail!("key in YubiKey PIV slot {slot}: needs `--features yubikey`")
             }
         }
-        KeySpec::Phone { label, public_key, fingerprint } => {
+        KeySpec::Phone { label, public_key, fingerprint, .. } => {
             if role != Role::Owner {
                 anyhow::bail!(
                     "phone key {label:?}: a phone signs only owner operations (a human confirms each one); \

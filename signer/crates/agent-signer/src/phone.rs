@@ -22,6 +22,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use base64::Engine;
 use alloy::primitives::Address;
 use hw_signer::{HardwareSigner, PublicKey, Signature, SignerError, UserOpContext};
+
+use crate::attestation::{self, Attested};
 use owner_core::enroll::{EnrollRequest, EnrollResponse, Enrollment};
 use owner_core::fingerprint::fingerprint;
 use owner_core::request::{commitment, confirmation_mac, verify_answer_mac, QrPayload, RequestError, SignResponse, MAC_HEADER, SESSION_SECRET_BYTES};
@@ -90,9 +92,10 @@ impl HardwareSigner for PhoneSigner {
             self.label,
             fingerprint(&self.public_key)
         );
-        let sig = lan_session(request, &headline, |body| SignResponse::verify(body, request, &self.public_key, hash))
+        let sig = lan_session(request, &headline, |body| Ok(SignResponse::verify(body, request, &self.public_key, hash)?))
             .map_err(|e| match e {
                 SessionError::Refused(e) => SignerError::Key(format!("phone {:?}: {e}", self.label)),
+                SessionError::Rejected(m) => SignerError::Key(format!("phone {:?}: {m}", self.label)),
                 SessionError::Backend(m) => SignerError::Backend(m),
             })?;
         eprintln!("phone:          signed, signature verified against the owner key");
@@ -117,19 +120,51 @@ pub enum FingerprintSource {
     Skipped,
 }
 
+/// What the laptop asks of the phone's key attestation (design §5.2, §5.6).
+pub struct AttestationPolicy {
+    /// Accept an answer without evidence: a simulator, or a platform without it.
+    pub allow_none: bool,
+    /// The app's signing-certificate digests accepted here, beyond the pinned ones.
+    pub signing_digests: Vec<[u8; 32]>,
+    /// Refuse a key the attestation places in the TEE.
+    pub require_strongbox: bool,
+    /// Refuse when Google's revocation list cannot be fetched, instead of
+    /// recording that it was not checked: anyone on the path can make the
+    /// fetch fail.
+    pub require_revocation_check: bool,
+}
+
+/// What the laptop learned about the key from its attestation.
+pub struct Evidence {
+    pub attested: Attested,
+    /// The revocation list: how many entries were checked, or why it was not.
+    pub revocation: Result<usize, String>,
+}
+
+/// An enrolled key: the request served, the phone's answer as posted, its
+/// parsed content, and the verified evidence when the answer carried any.
+pub struct Enrolled {
+    pub request: Vec<u8>,
+    pub answer: Vec<u8>,
+    pub enrollment: Enrollment,
+    pub evidence: Option<Evidence>,
+}
+
 /// Enrollment (design §2.1): ask the phone to create a new owner key for
-/// `account` and return it with its evidence. Nothing on-chain; the caller
-/// prints the fingerprint and the config snippet, and the handover is the
-/// owner's next, separate step.
+/// `account` and return it with its evidence, which is verified before the
+/// answer is accepted. Nothing on-chain; the caller prints the fingerprint
+/// and the config snippet, and the handover is the owner's next, separate
+/// step.
+#[allow(clippy::too_many_arguments)]
 pub fn enroll(
     label: &str,
     chain_id: u64,
     entry_point: Address,
     account: Address,
     pins: std::collections::BTreeMap<Address, String>,
-    allow_no_attestation: bool,
+    policy: &AttestationPolicy,
     confirm: FingerprintSource,
-) -> Result<(Vec<u8>, Vec<u8>, Enrollment), SignerError> {
+) -> Result<Enrolled, SignerError> {
     let mut challenge = [0u8; 32];
     OsRng.fill_bytes(&mut challenge);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| SignerError::Backend(e.to_string()))?;
@@ -144,8 +179,64 @@ pub fn enroll(
         FingerprintSource::Given(fp) => Some(normalize_fingerprint(fp)?),
         FingerprintSource::Prompt | FingerprintSource::Skipped => None,
     };
-    let (body, enrollment) = lan_session(&request, &headline, |body| {
-        let e = EnrollResponse::verify(body, &request, allow_no_attestation)?;
+    let roots = attestation::google_roots();
+    let mut digests = attestation::PINNED_SIGNING_DIGESTS.to_vec();
+    digests.extend(&policy.signing_digests);
+    let (body, enrollment, evidence) = lan_session(&request, &headline, |body| {
+        let e = EnrollResponse::verify(body, &request, policy.allow_none)?;
+        // the evidence: where the key lives and which app made it (§5.2). The answer is the
+        // phone's own (the session MAC), so a failure here ends the session with its reason.
+        let evidence = if e.attestation.is_empty() {
+            if policy.require_strongbox {
+                return Err(Rejection::End("--require-strongbox needs a key attestation, and the answer carries none".into()));
+            }
+            None
+        } else if e.app.as_ref().map(|a| a.platform.as_str()) != Some("android") {
+            // the only evidence this CLI can read today is Android's key attestation
+            return Err(Rejection::End(format!(
+                "the key attestation was not accepted: evidence from platform {:?} is not something this version can verify",
+                e.app.as_ref().map(|a| a.platform.as_str()).unwrap_or("unknown")
+            )));
+        } else {
+            let attested = attestation::verify_android(
+                &e.attestation,
+                &roots,
+                &attestation::Expect {
+                    challenge: owner_core::enroll::attestation_challenge(&request),
+                    public_key: e.public_key,
+                    device_credential: e.device_credential,
+                    now: now.as_secs(),
+                    packages: attestation::ANDROID_PACKAGES,
+                    signing_digests: &digests,
+                    min_version_code: attestation::MIN_ANDROID_VERSION_CODE,
+                },
+            )
+            .map_err(|why| Rejection::End(format!("the key attestation was not accepted: {why}")))?;
+            if attested.tier.as_str() != e.security_level {
+                return Err(Rejection::End(format!(
+                    "the phone reports the key's security level as {:?}, its attestation says {:?}",
+                    e.security_level,
+                    attested.tier.as_str()
+                )));
+            }
+            if policy.require_strongbox && attested.tier != attestation::Tier::StrongBox {
+                return Err(Rejection::End(
+                    "--require-strongbox: the attestation places this key in the processor's trusted mode (TEE), not in a StrongBox".into(),
+                ));
+            }
+            let revocation = attestation::fetch_status_list().map(|list| (list.len(), list.listed(&attested.serials)));
+            let revocation = match revocation {
+                Ok((_, Some((serial, status)))) => {
+                    return Err(Rejection::End(format!("a certificate of the attestation chain (serial {serial}) is on Google's revocation list: {status}")));
+                }
+                Ok((entries, None)) => Ok(entries),
+                Err(why) if policy.require_revocation_check => {
+                    return Err(Rejection::End(format!("--require-revocation-check: Google's revocation list could not be fetched ({why})")));
+                }
+                Err(why) => Err(why),
+            };
+            Some(Evidence { attested, revocation })
+        };
         let actual = fingerprint(&e.public_key);
         let matches = match &typed {
             Some(t) => fingerprint_matches(t, &actual),
@@ -169,15 +260,16 @@ pub fn enroll(
                 "an answer arrived with a key whose fingerprint ({actual}) is not the one on the phone's screen; \
                  it is not the phone's key — refused, still waiting for the phone"
             );
-            return Err(RequestError::Malformed("the key is not the one on the phone's screen".into()));
+            return Err(RequestError::Malformed("the key is not the one on the phone's screen".into()).into());
         }
-        Ok((body.to_vec(), e))
+        Ok((body.to_vec(), e, evidence))
     })
     .map_err(|e| match e {
         SessionError::Refused(e) => SignerError::Key(format!("enrollment of {label:?}: {e}")),
+        SessionError::Rejected(m) => SignerError::Key(format!("enrollment of {label:?}: {m}")),
         SessionError::Backend(m) => SignerError::Backend(m),
     })?;
-    Ok((request, body, enrollment))
+    Ok(Enrolled { request, answer: body, enrollment, evidence })
 }
 
 /// Names from the laptop's deployments file for the addresses the phone's
@@ -241,14 +333,25 @@ fn prompt_fingerprint() -> Result<String, RequestError> {
 }
 
 enum SessionError {
-    /// The phone said no, or the session ended without a usable answer.
+    /// The phone said no, or its answer was not accepted.
     Refused(RequestError),
+    /// The phone's authenticated answer fails a check no retry can fix.
+    Rejected(String),
     Backend(String),
 }
 
-impl From<RequestError> for SessionError {
+/// Why a verifier turns an authenticated answer down.
+enum Rejection {
+    /// Answer 400 and keep waiting: another answer may be the right one.
+    Wait(RequestError),
+    /// Answer 400 with this reason and end the session: the phone's answer
+    /// itself is unacceptable (its attestation, say), so waiting is pointless.
+    End(String),
+}
+
+impl From<RequestError> for Rejection {
     fn from(e: RequestError) -> Self {
-        SessionError::Refused(e)
+        Rejection::Wait(e)
     }
 }
 
@@ -267,7 +370,7 @@ impl From<RequestError> for SessionError {
 fn lan_session<T>(
     request: &[u8],
     headline: &str,
-    mut verify: impl FnMut(&[u8]) -> Result<T, RequestError>,
+    mut verify: impl FnMut(&[u8]) -> Result<T, Rejection>,
 ) -> Result<T, SessionError> {
     let opts = options();
     let mut token = [0u8; 16];
@@ -363,14 +466,18 @@ fn lan_session<T>(
                         drop(server); // the port closes; later requests get nothing
                         return Ok(t);
                     }
-                    Err(e @ RequestError::Refused { .. }) => {
+                    Err(Rejection::Wait(e @ RequestError::Refused { .. })) => {
                         let _ = req.respond(tiny_http::Response::from_string("ok"));
                         return Err(SessionError::Refused(e));
                     }
-                    Err(e) => {
+                    Err(Rejection::Wait(e)) => {
                         eprintln!("an answer was rejected ({e}); still waiting for the phone");
                         let _ = req.respond(tiny_http::Response::from_string(e.to_string()).with_status_code(400));
                         strike(&mut strikes)?;
+                    }
+                    Err(Rejection::End(why)) => {
+                        let _ = req.respond(tiny_http::Response::from_string(why.clone()).with_status_code(400));
+                        return Err(SessionError::Rejected(why));
                     }
                 }
             }

@@ -58,6 +58,9 @@ p256 = { version = "0.13", features = ["ecdsa"] }
 # HTTP server and a QR in the terminal.
 tiny_http = "0.12"
 qrcode = "0.14"
+# Signature checks on the phone's key-attestation chain (src/attestation.rs):
+# ECDSA P-256/P-384 and RSA, by the library already in the tree under rustls.
+aws-lc-rs = "1"
 
 # alloy's HTTP stack (reqwest → rustls → aws-lc-rs) builds AWS-LC from C and,
 # on Windows x86_64, assembles it with NASM. The crate ships those objects

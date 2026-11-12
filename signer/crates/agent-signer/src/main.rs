@@ -4,6 +4,8 @@ mod bundler;
 mod chain;
 use owner_core::kernel;
 mod keyfile;
+mod attestation;
+mod der;
 mod phone;
 mod x402;
 
@@ -383,8 +385,26 @@ enum KeyCmd {
         /// Phone: accept an enrollment without attestation evidence (a
         /// simulator, or a platform without it). The laptop then cannot
         /// place the key in hardware; the config snippet says so.
-        #[arg(long, requires = "phone")]
+        #[arg(long, requires = "phone", conflicts_with = "require_strongbox")]
         allow_no_attestation: bool,
+        /// Phone: refuse a key that the attestation places in the
+        /// processor's trusted mode (TEE) instead of a StrongBox
+        /// (docs/MOBILE_OWNER_DESIGN.md §5.6). Decided on the attestation,
+        /// never on the phone's own word.
+        #[arg(long, requires = "phone")]
+        require_strongbox: bool,
+        /// Phone: refuse the enrollment when Google's list of revoked
+        /// attestation certificates cannot be fetched. Without this the
+        /// result and the config say "not checked".
+        #[arg(long, requires = "phone", conflicts_with = "allow_no_attestation")]
+        require_revocation_check: bool,
+        /// Phone: also accept the app when its signing certificate has this
+        /// SHA-256 digest (hex, colons allowed) — your own build of the
+        /// app. The attestation names the certificate; a digest that is
+        /// neither pinned in this CLI nor given here is refused, with the
+        /// digest printed. May be repeated.
+        #[arg(long, requires = "phone")]
+        android_app_digest: Vec<String>,
         /// Phone: write the enrollment — the request, the phone's answer and
         /// the attestation certificates (DER) — into this directory, for the
         /// off-device check (docs/MOBILE_OWNER_DESIGN.md §5.2) and for scripts.
@@ -615,7 +635,20 @@ fn check_signer(name: String, signer: &dyn HardwareSigner) -> Result<()> {
 
 fn run_key(cmd: KeyCmd) -> Result<()> {
     let (key, op) = match cmd {
-        KeyCmd::Create { key, parent, pcrs, auth_file, allow_no_attestation, out, phone_fingerprint, phone_skip_fingerprint, session } => {
+        KeyCmd::Create {
+            key,
+            parent,
+            pcrs,
+            auth_file,
+            allow_no_attestation,
+            require_strongbox,
+            require_revocation_check,
+            android_app_digest,
+            out,
+            phone_fingerprint,
+            phone_skip_fingerprint,
+            session,
+        } => {
             if let (Some(label), Some(cfg)) = (&key.phone, &key.agent) {
                 session.configure();
                 let confirm = match (phone_fingerprint, phone_skip_fingerprint) {
@@ -623,7 +656,13 @@ fn run_key(cmd: KeyCmd) -> Result<()> {
                     (None, true) => phone::FingerprintSource::Skipped,
                     (None, false) => phone::FingerprintSource::Prompt,
                 };
-                return phone_enroll(label, cfg, allow_no_attestation, out.as_deref(), confirm);
+                let policy = phone::AttestationPolicy {
+                    allow_none: allow_no_attestation,
+                    signing_digests: android_app_digest.iter().map(|d| attestation::parse_digest(d)).collect::<Result<_, _>>().map_err(|e| anyhow::anyhow!("--android-app-digest: {e}"))?,
+                    require_strongbox,
+                    require_revocation_check,
+                };
+                return phone_enroll(label, cfg, &policy, out.as_deref(), confirm);
             }
             (key, KeyOp::Create { parent, pcrs, auth_file })
         }
@@ -659,7 +698,7 @@ fn run_key(cmd: KeyCmd) -> Result<()> {
 fn phone_enroll(
     label: &str,
     cfg_path: &Path,
-    allow_no_attestation: bool,
+    policy: &phone::AttestationPolicy,
     out: Option<&Path>,
     confirm: phone::FingerprintSource,
 ) -> Result<()> {
@@ -683,24 +722,57 @@ fn phone_enroll(
         }
     }
     let confirmed = !matches!(confirm, phone::FingerprintSource::Skipped);
-    let (request, answer, e) = phone::enroll(label, dep.chain_id, dep.entry_point, account, pins, allow_no_attestation, confirm)?;
+    let phone::Enrolled { request, answer, enrollment: e, evidence } =
+        phone::enroll(label, dep.chain_id, dep.entry_point, account, pins, policy, confirm)?;
     let fp = owner_core::fingerprint::fingerprint(&e.public_key);
     let (x, y) = (hex32(&e.public_key.x), hex32(&e.public_key.y));
-    let evidence = if e.attestation.is_empty() {
-        "none — the laptop cannot place this key in hardware".to_string()
-    } else {
-        format!(
-            "{} certificates; verification against the platform's roots is the next step (design §5.2), so \
-             the tier above is the phone's own word for now",
-            e.attestation.len()
-        )
-    };
     let app = e.app.as_ref().map(|a| format!("{} {} (core {})", a.platform, a.version, a.core)).unwrap_or_else(|| "unknown".into());
+    let pin = if e.device_credential { ", device PIN also unlocks" } else { "" };
     println!("enrolled phone owner key {label:?} for account {account} (chain {})", dep.chain_id);
     println!("  public key     x = {x}\n                 y = {y}");
     println!("  fingerprint    {fp}   {}", if confirmed { "(confirmed against the phone's screen)" } else { "← not confirmed here (--phone-skip-fingerprint): the phone shows the same one" });
-    println!("  security level {} (self-reported){}", e.security_level, if e.device_credential { ", device PIN also unlocks" } else { "" });
-    println!("  attestation    {evidence}");
+    // what the config records about the key's hardware: the attested tier, or that there is no
+    // evidence; and whether the chain was checked against the revocation list at that time
+    let revocation = match &evidence {
+        Some(ev) if ev.revocation.is_ok() => "checked",
+        _ => "not checked",
+    };
+    let attestation = match &evidence {
+        Some(ev) => {
+            let a = &ev.attested;
+            let tier = match a.tier {
+                attestation::Tier::StrongBox => "strongbox — a separate secure chip",
+                attestation::Tier::Tee => "tee — the processor's trusted mode, not a separate secure chip",
+            };
+            println!("  security level {tier} (attested){pin}");
+            println!(
+                "  attestation    verified: {} certificates to {}; made for this request; the key is the one above; \
+                 generated in the hardware, signs only after a biometric check",
+                a.chain_len, a.root
+            );
+            println!(
+                "  made by        {} version code {}, signing certificate {}{}",
+                a.package,
+                a.version_code,
+                hex::encode(a.signing_digest),
+                if attestation::PINNED_SIGNING_DIGESTS.contains(&a.signing_digest) { " (pinned)" } else { " (accepted by --android-app-digest)" }
+            );
+            match &ev.revocation {
+                Ok(entries) => println!("  revocation     none of the chain is on Google's list ({entries} entries, fetched now)"),
+                Err(why) => println!("  revocation     NOT checked ({why}): the config will say so; --require-revocation-check refuses instead"),
+            }
+            for w in &a.warnings {
+                println!("  warning        {w}");
+            }
+            println!("  note           attestation is evidence of where the key lives, not of whose phone it is; that is the QR's secret");
+            a.tier.as_str()
+        }
+        None => {
+            println!("  security level {} (the phone's own word){pin}", e.security_level);
+            println!("  attestation    none — the laptop cannot place this key in hardware");
+            "none"
+        }
+    };
     println!("  app            {app}");
     println!();
     println!("Nothing changed on-chain. Next, signed by the current owner key:");
@@ -709,7 +781,15 @@ fn phone_enroll(
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
-            "owner": {"phone": {"label": label, "publicKey": {"x": x, "y": y}, "fingerprint": fp}}
+            "owner": {"phone": {
+                "label": label,
+                "platform": e.app.as_ref().map(|a| a.platform.as_str()).unwrap_or("unknown"),
+                "attestation": attestation,
+                "revocation": revocation,
+                "deviceCredential": e.device_credential,
+                "publicKey": {"x": x, "y": y},
+                "fingerprint": fp,
+            }}
         }))?
     );
     if let Some(dir) = out {
@@ -734,7 +814,7 @@ fn phone_key(label: &str, cfg_path: &Path, op: KeyOp) -> Result<()> {
         .flatten()
         .find(|k| matches!(k, KeySpec::Phone { label: l, .. } if l == label))
         .with_context(|| format!("no phone key labelled {label:?} in {}", cfg_path.display()))?;
-    let KeySpec::Phone { public_key, fingerprint, .. } = spec else { unreachable!() };
+    let KeySpec::Phone { public_key, fingerprint, attestation, revocation, .. } = spec else { unreachable!() };
     match op {
         KeyOp::Show => {
             let pk = public_key.parse()?;
@@ -742,6 +822,8 @@ fn phone_key(label: &str, cfg_path: &Path, op: KeyOp) -> Result<()> {
             print_key(format!("phone {label}"), &pk)?;
             if fingerprint.eq_ignore_ascii_case(&actual) {
                 println!("fingerprint {actual}");
+                println!("attestation {}", attestation.as_deref().unwrap_or("not recorded"));
+                println!("revocation  {}", revocation.as_deref().unwrap_or("not recorded"));
                 Ok(())
             } else {
                 bail!("the config's fingerprint {fingerprint} does not match the publicKey's ({actual})")
