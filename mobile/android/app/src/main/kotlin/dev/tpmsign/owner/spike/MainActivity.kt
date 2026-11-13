@@ -775,6 +775,7 @@ class MainActivity : AppCompatActivity() {
             override fun onAuthenticationError(code: Int, msg: CharSequence) { say("not deleted: biometric error $code: $msg") }
             override fun onAuthenticationFailed() { say("biometric not recognised, try again") }
         })
+        // no CryptoObject, unlike every other prompt here: nothing is signed, this is the owner's presence
         prompt.authenticate(
             BiometricPrompt.PromptInfo.Builder().setTitle(reason)
                 .setSubtitle("account ${e.getString("account")}")

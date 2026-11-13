@@ -68,8 +68,8 @@ pub fn deletion_prompt(label: &str, chain_id: u64, account: Address, key: &Publi
             "Key {fp} of account {account} on chain {chain_id} ({label}).\n\n\
              This phone cannot see whether the key is the account's root key. If it is, deleting it takes the account with it, \
              unless a recovery key is installed.\n\n\
-             Look on the laptop first: \"agent-signer owner status\" prints the root key's fingerprint and whether a recovery key \
-             is installed. Delete only when the root key there is another one than {fp}.\n\n\
+             Look on the laptop first: \"agent-signer owner status\" for this account prints its root key's fingerprint and \
+             whether a recovery key is installed. Delete only when the root key it shows for this account is another one than {fp}.\n\n\
              A deleted key cannot be brought back."
         ),
         second: format!("Delete the key {fp} for good? If it is still the root key of {account}, the account goes with it."),
@@ -343,7 +343,7 @@ mod tests {
         let pk = PublicKey { x: (*p.x().unwrap()).into(), y: (*p.y().unwrap()).into() };
         let fp = crate::fingerprint::fingerprint(&pk);
         let d = deletion_prompt("owner-phone", 84532, account, &pk);
-        for needed in [fp.as_str(), "0xD62Dd4afD4e77cDFA6f8eaD1D2655745cF5af628", "chain 84532", "owner-phone", "takes the account with it", "recovery key", "agent-signer owner status", "cannot be brought back"] {
+        for needed in [fp.as_str(), "0xD62Dd4afD4e77cDFA6f8eaD1D2655745cF5af628", "chain 84532", "owner-phone", "takes the account with it", "recovery key", "agent-signer owner status", "for this account", "cannot be brought back"] {
             assert!(d.warning.contains(needed), "{needed:?} is not in: {}", d.warning);
         }
         assert!(d.second.contains(&fp) && d.second.contains("the account goes with it"), "{}", d.second);

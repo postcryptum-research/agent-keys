@@ -572,8 +572,12 @@ given up. It is per enrollment and cannot happen by accident:
 - the phone has no view of the chain (T21), so it **cannot know whether
   the key is root**, and says so. Deleting the root key takes the account
   with it, unless a recovery key is installed. The screen sends the owner
-  to the laptop first: `owner status` prints the root key's fingerprint
-  and the recovery state, to compare with the fingerprint on the phone;
+  to the laptop first: `owner status`, for that account, prints the root
+  key's fingerprint and the recovery state, to compare with the
+  fingerprint on the phone. The comparison covers the root key only: a
+  key that is not root but sits on a validator that was granted `execute`
+  (§6.3) still acts for the account, and the phone cannot see that
+  either;
 - it asks **twice**, then for the **biometric check**;
 - the words are `owner-core`'s (`enroll::deletion_prompt`), so both apps
   say the same, and they are the same for a key the laptop confirmed and

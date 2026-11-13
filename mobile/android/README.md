@@ -263,7 +263,9 @@ A deleted key cannot be brought back.
 ```
 
 Not exercised on the device: a Keystore that refuses the delete, and a
-record that cannot be removed after its key is gone.
+record that cannot be removed after its key is gone. Since that run the
+third paragraph of the question says "for this account" twice, so the
+owner does not compare with the status of another account.
 
 ### Run record — the key shown before the handover (2026-11-13, app 0.4.0-p4)
 
