@@ -25,6 +25,18 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb shell am start -n dev.tpmsign.owner.spike/.MainActivity
 ```
 
+Only the debug build exists for now. A release build is one that can be
+handed to someone, and Gradle refuses it while the application id is the
+provisional `.spike` one or the core was built with `test-chains`
+(`app/build.gradle.kts`, issue #35):
+
+```
+$ ./gradlew assembleRelease
+not a build to hand to anyone:
+  - the application id dev.tpmsign.owner.spike is provisional: the package is the owner's decision (docs/APP_ATTEST_ORG.md §8)
+  - owner-core was built with test-chains: run ./build-core.sh without OWNER_CORE_FEATURES
+```
+
 On the phone: **1. Create the owner key** (the notice tells you the tier),
 then **2. Sign the golden digest** and put your finger on the sensor. Then:
 
@@ -199,6 +211,16 @@ it was generated there and signs only after a biometric check, the locked
 bootloader, and which app made it. A refusal ends the session with its
 reason and the app deletes the key.
 
+The phone's verified boot state decides how much "which app made it" is
+worth, since the operating system is what names the app (issue #35).
+Verified: accepted. SelfSigned, a custom system on a locked bootloader
+such as GrapheneOS: accepted with a warning. Unverified: refused, unless
+the enrollment passes `--allow-unverified-boot`, which gives up the app's
+identity and the trust in the screen the fingerprint is read from; the
+hardware facts still hold. Failed: refused. The result prints the state
+(`boot state     verified`) and the config snippet records it
+(`"bootState"`), beside `"attestation"` and `"revocation"`.
+
 The attestation names the certificate the app was signed with. A debug
 build is signed with the developer's own debug key, which no CLI can pin,
 so the developer names it: the CLI prints the digest it saw when it
@@ -245,6 +267,11 @@ then point the config's owner at the phone (ownerPublicKey stays the account's c
 { "owner": { "phone": { "label": "owner-phone", "platform": "android", "attestation": "tee", "deviceCredential": false,
                         "publicKey": { … }, "fingerprint": "DKIWB-JLPIT-FGQ6T-MQYZA" } } }
 ```
+
+This is the output as that run printed it. The snippet has since gained
+two records of what the result above already says, `"revocation":
+"checked"` and `"bootState"`, and the result a `boot state` line; the run
+was not repeated for them.
 
 The handover followed, then the permission install, previewed on the
 laptop and signed on the phone:

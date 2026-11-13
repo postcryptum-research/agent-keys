@@ -33,6 +33,23 @@ kotlin {
     compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
 }
 
+// A release build is the one that can be handed to someone, so it must not
+// leave in the development posture (issue #35): the provisional package, or
+// a core that knows the test chain. The CLI's half of the gate is its
+// `distribution` feature (agent-signer/src/attestation.rs).
+gradle.taskGraph.whenReady {
+    if (allTasks.none { it.project == project && it.name.contains("Release") }) return@whenReady
+    val core = file("src/main/jniLibs/arm64-v8a/libowner_core.so")
+    val problems = listOfNotNull(
+        "the application id ${android.defaultConfig.applicationId} is provisional: the package is the owner's decision (docs/APP_ATTEST_ORG.md §8)"
+            .takeIf { android.defaultConfig.applicationId.orEmpty().endsWith(".spike") },
+        "no owner-core library: run ./build-core.sh".takeIf { !core.exists() },
+        "owner-core was built with test-chains: run ./build-core.sh without OWNER_CORE_FEATURES"
+            .takeIf { core.exists() && String(core.readBytes(), Charsets.ISO_8859_1).contains("+test-chains") },
+    )
+    if (problems.isNotEmpty()) throw GradleException("not a build to hand to anyone:\n  - " + problems.joinToString("\n  - "))
+}
+
 dependencies {
     // Pinned to the last versions that compile against API 34 (newer ones need
     // compileSdk 37 and AGP 9.1).

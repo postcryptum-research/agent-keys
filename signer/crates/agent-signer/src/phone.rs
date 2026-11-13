@@ -132,6 +132,8 @@ pub struct AttestationPolicy {
     /// recording that it was not checked: anyone on the path can make the
     /// fetch fail.
     pub require_revocation_check: bool,
+    /// Accept a key from a phone whose verified boot state is Unverified.
+    pub allow_unverified_boot: bool,
 }
 
 /// What the laptop learned about the key from its attestation.
@@ -209,6 +211,7 @@ pub fn enroll(
                     packages: attestation::ANDROID_PACKAGES,
                     signing_digests: &digests,
                     min_version_code: attestation::MIN_ANDROID_VERSION_CODE,
+                    allow_unverified_boot: policy.allow_unverified_boot,
                 },
             )
             .map_err(|why| Rejection::End(format!("the key attestation was not accepted: {why}")))?;

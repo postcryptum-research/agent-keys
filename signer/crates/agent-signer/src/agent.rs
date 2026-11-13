@@ -101,6 +101,11 @@ pub enum KeySpec {
         /// revocation list at enrollment: `checked` or `not checked`.
         #[serde(default)]
         revocation: Option<String>,
+        /// What the phone's verified boot said of its operating system at
+        /// enrollment: `verified`, `self-signed`, `unverified`, or `none`
+        /// without evidence.
+        #[serde(default, rename = "bootState")]
+        boot_state: Option<String>,
         /// Records of the enrollment, as `attestation`: the phone's platform,
         /// and whether the device PIN may unlock the key besides a biometric.
         #[serde(default)]

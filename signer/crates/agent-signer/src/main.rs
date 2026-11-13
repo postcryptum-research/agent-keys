@@ -398,6 +398,15 @@ enum KeyCmd {
         /// result and the config say "not checked".
         #[arg(long, requires = "phone", conflicts_with = "allow_no_attestation")]
         require_revocation_check: bool,
+        /// Phone: accept a key from a phone whose verified boot state is
+        /// Unverified. The integrity of its operating system is then not
+        /// guaranteed, so this gives up the app's identity and the trust in
+        /// the screen the fingerprint was read from; the hardware facts of
+        /// the attestation still hold. A custom system on a locked
+        /// bootloader (SelfSigned) needs no flag; a failed boot or an
+        /// unlocked bootloader is refused with or without it.
+        #[arg(long, requires = "phone", conflicts_with = "allow_no_attestation")]
+        allow_unverified_boot: bool,
         /// Phone: also accept the app when its signing certificate has this
         /// SHA-256 digest (hex, colons allowed) — your own build of the
         /// app. The attestation names the certificate; a digest that is
@@ -643,6 +652,7 @@ fn run_key(cmd: KeyCmd) -> Result<()> {
             allow_no_attestation,
             require_strongbox,
             require_revocation_check,
+            allow_unverified_boot,
             android_app_digest,
             out,
             phone_fingerprint,
@@ -661,6 +671,7 @@ fn run_key(cmd: KeyCmd) -> Result<()> {
                     signing_digests: android_app_digest.iter().map(|d| attestation::parse_digest(d)).collect::<Result<_, _>>().map_err(|e| anyhow::anyhow!("--android-app-digest: {e}"))?,
                     require_strongbox,
                     require_revocation_check,
+                    allow_unverified_boot,
                 };
                 return phone_enroll(label, cfg, &policy, out.as_deref(), confirm);
             }
@@ -737,6 +748,7 @@ fn phone_enroll(
         Some(ev) if ev.revocation.is_ok() => "checked",
         _ => "not checked",
     };
+    let boot_state = evidence.as_ref().map(|ev| ev.attested.boot_state.as_str()).unwrap_or("none");
     let attestation = match &evidence {
         Some(ev) => {
             let a = &ev.attested;
@@ -757,6 +769,7 @@ fn phone_enroll(
                 hex::encode(a.signing_digest),
                 if attestation::PINNED_SIGNING_DIGESTS.contains(&a.signing_digest) { " (pinned)" } else { " (accepted by --android-app-digest)" }
             );
+            println!("  boot state     {} (the phone's operating system, as its verified boot reports it)", a.boot_state.as_str());
             match &ev.revocation {
                 Ok(entries) => println!("  revocation     none of the chain is on Google's list ({entries} entries, fetched now)"),
                 Err(why) => println!("  revocation     NOT checked ({why}): the config will say so; --require-revocation-check refuses instead"),
@@ -786,6 +799,7 @@ fn phone_enroll(
                 "platform": e.app.as_ref().map(|a| a.platform.as_str()).unwrap_or("unknown"),
                 "attestation": attestation,
                 "revocation": revocation,
+                "bootState": boot_state,
                 "deviceCredential": e.device_credential,
                 "publicKey": {"x": x, "y": y},
                 "fingerprint": fp,
@@ -814,7 +828,7 @@ fn phone_key(label: &str, cfg_path: &Path, op: KeyOp) -> Result<()> {
         .flatten()
         .find(|k| matches!(k, KeySpec::Phone { label: l, .. } if l == label))
         .with_context(|| format!("no phone key labelled {label:?} in {}", cfg_path.display()))?;
-    let KeySpec::Phone { public_key, fingerprint, attestation, revocation, .. } = spec else { unreachable!() };
+    let KeySpec::Phone { public_key, fingerprint, attestation, revocation, boot_state, .. } = spec else { unreachable!() };
     match op {
         KeyOp::Show => {
             let pk = public_key.parse()?;
@@ -824,6 +838,7 @@ fn phone_key(label: &str, cfg_path: &Path, op: KeyOp) -> Result<()> {
                 println!("fingerprint {actual}");
                 println!("attestation {}", attestation.as_deref().unwrap_or("not recorded"));
                 println!("revocation  {}", revocation.as_deref().unwrap_or("not recorded"));
+                println!("boot state  {}", boot_state.as_deref().unwrap_or("not recorded"));
                 Ok(())
             } else {
                 bail!("the config's fingerprint {fingerprint} does not match the publicKey's ({actual})")
