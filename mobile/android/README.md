@@ -224,6 +224,47 @@ root key's fingerprint. Then the fingerprint sensor. The Keystore entry
 goes first and its record after it; if either cannot be removed the app
 says which, and a record without its key shows as KEY MISSING.
 
+### Run record — deleting enrollments on the phone (2026-11-13, app 0.4.1-p4)
+
+On the same TEE-only phone, which held ten enrollments left by the test
+runs on the local chain, nine confirmed by the laptop and one not. No
+laptop session is involved. Three things were done by hand:
+
+1. an enrollment picked, **Delete…** on the first question, then **Keep
+   the key** on the second;
+2. the unconfirmed enrollment deleted: both questions, then the
+   fingerprint;
+3. a confirmed one deleted the same way.
+
+The app's records, read off the phone before and after: ten, then eight,
+the two deleted ones gone and the other eight as they were, so the
+abandoned attempt deleted nothing. The app's log:
+
+```
+deleted the key RYVI6-CC4HZ-G5CWK-IVUMW and its record (account 0x3BEa5c36ED3bBa80b2Ae49d1967ea8969A17533c, chain 31337)
+deleted the key 2GIQE-7OPFS-4IGNR-I23XP and its record (account 0xD4aB6e91eBCc742fd034Ee0fbe3BDFe3DFaAd713, chain 31337)
+```
+
+The first question as the phone showed it, for a third enrollment that
+was then kept:
+
+```
+Delete this key?
+
+Key CG3HB-VGOPQ-YPM2R-FQ7IO of account 0x5194787bC062021321f04Cf78E9dd022c678B9D3 on chain 31337 (owner-phone).
+
+This phone cannot see whether the key is the account's root key. If it is, deleting it takes the account with it, unless a recovery key is installed.
+
+Look on the laptop first: "agent-signer owner status" prints the root key's fingerprint and whether a recovery key is installed. Delete only when the root key there is another one than CG3HB-VGOPQ-YPM2R-FQ7IO.
+
+A deleted key cannot be brought back.
+
+                                   KEEP THE KEY    DELETE…
+```
+
+Not exercised on the device: a Keystore that refuses the delete, and a
+record that cannot be removed after its key is gone.
+
 ### Run record — the key shown before the handover (2026-11-13, app 0.4.0-p4)
 
 The real-device test on the same TEE-only phone, three QR codes: the
