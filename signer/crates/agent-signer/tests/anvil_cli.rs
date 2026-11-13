@@ -512,7 +512,7 @@ fn recovery_drill() {
     let validator = chain.addr("p256Validator");
     let public_key = format!("{},{}", new_owner.x, new_owner.y);
     chain.ok(&[
-        "owner", "set-root", "--agent", &old_cfg, "--as-recovery",
+        "owner", "set-root", "--agent", &old_cfg, "--as-recovery", "--not-a-phone",
         "--validator", &validator, "--retire", &validator, "--public-key", &public_key,
     ]);
 
@@ -551,15 +551,25 @@ fn owner_rotates_its_key_on_the_root_validator() {
     let bare = with("owner-norec.json", &owner, None);
     let refused = chain.fails(&[
         "owner", "set-root", "--agent", &bare, "--validator", &validator, "--retire", &validator, "--public-key", &public_key,
+        "--not-a-phone",
     ]);
     assert!(refused.contains("owner add-recovery"), "{refused}");
 
     // with the recovery key installed, the rotation goes through in one operation
     let old_cfg = with("owner.json", &owner, Some(&recovery));
     chain.ok(&["owner", "add-recovery", "--agent", &old_cfg]);
-    chain.ok(&[
-        "owner", "set-root", "--agent", &old_cfg, "--validator", &validator, "--retire", &validator, "--public-key", &public_key,
-    ]);
+    // the handover must be told what the new key is (issue #38): with neither statement it
+    // refuses before anything is read or built, and the two together are a usage error
+    let untold = ["owner", "set-root", "--agent", &old_cfg, "--validator", &validator, "--retire", &validator, "--public-key", &public_key];
+    let err = chain.fails(&untold);
+    assert!(err.contains("say what the new key is") && err.contains("--to-phone") && err.contains("--not-a-phone"), "{err}");
+    assert!(err.contains("Nothing built, nothing sent") && !err.contains("new root key"), "{err}");
+    let err = chain.fails(&[&untold[..], &["--to-phone", "p", "--not-a-phone"]].concat());
+    assert!(err.contains("cannot be used with"), "{err}");
+    // after a recovery too: the same command, the same rule
+    let err = chain.fails(&[&untold[..], &["--as-recovery"]].concat());
+    assert!(err.contains("say what the new key is"), "{err}");
+    chain.ok(&[&untold[..], &["--not-a-phone"]].concat());
     let status = chain.ok(&["owner", "status", "--agent", &old_cfg]);
     assert!(status.contains(&validator.to_lowercase()), "root is back on the validator: {status}");
     assert!(status.contains("is root now = false"), "{status}");
@@ -596,7 +606,11 @@ fn http_get(url: &str) -> Vec<u8> {
 /// `wrong-hash`, `refuse` answer a sign request; `enroll` and `enroll-refuse`
 /// answer an enrollment request with `key` as the new key (no attestation:
 /// a simulator has none; `enroll-fake-attestation` claims a hardware key with
-/// evidence that is not a chain). Every answer carries the MAC of the QR's secret,
+/// evidence that is not a chain). `prove` answers a health request as an
+/// honest phone that holds `key` for the account — it signs when that is the
+/// key the laptop named and says so when it is not; `prove-lost` is the phone
+/// that no longer holds a key; `prove-forge` signs with `key` whatever the
+/// laptop named. Every answer carries the MAC of the QR's secret,
 /// as the app's does; a mode ending in `-nomac` posts without it — a host on
 /// the network that saw the session URL but never the QR.
 ///
@@ -642,6 +656,31 @@ fn phone_simulator_after(qr_file: std::path::PathBuf, key: Key, mode: &'static s
             x: hex::decode(&key.x[2..]).unwrap().try_into().unwrap(),
             y: hex::decode(&key.y[2..]).unwrap().try_into().unwrap(),
         };
+        if mode.starts_with("prove") {
+            use owner_core::health::{health_digest, HealthRequest, HealthResponse};
+            use p256::ecdsa::signature::hazmat::PrehashSigner;
+            let req = HealthRequest::parse(&bytes, now, 300).expect("a well-formed health request");
+            assert_eq!(req.chain_id().unwrap(), 31337);
+            let held = match mode {
+                "prove" => req.held(Some(&pk)),
+                "prove-lost" => req.held(None),
+                "prove-forge" => Ok(()),
+                other => panic!("mode {other}"),
+            };
+            let resp = match held {
+                Ok(()) => {
+                    let phone_nonce = B256::repeat_byte(0x5a);
+                    let mut scalar = [0u8; 32];
+                    scalar.copy_from_slice(&hex::decode(&key.scalar[2..]).unwrap());
+                    let sig: p256::ecdsa::Signature =
+                        SigningKey::from_bytes(&scalar.into()).unwrap().sign_prehash(&health_digest(&req.nonce, &phone_nonce)).unwrap();
+                    let (r, s) = sig.split_bytes();
+                    HealthResponse::signed(&qr.commitment, phone_nonce, &hw_signer::Signature { r: r.into(), s: s.into() }, app)
+                }
+                Err((reason, detail)) => HealthResponse::refused(&qr.commitment, reason, Some(detail), app),
+            };
+            return post(resp.to_bytes());
+        }
         if mode.starts_with("enroll") {
             let req = EnrollRequest::parse(&bytes, now, 300).expect("a well-formed enrollment request");
             assert_eq!(req.chain_id().unwrap(), 31337);
@@ -683,6 +722,72 @@ fn phone_simulator_after(qr_file: std::path::PathBuf, key: Key, mode: &'static s
             other => panic!("mode {other}"),
         };
         post(resp.to_bytes())
+    })
+}
+
+/// A host on the path between a phone and the laptop (issue #38): it points
+/// the session's URL at itself, forwards the phone's requests to the laptop
+/// untouched, and replaces the laptop's reply to the phone's answer. That
+/// needs no secret. The laptop has accepted the answer; the phone sees no
+/// confirmation. The phone gets the QR with the attacker's address through
+/// `phone_qr`, when it takes the QR's text from a file, or off this terminal,
+/// when it has a camera (the laptop's own QR is then not shown).
+fn path_attacker(laptop_qr: PathBuf, phone_qr: Option<PathBuf>) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        let uri = loop {
+            if let Ok(u) = std::fs::read_to_string(&laptop_qr) {
+                if u.starts_with("tpmsign:") {
+                    break u;
+                }
+            }
+            assert!(started.elapsed() < Duration::from_secs(30), "the CLI never showed a QR");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        // tpmsign:1?u=http://<host>:<port>/s/<token>&h=…&k=…
+        let laptop = uri.split("u=http://").nth(1).unwrap().split('/').next().unwrap().to_string();
+        let listener = TcpListener::bind(format!("{}:0", laptop.rsplit_once(':').unwrap().0)).unwrap();
+        let uri = uri.replacen(&laptop, &listener.local_addr().unwrap().to_string(), 1);
+        match &phone_qr {
+            Some(file) => std::fs::write(file, &uri).unwrap(),
+            None => {
+                use qrcode::render::unicode;
+                let code = qrcode::QrCode::new(uri.as_bytes()).unwrap();
+                let qr = code.render::<unicode::Dense1x2>().dark_color(unicode::Dense1x2::Light).light_color(unicode::Dense1x2::Dark).quiet_zone(true).build();
+                eprintln!("{qr}\n(this QR leads to a host on the path, not to the laptop; waiting for the phone…)");
+            }
+        }
+        for stream in listener.incoming() {
+            let mut phone = stream.unwrap();
+            let mut reader = BufReader::new(phone.try_clone().unwrap());
+            // one request: its head, then a body of Content-Length bytes
+            let (mut head, mut length) = (Vec::new(), 0usize);
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                    break;
+                }
+                let lower = line.to_ascii_lowercase();
+                if let Some(value) = lower.strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
+                if !lower.starts_with("connection:") {
+                    head.extend_from_slice(line.as_bytes());
+                }
+            }
+            let mut body = vec![0u8; length];
+            reader.read_exact(&mut body).unwrap();
+            let mut upstream = TcpStream::connect(&laptop).unwrap();
+            upstream.write_all(&[&head[..], b"Connection: close\r\n\r\n", &body[..]].concat()).unwrap();
+            let mut reply = Vec::new();
+            upstream.read_to_end(&mut reply).unwrap();
+            if head.starts_with(b"POST ") {
+                // the laptop's confirmation stops here
+                phone.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok").unwrap();
+                return;
+            }
+            phone.write_all(&reply).unwrap();
+        }
     })
 }
 
@@ -990,6 +1095,9 @@ fn phone_is_enrolled_then_takes_over_root() {
     assert!(!text.contains(&key(8).x), "no line names the intruder's key as the owner's: {text}");
     let _ = std::fs::remove_file(&qr_file);
 
+    // the enrollment's own next step names the proof
+    assert!(text.contains("--to-phone owner-phone") && text.contains("Do not hand root to a phone key without it"), "{text}");
+
     // 4. the handover goes only to the key the owner saw
     let validator = chain.addr("p256Validator");
     let public_key = format!("{},{}", phone.x, phone.y);
@@ -997,19 +1105,48 @@ fn phone_is_enrolled_then_takes_over_root() {
     let other = fingerprint_of(&key(8));
     let err = chain.fails(&[
         "owner", "set-root", "--agent", &cfg, "--validator", &validator, "--retire", &validator, "--public-key", &public_key,
-        "--expect-fingerprint", &other,
+        "--expect-fingerprint", &other, "--to-phone", "owner-phone",
     ]);
     assert!(err.contains(&format!("has fingerprint {fp}, not the expected {other}")), "{err}");
     let err = chain.fails(&[
         "owner", "set-root", "--agent", &cfg, "--validator", &validator, "--retire", &validator, "--public-key",
         &format!("{},{}", phone.x, "0x".to_string() + &"11".repeat(32)),
+        "--to-phone", "owner-phone",
     ]);
     assert!(err.contains("not a point on P-256"), "{err}");
-    let text = chain.ok(&[
+
+    // 4a. and only once the phone has shown that it holds that key (issue #38). The laptop
+    // accepted the enrollment above; whether the phone kept the key is the phone's to show.
+    // A phone that lost it — the laptop's confirmation never arrived and an old app deleted the
+    // key, or the app was removed since — a phone holding another key for the account, and an
+    // answer signed by another key all stop the handover before anything is signed or sent.
+    let handover = [
         "owner", "set-root", "--agent", &cfg, "--validator", &validator, "--retire", &validator, "--public-key", &public_key,
-        "--expect-fingerprint", &fp.to_lowercase(),
-    ]);
-    assert!(text.contains(&format!("fingerprint {fp}")), "{text}");
+        "--expect-fingerprint", &fp, "--to-phone", "owner-phone", "--listen", "127.0.0.1:0", "--phone-qr-file", qr, "--phone-timeout", "60",
+    ];
+    for (mode, held, why) in [
+        ("prove-lost", key(9), "the phone refused: no-key (this phone holds no key for the account)"),
+        ("prove", key(8), "the phone refused: other-key"),
+        ("prove-forge", key(8), "is not by the key the laptop named"),
+    ] {
+        let sim = phone_simulator(qr_file.clone(), held, mode);
+        let err = chain.fails(&handover);
+        assert!(!sim.join().unwrap(), "{mode}: the laptop confirmed an answer that proves nothing");
+        assert!(err.contains("did not show that it holds the key") && err.contains(why) && err.contains("nothing sent"), "{mode}: {err}");
+        assert!(!err.contains("userOpHash"), "{mode}: no operation was built for signing: {err}");
+        let _ = std::fs::remove_file(&qr_file);
+    }
+    // nothing was sent: the old owner key is still root, and signs
+    let before = chain.counter();
+    chain.ok(&["op", "send", "--agent", &cfg, "--root", "--target", &counter, "--data", INCREMENT]);
+    assert_eq!(chain.counter(), before + U256::from(1), "root did not move");
+
+    // 4b. the phone holds the key and shows it: the handover goes through
+    let sim = phone_simulator(qr_file.clone(), key(9), "prove");
+    let text = chain.ok(&handover);
+    assert!(sim.join().unwrap(), "the laptop confirms the proof");
+    assert!(text.contains(&format!("fingerprint {fp}")) && text.contains(&format!("phone:          holds the key {fp}")), "{text}");
+    let _ = std::fs::remove_file(&qr_file);
 
     // 5. the phone is root: the config points at it; a root operation goes through the session
     let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
@@ -1020,6 +1157,18 @@ fn phone_is_enrolled_then_takes_over_root() {
     let shown = chain.ok(&["key", "show", "--phone", "owner-phone", "--agent", phone_cfg]);
     assert!(shown.contains(&format!("fingerprint {fp}")) && shown.contains("attestation none") && shown.contains("revocation  not checked"), "{shown}");
     assert!(shown.contains("boot state  none"), "{shown}");
+    // the health check (§2.4): the same proof, any time, without a transaction
+    let check = ["key", "check", "--phone", "owner-phone", "--agent", phone_cfg, "--listen", "127.0.0.1:0", "--phone-qr-file", qr, "--phone-timeout", "60"];
+    let sim = phone_simulator(qr_file.clone(), key(9), "prove");
+    let text = chain.ok(&check);
+    assert!(sim.join().unwrap());
+    assert!(text.contains(&format!("OK: phone owner-phone holds its key {fp}")), "{text}");
+    let _ = std::fs::remove_file(&qr_file);
+    let sim = phone_simulator(qr_file.clone(), key(9), "prove-lost");
+    let err = chain.fails(&check);
+    sim.join().unwrap();
+    assert!(err.contains("did not show that it holds the key") && err.contains("no-key"), "{err}");
+    let _ = std::fs::remove_file(&qr_file);
     let sim = phone_simulator(qr_file.clone(), key(9), "sign");
     let before = chain.counter();
     let text = chain.ok(&[
@@ -1035,6 +1184,81 @@ fn phone_is_enrolled_then_takes_over_root() {
     chain.ok(&["demo", "--agent", phone_cfg]);
 }
 
+/// Issue #38. A host on the path forwards the phone's enrollment answer and
+/// replaces the laptop's reply, which needs no secret: the laptop says
+/// "enrolled", the phone saw no confirmation. Nothing at the handover used to
+/// notice, and root could go to a key the phone had deleted. Now the handover
+/// to a phone waits for the phone to show the key: a phone that no longer
+/// holds it stops everything before a transaction, and a phone that kept it
+/// takes over as if nothing had happened.
+#[test]
+fn a_replaced_confirmation_does_not_cost_the_account() {
+    let chain = chain_or_skip!("phone-lost");
+    let (owner, agent, recovery, phone) = (key(1), key(2), key(4), key(9));
+    let counter = chain.addr("demoCounter");
+    let until = far_future(&chain);
+    let account = chain.deploy(&chain.config("agent.json", &base_cfg(&owner, &agent, &counter, until)));
+    let cfg = chain.config(
+        "owner.json",
+        &Cfg { recovery: Some(&recovery), account: Some(account.clone()), ..base_cfg(&owner, &agent, &counter, until) },
+    );
+    let (laptop_qr, phone_qr) = (chain.dir.join("laptop.qr"), chain.dir.join("phone.qr"));
+    let qr = phone_qr.to_str().unwrap();
+    let fp = fingerprint_of(&phone);
+
+    // the enrollment, with the host on the path
+    let attacker = path_attacker(laptop_qr.clone(), Some(phone_qr.clone()));
+    let sim = phone_simulator(phone_qr.clone(), key(9), "enroll");
+    let text = chain.ok(&[
+        "key", "create", "--phone", "owner-phone", "--agent", &cfg, "--allow-no-attestation", "--phone-skip-fingerprint",
+        "--listen", "127.0.0.1:0", "--phone-qr-file", laptop_qr.to_str().unwrap(), "--phone-timeout", "60",
+    ]);
+    attacker.join().unwrap();
+    assert!(!sim.join().unwrap(), "the phone must not take the replaced reply for the laptop's confirmation");
+    assert!(text.contains("enrolled phone owner key") && text.contains(&fp), "the laptop accepted: {text}");
+    let _ = std::fs::remove_file(&phone_qr);
+
+    let validator = chain.addr("p256Validator");
+    chain.ok(&["owner", "add-recovery", "--agent", &cfg]);
+    let public_key = format!("{},{}", phone.x, phone.y);
+    let handover = [
+        "owner", "set-root", "--agent", &cfg, "--validator", &validator, "--retire", &validator, "--public-key", &public_key,
+        "--expect-fingerprint", &fp, "--to-phone", "owner-phone", "--listen", "127.0.0.1:0", "--phone-qr-file", qr, "--phone-timeout", "60",
+    ];
+
+    // a phone that deleted the key on the missing confirmation, as the apps did: the handover stops
+    let sim = phone_simulator(phone_qr.clone(), key(9), "prove-lost");
+    let err = chain.fails(&handover);
+    sim.join().unwrap();
+    assert!(err.contains("did not show that it holds the key") && err.contains("no-key") && err.contains("nothing sent"), "{err}");
+    let _ = std::fs::remove_file(&phone_qr);
+    // and a phone that is simply not there
+    let err = chain.fails(&[&handover[..handover.len() - 1], &["2"]].concat());
+    assert!(err.contains("did not show that it holds the key") && err.contains("no answer from the phone"), "{err}");
+    let _ = std::fs::remove_file(&phone_qr);
+    let before = chain.counter();
+    chain.ok(&["op", "send", "--agent", &cfg, "--root", "--target", &counter, "--data", INCREMENT]);
+    assert_eq!(chain.counter(), before + U256::from(1), "root is still the old owner's");
+
+    // a phone that kept the key, unconfirmed, as the apps do now: it shows the key, and takes over
+    let sim = phone_simulator(phone_qr.clone(), key(9), "prove");
+    chain.ok(&handover);
+    assert!(sim.join().unwrap());
+    let _ = std::fs::remove_file(&phone_qr);
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    v["owner"] = phone_spec("owner-phone", &phone);
+    let phone_cfg = chain.dir.join("phone-owner.json");
+    std::fs::write(&phone_cfg, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    let sim = phone_simulator(phone_qr.clone(), key(9), "sign");
+    let before = chain.counter();
+    chain.ok(&[
+        "op", "send", "--agent", phone_cfg.to_str().unwrap(), "--root", "--target", &counter, "--data", INCREMENT,
+        "--listen", "127.0.0.1:0", "--phone-qr-file", qr, "--phone-timeout", "60",
+    ]);
+    sim.join().unwrap();
+    assert_eq!(chain.counter(), before + U256::from(1), "the phone's key is root and signs");
+}
+
 /// The real thing, with a real phone on the same network (design §9.6): the
 /// phone enrolls a new key for a fresh anvil account, the current owner hands
 /// root to it (`set-root` with the fingerprint check), the phone signs a root
@@ -1043,8 +1267,10 @@ fn phone_is_enrolled_then_takes_over_root() {
 ///   cargo test -p agent-signer --features insecure-software-keys \
 ///     --test anvil_cli phone_owner_real_device -- --ignored --nocapture
 ///
-/// On the phone: "4. Enroll" for the first QR, "3. Scan and sign" for the second
-/// (a new agent permission, whose mandate the phone shows). The app needs the
+/// On the phone: "4. Enroll" for the first QR; the second asks the phone to
+/// show that it holds the new key before root goes to it (`--to-phone`); the
+/// third is "3. Scan and sign" (a new agent permission, whose mandate the
+/// phone shows). The app needs the
 /// test chain's facts: `OWNER_CORE_FEATURES=ffi,test-chains ./build-core.sh`.
 /// The enrollment verifies the phone's key attestation against Google's roots;
 /// `TPMSIGN_ANDROID_APP_DIGEST=<sha256>` names the certificate your own build
@@ -1059,6 +1285,12 @@ fn phone_is_enrolled_then_takes_over_root() {
 /// and so no evidence. `TPMSIGN_PHONE_HANDOVER_BACK=1` adds a last session,
 /// for either phone: the phone signs the change of the root key itself
 /// (§2.2), which its review shows in bold and asks about a second time.
+/// `TPMSIGN_PHONE_PATH_ATTACKER=1` puts a host on the path that replaces the
+/// laptop's reply to the enrollment answer (issue #38): the laptop says
+/// "enrolled", the phone sees no confirmation and says so, and the run goes
+/// on only if the phone kept its key and can show it. For a phone with a
+/// camera the first QR is then the attacker's, shown here in place of the
+/// laptop's.
 #[test]
 #[ignore = "needs a phone with the owner app on the same network"]
 fn phone_owner_real_device() {
@@ -1101,8 +1333,26 @@ fn phone_owner_real_device() {
     if std::env::var_os("TPMSIGN_PHONE_NO_ATTESTATION").is_some() {
         args.push("--allow-no-attestation");
     }
-    let status = run(&args);
-    assert!(status.success(), "the enrollment failed");
+    // On request, a host on the path replaces the laptop's reply (issue #38). The CLI writes its
+    // QR for the attacker, who hands the phone its own: into the QR file, or onto this terminal
+    // for a phone with a camera, where the laptop's own QR must then stay out of sight.
+    let laptop_qr = chain.dir.join("laptop.qr");
+    if std::env::var_os("TPMSIGN_PHONE_PATH_ATTACKER").is_some() {
+        let phone_qr = std::env::var_os("TPMSIGN_PHONE_QR_FILE").map(PathBuf::from);
+        args.extend(["--phone-qr-file", laptop_qr.to_str().unwrap(), "--phone-timeout", "180"]);
+        let attacker = path_attacker(laptop_qr.clone(), phone_qr);
+        let out = Command::new(env!("CARGO_BIN_EXE_agent-signer")).args(&args).output().expect("run agent-signer");
+        attacker.join().unwrap();
+        // the laptop's words, without the QR it showed to nobody
+        let said = String::from_utf8_lossy(&out.stderr);
+        eprintln!("{}", said.lines().filter(|l| !l.contains('█') && !l.contains('▀') && !l.contains('▄')).collect::<Vec<_>>().join("\n"));
+        print!("{}", String::from_utf8_lossy(&out.stdout));
+        assert!(out.status.success(), "the enrollment failed");
+        eprintln!("\nA host on the path replaced the laptop's reply: the laptop says \"enrolled\" above, the phone saw no confirmation\nand says so. It must have kept the key all the same.");
+    } else {
+        let status = run(&args);
+        assert!(status.success(), "the enrollment failed");
+    }
     let resp: Value = serde_json::from_str(&std::fs::read_to_string(out_dir.join("enroll-response.json")).unwrap()).unwrap();
     let phone = Key {
         scalar: String::new(),
@@ -1114,10 +1364,12 @@ fn phone_owner_real_device() {
     // 2. the handover, signed by the current (software) owner, to the key the phone showed
     let validator = chain.addr("p256Validator");
     chain.ok(&["owner", "add-recovery", "--agent", &cfg]);
-    chain.ok(&[
+    eprintln!("\nBefore root goes to the phone's key, the phone shows that it holds it: scan the QR below and confirm on the phone.\n");
+    let status = run(&[
         "owner", "set-root", "--agent", &cfg, "--validator", &validator, "--retire", &validator,
-        "--public-key", &format!("{},{}", phone.x, phone.y), "--expect-fingerprint", &fp,
+        "--public-key", &format!("{},{}", phone.x, phone.y), "--expect-fingerprint", &fp, "--to-phone", "owner-phone",
     ]);
+    assert!(status.success(), "the handover failed");
     eprintln!("\nroot handed to the phone key {fp}.");
 
     // 3. a root operation signed on the phone
@@ -1161,7 +1413,7 @@ fn phone_owner_real_device() {
         eprintln!("\nNow the phone signs a change of the root key, to {back}: scan the QR below. The review shows the new\nkey's fingerprint in bold, and Sign asks a second time.\n");
         let status = run(&[
             "owner", "set-root", "--agent", phone_cfg, "--validator", &validator, "--retire", &validator,
-            "--public-key", &format!("{},{}", owner.x, owner.y), "--expect-fingerprint", &back,
+            "--public-key", &format!("{},{}", owner.x, owner.y), "--expect-fingerprint", &back, "--not-a-phone",
         ]);
         assert!(status.success(), "the phone-signed handover failed");
         let before = chain.counter();

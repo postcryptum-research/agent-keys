@@ -174,7 +174,7 @@ its module until then; `permission show` names it.
 | `permission revoke --id` | `account` | removes a permission | owner key |
 | `owner add-recovery` | `recovery`, `account` | installs the recovery key | owner key |
 | `owner recover` | `recovery`, `account` | makes the recovery key root | recovery key |
-| `owner set-root` | `account` (+ arguments; `--expect-fingerprint` refuses a `--public-key` that is not the one the owner saw) | hands root to a new key, retires the old | current root (owner, or recovery after `recover`) |
+| `owner set-root` | `account` (+ arguments; `--expect-fingerprint` refuses a `--public-key` that is not the one the owner saw; one of `--to-phone <label>`, which makes a handover to a phone key wait until the phone has shown that it holds it, and `--not-a-phone` is required) | hands root to a new key, retires the old | current root (owner, or recovery after `recover`) |
 | `key create --phone` | `account`, `deployments` | nothing on-chain: enrolls a new key on the phone for the account and prints the `phone` key spec | — (the phone's user confirms) |
 | `account fund`, `paymaster …` | `account`, `deployments` | ETH transfers / paymaster settings | gas wallet / paymaster owner |
 

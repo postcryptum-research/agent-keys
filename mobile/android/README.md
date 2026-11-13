@@ -187,6 +187,141 @@ phone-signed root operation included on anvil; the agent still runs:
 test phone_owner_real_device ... ok
 ```
 
+## Showing a key, and keeping one (version 0.4.0-p4, issue #38)
+
+An enrollment could end with the laptop saying "enrolled" and the phone
+having deleted the key: the laptop's confirmation lost on the way, or
+replaced by a host on the path, which needs no secret. The handover then
+gave root to a key nobody held. Two changes in the app, one on the laptop:
+
+- **The key is kept.** A missing or foreign reply to the enrollment answer
+  says nothing about what the laptop has, so the app keeps the key as
+  unconfirmed and says so in a dialog of its own: the first device run
+  showed that a line in the log, under the fingerprint dialog, is not
+  seen. Only a key that never left the phone (its
+  creation failed) is deleted. An unconfirmed key is replaced by the next
+  enrollment of the same account, after the owner's yes.
+- **The phone can show a key** (design §2.2, §2.4). Either scan button
+  answers a `health-request`: the core checks it and decides whether this
+  phone can answer, the dialog says which key and account, and after the
+  fingerprint the key signs `sha256("TPM_sign/v1/health" ‖ laptopNonce ‖
+  phoneNonce)`, with a nonce the core draws. It is never an operation. A
+  key the phone has shown is confirmed from then on: the laptop may make
+  it root on that answer.
+- **The laptop asks before the handover**: `owner set-root … --to-phone
+  <label>`, and `key check --phone <label>` at any time. The CLI accepts
+  this app from version code 11.
+
+### Run record — the key shown before the handover (2026-11-13, app 0.4.0-p4)
+
+The real-device test on the same TEE-only phone, three QR codes: the
+enrollment, the phone showing the key, a signature. Private values are
+masked. The enrollment, now with the boot state and the handover's flag:
+
+```
+enrolled phone owner key "owner-phone" for account 0x38c09e253D5351767D6A512b3ed7dEd10B049A29 (chain 31337)
+  public key     x = 0x5665…1dff
+                 y = 0x181d…d8a7
+  fingerprint    2V7PJ-3M6BV-TAXVQ-7TH6L   ← not confirmed here (--phone-skip-fingerprint): the phone shows the same one
+  security level tee — the processor's trusted mode, not a separate secure chip (attested)
+  attestation    verified: 5 certificates to Google's remote-provisioning root (P-384); made for this request; the key is the one above; generated in the hardware, signs only after a biometric check
+  made by        dev.tpmsign.owner.spike version code 11, signing certificate <sha256 of the developer's debug certificate> (accepted by --android-app-digest)
+  boot state     verified (the phone's operating system, as its verified boot reports it)
+  revocation     none of the chain is on Google's list (1773 entries, fetched now)
+  note           attestation is evidence of where the key lives, not of whose phone it is; that is the QR's secret
+  app            android 0.4.0-p4 (core 0.3.0+test-chains)
+
+Nothing changed on-chain. Next, signed by the current owner key:
+  agent-signer owner set-root --agent …/owner.json --validator <P256Validator> --public-key 0x5665…1dff,0x181d…d8a7 --expect-fingerprint 2V7PJ-3M6BV-TAXVQ-7TH6L --to-phone owner-phone [--retire <validator>]
+--to-phone makes the handover wait for the phone: one more QR, on which the phone shows that it holds this key.
+Do not hand root to a phone key without it: if the phone did not keep the key, the account goes with it.
+then point the config's owner at the phone (ownerPublicKey stays the account's creation key):
+{ "owner": { "phone": { "label": "owner-phone", "platform": "android", "attestation": "tee", "revocation": "checked",
+                        "bootState": "verified", "deviceCredential": false,
+                        "publicKey": { … }, "fingerprint": "2V7PJ-3M6BV-TAXVQ-7TH6L" } } }
+```
+
+The handover, which waited for the phone (the second QR: "Show the key",
+then the fingerprint), and the signature after it:
+
+```
+new root key:   fingerprint 2V7PJ-3M6BV-TAXVQ-7TH6L
+…
+tpmsign:1?u=http://192.168.x.x:54783/s/<token>&h=<commitment>&k=<in the QR only>
+waiting up to 180s for the phone…
+phone:          holds the key 2V7PJ-3M6BV-TAXVQ-7TH6L (signed a fresh digest)
+nonce:          0x1
+…
+root handed to 0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2: tx 0x556c…546d (block 4, 171228 gas)
+
+root handed to the phone key 2V7PJ-3M6BV-TAXVQ-7TH6L.
+…
+phone:          signed, signature verified against the owner key
+added permission 0x74657332 (valid 0 … 1826105903): tx 0x21f7…f564 (block 5, 399078 gas)
+the permission the phone installed is on-chain; the agent runs under it:
+test phone_owner_real_device ... ok
+```
+
+Nothing was built or sent for the handover before the phone's answer: the
+`nonce` line of the `set-root` operation comes after `phone: holds the
+key`.
+
+### Run record — the laptop's confirmation lost on the way (2026-11-13, app 0.4.0-p4)
+
+The same test with `TPMSIGN_PHONE_PATH_ATTACKER=1`: a stand-in for a host
+on the network shows its own QR in place of the laptop's, forwards the
+phone's requests to the laptop untouched and replaces the laptop's reply
+to the enrollment answer. The laptop accepted the enrollment; the phone
+got no confirmation, so its key stayed unconfirmed.
+
+```
+(this QR leads to a host on the path, not to the laptop; waiting for the phone…)
+
+enrolling phone owner key "owner-phone" for account 0xD4aB6e91eBCc742fd034Ee0fbe3BDFe3DFaAd713 on chain 31337: …
+waiting up to 180s for the phone…
+enrolled phone owner key "owner-phone" for account 0xD4aB6e91eBCc742fd034Ee0fbe3BDFe3DFaAd713 (chain 31337)
+  fingerprint    2GIQE-7OPFS-4IGNR-I23XP   ← not confirmed here (--phone-skip-fingerprint): the phone shows the same one
+  security level tee — the processor's trusted mode, not a separate secure chip (attested)
+  …
+
+A host on the path replaced the laptop's reply: the laptop says "enrolled" above, the phone saw no confirmation
+and says so. It must have kept the key all the same.
+
+Before root goes to the phone's key, the phone shows that it holds it: scan the QR below and confirm on the phone.
+
+new root key:   fingerprint 2GIQE-7OPFS-4IGNR-I23XP
+phone key "owner-phone" for account 0xD4aB6e91eBCc742fd034Ee0fbe3BDFe3DFaAd713 on chain 31337: scan this with the owner app and confirm there. The phone shows that it holds the key 2GIQE-7OPFS-4IGNR-I23XP; nothing goes to the chain.
+tpmsign:1?u=http://192.168.x.x:58687/s/<token>&h=<commitment>&k=<in the QR only>
+waiting up to 180s for the phone…
+phone:          holds the key 2GIQE-7OPFS-4IGNR-I23XP (signed a fresh digest)
+…
+root handed to 0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2: tx 0x4bdf…d8a6 (block 4, 171240 gas)
+
+root handed to the phone key 2GIQE-7OPFS-4IGNR-I23XP.
+…
+phone:          signed, signature verified against the owner key
+added permission 0x74657332 (valid 0 … 1826106472): tx 0xa404…4d86 (block 5, 399078 gas)
+test phone_owner_real_device ... ok
+```
+
+So the Keystore key that the app kept without the laptop's confirmation
+was shown to the laptop, became root and signed. With the app before
+0.4.0 the key would have been deleted at the first step and root handed
+to it regardless. The phone's own words for the unconfirmed enrollment
+were only a line in its log, under the fingerprint dialog, and the person
+running the test did not see them. The app now says it in a dialog.
+
+The run was repeated with that build (account
+0xCd6e30783b6fe51c0722Dba1363dc8F8F2b5B8b3, key SMSGE-22ERB-P2SES-E3PZF,
+the same lines and the same outcome): right after Enroll the phone showed
+"The laptop did not confirm this enrollment" on top of the fingerprint
+dialog, it was acknowledged, and the key was then shown, made root and
+used to sign. An earlier attempt of that run was abandoned at the second
+QR, whose session of 180 seconds ran out while the person was away from
+the phone; the handover then stops with "no answer from the phone",
+nothing is sent, and the phone is left with one more unconfirmed key for
+an account that no longer exists.
+
 ## P3: authenticated answers (version 0.3.1-p3)
 
 The QR now carries the session's secret (`&k=…`, design §3.2). The core's

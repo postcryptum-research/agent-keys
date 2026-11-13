@@ -524,7 +524,7 @@ path:           recovery validator (changeRootValidator only)
 the recovery key is root now: tx 0x4cd09250b48adf81cff6f255153f7651627063357af57f0b76be7688935b276c; next, `owner set-root --as-recovery` to a new owner device
 $ $B owner set-root --agent … --as-recovery \
     --validator 0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2 --retire 0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2 \
-    --public-key <x>,<y of a second enclave key, tpm_sign-owner2>
+    --public-key <x>,<y of a second enclave key, tpm_sign-owner2>      # today also: --not-a-phone
 path:           root (recovery key)
 root handed to 0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2: tx 0xa345eed28b1d55fce353e7f2156dd64c304f947cbefb3ceae58bedb590642c75 (block 48414854, 179994 gas)
 $ $B owner status --agent …                             # config now names tpm_sign-owner2

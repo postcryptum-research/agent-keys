@@ -359,6 +359,22 @@ enum OwnerCmd {
         /// handover goes to the key the owner saw, not to a pasted one.
         #[arg(long)]
         expect_fingerprint: Option<String>,
+        /// The new key is the phone key with this label (`key create --phone`).
+        /// Before anything is sent, the phone must show that it holds the
+        /// key, by signing a fresh digest in a session of its own (the
+        /// health check, `key check --phone`). An enrollment the phone did
+        /// not keep stops here, not after root has gone to a key nobody
+        /// holds. One of this and `--not-a-phone` is required.
+        #[arg(long)]
+        to_phone: Option<String>,
+        /// The new key is not a phone's key, so no phone is asked to show
+        /// it. One of this and `--to-phone` is required: the command cannot
+        /// tell a phone's key from any other pasted `--public-key`, and
+        /// root handed to a key nobody holds takes the account with it.
+        /// For a key on another device, check first that the device signs
+        /// (`key check`).
+        #[arg(long, conflicts_with = "to_phone")]
+        not_a_phone: bool,
         #[arg(long)]
         sponsored: bool,
     },
@@ -447,12 +463,16 @@ enum KeyCmd {
     },
     /// Health check: open the key, sign a random digest and verify it — no
     /// transaction. For a key file this proves the passphrase still opens it.
+    /// For a phone it is a session: the phone signs a digest it
+    /// co-randomizes, which shows that it still holds the key.
     Check {
         #[command(flatten)]
         key: KeyRef,
         /// TPM: the key's auth file, for a key created with --auth-file.
         #[arg(long)]
         auth_file: Option<PathBuf>,
+        #[command(flatten)]
+        session: PhoneSessionArgs,
     },
     /// YubiKey: write the slot's attestation certificate (DER) — proof that
     /// the key was generated on this device, with its PIN and touch policies.
@@ -679,7 +699,10 @@ fn run_key(cmd: KeyCmd) -> Result<()> {
         }
         KeyCmd::Show { key } => (key, KeyOp::Show),
         KeyCmd::Evict { key } => (key, KeyOp::Evict),
-        KeyCmd::Check { key, auth_file } => (key, KeyOp::Check { auth_file }),
+        KeyCmd::Check { key, auth_file, session } => {
+            session.configure();
+            (key, KeyOp::Check { auth_file })
+        }
         KeyCmd::Attest { key, out } => return yubikey_attest(key, &out),
     };
     if let (Some(label), Some(cfg)) = (&key.phone, &key.agent) {
@@ -789,7 +812,9 @@ fn phone_enroll(
     println!("  app            {app}");
     println!();
     println!("Nothing changed on-chain. Next, signed by the current owner key:");
-    println!("  agent-signer owner set-root --agent {} --validator <P256Validator> --public-key {x},{y} --expect-fingerprint {fp} [--retire <validator>]", cfg_path.display());
+    println!("  agent-signer owner set-root --agent {} --validator <P256Validator> --public-key {x},{y} --expect-fingerprint {fp} --to-phone {label} [--retire <validator>]", cfg_path.display());
+    println!("--to-phone makes the handover wait for the phone: one more QR, on which the phone shows that it holds this key.");
+    println!("Do not hand root to a phone key without it: if the phone did not keep the key, the account goes with it.");
     println!("then point the config's owner at the phone (ownerPublicKey stays the account's creation key):");
     println!(
         "{}",
@@ -822,7 +847,7 @@ fn phone_enroll(
 /// `show` reads the config, the rest is not a laptop operation.
 fn phone_key(label: &str, cfg_path: &Path, op: KeyOp) -> Result<()> {
     use agent::KeySpec;
-    let (cfg, _) = AgentConfig::load(cfg_path)?;
+    let (cfg, base) = AgentConfig::load(cfg_path)?;
     let spec = [Some(&cfg.owner), cfg.recovery.as_ref(), Some(&cfg.agent)]
         .into_iter()
         .flatten()
@@ -846,7 +871,13 @@ fn phone_key(label: &str, cfg_path: &Path, op: KeyOp) -> Result<()> {
         }
         KeyOp::Create { .. } => unreachable!("handled by phone_enroll"),
         KeyOp::Evict => bail!("a phone key is deleted on the phone, after a `set-root` away from it"),
-        KeyOp::Check { .. } => bail!("the phone health check (design §2.4) is not implemented yet; a root operation on anvil is the check today"),
+        KeyOp::Check { .. } => {
+            let pk = public_key.parse()?;
+            let account = cfg.account.context("the health check names the account the key is for: pin `account` in the config first")?;
+            phone::prove_possession(label, cfg.load_deployments(&base)?.chain_id, account, &pk)?;
+            println!("OK: phone {label} holds its key {} (signed a fresh digest)", owner_core::fingerprint::fingerprint(&pk));
+            Ok(())
+        }
     }
 }
 
@@ -1153,9 +1184,17 @@ async fn main() -> Result<()> {
             OwnerCmd::Recover { agent, sponsored } => {
                 let s = session(&agent).await?;
                 let inc = s.recover(sponsored).await?;
-                println!("the recovery key is root now: tx {}; next, `owner set-root --as-recovery` to a new owner device", inc.tx);
+                println!("the recovery key is root now: tx {}; next, `owner set-root --as-recovery` to a new owner device (--to-phone <label>, or --not-a-phone)", inc.tx);
             }
-            OwnerCmd::SetRoot { agent, validator, public_key, retire, as_recovery, expect_fingerprint, sponsored } => {
+            OwnerCmd::SetRoot { agent, validator, public_key, retire, as_recovery, expect_fingerprint, to_phone, not_a_phone, sponsored } => {
+                // before anything is read, built or asked of a key (issue #38)
+                if to_phone.is_none() && !not_a_phone {
+                    bail!(
+                        "say what the new key is: --to-phone <label> when it is a phone's key (the phone then shows that it holds \
+                         the key, before anything is signed or sent), or --not-a-phone for any other key. Root handed to a key \
+                         nobody holds takes the account with it. Nothing built, nothing sent"
+                    );
+                }
                 let (x, y) = public_key.split_once(',').context("--public-key x,y")?;
                 let key = hw_signer::PublicKey { x: agent::parse32(x.trim())?, y: agent::parse32(y.trim())? };
                 if !hw_signer::valid_public_key(&key) {
@@ -1169,6 +1208,12 @@ async fn main() -> Result<()> {
                 }
                 let s = session(&agent).await?;
                 eprintln!("new root key:   fingerprint {fp}");
+                // a handover to a phone waits for the phone to show the key (design §2.2): nothing is
+                // signed or sent before that
+                if let Some(label) = &to_phone {
+                    phone::prove_possession(label, s.dep.chain_id, s.account, &key).context("nothing sent")?;
+                    eprintln!("phone:          holds the key {fp} (signed a fresh digest)");
+                }
                 let inc = s.set_root(validator, &key, retire, as_recovery, sponsored).await?;
                 println!("root handed to {validator}: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
             }

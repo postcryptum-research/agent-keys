@@ -50,8 +50,10 @@ against the app on a local anvil:
 1. **Enrollment.** `key create --phone … --allow-no-attestation`; the app
    shows the account, the notice about its key and asks; a new key; the
    laptop confirms.
-2. **Handover**, signed by the account's current software key, to the
-   app's key.
+2. **The app shows that it holds the new key** (`owner set-root …
+   --to-phone`, design §2.2): it signs a check value both sides contribute
+   to. Only then the **handover**, signed by the account's current
+   software key, to the app's key.
 3. **A new agent permission, signed in the app.** The review names
    AgentPolicy, P256Signer and the demo counter from the build's own
    table, and shows the whole mandate.
@@ -59,6 +61,13 @@ against the app on a local anvil:
    calls, each effect in bold, and a second confirmation that lists them.
    Root then is the software key's again, which the test proves by using
    it.
+
+The script runs the loop twice. The second time a host on the path
+replaces the laptop's confirmation of the enrollment (issue #38): the
+laptop says "enrolled", the app saw no confirmation. The app must keep its
+key, unconfirmed, say so at the top of its screen, show the key when the
+handover asks, and go on; the script checks the app's own log and the
+robot's record of that notice.
 
 `ROBOT=0 ./run-simulator.sh` leaves the taps to you, in the Simulator
 window. By default a UI test is the owner's hands. It taps what a person
@@ -68,10 +77,11 @@ would and checks what only the screen can show:
   emphasised ones marked `⚠` and no others;
 - Sign is not enabled before the end of the review is on screen (§6.6);
 - a second confirmation appears for the review with bold effects, and only
-  for that one.
+  for that one;
+- the app is asked to show its key once, before any signature.
 
-It keeps a screenshot of each step in `build/robot-screens`, and its log
-(`build/robot.log`) has each review as the screen showed it. The script
+It keeps a screenshot of each step in `build/robot-screens-<run>`, and its
+log (`build/robot-<run>.log`) has each review as the screen showed it. The script
 fails if either half fails: the CLI's test, or the robot's checks.
 
 ### What is different in the simulator
@@ -115,7 +125,8 @@ a free personal Apple Account:
      cargo test -p agent-signer --features insecure-software-keys \
      --test anvil_cli phone_owner_real_device -- --ignored --nocapture
    ```
-   Three QR codes follow; for each, "Scan the laptop's QR" in the app.
+   Four QR codes follow (enrollment, showing the key, two signatures); for
+   each, "Scan the laptop's QR" in the app.
    `--allow-no-attestation` is what the first variable adds: there is no
    App Attest without an organisation (§3.5).
 
@@ -213,6 +224,117 @@ So the Secure Enclave signs the raw 32-byte `userOpHash` in the form
 laptop's "what the phone will show" for both operations is the text the
 core gave the phone. What the screen itself showed is checked in the
 simulator, by the robot; nobody recorded the phone's screen.
+
+## Run record — an iPhone, with the laptop's confirmation lost (2026-11-13, app 0.4.1, issue #38)
+
+The same test with `TPMSIGN_PHONE_PATH_ATTACKER=1` and four QR codes: a
+stand-in for a host on the network shows its own QR in place of the
+laptop's, forwards the phone's requests untouched and replaces the
+laptop's reply to the enrollment answer. Private values are masked.
+
+```
+(this QR leads to a host on the path, not to the laptop; waiting for the phone…)
+…
+enrolled phone owner key "owner-phone" for account 0xa0EC41e400ae606C4068Dd56509a4a37E83Efb31 (chain 31337)
+  fingerprint    P7ZGR-UAU3G-X6J5U-64J74   ← not confirmed here (--phone-skip-fingerprint): the phone shows the same one
+  security level secure-enclave (the phone's own word)
+  attestation    none — the laptop cannot place this key in hardware
+  app            ios 0.4.1 (core 0.3.0+test-chains)
+
+Nothing changed on-chain. Next, signed by the current owner key:
+  agent-signer owner set-root --agent …/owner.json --validator <P256Validator> --public-key 0xde7c…2853,0x0a90…b18d --expect-fingerprint P7ZGR-UAU3G-X6J5U-64J74 --to-phone owner-phone [--retire <validator>]
+--to-phone makes the handover wait for the phone: one more QR, on which the phone shows that it holds this key.
+Do not hand root to a phone key without it: if the phone did not keep the key, the account goes with it.
+…
+A host on the path replaced the laptop's reply: the laptop says "enrolled" above, the phone saw no confirmation
+and says so. It must have kept the key all the same.
+
+Before root goes to the phone's key, the phone shows that it holds it: scan the QR below and confirm on the phone.
+
+new root key:   fingerprint P7ZGR-UAU3G-X6J5U-64J74
+phone key "owner-phone" for account 0xa0EC41e400ae606C4068Dd56509a4a37E83Efb31 on chain 31337: scan this with the owner app and confirm there. The phone shows that it holds the key P7ZGR-UAU3G-X6J5U-64J74; nothing goes to the chain.
+tpmsign:1?u=http://192.168.x.x:50288/s/<token>&h=<commitment>&k=<in the QR only>
+waiting up to 180s for the phone…
+phone:          holds the key P7ZGR-UAU3G-X6J5U-64J74 (signed a fresh digest)
+nonce:          0x1
+…
+root handed to 0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2: tx 0x07ba…69f1 (block 4, 171180 gas)
+
+root handed to the phone key P7ZGR-UAU3G-X6J5U-64J74.
+…
+phone:          signed, signature verified against the owner key
+added permission 0x74657332 (valid 0 … 1826113854): tx 0xa00f…d275 (block 5, 399042 gas)
+…
+phone:          signed, signature verified against the owner key
+root handed to 0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2: tx 0xd236…3bae (block 8, 171192 gas)
+test phone_owner_real_device ... ok
+```
+
+The app's own log of that run, as the launching console kept it:
+
+```
+owner-core 0.3.0+test-chains loaded; key tier on this device: secure-enclave
+new key: tier secure-enclave
+  FINGERPRINT  P7ZGR-UAU3G-X6J5U-64J74
+enrollment NOT confirmed (HTTP 200 without the laptop's confirmation — not the laptop's answer). The key is kept, unconfirmed: …
+PROOF asked: key P7ZGR-UAU3G-X6J5U-64J74, account 0xa0EC41e400ae606C4068Dd56509a4a37E83Efb31
+showed the key P7ZGR-UAU3G-X6J5U-64J74 and posted: confirmed by the laptop
+signed 0x9f61814b…db8f27 and posted: confirmed by the laptop
+signed 0x29f2cdd2…388947 and posted: confirmed by the laptop
+```
+
+So the Secure Enclave key that the app kept without the laptop's
+confirmation was shown to the laptop, became root, and signed twice. Face
+ID was asked three times, once for each use of the key: the proof and the
+two signatures. Creating the key asks for none.
+
+### The same on the iPhone with the confirmation arriving
+
+The run without the host on the path, right after it (app 0.4.1): the
+first QR is the laptop's own, the laptop's confirmation reaches the app,
+and the handover still waits for the phone to show the key.
+
+```
+enrolled phone owner key "owner-phone" for account 0x202c2962d06Fd7c1B68c279eB42b584c1BF20C6D (chain 31337)
+  fingerprint    VT4SN-YQ5KF-WARDA-IUKSP   ← not confirmed here (--phone-skip-fingerprint): the phone shows the same one
+  security level secure-enclave (the phone's own word)
+  attestation    none — the laptop cannot place this key in hardware
+  app            ios 0.4.1 (core 0.3.0+test-chains)
+…
+Before root goes to the phone's key, the phone shows that it holds it: scan the QR below and confirm on the phone.
+
+new root key:   fingerprint VT4SN-YQ5KF-WARDA-IUKSP
+…
+waiting up to 180s for the phone…
+phone:          holds the key VT4SN-YQ5KF-WARDA-IUKSP (signed a fresh digest)
+nonce:          0x1
+…
+root handed to 0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2: tx 0x8134…98c3 (block 4, 171252 gas)
+
+root handed to the phone key VT4SN-YQ5KF-WARDA-IUKSP.
+…
+phone:          signed, signature verified against the owner key
+added permission 0x74657332 (valid 0 … 1826114247): tx 0x6cba…60ce (block 5, 399078 gas)
+…
+phone:          signed, signature verified against the owner key
+root handed to 0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2: tx 0x8fb6…b610 (block 8, 171240 gas)
+test phone_owner_real_device ... ok
+```
+
+The app's log:
+
+```
+new key: tier secure-enclave
+  FINGERPRINT  VT4SN-YQ5KF-WARDA-IUKSP
+enrollment confirmed by the laptop. Next there: owner set-root … --expect-fingerprint VT4SN-YQ5KF-WARDA-IUKSP --to-phone owner-phone
+PROOF asked: key VT4SN-YQ5KF-WARDA-IUKSP, account 0x202c2962d06Fd7c1B68c279eB42b584c1BF20C6D
+showed the key VT4SN-YQ5KF-WARDA-IUKSP and posted: confirmed by the laptop
+signed 0xef95eae4…e15697 and posted: confirmed by the laptop
+signed 0x5769afe1…5d9b5e and posted: confirmed by the laptop
+```
+
+In both runs the handover back to the software key carried
+`--not-a-phone`, and the one to the phone `--to-phone`.
 
 ## Run record — the loop in the simulator (2026-11-13, app 0.4.0)
 

@@ -24,6 +24,10 @@
 // the project's contracts from its embedded table (§6.7); Sign is enabled
 // once the review has been scrolled to its end (§6.6). Button 4 opens the
 // enrollment through the core too, which splits the laptop's pins (§4.3).
+//
+// Issue #38: either scan button also answers the laptop's question whether
+// this phone holds a key (§2.2, §2.4), which a handover waits for; and a key
+// whose enrollment the laptop did not confirm is kept, not deleted.
 package dev.tpmsign.owner.spike
 
 import android.content.Context
@@ -73,7 +77,7 @@ class MainActivity : AppCompatActivity() {
         const val ALIAS = "tpmsign-p0-owner"
         /** One key per enrolled account (§5.1): alias by chain and account. */
         fun aliasFor(chainId: String, account: String) = "tpmsign-owner-$chainId-${account.lowercase()}"
-        const val APP_VERSION = "0.3.1-p3"
+        const val APP_VERSION = "0.4.0-p4"
         const val PREFS = "enrollments"
         /** owner-core `user_op::tests`: the golden operation's userOpHash on chain 31337 (anvil). */
         const val GOLDEN_DIGEST_HEX = "48e286b71f896beef7a0b4d23fd82d6afae60a64e7976118de492a2fba4c1947"
@@ -291,6 +295,7 @@ class MainActivity : AppCompatActivity() {
                         when (kind) {
                             "enroll-request" -> reviewAndEnroll(bytes, commitment, url)
                             "sign-request" -> { require(!enrollOnly) { "this is a sign request, not an enrollment; use button 3" }; reviewAndSign(bytes, commitment, url) }
+                            "health-request" -> showKey(bytes, commitment, url)
                             else -> error("unknown request type $kind")
                         }
                     }
@@ -451,7 +456,7 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle("Enroll this phone as the owner key?")
             .setMessage("Account $account on chain $chainId, label \"$label\".\n\n$tierNotice\n\n$pinsNotice" +
-                (if (unconfirmed) "An earlier enrollment of this account was never confirmed by the laptop; its key is replaced.\n\n" else "") +
+                (if (unconfirmed) "An earlier enrollment of this account was never confirmed by the laptop, and this phone never showed its key to the laptop; that key is replaced. If root was handed to it all the same, refuse here.\n\n" else "") +
                 "A new key is created on this phone for this account. Nothing changes on-chain until the laptop hands root to it.")
             .setNegativeButton("Refuse") { _, _ ->
                 say("enrollment refused — telling the laptop")
@@ -469,10 +474,11 @@ class MainActivity : AppCompatActivity() {
                         .put("entryPoint", e.entryPoint).put("enrolledAt", now).put("state", "pending")
                         .put("pins", JSONArray().also { a -> e.pins.forEach { a.put(JSONObject().put("address", it.address).put("label", it.label)) } })
                     prefs().edit().putString(alias, record.toString()).apply()
+                    // only for a key that never left this phone: nothing was posted, so the laptop cannot have it
                     fun discard(why: String) {
                         if (keyStore.containsAlias(alias)) keyStore.deleteEntry(alias)
                         prefs().edit().remove(alias).apply()
-                        say("enrollment not confirmed ($why): the key and the record are deleted; scan a new QR to try again")
+                        say("no key was made ($why): scan a new QR to try again")
                     }
                     try {
                         generateKey(alias, challenge)
@@ -502,8 +508,25 @@ class MainActivity : AppCompatActivity() {
                                 if (reply?.confirmed == true) {
                                     // confirmed: the record (§5.4) becomes permanent
                                     prefs().edit().putString(alias, record.put("state", "confirmed").put("tier", tier).put("x", "0x$x").put("y", "0x$y").toString()).apply()
-                                    say("enrollment confirmed by the laptop. Next there: owner set-root … --expect-fingerprint $fp")
-                                } else discard(outcome)
+                                    say("enrollment confirmed by the laptop. Next there: owner set-root … --expect-fingerprint $fp --to-phone $label")
+                                } else {
+                                    // Anything else says nothing about what the laptop has: a lost reply, a reply
+                                    // replaced on the way and a real rejection look the same from here. The key is
+                                    // kept, unconfirmed: deleting it is the one step that cannot be undone, and the
+                                    // laptop may be about to make it root (issue #38).
+                                    say("enrollment NOT confirmed ($outcome). The key is kept, unconfirmed: the laptop may have accepted it all the same. If the laptop says \"enrolled\", its handover asks this phone to show the key (--to-phone), which settles it. If it does not, enroll again: the unconfirmed key is replaced then.")
+                                    // said where it cannot be missed: the log is under the fingerprint dialog, and the
+                                    // owner is looking at the laptop, which may be saying "enrolled"
+                                    AlertDialog.Builder(this)
+                                        .setTitle("The laptop did not confirm this enrollment")
+                                        .setMessage("This phone got no confirmation from the laptop ($outcome).\n\n" +
+                                            "The key is kept, unconfirmed. If the laptop says \"enrolled\", it has the key all the same: its handover " +
+                                            "will ask this phone to show the key, and that settles it. If the laptop reports a failure, enroll again: " +
+                                            "the unconfirmed key is replaced then.")
+                                        .setPositiveButton("OK", null)
+                                        .setCancelable(false)
+                                        .show()
+                                }
                             }
                         }
                     }.start()
@@ -511,6 +534,89 @@ class MainActivity : AppCompatActivity() {
             }
             .setCancelable(false)
             .show()
+    }
+
+    // ---- 5. showing a key (design §2.2, §2.4) ----------------------------------
+
+    /**
+     * The laptop asks whether this phone holds a key. owner-core checks the request and decides
+     * whether this phone can answer: it can for the key it holds for that account, confirmed by
+     * the laptop or not. What the key signs is a check value both sides contribute to.
+     */
+    private fun showKey(bytes: ByteArray, commitment: String, url: String) {
+        val now = System.currentTimeMillis() / 1000
+        val held = prefs().all.mapNotNull { (alias, v) ->
+            val e = JSONObject(v.toString())
+            if (!e.has("x") || !keyStore.containsAlias(alias)) null
+            else FfiHeldKey(
+                chainId = e.getString("chainId").toULong(), account = e.getString("account"),
+                publicKey = (e.getString("x").removePrefix("0x") + e.getString("y").removePrefix("0x")).hexToBytes()
+            )
+        }
+        val health = openHealth(bytes, commitment, now.toULong(), held)
+        val app = FfiApp(platform = "android", version = APP_VERSION)
+        val fp = health.fingerprint()
+        health.cannot()?.let { why ->
+            say("CANNOT SHOW the key $fp for ${health.account()}: $why — telling the laptop")
+            val refusal = health.refuseAsUnable(app)
+            Thread { try { httpPost(url, refusal) } catch (_: Exception) {} }.start()
+            return
+        }
+        val alias = aliasFor(health.chainId().toString(), health.account())
+        val unconfirmed = !isConfirmed(prefs().getString(alias, null))
+        say("PROOF asked: key $fp, account ${health.account()}")
+        val refuse = { detail: String? ->
+            say("did not show the key — telling the laptop")
+            val r = health.refuse(detail, app)
+            Thread { try { httpPost(url, r) } catch (_: Exception) {} }.start()
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Show that this phone holds the key?")
+            .setMessage("The laptop asks this phone to show that it holds the key $fp of account ${health.account()} on chain ${health.chainId()}.\n\n" +
+                "The key signs a one-time check value, not an operation: nothing goes to the chain, and nothing changes on it." +
+                (if (unconfirmed) "\n\nThe laptop never confirmed this key's enrollment to this phone. Showing the key is how the laptop learns that the phone has it; the laptop may then hand the account's root to it." else ""))
+            .setNegativeButton("Refuse") { _, _ -> refuse(null) }
+            .setPositiveButton("Show the key") { _, _ -> safely { signHealth(health, alias, url, app, refuse) } }
+            .setCancelable(false)
+            .show()
+    }
+
+    private fun signHealth(health: HealthHandle, alias: String, url: String, app: FfiApp, refuse: (String?) -> Unit) {
+        val digest = health.digestToSign()
+        val priv = keyStore.getKey(alias, null) as PrivateKey
+        val sig = Signature.getInstance("NONEwithECDSA").apply { initSign(priv) }
+        val prompt = BiometricPrompt(this, ContextCompat.getMainExecutor(this), object : BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                safely {
+                    val s = result.cryptoObject!!.signature!!
+                    s.update(digest)
+                    // owner-core verifies the signature against the key the laptop named before the answer exists
+                    val answer = health.finish(s.sign(), app)
+                    // On this answer the laptop may make the key root, whatever becomes of its reply:
+                    // from here on the key is one in use, never one to replace. Written before the POST.
+                    val record = prefs().getString(alias, null)
+                    if (!isConfirmed(record)) prefs().edit().putString(alias, JSONObject(record!!).put("state", "confirmed").toString()).commit()
+                    Thread {
+                        try {
+                            val reply = httpPost(url, answer)
+                            runOnUiThread { say("showed the key ${health.fingerprint()} and posted: ${reply.describe()}") }
+                        } catch (e: Exception) { runOnUiThread { say("POST failed: ${e.message}") } }
+                    }.start()
+                }
+            }
+            override fun onAuthenticationError(code: Int, msg: CharSequence) {
+                say("biometric error $code: $msg")
+                refuse(msg.toString())
+            }
+            override fun onAuthenticationFailed() { say("biometric not recognised, try again") }
+        })
+        prompt.authenticate(
+            BiometricPrompt.PromptInfo.Builder().setTitle("Show the key to the laptop")
+                .setSubtitle("key ${health.fingerprint()}")
+                .setNegativeButtonText("Refuse")
+                .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG).build(),
+            BiometricPrompt.CryptoObject(sig)
+        )
     }
 
     /** A dialog the owner reads the fingerprint from while typing it on the laptop; it stays until dismissed. */
@@ -530,7 +636,7 @@ class MainActivity : AppCompatActivity() {
             val e = JSONObject(v.toString())
             if (!isConfirmed(v.toString())) {
                 val fp = if (e.has("x")) fingerprint(e.getString("x").removePrefix("0x"), e.getString("y").removePrefix("0x")) else "?"
-                say("unconfirmed enrollment for ${e.getString("account")} (the laptop has not answered 200): fingerprint $fp. It is discarded on the next enrollment of that account")
+                say("unconfirmed enrollment for ${e.getString("account")}: fingerprint $fp. The laptop did not confirm it to this phone, and may have it all the same: its handover asks this phone to show the key. The next enrollment of that account replaces it")
                 if (e.has("x") && keyStore.containsAlias(alias)) showFingerprint(fp, e.getString("account"))
                 continue
             }

@@ -483,6 +483,9 @@ pub enum RequestError {
     NotLocal(String),
     /// An enrollment without attestation evidence (`enroll.rs`).
     NoAttestation,
+    /// A health answer whose signature is not by the key the request named
+    /// (`health.rs`).
+    NotHeld,
 }
 
 impl std::fmt::Display for RequestError {
@@ -505,6 +508,7 @@ impl std::fmt::Display for RequestError {
                 write!(f, "the signature does not verify against the owner key over the userOpHash")
             }
             RequestError::NotLocal(h) => write!(f, "the session host {h} is not a local address"),
+            RequestError::NotHeld => write!(f, "the answer's signature is not by the key the laptop named: the phone has not shown that it holds that key"),
             RequestError::NoAttestation => write!(
                 f,
                 "the phone sent no attestation evidence; pass --allow-no-attestation to enroll a key the laptop cannot place in hardware"

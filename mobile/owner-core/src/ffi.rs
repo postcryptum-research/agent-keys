@@ -10,6 +10,7 @@ use alloy_primitives::Address;
 use hw_signer::{normalize_low_s, verify_p256, PublicKey, Signature};
 
 use crate::enroll::{EnrollRequest, EnrollResponse};
+use crate::health::{health_digest, HealthRequest, HealthResponse};
 use crate::request::{AppInfo, QrPayload, SignResponse};
 use crate::review::{self, EnrolledAccount, Review, Verdict, CLOCK_TOLERANCE_SECS};
 
@@ -277,6 +278,104 @@ pub fn enroll_refusal(commitment: String, reason: String, detail: Option<String>
     EnrollResponse::refused(&commitment, &reason, detail, app_info(app)).to_bytes()
 }
 
+/// A key this phone holds, confirmed by the laptop or not (§5.4).
+#[derive(uniffi::Record)]
+pub struct FfiHeldKey {
+    pub chain_id: u64,
+    pub account: String,
+    /// `x ‖ y`.
+    pub public_key: Vec<u8>,
+}
+
+/// A health request, opened (§2.4): whether this phone can prove the key the
+/// laptop named, the digest to sign if so, and the answer either way.
+#[derive(uniffi::Object)]
+pub struct HealthHandle {
+    request: HealthRequest,
+    commitment: String,
+    /// The phone's half of the digest, drawn here: the app never chooses it.
+    phone_nonce: alloy_primitives::B256,
+    /// Why this phone cannot prove the key: reason and detail of the refusal.
+    cannot: Option<(String, String)>,
+}
+
+#[uniffi::export]
+impl HealthHandle {
+    /// `None` when the phone holds the key the laptop named; otherwise why
+    /// not, to show and to answer with (`refuse_as_unable`).
+    pub fn cannot(&self) -> Option<String> {
+        self.cannot.as_ref().map(|(_, detail)| detail.clone())
+    }
+
+    pub fn account(&self) -> String {
+        self.request.account.to_checksum(None)
+    }
+
+    pub fn chain_id(&self) -> Result<u64, CoreError> {
+        self.request.chain_id().map_err(failed)
+    }
+
+    /// The fingerprint of the key the laptop asks about.
+    pub fn fingerprint(&self) -> String {
+        crate::fingerprint::fingerprint(&self.request.public_key.to_key())
+    }
+
+    /// `sha256("TPM_sign/v1/health" ‖ laptopNonce ‖ phoneNonce)`: the only
+    /// thing the key signs for this request. Not available for a key this
+    /// phone does not hold.
+    pub fn digest_to_sign(&self) -> Result<Vec<u8>, CoreError> {
+        if let Some((_, why)) = &self.cannot {
+            return Err(CoreError::Failed(why.clone()));
+        }
+        Ok(health_digest(&self.request.nonce, &self.phone_nonce).to_vec())
+    }
+
+    /// The answer, from the key's DER signature over `digest_to_sign()`:
+    /// verified here against the key the laptop named before it exists.
+    pub fn finish(&self, der_signature: Vec<u8>, app: FfiApp) -> Result<Vec<u8>, CoreError> {
+        let digest: [u8; 32] = self.digest_to_sign()?.try_into().expect("32");
+        let (r, s) = der_to_rs(&der_signature).ok_or_else(|| CoreError::Failed("the signature is not DER ECDSA".into()))?;
+        let sig = normalize_low_s(Signature { r, s });
+        if !verify_p256(&digest, &sig, &self.request.public_key.to_key()) {
+            return Err(CoreError::Failed("the signature does not verify against the key the laptop named".into()));
+        }
+        Ok(HealthResponse::signed(&self.commitment, self.phone_nonce, &sig, app_info(app)).to_bytes())
+    }
+
+    /// The refusal for a key this phone does not hold (`cannot()`).
+    pub fn refuse_as_unable(&self, app: FfiApp) -> Vec<u8> {
+        let (reason, detail) = self.cannot.clone().unwrap_or_else(|| ("user".into(), "declined on the phone".into()));
+        HealthResponse::refused(&self.commitment, &reason, Some(detail), app_info(app)).to_bytes()
+    }
+
+    /// The owner's own refusal, or a failed biometric check.
+    pub fn refuse(&self, detail: Option<String>, app: FfiApp) -> Vec<u8> {
+        HealthResponse::refused(&self.commitment, "user", detail, app_info(app)).to_bytes()
+    }
+}
+
+/// §2.4: the commitment, the type, the version, the expiry with the clock
+/// tolerance, and which of the keys this phone holds the request is about.
+#[uniffi::export]
+pub fn open_health(bytes: Vec<u8>, commitment: String, now: u64, held: Vec<FfiHeldKey>) -> Result<Arc<HealthHandle>, CoreError> {
+    use rand_core::RngCore;
+    if crate::request::commitment(&bytes) != commitment {
+        return Err(CoreError::Failed("the served request does not match the QR's commitment".into()));
+    }
+    let request = HealthRequest::parse(&bytes, now, CLOCK_TOLERANCE_SECS).map_err(failed)?;
+    let chain_id = request.chain_id().map_err(failed)?;
+    let mut mine = None;
+    for k in &held {
+        if k.chain_id == chain_id && parse_address(&k.account)? == request.account {
+            mine = Some(parse_key(&k.public_key)?);
+        }
+    }
+    let cannot = request.held(mine.as_ref()).err().map(|(reason, detail)| (reason.to_string(), detail));
+    let mut phone_nonce = [0u8; 32];
+    rand_core::OsRng.fill_bytes(&mut phone_nonce);
+    Ok(Arc::new(HealthHandle { request, commitment, phone_nonce: phone_nonce.into(), cannot }))
+}
+
 /// §6.1, with the facts this build embeds for the request's chain (§6.7).
 #[uniffi::export]
 pub fn open_request(
@@ -480,6 +579,55 @@ mod tests {
         let other = EnrollRequest::new(1, known, unknown, "p", B256::ZERO, 2_000_000_000).with_pins(pins2).to_bytes();
         let e = open_enrollment(other.clone(), crate::request::commitment(&other), 0).unwrap();
         assert!(!e.chain_known && e.pins.len() == 1 && e.ignored_pins.is_empty());
+    }
+
+    /// A health request on the phone: the key it holds is proved with a
+    /// digest the app does not choose; a key it does not hold is refused
+    /// with the reason, and never signed for.
+    #[test]
+    fn health_is_proved_only_for_the_key_this_phone_holds() {
+        use alloy_primitives::{address, B256};
+        use p256::ecdsa::signature::hazmat::PrehashSigner;
+        let account = address!("D62Dd4afD4e77cDFA6f8eaD1D2655745cF5af628");
+        let key = |n: u8| {
+            let sk = p256::ecdsa::SigningKey::from_bytes(&[n; 32].into()).unwrap();
+            let p = sk.verifying_key().to_encoded_point(false);
+            (sk, [p.x().unwrap().as_slice(), p.y().unwrap().as_slice()].concat())
+        };
+        let (sk, xy) = key(5);
+        let (other_sk, other_xy) = key(6);
+        let pk = parse_key(&xy).unwrap();
+        let bytes = HealthRequest::new(31337, account, &pk, B256::repeat_byte(7), 2_000_000_000).to_bytes();
+        let c = crate::request::commitment(&bytes);
+        let app = || FfiApp { platform: "test".into(), version: "0".into() };
+        let held = |xy: &[u8], chain_id: u64| vec![FfiHeldKey { chain_id, account: format!("{account}"), public_key: xy.to_vec() }];
+
+        let h = open_health(bytes.clone(), c.clone(), 1_999_999_000, held(&xy, 31337)).unwrap();
+        assert!(h.cannot().is_none() && h.chain_id().unwrap() == 31337 && h.fingerprint() == crate::fingerprint::fingerprint(&pk));
+        let digest: [u8; 32] = h.digest_to_sign().unwrap().try_into().unwrap();
+        let sig: p256::ecdsa::Signature = sk.sign_prehash(&digest).unwrap();
+        let answer = h.finish(sig.to_der().as_bytes().to_vec(), app()).unwrap();
+        assert!(HealthResponse::verify(&answer, &bytes).is_ok(), "the laptop accepts what finish built");
+        // the phone's nonce is its own: two openings never sign the same digest
+        let again = open_health(bytes.clone(), c.clone(), 1_999_999_000, held(&xy, 31337)).unwrap();
+        assert_ne!(again.digest_to_sign().unwrap(), digest.to_vec());
+        // a signature by another key is not turned into an answer
+        let wrong: p256::ecdsa::Signature = other_sk.sign_prehash(&digest).unwrap();
+        assert!(h.finish(wrong.to_der().as_bytes().to_vec(), app()).is_err());
+
+        // another key for the account, a key for another chain, no key: no digest, a refusal that says why
+        for (keys, reason) in [(held(&other_xy, 31337), "other-key"), (held(&xy, 1), "no-key"), (vec![], "no-key")] {
+            let h = open_health(bytes.clone(), c.clone(), 1_999_999_000, keys).unwrap();
+            assert!(h.cannot().is_some() && h.digest_to_sign().is_err());
+            assert!(h.finish(sig.to_der().as_bytes().to_vec(), app()).is_err());
+            let refusal = h.refuse_as_unable(app());
+            assert!(matches!(HealthResponse::verify(&refusal, &bytes), Err(crate::request::RequestError::Refused { reason: r, .. }) if r == reason));
+        }
+        // the owner's own no
+        assert!(matches!(HealthResponse::verify(&h.refuse(None, app()), &bytes), Err(crate::request::RequestError::Refused { reason, .. }) if reason == "user"));
+        // the commitment and the expiry are checked here, not in the app
+        assert!(open_health(bytes.clone(), "x".into(), 1_999_999_000, vec![]).is_err());
+        assert!(open_health(bytes.clone(), c, 2_000_000_301, vec![]).is_err());
     }
 
     /// `finish` over a reviewed request: a good signature becomes a verified

@@ -7,6 +7,7 @@ pub mod facts;
 #[cfg(feature = "ffi")]
 pub mod ffi;
 pub mod fingerprint;
+pub mod health;
 pub mod kernel;
 pub mod request;
 pub mod review;
