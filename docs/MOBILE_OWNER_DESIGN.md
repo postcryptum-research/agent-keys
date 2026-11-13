@@ -770,6 +770,11 @@ one (T19). So the facts come from the **build**:
         -> Result<Vec<u8>, CoreError>;      // DER → r‖s, low-s, self-verify, response JSON
     fn refuse(&self, reason: RefuseReason) -> Vec<u8>;
 }
+// The phone's answer to an enrollment, and its refusal (§4.3): built here, not in each app.
+#[uniffi::export] fn enroll_answer(commitment: String, public_key: Vec<u8>, security_level: String,
+    device_credential: bool, attestation: Vec<Vec<u8>>, app: AppInfo) -> Result<Vec<u8>, CoreError>;
+#[uniffi::export] fn enroll_refusal(commitment: String, reason: String, detail: Option<String>,
+    app: AppInfo) -> Vec<u8>;
 #[uniffi::export] fn health_digest(laptop_nonce: Vec<u8>) -> HealthChallenge;
 #[uniffi::export] fn fingerprint(public_key: Vec<u8>) -> String;   // 100 bits, 4 × 5 base32
 // Enrollment carries its options: gas cap, expert mode, device PIN.
@@ -783,7 +788,7 @@ translation can follow.
 ### 7.3 Builds
 
 - **iOS:** an `xcframework` (device plus simulator), and the generated
-  Swift.
+  Swift (`mobile/ios/build-core.sh`; arm64 for both).
 - **Android:** `cargo-ndk` libraries for `arm64-v8a` and `armeabi-v7a`,
   plus the generated Kotlin (JNA).
 - Both are pinned to the same `owner-core` version, which the response

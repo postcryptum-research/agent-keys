@@ -1,0 +1,72 @@
+# The Xcode project, as a spec: `xcodegen generate` writes OwnerApp.xcodeproj,
+# which is not committed. Run ./build-core.sh first (README.md).
+name: OwnerApp
+options:
+  deploymentTarget:
+    iOS: "16.0" # design D7
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: 0.4.0
+    CURRENT_PROJECT_VERSION: 1
+    TARGETED_DEVICE_FAMILY: "1"
+targets:
+  OwnerApp:
+    type: application
+    platform: iOS
+    sources:
+      - OwnerApp
+      - path: build/core/owner_core.swift
+        group: OwnerCore
+    dependencies:
+      - framework: build/core/OwnerCoreFFI.xcframework
+        embed: false
+    settings:
+      base:
+        # Provisional, like the Android package: the bundle id is the owner's
+        # decision (docs/APP_ATTEST_ORG.md §8).
+        PRODUCT_BUNDLE_IDENTIFIER: dev.tpmsign.owner.spike
+        INFOPLIST_FILE: OwnerApp/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+    preBuildScripts:
+      # A Release build is the one that can be handed to someone, so it must
+      # not leave in the development posture (issue #35), as on Android.
+      - name: Refuse a release in the development posture
+        basedOnDependencyAnalysis: false
+        script: |
+          [ "$CONFIGURATION" = Release ] || exit 0
+          fail=0
+          case "$PRODUCT_BUNDLE_IDENTIFIER" in *.spike)
+            echo "error: the bundle id $PRODUCT_BUNDLE_IDENTIFIER is provisional: it is the owner's decision (docs/APP_ATTEST_ORG.md §8)"; fail=1 ;;
+          esac
+          if LC_ALL=C grep -q -a -F '+test-chains' "$SRCROOT"/build/core/OwnerCoreFFI.xcframework/*/libowner_core.a; then
+            echo "error: owner-core was built with test-chains: run ./build-core.sh without OWNER_CORE_FEATURES"; fail=1
+          fi
+          exit $fail
+  # The owner's hands for the simulator run (README.md): it taps what a person would.
+  OwnerAppUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "17.0" # what this Xcode's XCTest is built for; the app itself stays at 16
+    sources:
+      - OwnerAppUITests
+    dependencies:
+      - target: OwnerApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.tpmsign.owner.spike.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: OwnerApp
+schemes:
+  OwnerApp:
+    build:
+      targets:
+        OwnerApp: all
+        OwnerAppUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - OwnerAppUITests

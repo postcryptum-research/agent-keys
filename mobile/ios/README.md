@@ -1,0 +1,186 @@
+# iPhone owner app — P4, in the simulator first
+
+The second platform of [`docs/MOBILE_OWNER_PLAN.md`](../../docs/MOBILE_OWNER_PLAN.md)
+(phase P4): the same loop as `mobile/android`, on the same `owner-core`. A
+QR opens a session with the laptop; the core checks the request, decides
+the verdict and gives the screen and the digest from one parse; the key
+signs that digest; the laptop's confirmation is the only thing that makes
+an enrollment permanent. The design is
+[`docs/MOBILE_OWNER_DESIGN.md`](../../docs/MOBILE_OWNER_DESIGN.md) (§2,
+§5.3, §6.6); development without an Apple organisation is
+[`docs/MOBILE_DEV_MODE.md`](../../docs/MOBILE_DEV_MODE.md) §3.
+
+**Status (2026-11-13): it runs in the iOS simulator, end to end against the
+real CLI. It has not run on an iPhone yet.** The code for a phone — the
+Secure Enclave key, the camera — compiles for the device and is written as
+the design says, but nothing has exercised it.
+
+**Licence: not decided** — the same study as `mobile/owner-core`
+(`docs/MOBILE_LICENSE_STUDY.md`). The bundle id `dev.tpmsign.owner.spike`
+is provisional (`docs/APP_ATTEST_ORG.md` §8).
+
+| File | What |
+|---|---|
+| `build-core.sh` | `owner-core` as an `xcframework` (phone and simulator, arm64) and its Swift bindings |
+| `project.yml` | the Xcode project as an `xcodegen` spec; the generated project is not committed |
+| `OwnerApp/Model.swift` | the session: fetch, hand to the core, sign, answer. No rule lives here |
+| `OwnerApp/Keys.swift` | the key: Secure Enclave on a phone, software in the simulator |
+| `OwnerApp/Store.swift` | what the phone keeps per enrollment (§5.4), out of backups |
+| `OwnerApp/Http.swift` | the two requests of a session, with the answer's MAC and the laptop's confirmation |
+| `OwnerApp/Views.swift` | the screens: accounts, the enrollment prompt, the review |
+| `OwnerApp/Scanner.swift` | the QR through the camera (phones only) |
+| `OwnerAppUITests/OwnerRobot.swift` | the owner's hands for the simulator run, and its checks of the screen |
+| `run-simulator.sh` | the whole loop, one command |
+
+## Run it in the simulator
+
+```sh
+cd mobile/ios
+./run-simulator.sh        # CARGO="cargo +1.94" if needed
+```
+
+Needs Xcode with an iOS simulator, `xcodegen`, `anvil`, and the Rust
+targets `aarch64-apple-ios` and `aarch64-apple-ios-sim` (an Apple-silicon
+Mac). No phone and no Apple account. It builds the core with the test
+chain's facts, builds the app, and runs agent-signer's phone test
+(`phone_owner_real_device` in `signer/crates/agent-signer/tests/anvil_cli.rs`)
+against the app on a local anvil:
+
+1. **Enrollment.** `key create --phone … --allow-no-attestation`; the app
+   shows the account, the notice about its key and asks; a new key; the
+   laptop confirms.
+2. **Handover**, signed by the account's current software key, to the
+   app's key.
+3. **A new agent permission, signed in the app.** The review names
+   AgentPolicy, P256Signer and the demo counter from the build's own
+   table, and shows the whole mandate.
+4. **A change of the root key, signed in the app** (design §2.2): four
+   calls, each effect in bold, and a second confirmation that lists them.
+   Root then is the software key's again, which the test proves by using
+   it.
+
+`ROBOT=0 ./run-simulator.sh` leaves the taps to you, in the Simulator
+window. By default a UI test is the owner's hands. It taps what a person
+would and checks what only the screen can show:
+
+- every row the core produced for a review is on the screen, the
+  emphasised ones marked `⚠` and no others;
+- Sign is not enabled before the end of the review is on screen (§6.6);
+- a second confirmation appears for the review with bold effects, and only
+  for that one.
+
+It keeps a screenshot of each step in `build/robot-screens`, and its log
+(`build/robot.log`) has each review as the screen showed it. The script
+fails if either half fails: the CLI's test, or the robot's checks.
+
+### What is different in the simulator
+
+Everything here is compiled only for the simulator
+(`#if targetEnvironment(simulator)`); a phone build has none of it.
+
+- **The key is software**, kept in the app's files, with no hardware and
+  no biometric check. Its tier is `simulator`, the app says so on every
+  screen that matters, and the laptop takes it only with
+  `--allow-no-attestation`.
+- **No camera.** agent-signer writes each QR's text to a file
+  (`--phone-qr-file`) in the simulated device's `tmp` directory, and the
+  app takes it from there.
+- **The app's log** also goes to a file in that directory, for the robot.
+
+## On an iPhone (not run yet)
+
+What `docs/MOBILE_DEV_MODE.md` §3 describes: a free Apple Account signed
+in to Xcode, Developer Mode on the phone, `./build-core.sh` (with
+`OWNER_CORE_FEATURES=ffi,test-chains` for the anvil run), `xcodegen
+generate`, then build and run from Xcode with your team selected. The
+enrollment needs `--allow-no-attestation`: there is no App Attest without
+an organisation (§3.5).
+
+On a phone the key is a CryptoKit Secure Enclave key, usable only after
+Face ID or Touch ID on every signature and invalidated by a change of the
+enrolled biometrics; its handle (not the key) is kept in the app's files,
+as the CLI's Mac backend does. The QR comes through the system's scanner.
+**Open until a phone has run it:** that the Secure Enclave signs the
+32-byte digest in the form `P256Validator` accepts (the Mac backend does,
+with the same call), the biometric prompt, the camera, the local-network
+permission prompt, and what a reinstall keeps.
+
+## A release build is refused
+
+The Release configuration is the one that can be handed to someone. It
+fails while the bundle id is the provisional `.spike` one or the core was
+built with `test-chains` (`project.yml`, issue #35), as on Android:
+
+```
+$ xcodebuild build -project OwnerApp.xcodeproj -scheme OwnerApp -configuration Release …
+error: the bundle id dev.tpmsign.owner.spike is provisional: it is the owner's decision (docs/APP_ATTEST_ORG.md §8)
+error: owner-core was built with test-chains: run ./build-core.sh without OWNER_CORE_FEATURES
+** BUILD FAILED **
+```
+
+## Run record — the loop in the simulator (2026-11-13, app 0.4.0)
+
+`./run-simulator.sh` on an Apple-silicon Mac, Xcode 27.2, the iPhone 17e
+simulator on iOS 27.2. Session addresses and tokens are masked.
+
+```
+enrolled phone owner key "owner-phone" for account 0xF62A4511Dc19C4CDBb7e8b1614D3e9A5B455d02E (chain 31337)
+  public key     x = 0xfba5…808c
+                 y = 0x354f…f976
+  fingerprint    KLZCW-O3BAT-P6PX5-CWWNK   ← not confirmed here (--phone-skip-fingerprint): the phone shows the same one
+  security level simulator (the phone's own word)
+  attestation    none — the laptop cannot place this key in hardware
+  app            ios 0.4.0 (core 0.2.0+test-chains)
+…
+root handed to the phone key KLZCW-O3BAT-P6PX5-CWWNK.
+…
+tpmsign:1?u=http://192.168.x.x:57499/s/<token>&h=<commitment>&k=<in the QR only>
+waiting up to 180s for the phone…
+phone:          signed, signature verified against the owner key
+path:           root (owner key)
+added permission 0x74657332 (valid 0 … 1826083215): tx 0x8c52…54b0 (block 5, 399066 gas)
+the permission the phone installed is on-chain; the agent runs under it:
+…
+Now the phone signs a change of the root key, to 36YE2-V45UT-KFLGX-7H5BF: scan the QR below. The review shows the new
+key's fingerprint in bold, and Sign asks a second time.
+…
+phone:          signed, signature verified against the owner key
+root handed to 0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2: tx 0x6e70…1bf6 (block 8, 171252 gas)
+test phone_owner_real_device ... ok
+the robot's checks passed; the screens it saw are in mobile/ios/build/robot-screens
+```
+
+The second review as the screen showed it, from the robot's log:
+
+```
+OPERATION
+Account: 0xF62A4511Dc19C4CDBb7e8b1614D3e9A5B455d02E
+Chain: 31337
+The laptop says: "owner operation (root)" (from the laptop — unverified)
+CALL 1 OF 4
+⚠ Hand control of this account to validator: 0x63dd80Fc5E109A44fd179F85050487E02c5e6958 — P256RecoveryValidator (verified in this build)
+Root validator: 0x63dd80Fc5E109A44fd179F85050487E02c5e6958 — P256RecoveryValidator (verified in this build)
+CALL 2 OF 4
+⚠ Remove validator: 0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2 — P256Validator (verified in this build) — this may be the validator holding this phone's key
+CALL 3 OF 4
+⚠ Install a key on a validator: 36YE2-V45UT-KFLGX-7H5BF — it controls this account once it is root or is granted access
+Validator: 0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2 — P256Validator (verified in this build)
+Validation nonce: 3
+CALL 4 OF 4
+⚠ Hand control of this account to key: 36YE2-V45UT-KFLGX-7H5BF
+Root validator: 0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2 — P256Validator (verified in this build)
+COST
+Maximum gas cost: 0.00050181092445 ETH
+DETAILS
+nonce: key 0 (root), sequence 3
+…
+userOpHash: 0x039badbc645686d6be3bf2023a1928f19ced79b57304d3d32274c343913eb381
+```
+
+Two defects of the first version of the review screen were found by this
+run and are what the robot's checks are for. Rows whose list id repeated
+one from an earlier section were not drawn at all, the bold ones among
+them; and Sign was enabled as the review opened. The screen now numbers
+its rows across the whole review and measures where its end is. A third
+was cosmetic but matters on this screen: iOS hyphenated the addresses it
+wrapped, which put a character on screen that is in no address.

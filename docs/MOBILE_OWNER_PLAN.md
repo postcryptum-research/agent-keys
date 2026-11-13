@@ -346,6 +346,24 @@ directory outside the repository, and one such run passed: five
 certificates to the remote-provisioning root, tier TEE. Not done: iOS
 (App Attest, design §5.3), which waits for the organization account.
 
+P4 status (2026-11-13, slice 1): the iPhone app exists (`mobile/ios`,
+SwiftUI on the same `owner-core` through its Swift bindings) and passes
+the loop **in the iOS simulator**, against the real CLI on a local anvil:
+enrollment, handover, an agent permission reviewed and signed in the app,
+and the app signing a change of the root key itself, with the second
+confirmation. One command runs it (`mobile/ios/run-simulator.sh`); a UI
+test stands in for the owner and checks the screen: every row the core
+produced is shown, Sign waits for the end of the review, the second
+confirmation appears exactly for the review with bold effects. The
+simulator has no Secure Enclave and no camera, so there the key is
+software with the tier `simulator`, accepted only with
+`--allow-no-attestation`, and the QR's text arrives through a file; all
+of that is compiled for the simulator only. `owner-core` now builds the
+enrollment answer for the apps (`enroll_answer`, `enroll_refusal`). **Not
+done: a real iPhone.** The Secure Enclave key (design §5.3, the CryptoKit
+handle of `MOBILE_DEV_MODE.md` §3.4), the biometric prompt and the camera
+compile for the device and have not run; P4 closes when P0–P2 pass there.
+
 ## Threat model, briefly
 
 - **The laptop is compromised.** It can request a malicious operation, but

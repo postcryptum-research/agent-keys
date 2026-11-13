@@ -29,4 +29,6 @@ trusts Base Sepolia's addresses on whatever chain calls itself 31337.
 
 Tests: `cargo test` in this directory, and again with `--features ffi` and
 `--features ffi,test-chains`. `cargo check --target aarch64-linux-android`
-type-checks the phone build.
+type-checks the phone build. The apps build it with
+`mobile/android/build-core.sh` (Kotlin bindings) and
+`mobile/ios/build-core.sh` (Swift bindings, the phone and its simulator).

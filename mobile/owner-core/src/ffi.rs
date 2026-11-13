@@ -9,7 +9,7 @@ use std::sync::Arc;
 use alloy_primitives::Address;
 use hw_signer::{normalize_low_s, verify_p256, PublicKey, Signature};
 
-use crate::enroll::EnrollRequest;
+use crate::enroll::{EnrollRequest, EnrollResponse};
 use crate::request::{AppInfo, QrPayload, SignResponse};
 use crate::review::{self, EnrolledAccount, Review, Verdict, CLOCK_TOLERANCE_SECS};
 
@@ -255,6 +255,28 @@ pub fn open_enrollment(bytes: Vec<u8>, commitment: String, now: u64) -> Result<F
     })
 }
 
+/// The phone's answer to an enrollment request (§4.3): the new key `x ‖ y`,
+/// the tier the phone gave it, and the platform's evidence as DER
+/// certificates, the key's first (empty where the platform has none).
+#[uniffi::export]
+pub fn enroll_answer(
+    commitment: String,
+    public_key: Vec<u8>,
+    security_level: String,
+    device_credential: bool,
+    attestation: Vec<Vec<u8>>,
+    app: FfiApp,
+) -> Result<Vec<u8>, CoreError> {
+    let pk = parse_key(&public_key)?;
+    Ok(EnrollResponse::enrolled(&commitment, &pk, &security_level, device_credential, &attestation, app_info(app)).to_bytes())
+}
+
+/// The refusal of an enrollment request (§4.3).
+#[uniffi::export]
+pub fn enroll_refusal(commitment: String, reason: String, detail: Option<String>, app: FfiApp) -> Vec<u8> {
+    EnrollResponse::refused(&commitment, &reason, detail, app_info(app)).to_bytes()
+}
+
 /// §6.1, with the facts this build embeds for the request's chain (§6.7).
 #[uniffi::export]
 pub fn open_request(
@@ -436,6 +458,21 @@ mod tests {
         assert_eq!(e.ignored_pins.len(), 1);
         assert!(e.ignored_pins[0].contains("the laptop says \"MyPolicy\" — this build knows the address as AgentPolicy"), "{}", e.ignored_pins[0]);
         assert_eq!(e.attestation_challenge, crate::enroll::attestation_challenge(&bytes).to_vec());
+        // the answers the phone builds for this request are the ones the laptop reads
+        let c = crate::request::commitment(&bytes);
+        let app = || FfiApp { platform: "ios".into(), version: "0".into() };
+        let sk = p256::ecdsa::SigningKey::from_bytes(&[5u8; 32].into()).unwrap();
+        let p = sk.verifying_key().to_encoded_point(false);
+        let xy = [p.x().unwrap().as_slice(), p.y().unwrap().as_slice()].concat();
+        let answer = enroll_answer(c.clone(), xy.clone(), "secure-enclave".into(), false, vec![], app()).unwrap();
+        let got = EnrollResponse::verify(&answer, &bytes, true).unwrap();
+        assert_eq!([got.public_key.x, got.public_key.y].concat(), xy);
+        assert_eq!((got.security_level.as_str(), got.device_credential, got.attestation.len()), ("secure-enclave", false, 0));
+        assert_eq!(got.app.unwrap().platform, "ios");
+        assert!(EnrollResponse::verify(&answer, &bytes, false).is_err(), "no evidence: only where the laptop allows that");
+        assert!(enroll_answer(c.clone(), vec![1; 64], "secure-enclave".into(), false, vec![], app()).is_err(), "off the curve");
+        let refusal = enroll_refusal(c, "user".into(), Some("declined on the phone".into()), app());
+        assert!(matches!(EnrollResponse::verify(&refusal, &bytes, true), Err(crate::request::RequestError::Refused { .. })));
         // the commitment and the expiry are checked here, not in the app
         assert!(open_enrollment(bytes.clone(), "x".into(), 1_999_999_000).is_err());
         assert!(open_enrollment(bytes.clone(), crate::request::commitment(&bytes), 2_000_000_301).is_err());
