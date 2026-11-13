@@ -381,16 +381,38 @@ builder may use it (§11.1).
   minimum (T14). A self-signed APK carries our own digest. A Play build
   carries the digest of Google's app-signing key, which puts Google in
   T6's trust root (`APP_ATTEST_ORG.md` §7, PR #6);
-- `rootOfTrust`: `deviceLocked = true`. A `verifiedBootState` of
-  `SelfSigned` or `Unverified` is shown as a warning, not refused; a
-  re-locked custom OS such as GrapheneOS reports `SelfSigned`. The warning
-  says what follows: `attestationApplicationId` is asserted by the
-  operating system, so on a system nobody vouches for, "made by" and the
-  digest pin carry no weight. `Failed` is refused.
+- `rootOfTrust`: `deviceLocked = true`, and the `verifiedBootState`
+  (the auditor's answer, issue #35). The owner confirms the enrollment by
+  reading the fingerprint off the app's screen, and boot integrity is what
+  makes that screen the app's. The hardware facts of the record hold in
+  every state; what an unvouched operating system takes away is the app's
+  identity and the integrity of what it shows.
+
+  | `verifiedBootState` | The CLI |
+  |---|---|
+  | `Verified` | accepts |
+  | `SelfSigned`: a custom OS on a locked bootloader, verified against a root the owner chose (GrapheneOS). Its integrity holds | accepts, with a warning |
+  | `Unverified`: integrity not guaranteed; a modified system could show the fingerprint of another key | **refuses**, unless `--allow-unverified-boot`; then accepts with the warning |
+  | `Failed`, or `deviceLocked = false` | refuses, with or without the flag |
+
+  The warning says what follows: `attestationApplicationId` is asserted by
+  the operating system, so on a system nobody vouches for, "made by" and
+  the digest pin carry no weight. The state is printed in the result and
+  recorded in the config's phone spec (`"bootState": "verified"`,
+  `"self-signed"` or `"unverified"`; `"none"` without evidence), so a key
+  accepted with the flag stays recognisable.
 
 Until the project has a signing key no digest is pinned in the CLI, and a
 developer's own build is accepted by naming its certificate
-(`--android-app-digest`); a refusal prints the digest it saw.
+(`--android-app-digest`); a refusal prints the digest it saw. That, the
+provisional package name and the test chain are the **development
+posture**, and a build that is handed to anyone must not be in it. Two
+checks refuse to produce one (issue #35): the CLI's `distribution` feature
+does not compile while `PINNED_SIGNING_DIGESTS` is empty, a package ends in
+`.spike`, or software keys and the test chain are compiled in; the Android
+project's release build type refuses a `.spike` application id and a core
+built with `test-chains`. A release is built with both; the decisions that
+would let them pass stay open (`APP_ATTEST_ORG.md` §8).
 
 Revocation: Google publishes an attestation revocation list. The CLI checks
 it when online and says so in the result, and the config's phone spec
@@ -774,7 +796,7 @@ translation can follow.
 ```json
 "owner": { "phone": { "label": "owner-phone", "platform": "android",
                       "attestation": "strongbox", "revocation": "checked",
-                      "deviceCredential": false,
+                      "bootState": "verified", "deviceCredential": false,
                       "fingerprint": "ABCDE-FGHIJ-KLMNO-PQRST" } },
 "ownerPublicKey": { "x": "0x…", "y": "0x…" }
 ```
@@ -792,10 +814,10 @@ translation can follow.
 
 | Command | Change |
 |---|---|
-| `key create --phone <label> --agent <cfg>` | the enrollment session (§2.1); verifies attestation, prints the public key, fingerprint, security tier and config snippet; `--allow-no-attestation` for iOS without App Attest; `--allow-dev-build` for development-signed iOS builds, test chains only (with iOS); `--require-strongbox` to refuse a TEE-only key (§5.6); `--android-app-digest <sha256>` to accept one's own build of the app; `--require-revocation-check` to refuse when Google's revocation list cannot be fetched; `--phone-skip-fingerprint` to rely on the QR's secret without the fingerprint prompt, `--phone-fingerprint <fp>` to give the fingerprint to a script (§3.1); `--out <dir>` to keep the request, the answer and the chain |
+| `key create --phone <label> --agent <cfg>` | the enrollment session (§2.1); verifies attestation, prints the public key, fingerprint, security tier and config snippet; `--allow-no-attestation` for iOS without App Attest; `--allow-dev-build` for development-signed iOS builds, test chains only (with iOS); `--require-strongbox` to refuse a TEE-only key (§5.6); `--android-app-digest <sha256>` to accept one's own build of the app; `--require-revocation-check` to refuse when Google's revocation list cannot be fetched; `--allow-unverified-boot` to accept a phone whose boot state is Unverified (§5.2); `--phone-skip-fingerprint` to rely on the QR's secret without the fingerprint prompt, `--phone-fingerprint <fp>` to give the fingerprint to a script (§3.1); `--out <dir>` to keep the request, the answer and the chain |
 | `owner set-root … --expect-fingerprint <fp>` | refuses unless `--public-key` has that fingerprint; for the first handover (§2.2) |
 | `key check --phone <label>` | the health check (§2.4) |
-| `key show --phone <label>` | prints the configured public key and fingerprint (no session) |
+| `key show --phone <label>` | prints the configured public key and fingerprint, and what the enrollment recorded: attestation, revocation, boot state (no session) |
 | every owner command | unchanged syntax; with a phone owner they open a session. New flags `--listen`, `--phone-timeout` |
 
 ### 8.3 Signing path (`chain.rs`)
@@ -946,8 +968,8 @@ signed on the laptop's word.
 | T2 | **The laptop is compromised during a handover** and substitutes its own key in `set-root` | phone to phone: the current phone decodes the `set-root` and shows the new key's fingerprint, which prevents it (§2.2). First handover: `--expect-fingerprint`, a clean machine, and a check from a **third** device of `P256Validator.publicKeys(account)` | the first handover is signed blind. Between a substituted `set-root` landing and the third-device check, the attacker holds root and can rotate again or drain. v2 adds on-chain checks by the phone itself (§14) |
 | T3 | **A LAN attacker** swaps the request or the response, or answers an enrollment with its own key | QR commitment; every answer carries a MAC under the QR's secret (§3.1); the laptop verifies the signature against its own hash | denial of service by dropping traffic only. An attacker who can also read the QR has the secret: the fingerprint the CLI asks for at enrollment covers that, unless the owner skips it (`--phone-skip-fingerprint`) |
 | T4 | **A foreign QR** (another screen, a poster) | unenrolled accounts are refused; for an enrolled one, the normal review applies | as T1 |
-| T5 | **Malware on the phone** (user level) | Keystore and keychain keys are bound to our app; use needs biometrics enforced by hardware | a rooted or jailbroken phone. Treat a phone that cannot pass attestation as untrusted. On a TEE-only phone, a bug in the trusted OS reaches the key; the app says so (§5.6) |
-| T6 | **Our app itself is malicious or compromised** (supply chain, a bad update) | open source; minimal dependencies; release signing; the Android attestation names our signing certificate; custody of the signing keys and release roles (`APP_ATTEST_ORG.md` §4) | it could show one operation and sign another. Mitigation by reproducible Android builds (P5); none on iOS beyond App Store review. Store distribution also puts the store operator in this root (Google signs Play builds, Apple re-signs App Store builds). The largest residual risk; say so in user docs |
+| T5 | **Malware on the phone** (user level) | Keystore and keychain keys are bound to our app; use needs biometrics enforced by hardware | a rooted or jailbroken phone. Treat a phone that cannot pass attestation as untrusted: an unlocked bootloader or a failed boot is refused at enrollment, an Unverified boot state too unless the owner asks for it (`--allow-unverified-boot`, §5.2), and the config records the state. That is the phone as it was at enrollment; nothing re-checks it later. On a TEE-only phone, a bug in the trusted OS reaches the key; the app says so (§5.6) |
+| T6 | **Our app itself is malicious or compromised** (supply chain, a bad update) | open source; minimal dependencies; release signing; the Android attestation names our signing certificate, which means something only on a system whose boot is verified (§5.2); a build to distribute cannot be made while no certificate is pinned or the package is provisional (§5.2); custody of the signing keys and release roles (`APP_ATTEST_ORG.md` §4) | it could show one operation and sign another. Mitigation by reproducible Android builds (P5); none on iOS beyond App Store review. Store distribution also puts the store operator in this root (Google signs Play builds, Apple re-signs App Store builds). The largest residual risk; say so in user docs |
 | T7 | **A thief with the phone** | biometric only by default (D2); the key is invalidated by a new biometric enrollment | with the per-enrollment PIN opt-in, a thief who saw the PIN can sign. The opt-in says so when it is chosen |
 | T8 | **Coercion** | out of scope | keep the recovery key with someone else, or in another place |
 | T9 | **A biometric change or a reset** invalidates the key | expected, correct behaviour | availability: recovery is mandatory (`RESILIENCE.md`), stated at enrollment |

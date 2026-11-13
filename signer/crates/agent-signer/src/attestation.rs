@@ -66,6 +66,43 @@ pub const MIN_ANDROID_VERSION_CODE: u64 = 10;
 /// `--android-app-digest`, naming their own certificate.
 pub const PINNED_SIGNING_DIGESTS: &[[u8; 32]] = &[];
 
+/// Whether this CLI is in the development posture: no release certificate
+/// pinned, or a provisional package name. Fine for development; a build
+/// that is handed to anyone must not be in it (issue #35), which the
+/// `distribution` feature turns into a compile error below.
+pub const fn development_posture() -> bool {
+    posture_of(PINNED_SIGNING_DIGESTS, ANDROID_PACKAGES)
+}
+
+const fn posture_of(pins: &[[u8; 32]], packages: &[&str]) -> bool {
+    if pins.is_empty() {
+        return true;
+    }
+    let mut i = 0;
+    while i < packages.len() {
+        let (name, suffix) = (packages[i].as_bytes(), b".spike");
+        if name.len() >= suffix.len() {
+            let mut j = 0;
+            while j < suffix.len() && name[name.len() - suffix.len() + j] == suffix[j] {
+                j += 1;
+            }
+            if j == suffix.len() {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+const _: () = assert!(
+    !cfg!(feature = "distribution") || !development_posture(),
+    "a distribution build needs a pinned signing digest and the final package name (docs/APP_ATTEST_ORG.md §8): \
+     PINNED_SIGNING_DIGESTS is empty or ANDROID_PACKAGES still names a .spike package"
+);
+#[cfg(all(feature = "distribution", feature = "insecure-software-keys"))]
+compile_error!("a distribution build cannot accept software keys or carry the test chain's facts: drop insecure-software-keys");
+
 /// Chains seen in practice have four or five certificates.
 const MAX_CHAIN: usize = 10;
 
@@ -126,6 +163,35 @@ pub struct Expect<'a> {
     pub signing_digests: &'a [[u8; 32]],
     /// T14: the lowest `versionCode` accepted.
     pub min_version_code: u64,
+    /// Accept a key from a phone whose boot state is Unverified
+    /// (`--allow-unverified-boot`): by default it is refused.
+    pub allow_unverified_boot: bool,
+}
+
+/// What the phone's verified boot said of its operating system. The
+/// hardware facts of the record hold in every state; what an unvouched
+/// system takes away is the app's identity and the integrity of the screen
+/// the owner read the fingerprint from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BootState {
+    /// Google's or the maker's system.
+    Verified,
+    /// A custom system on a locked bootloader, verified against a root the
+    /// owner chose (GrapheneOS): its integrity holds.
+    SelfSigned,
+    /// Integrity not guaranteed. Accepted only on request.
+    Unverified,
+}
+
+impl BootState {
+    /// The word the config records.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BootState::Verified => "verified",
+            BootState::SelfSigned => "self-signed",
+            BootState::Unverified => "unverified",
+        }
+    }
 }
 
 /// A verified attestation.
@@ -139,6 +205,7 @@ pub struct Attested {
     pub package: String,
     pub version_code: u64,
     pub signing_digest: [u8; 32],
+    pub boot_state: BootState,
     /// Shown, not refused: a boot state other than Verified, for example.
     pub warnings: Vec<String>,
     /// Each certificate's serial number, for the revocation list.
@@ -479,15 +546,29 @@ pub fn verify_android(chain: &[Vec<u8>], roots: &[Root], expect: &Expect<'_>) ->
         return Err("the phone's bootloader is unlocked".into());
     }
     // The app's identity below is asserted by the operating system, so it is worth what the
-    // boot state says of that system. Verified: Google's or the maker's. SelfSigned or
-    // Unverified: shown (§5.2), with what it means for the "made by" line. Failed: refused.
+    // boot state says of that system. Verified: Google's or the maker's. SelfSigned: accepted
+    // with a warning (§5.2). Unverified: refused unless asked for, then with the warning.
+    // Failed: refused.
     let unvouched = "the app's identity below is asserted by an operating system nobody vouches for, so \"made by\" and the signing digest carry no weight";
-    match state {
-        0 => {}
-        1 => warnings.push(format!("verified boot state SelfSigned, a custom operating system on a locked bootloader: {unvouched}")),
-        2 => warnings.push(format!("verified boot state Unverified: {unvouched}")),
+    let boot_state = match state {
+        0 => BootState::Verified,
+        1 => {
+            warnings.push(format!("verified boot state SelfSigned, a custom operating system on a locked bootloader: {unvouched}"));
+            BootState::SelfSigned
+        }
+        2 if expect.allow_unverified_boot => {
+            warnings.push(format!("verified boot state Unverified: {unvouched}"));
+            BootState::Unverified
+        }
+        2 => {
+            return Err("verified boot state Unverified: the integrity of the phone's operating system is not guaranteed, so \
+                        the app that made this key and showed its fingerprint may not be ours. --allow-unverified-boot accepts \
+                        the key anyway; it gives up the app's identity and the trust in that screen, while the hardware facts \
+                        (where the key lives, a biometric check on every use) still hold"
+                .into())
+        }
         s => return Err(format!("verified boot state Failed ({s}): the phone's boot verification failed")),
-    }
+    };
 
     // which app made the key: asserted by the phone's operating system, hence the boot state above
     let app = software.application_id.or(hw.application_id).ok_or("the attestation names no application")?;
@@ -533,6 +614,7 @@ pub fn verify_android(chain: &[Vec<u8>], roots: &[Root], expect: &Expect<'_>) ->
         package: name,
         version_code,
         signing_digest,
+        boot_state,
         warnings,
         serials: certs.iter().map(|c| c.serial.to_vec()).collect(),
     })
@@ -816,6 +898,7 @@ mod tests {
             packages: &[PACKAGE],
             signing_digests: &[SIGNER_DIGEST],
             min_version_code: 10,
+            allow_unverified_boot: false,
         }
     }
 
@@ -828,6 +911,7 @@ mod tests {
             assert_eq!((a.tier, a.chain_len, a.attestation_version), (Tier::Tee, 4, 400));
             assert_eq!((a.package.as_str(), a.version_code, a.signing_digest), (PACKAGE, 10, SIGNER_DIGEST));
             assert!(a.warnings.is_empty() && a.serials.len() == 4);
+            assert_eq!(a.boot_state.as_str(), "verified");
         }
         // StrongBox is read from the record, and both levels must say it
         let pki = Pki::new(TestKey::p384());
@@ -962,10 +1046,22 @@ mod tests {
         let with_pin = Record { user_auth_type: Some(3), ..good.clone() };
         assert!(verify(&with_pin, &Expect { device_credential: true, ..expect(key, challenge) }).is_ok());
         assert!(verify(&good, &Expect { device_credential: true, ..expect(key, challenge) }).is_err());
-        // SelfSigned and Unverified are shown, not refused, and say what they do to the app's identity
+        // SelfSigned (a custom system on a locked bootloader) is accepted with a warning that
+        // says what it does to the app's identity
         let a = verify(&Record { boot_state: 1, ..good.clone() }, &expect(key, challenge)).unwrap();
         assert!(a.warnings[0].contains("SelfSigned") && a.warnings[0].contains("carry no weight"), "{:?}", a.warnings);
-        assert!(verify(&Record { boot_state: 2, ..good.clone() }, &expect(key, challenge)).unwrap().warnings[0].contains("Unverified"));
+        assert_eq!(a.boot_state.as_str(), "self-signed");
+        // Unverified is refused, naming the flag and what it gives up; with the flag it is
+        // accepted, with the same warning
+        let unverified = Record { boot_state: 2, ..good.clone() };
+        let e = verify(&unverified, &expect(key, challenge)).unwrap_err();
+        assert!(e.contains("--allow-unverified-boot") && e.contains("gives up the app's identity"), "{e}");
+        let a = verify(&unverified, &Expect { allow_unverified_boot: true, ..expect(key, challenge) }).unwrap();
+        assert!(a.boot_state == BootState::Unverified && a.warnings[0].contains("Unverified") && a.warnings[0].contains("carry no weight"));
+        // the flag opens nothing else: a failed boot and an unlocked bootloader stay refused
+        let with_flag = Expect { allow_unverified_boot: true, ..expect(key, challenge) };
+        assert!(verify(&Record { boot_state: 3, ..good.clone() }, &with_flag).unwrap_err().contains("boot verification failed"));
+        assert!(verify(&Record { locked: false, ..good.clone() }, &with_flag).unwrap_err().contains("bootloader is unlocked"));
         // the attested key must be the one the answer names
         let other = TestKey::p256().public_key();
         assert!(verify(&good, &expect(other, challenge)).unwrap_err().contains("not the key the phone's answer names"));
@@ -987,6 +1083,20 @@ mod tests {
         let spki_hash = |r: &Root| hex::encode(Sha256::digest(&r.spki));
         assert_eq!(spki_hash(&roots[0]), "feb2ea7551ee316ed4bb443c8293b884dbfdea40b603ee3e4f4a897e4580fbae");
         assert_eq!(spki_hash(&roots[1]), "3ee44512a1af2beb39c889490c60ea3f82e43f5d5a5532f5ab9419f676cd07ec");
+    }
+
+    /// Issue #35: today's constants are the development posture, and a
+    /// `distribution` build refuses to compile in it (the const assertion
+    /// above, which only that feature compiles in).
+    #[test]
+    fn the_development_posture_is_what_the_distribution_feature_refuses() {
+        assert!(PINNED_SIGNING_DIGESTS.is_empty() && ANDROID_PACKAGES.iter().any(|p| p.ends_with(".spike")));
+        assert!(development_posture());
+        // each half on its own: no pin, or a provisional package beside a final one
+        assert!(posture_of(&[], &["org.example.owner"]));
+        assert!(posture_of(&[[1; 32]], &["org.example.owner", "dev.tpmsign.owner.spike"]));
+        assert!(posture_of(&[[1; 32]], &[".spike"]) && !posture_of(&[[1; 32]], &["spike", "org.example.spike.owner"]));
+        assert!(!posture_of(&[[1; 32]], &["org.example.owner"]));
     }
 
     #[test]
@@ -1058,6 +1168,7 @@ mod tests {
                 packages: &[PACKAGE],
                 signing_digests: &[digest],
                 min_version_code: 1,
+                allow_unverified_boot: false,
             },
         )
         .unwrap();
@@ -1074,6 +1185,7 @@ mod tests {
             packages: &[PACKAGE],
             signing_digests: &[digest],
             min_version_code: 1,
+            allow_unverified_boot: false,
         };
         assert!(verify_android(&e.attestation, &google_roots(), &wrong).unwrap_err().contains("challenge mismatch"));
     }

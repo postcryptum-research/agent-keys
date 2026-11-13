@@ -957,6 +957,7 @@ fn phone_is_enrolled_then_takes_over_root() {
     assert_eq!(snippet["owner"]["phone"]["fingerprint"], fp);
     assert_eq!(snippet["owner"]["phone"]["attestation"], "none", "the config records that nothing places this key in hardware");
     assert_eq!(snippet["owner"]["phone"]["revocation"], "not checked");
+    assert_eq!(snippet["owner"]["phone"]["bootState"], "none", "no evidence, so no boot state either");
 
     // 3b. the answer is authenticated by the secret in the QR: a host on the network that saw
     // the session URL in the phone's GET, but never the QR, posts its own key first. With the
@@ -1018,6 +1019,7 @@ fn phone_is_enrolled_then_takes_over_root() {
     let phone_cfg = phone_cfg.to_str().unwrap();
     let shown = chain.ok(&["key", "show", "--phone", "owner-phone", "--agent", phone_cfg]);
     assert!(shown.contains(&format!("fingerprint {fp}")) && shown.contains("attestation none") && shown.contains("revocation  not checked"), "{shown}");
+    assert!(shown.contains("boot state  none"), "{shown}");
     let sim = phone_simulator(qr_file.clone(), key(9), "sign");
     let before = chain.counter();
     let text = chain.ok(&[

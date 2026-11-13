@@ -220,6 +220,15 @@ The same question on Android, so the two are decided together:
    self-signed APK (no Google, no Play), or both with per-channel digests
    (§7).
 
+Until 3 and 7 are decided the code is in its development posture: a
+provisional package (`dev.tpmsign.owner.spike`) and no signing digest
+pinned in the CLI. That is the owner's decision while development is
+informal, on the auditor's condition that such a build cannot be
+distributed (issue #35). So a release is built with the CLI's
+`distribution` feature and the Android release build type, and both refuse
+until the package and the digests are final (`MOBILE_OWNER_DESIGN.md`
+§5.2).
+
 *Reviewed by the auditor on 2026-10-28: no blocker. The refinements above
 (channel-filter scope, TestFlight rights, source-to-build custody,
 succession, store-operator symmetry) are folded in.*

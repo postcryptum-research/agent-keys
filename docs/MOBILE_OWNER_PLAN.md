@@ -323,8 +323,11 @@ answer names, generated in the hardware, EC P-256, sign only, with
 the device PIN exactly when the enrollment chose that), both security
 levels StrongBox or both TEE, the bootloader locked; the app named by
 package, minimum version and signing-certificate digest. A boot state of
-SelfSigned or Unverified is a warning that says the app's identity then
-carries no weight; Failed is refused. Google's revocation list is fetched,
+SelfSigned is a warning that says the app's identity then carries no
+weight; Unverified is refused unless `--allow-unverified-boot` and then
+carries the same warning; Failed is refused. The state is recorded in the
+config (`bootState`), and a build to distribute cannot be made in the
+development posture (issue #35, design §5.2). Google's revocation list is fetched,
 the result and the config say whether it was checked, and
 `--require-revocation-check` refuses when it cannot be. `--require-strongbox` decides on
 the attested level; `--android-app-digest` accepts a developer's own build

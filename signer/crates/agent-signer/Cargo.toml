@@ -30,6 +30,12 @@ yubikey = ["hw-signer/yubikey-piv"]
 # review the CLI previews, and the simulated phone runs, knows the contracts
 # the harness installs.
 insecure-software-keys = ["owner-core/test-chains"]
+# For a build that is handed to anyone. It refuses to compile while the CLI is
+# in its development posture: no signing digest pinned for the owner app, a
+# provisional package name, or the test features (src/attestation.rs; issue
+# #35, docs/APP_ATTEST_ORG.md §8). Until those decisions are made, no
+# distribution build exists.
+distribution = []
 
 [dependencies]
 hw-signer = { path = "../hw-signer" }
