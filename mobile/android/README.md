@@ -210,6 +210,62 @@ gave root to a key nobody held. Two changes in the app, one on the laptop:
   <label>`, and `key check --phone <label>` at any time. The CLI accepts
   this app from version code 11.
 
+### Run record — the key shown before the handover (2026-11-13, app 0.4.0-p4)
+
+The real-device test on the same TEE-only phone, three QR codes: the
+enrollment, the phone showing the key, a signature. Private values are
+masked. The enrollment, now with the boot state and the handover's flag:
+
+```
+enrolled phone owner key "owner-phone" for account 0x38c09e253D5351767D6A512b3ed7dEd10B049A29 (chain 31337)
+  public key     x = 0x5665…1dff
+                 y = 0x181d…d8a7
+  fingerprint    2V7PJ-3M6BV-TAXVQ-7TH6L   ← not confirmed here (--phone-skip-fingerprint): the phone shows the same one
+  security level tee — the processor's trusted mode, not a separate secure chip (attested)
+  attestation    verified: 5 certificates to Google's remote-provisioning root (P-384); made for this request; the key is the one above; generated in the hardware, signs only after a biometric check
+  made by        dev.tpmsign.owner.spike version code 11, signing certificate <sha256 of the developer's debug certificate> (accepted by --android-app-digest)
+  boot state     verified (the phone's operating system, as its verified boot reports it)
+  revocation     none of the chain is on Google's list (1773 entries, fetched now)
+  note           attestation is evidence of where the key lives, not of whose phone it is; that is the QR's secret
+  app            android 0.4.0-p4 (core 0.3.0+test-chains)
+
+Nothing changed on-chain. Next, signed by the current owner key:
+  agent-signer owner set-root --agent …/owner.json --validator <P256Validator> --public-key 0x5665…1dff,0x181d…d8a7 --expect-fingerprint 2V7PJ-3M6BV-TAXVQ-7TH6L --to-phone owner-phone [--retire <validator>]
+--to-phone makes the handover wait for the phone: one more QR, on which the phone shows that it holds this key.
+Do not hand root to a phone key without it: if the phone did not keep the key, the account goes with it.
+then point the config's owner at the phone (ownerPublicKey stays the account's creation key):
+{ "owner": { "phone": { "label": "owner-phone", "platform": "android", "attestation": "tee", "revocation": "checked",
+                        "bootState": "verified", "deviceCredential": false,
+                        "publicKey": { … }, "fingerprint": "2V7PJ-3M6BV-TAXVQ-7TH6L" } } }
+```
+
+The handover, which waited for the phone (the second QR: "Show the key",
+then the fingerprint), and the signature after it:
+
+```
+new root key:   fingerprint 2V7PJ-3M6BV-TAXVQ-7TH6L
+…
+tpmsign:1?u=http://192.168.x.x:54783/s/<token>&h=<commitment>&k=<in the QR only>
+waiting up to 180s for the phone…
+phone:          holds the key 2V7PJ-3M6BV-TAXVQ-7TH6L (signed a fresh digest)
+nonce:          0x1
+…
+root handed to 0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2: tx 0x556c…546d (block 4, 171228 gas)
+
+root handed to the phone key 2V7PJ-3M6BV-TAXVQ-7TH6L.
+…
+phone:          signed, signature verified against the owner key
+added permission 0x74657332 (valid 0 … 1826105903): tx 0x21f7…f564 (block 5, 399078 gas)
+the permission the phone installed is on-chain; the agent runs under it:
+test phone_owner_real_device ... ok
+```
+
+Nothing was built or sent for the handover before the phone's answer: the
+`nonce` line of the `set-root` operation comes after `phone: holds the
+key`. Not run on the phone: an enrollment whose confirmation is lost. That
+path is replayed by the anvil suite and, against the iPhone app, in the
+iOS simulator.
+
 ## P3: authenticated answers (version 0.3.1-p3)
 
 The QR now carries the session's secret (`&k=…`, design §3.2). The core's

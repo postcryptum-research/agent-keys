@@ -287,7 +287,8 @@ pub fn prove_possession(label: &str, chain_id: u64, account: Address, key: &Publ
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| SignerError::Backend(e.to_string()))?;
     let request = HealthRequest::new(chain_id, account, key, B256::from(nonce), now.as_secs() + options().timeout.as_secs()).to_bytes();
     let headline = format!(
-        "phone key {label:?} for account {account} on chain {chain_id}: scan this with the owner app and confirm there.          The phone shows that it holds the key {}; nothing goes to the chain.",
+        "phone key {label:?} for account {account} on chain {chain_id}: scan this with the owner app and confirm there. \
+         The phone shows that it holds the key {}; nothing goes to the chain.",
         fingerprint(key)
     );
     lan_session(&request, &headline, |body| match HealthResponse::verify(body, &request) {
