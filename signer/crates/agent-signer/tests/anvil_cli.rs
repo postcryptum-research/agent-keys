@@ -715,12 +715,14 @@ fn phone_simulator_after(qr_file: std::path::PathBuf, key: Key, mode: &'static s
     })
 }
 
-/// A host on the path between a phone and the laptop (issue #38), for a phone
-/// that takes the QR's text from a file: it points the session's URL at
-/// itself, forwards the phone's requests to the laptop untouched, and
-/// replaces the laptop's reply to the phone's answer. That needs no secret.
-/// The laptop has accepted the answer; the phone sees no confirmation.
-fn path_attacker(laptop_qr: PathBuf, phone_qr: PathBuf) -> std::thread::JoinHandle<()> {
+/// A host on the path between a phone and the laptop (issue #38): it points
+/// the session's URL at itself, forwards the phone's requests to the laptop
+/// untouched, and replaces the laptop's reply to the phone's answer. That
+/// needs no secret. The laptop has accepted the answer; the phone sees no
+/// confirmation. The phone gets the QR with the attacker's address through
+/// `phone_qr`, when it takes the QR's text from a file, or off this terminal,
+/// when it has a camera (the laptop's own QR is then not shown).
+fn path_attacker(laptop_qr: PathBuf, phone_qr: Option<PathBuf>) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let started = std::time::Instant::now();
         let uri = loop {
@@ -735,7 +737,16 @@ fn path_attacker(laptop_qr: PathBuf, phone_qr: PathBuf) -> std::thread::JoinHand
         // tpmsign:1?u=http://<host>:<port>/s/<token>&h=…&k=…
         let laptop = uri.split("u=http://").nth(1).unwrap().split('/').next().unwrap().to_string();
         let listener = TcpListener::bind(format!("{}:0", laptop.rsplit_once(':').unwrap().0)).unwrap();
-        std::fs::write(&phone_qr, uri.replacen(&laptop, &listener.local_addr().unwrap().to_string(), 1)).unwrap();
+        let uri = uri.replacen(&laptop, &listener.local_addr().unwrap().to_string(), 1);
+        match &phone_qr {
+            Some(file) => std::fs::write(file, &uri).unwrap(),
+            None => {
+                use qrcode::render::unicode;
+                let code = qrcode::QrCode::new(uri.as_bytes()).unwrap();
+                let qr = code.render::<unicode::Dense1x2>().dark_color(unicode::Dense1x2::Light).light_color(unicode::Dense1x2::Dark).quiet_zone(true).build();
+                eprintln!("{qr}\n(this QR leads to a host on the path, not to the laptop; waiting for the phone…)");
+            }
+        }
         for stream in listener.incoming() {
             let mut phone = stream.unwrap();
             let mut reader = BufReader::new(phone.try_clone().unwrap());
@@ -1185,7 +1196,7 @@ fn a_replaced_confirmation_does_not_cost_the_account() {
     let fp = fingerprint_of(&phone);
 
     // the enrollment, with the host on the path
-    let attacker = path_attacker(laptop_qr.clone(), phone_qr.clone());
+    let attacker = path_attacker(laptop_qr.clone(), Some(phone_qr.clone()));
     let sim = phone_simulator(phone_qr.clone(), key(9), "enroll");
     let text = chain.ok(&[
         "key", "create", "--phone", "owner-phone", "--agent", &cfg, "--allow-no-attestation", "--phone-skip-fingerprint",
@@ -1263,10 +1274,12 @@ fn a_replaced_confirmation_does_not_cost_the_account() {
 /// and so no evidence. `TPMSIGN_PHONE_HANDOVER_BACK=1` adds a last session,
 /// for either phone: the phone signs the change of the root key itself
 /// (§2.2), which its review shows in bold and asks about a second time.
-/// `TPMSIGN_PHONE_PATH_ATTACKER=1`, with the QR file only, puts a host on
-/// the path that replaces the laptop's reply to the enrollment answer (issue
-/// #38): the laptop says "enrolled", the phone sees no confirmation, and the
-/// run goes on only if the phone kept its key and can show it.
+/// `TPMSIGN_PHONE_PATH_ATTACKER=1` puts a host on the path that replaces the
+/// laptop's reply to the enrollment answer (issue #38): the laptop says
+/// "enrolled", the phone sees no confirmation and says so, and the run goes
+/// on only if the phone kept its key and can show it. For a phone with a
+/// camera the first QR is then the attacker's, shown here in place of the
+/// laptop's.
 #[test]
 #[ignore = "needs a phone with the owner app on the same network"]
 fn phone_owner_real_device() {
@@ -1309,19 +1322,25 @@ fn phone_owner_real_device() {
     if std::env::var_os("TPMSIGN_PHONE_NO_ATTESTATION").is_some() {
         args.push("--allow-no-attestation");
     }
-    // a camera reads the laptop's own QR, so the host on the path exists only for a phone that
-    // is handed the QR's text: the CLI writes its QR for the attacker, who writes the phone's
+    // On request, a host on the path replaces the laptop's reply (issue #38). The CLI writes its
+    // QR for the attacker, who hands the phone its own: into the QR file, or onto this terminal
+    // for a phone with a camera, where the laptop's own QR must then stay out of sight.
     let laptop_qr = chain.dir.join("laptop.qr");
-    let attacker = std::env::var_os("TPMSIGN_PHONE_PATH_ATTACKER").map(|_| {
-        let phone_qr = std::env::var_os("TPMSIGN_PHONE_QR_FILE").expect("TPMSIGN_PHONE_PATH_ATTACKER needs TPMSIGN_PHONE_QR_FILE");
-        args.extend(["--phone-qr-file", laptop_qr.to_str().unwrap()]);
-        path_attacker(laptop_qr.clone(), PathBuf::from(phone_qr))
-    });
-    let status = run(&args);
-    assert!(status.success(), "the enrollment failed");
-    if let Some(attacker) = attacker {
+    if std::env::var_os("TPMSIGN_PHONE_PATH_ATTACKER").is_some() {
+        let phone_qr = std::env::var_os("TPMSIGN_PHONE_QR_FILE").map(PathBuf::from);
+        args.extend(["--phone-qr-file", laptop_qr.to_str().unwrap(), "--phone-timeout", "180"]);
+        let attacker = path_attacker(laptop_qr.clone(), phone_qr);
+        let out = Command::new(env!("CARGO_BIN_EXE_agent-signer")).args(&args).output().expect("run agent-signer");
         attacker.join().unwrap();
-        eprintln!("\nA host on the path replaced the laptop's reply: the laptop says \"enrolled\" above, the phone saw no confirmation.");
+        // the laptop's words, without the QR it showed to nobody
+        let said = String::from_utf8_lossy(&out.stderr);
+        eprintln!("{}", said.lines().filter(|l| !l.contains('█') && !l.contains('▀') && !l.contains('▄')).collect::<Vec<_>>().join("\n"));
+        print!("{}", String::from_utf8_lossy(&out.stdout));
+        assert!(out.status.success(), "the enrollment failed");
+        eprintln!("\nA host on the path replaced the laptop's reply: the laptop says \"enrolled\" above, the phone saw no confirmation\nand says so. It must have kept the key all the same.");
+    } else {
+        let status = run(&args);
+        assert!(status.success(), "the enrollment failed");
     }
     let resp: Value = serde_json::from_str(&std::fs::read_to_string(out_dir.join("enroll-response.json")).unwrap()).unwrap();
     let phone = Key {

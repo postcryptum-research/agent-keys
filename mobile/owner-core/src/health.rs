@@ -33,7 +33,7 @@ pub fn health_digest(laptop_nonce: &B256, phone_nonce: &B256) -> [u8; 32] {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HealthRequest {
     pub tpm_sign: String,
     pub version: u32,
@@ -295,6 +295,11 @@ mod tests {
         assert!(HealthRequest::parse(&serde_json::to_vec(&v).unwrap(), 0, 0).is_err());
         v["tpmSign"] = HEALTH_REQUEST.into();
         v["chainId"] = "0x7a69".into();
+        assert!(HealthRequest::parse(&serde_json::to_vec(&v).unwrap(), 0, 0).is_err());
+        // nothing rides along: a field this side does not know is not something to sign next to
+        v["chainId"] = "31337".into();
+        assert!(HealthRequest::parse(&serde_json::to_vec(&v).unwrap(), 0, 0).is_ok());
+        v["userOpHash"] = "0x00".into();
         assert!(HealthRequest::parse(&serde_json::to_vec(&v).unwrap(), 0, 0).is_err());
     }
 
