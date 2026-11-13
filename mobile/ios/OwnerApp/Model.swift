@@ -44,6 +44,8 @@ final class Model: ObservableObject {
     @Published var proofPrompt: ProofPrompt?
     /// The new key's fingerprint, kept on screen while the owner types it on the laptop.
     @Published var fingerprint: ShownFingerprint?
+    /// Something the owner must not miss, kept at the top of the screen until acknowledged.
+    @Published var notice: String?
 
     private var app: FfiApp { FfiApp(platform: "ios", version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") }
     private var now: UInt64 { UInt64(Date().timeIntervalSince1970) }
@@ -168,7 +170,10 @@ final class Model: ObservableObject {
                     // replaced on the way, and a real rejection look the same from here. The key is
                     // kept, unconfirmed. Deleting it is the one step that cannot be undone, and the
                     // laptop may be about to make it root (issue #38).
-                    say("enrollment NOT confirmed (\(reply?.description ?? "the POST failed")). The key is kept, unconfirmed: the laptop may have accepted it all the same. If the laptop says \"enrolled\", its handover asks this phone to show the key (--to-phone), which settles it. If it does not, enroll again: the unconfirmed key is replaced then.")
+                    let outcome = reply?.description ?? "the POST failed"
+                    say("enrollment NOT confirmed (\(outcome)). The key is kept, unconfirmed: the laptop may have accepted it all the same. If the laptop says \"enrolled\", its handover asks this phone to show the key (--to-phone), which settles it. If it does not, enroll again: the unconfirmed key is replaced then.")
+                    // said where it cannot be missed: the owner is looking at the laptop, which may be saying "enrolled"
+                    notice = "The laptop did not confirm this enrollment to this phone (\(outcome)).\n\nThe key is kept, unconfirmed. If the laptop says \"enrolled\", it has the key all the same: its handover will ask this phone to show the key, and that settles it. If the laptop reports a failure, enroll again: the unconfirmed key is replaced then."
                 }
             } catch { say("ERROR \(error.localizedDescription)") }
         }

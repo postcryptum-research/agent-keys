@@ -70,4 +70,5 @@ said "enrollment confirmed by the laptop"
 pass lost-confirmation TPMSIGN_PHONE_PATH_ATTACKER=1
 said "enrollment NOT confirmed"
 said "showed the key"
+[ "$ROBOT" != 1 ] || grep -q "the not-confirmed notice" build/robot-lost-confirmation.log || { echo "the app did not put its not-confirmed notice on screen"; exit 1; }
 echo "both runs passed: with the laptop's confirmation, and with it replaced on the way"

@@ -65,8 +65,9 @@ against the app on a local anvil:
 The script runs the loop twice. The second time a host on the path
 replaces the laptop's confirmation of the enrollment (issue #38): the
 laptop says "enrolled", the app saw no confirmation. The app must keep its
-key, unconfirmed, show it when the handover asks, and go on; the script
-checks the app's own log for exactly that.
+key, unconfirmed, say so at the top of its screen, show the key when the
+handover asks, and go on; the script checks the app's own log and the
+robot's record of that notice.
 
 `ROBOT=0 ./run-simulator.sh` leaves the taps to you, in the Simulator
 window. By default a UI test is the owner's hands. It taps what a person

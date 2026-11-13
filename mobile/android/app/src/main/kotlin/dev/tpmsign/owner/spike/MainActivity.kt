@@ -515,6 +515,17 @@ class MainActivity : AppCompatActivity() {
                                     // kept, unconfirmed: deleting it is the one step that cannot be undone, and the
                                     // laptop may be about to make it root (issue #38).
                                     say("enrollment NOT confirmed ($outcome). The key is kept, unconfirmed: the laptop may have accepted it all the same. If the laptop says \"enrolled\", its handover asks this phone to show the key (--to-phone), which settles it. If it does not, enroll again: the unconfirmed key is replaced then.")
+                                    // said where it cannot be missed: the log is under the fingerprint dialog, and the
+                                    // owner is looking at the laptop, which may be saying "enrolled"
+                                    AlertDialog.Builder(this)
+                                        .setTitle("The laptop did not confirm this enrollment")
+                                        .setMessage("This phone got no confirmation from the laptop ($outcome).\n\n" +
+                                            "The key is kept, unconfirmed. If the laptop says \"enrolled\", it has the key all the same: its handover " +
+                                            "will ask this phone to show the key, and that settles it. If the laptop reports a failure, enroll again: " +
+                                            "the unconfirmed key is replaced then.")
+                                        .setPositiveButton("OK", null)
+                                        .setCancelable(false)
+                                        .show()
                                 }
                             }
                         }

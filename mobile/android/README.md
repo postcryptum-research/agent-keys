@@ -196,7 +196,9 @@ gave root to a key nobody held. Two changes in the app, one on the laptop:
 
 - **The key is kept.** A missing or foreign reply to the enrollment answer
   says nothing about what the laptop has, so the app keeps the key as
-  unconfirmed and says so. Only a key that never left the phone (its
+  unconfirmed and says so in a dialog of its own: the first device run
+  showed that a line in the log, under the fingerprint dialog, is not
+  seen. Only a key that never left the phone (its
   creation failed) is deleted. An unconfirmed key is replaced by the next
   enrollment of the same account, after the owner's yes.
 - **The phone can show a key** (design §2.2, §2.4). Either scan button
@@ -306,7 +308,8 @@ So the Keystore key that the app kept without the laptop's confirmation
 was shown to the laptop, became root and signed. With the app before
 0.4.0 the key would have been deleted at the first step and root handed
 to it regardless. The phone's own words for the unconfirmed enrollment
-were on its screen and are not in this record: its log had rolled over.
+were only a line in its log, under the fingerprint dialog, and the person
+running the test did not see them. The app now says it in a dialog.
 
 ## P3: authenticated answers (version 0.3.1-p3)
 

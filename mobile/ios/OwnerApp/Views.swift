@@ -32,6 +32,12 @@ struct ContentView: View {
     private var accounts: some View {
         NavigationStack {
             List {
+                if let notice = model.notice {
+                    Section("Not confirmed") {
+                        Text(notice).bold().accessibilityIdentifier("notice")
+                        Button("OK") { model.notice = nil }.accessibilityIdentifier("notice-ok")
+                    }
+                }
                 if let fp = model.fingerprint {
                     Section("New key's fingerprint") {
                         Text(fp.text).font(.title2.monospaced()).textSelection(.enabled).accessibilityIdentifier("fingerprint")

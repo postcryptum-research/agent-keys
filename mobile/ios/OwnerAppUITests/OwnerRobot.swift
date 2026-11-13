@@ -20,6 +20,7 @@ final class OwnerRobot: XCTestCase {
         var signatures = 0
         var secondConfirmations = 0
         var proofs = 0
+        var noticeKept = false
         while Date() < end {
             if let line = awaited, appLog().contains(where: { $0.contains(line) }) {
                 awaited = nil
@@ -36,6 +37,12 @@ final class OwnerRobot: XCTestCase {
             if enroll.exists && enroll.isHittable {
                 keep("the enrollment prompt")
                 enroll.tap()
+            }
+            // the app's word that the laptop did not confirm an enrollment: recorded once, and left on
+            // screen, where it waits for a person and is in nobody's way
+            if !noticeKept && app.buttons["notice-ok"].exists {
+                noticeKept = true
+                keep("the not-confirmed notice")
             }
             let done = app.buttons["fingerprint-done"]
             if done.exists && done.isHittable {
