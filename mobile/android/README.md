@@ -311,6 +311,17 @@ to it regardless. The phone's own words for the unconfirmed enrollment
 were only a line in its log, under the fingerprint dialog, and the person
 running the test did not see them. The app now says it in a dialog.
 
+The run was repeated with that build (account
+0xCd6e30783b6fe51c0722Dba1363dc8F8F2b5B8b3, key SMSGE-22ERB-P2SES-E3PZF,
+the same lines and the same outcome): right after Enroll the phone showed
+"The laptop did not confirm this enrollment" on top of the fingerprint
+dialog, it was acknowledged, and the key was then shown, made root and
+used to sign. An earlier attempt of that run was abandoned at the second
+QR, whose session of 180 seconds ran out while the person was away from
+the phone; the handover then stops with "no answer from the phone",
+nothing is sent, and the phone is left with one more unconfirmed key for
+an account that no longer exists.
+
 ## P3: authenticated answers (version 0.3.1-p3)
 
 The QR now carries the session's secret (`&k=…`, design §3.2). The core's
