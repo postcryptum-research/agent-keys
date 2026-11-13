@@ -262,9 +262,51 @@ test phone_owner_real_device ... ok
 
 Nothing was built or sent for the handover before the phone's answer: the
 `nonce` line of the `set-root` operation comes after `phone: holds the
-key`. Not run on the phone: an enrollment whose confirmation is lost. That
-path is replayed by the anvil suite and, against the iPhone app, in the
-iOS simulator.
+key`.
+
+### Run record — the laptop's confirmation lost on the way (2026-11-13, app 0.4.0-p4)
+
+The same test with `TPMSIGN_PHONE_PATH_ATTACKER=1`: a stand-in for a host
+on the network shows its own QR in place of the laptop's, forwards the
+phone's requests to the laptop untouched and replaces the laptop's reply
+to the enrollment answer. The laptop accepted the enrollment; the phone
+got no confirmation, so its key stayed unconfirmed.
+
+```
+(this QR leads to a host on the path, not to the laptop; waiting for the phone…)
+
+enrolling phone owner key "owner-phone" for account 0xD4aB6e91eBCc742fd034Ee0fbe3BDFe3DFaAd713 on chain 31337: …
+waiting up to 180s for the phone…
+enrolled phone owner key "owner-phone" for account 0xD4aB6e91eBCc742fd034Ee0fbe3BDFe3DFaAd713 (chain 31337)
+  fingerprint    2GIQE-7OPFS-4IGNR-I23XP   ← not confirmed here (--phone-skip-fingerprint): the phone shows the same one
+  security level tee — the processor's trusted mode, not a separate secure chip (attested)
+  …
+
+A host on the path replaced the laptop's reply: the laptop says "enrolled" above, the phone saw no confirmation
+and says so. It must have kept the key all the same.
+
+Before root goes to the phone's key, the phone shows that it holds it: scan the QR below and confirm on the phone.
+
+new root key:   fingerprint 2GIQE-7OPFS-4IGNR-I23XP
+phone key "owner-phone" for account 0xD4aB6e91eBCc742fd034Ee0fbe3BDFe3DFaAd713 on chain 31337: scan this with the owner app and confirm there. The phone shows that it holds the key 2GIQE-7OPFS-4IGNR-I23XP; nothing goes to the chain.
+tpmsign:1?u=http://192.168.x.x:58687/s/<token>&h=<commitment>&k=<in the QR only>
+waiting up to 180s for the phone…
+phone:          holds the key 2GIQE-7OPFS-4IGNR-I23XP (signed a fresh digest)
+…
+root handed to 0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2: tx 0x4bdf…d8a6 (block 4, 171240 gas)
+
+root handed to the phone key 2GIQE-7OPFS-4IGNR-I23XP.
+…
+phone:          signed, signature verified against the owner key
+added permission 0x74657332 (valid 0 … 1826106472): tx 0xa404…4d86 (block 5, 399078 gas)
+test phone_owner_real_device ... ok
+```
+
+So the Keystore key that the app kept without the laptop's confirmation
+was shown to the laptop, became root and signed. With the app before
+0.4.0 the key would have been deleted at the first step and root handed
+to it regardless. The phone's own words for the unconfirmed enrollment
+were on its screen and are not in this record: its log had rolled over.
 
 ## P3: authenticated answers (version 0.3.1-p3)
 
