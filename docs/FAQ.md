@@ -52,8 +52,9 @@ B=target/debug/agent-signer
 **3. Create the keys.**
 
 Keys are created under the TPM's storage root key at `0x81000001`. Many
-distributions persist one there already; if `key create` says the handle
-does not exist, create it once with tpm2-tools:
+distributions persist one there already. If `key create` fails with "the
+handle is not correct for the use", there is none yet, as on a new
+virtual machine: create it once with tpm2-tools:
 
 ```sh
 sudo apt install tpm2-tools
@@ -244,6 +245,13 @@ the agent key: they want a button press per signature.)
 
 **Machines** for the agent key: Linux with a TPM 2.0, Windows with a TPM 2.0,
 a TROPIC01 USB devkit and a Mac's Secure Enclave (all four verified).
+
+**A server or a virtual machine:** the Linux `tpm` backend works as it is
+against a virtual TPM. That is checked against the software TPM that QEMU,
+libvirt and Proxmox use (`scripts/tpm-check.sh --swtpm`), and not yet run
+on a cloud VM. What changes there is who else can reach the key: the host,
+and whoever may copy the VM
+([`SERVER_KEY_STORES.md`](SERVER_KEY_STORES.md)).
 
 **Networks:** every EVM network that has the contracts it needs — the
 ERC-4337 EntryPoint v0.7, ZeroDev Kernel v3.3 and its factory, a P-256
