@@ -359,10 +359,21 @@ simulator has no Secure Enclave and no camera, so there the key is
 software with the tier `simulator`, accepted only with
 `--allow-no-attestation`, and the QR's text arrives through a file; all
 of that is compiled for the simulator only. `owner-core` now builds the
-enrollment answer for the apps (`enroll_answer`, `enroll_refusal`). **Not
-done: a real iPhone.** The Secure Enclave key (design §5.3, the CryptoKit
-handle of `MOBILE_DEV_MODE.md` §3.4), the biometric prompt and the camera
-compile for the device and have not run; P4 closes when P0–P2 pass there.
+enrollment answer for the apps (`enroll_answer`, `enroll_refusal`).
+
+P4 status (2026-11-13, on an iPhone): the same loop passed on a real
+iPhone, as a development build under a free personal team
+(`MOBILE_DEV_MODE.md` §3; run record in `mobile/ios/README.md`). The key
+was created in the Secure Enclave (design §5.3, the CryptoKit handle of
+`MOBILE_DEV_MODE.md` §3.4) and signed the raw `userOpHash` after Face ID,
+in the form `P256Validator` accepts, through two root operations on a
+local anvil: an agent permission, and the change of the root key itself.
+The QR came through the camera; a failed Face ID check became a refusal
+on the laptop. So P0–P2 pass on the second platform, without attestation,
+which iOS under plan B does not have. Not done there: Base Sepolia, the
+screen's rules checked by anything but the simulator's robot, the 7-day
+expiry of the free profile, and the first fetch, which fails once while
+iOS asks for the local network.
 
 ## Threat model, briefly
 

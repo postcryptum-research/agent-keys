@@ -42,7 +42,11 @@ struct ContentView: View {
                     #if targetEnvironment(simulator)
                     Text("No camera here: agent-signer hands the QR's text to the simulator (mobile/ios/run-simulator.sh).")
                     #else
-                    Button("Scan the laptop's QR") { scanning = true }
+                    Button("Scan the laptop's QR") {
+                        Task {
+                            if await QrScanner.allowed() { scanning = true } else { model.say("ERROR the camera is not available to this app: allow it in Settings → TPM_sign owner → Camera") }
+                        }
+                    }
                     #endif
                 }
                 Section("Enrolled accounts") {
@@ -71,9 +75,12 @@ struct ContentView: View {
         }
         #if !targetEnvironment(simulator)
         .sheet(isPresented: $scanning) {
-            QrScanner { text in
+            QrScanner { result in
                 scanning = false
-                model.handleQr(text)
+                switch result {
+                case .success(let text): model.handleQr(text)
+                case .failure(let error): model.say("ERROR the scanner stopped: \(error.localizedDescription)")
+                }
             }
         }
         #endif

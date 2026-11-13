@@ -1,4 +1,4 @@
-# iPhone owner app — P4, in the simulator first
+# iPhone owner app — P4
 
 The second platform of [`docs/MOBILE_OWNER_PLAN.md`](../../docs/MOBILE_OWNER_PLAN.md)
 (phase P4): the same loop as `mobile/android`, on the same `owner-core`. A
@@ -10,10 +10,10 @@ an enrollment permanent. The design is
 §5.3, §6.6); development without an Apple organisation is
 [`docs/MOBILE_DEV_MODE.md`](../../docs/MOBILE_DEV_MODE.md) §3.
 
-**Status (2026-11-13): it runs in the iOS simulator, end to end against the
-real CLI. It has not run on an iPhone yet.** The code for a phone — the
-Secure Enclave key, the camera — compiles for the device and is written as
-the design says, but nothing has exercised it.
+**Status (2026-11-13): it passes the loop in the iOS simulator and on an
+iPhone**, end to end against the real CLI on a local anvil. On the phone
+the key lives in the Secure Enclave and signs after Face ID; the QR comes
+through the camera. Nothing has run on Base Sepolia.
 
 **Licence: not decided** — the same study as `mobile/owner-core`
 (`docs/MOBILE_LICENSE_STUDY.md`). The bundle id `dev.tpmsign.owner.spike`
@@ -30,7 +30,8 @@ is provisional (`docs/APP_ATTEST_ORG.md` §8).
 | `OwnerApp/Views.swift` | the screens: accounts, the enrollment prompt, the review |
 | `OwnerApp/Scanner.swift` | the QR through the camera (phones only) |
 | `OwnerAppUITests/OwnerRobot.swift` | the owner's hands for the simulator run, and its checks of the screen |
-| `run-simulator.sh` | the whole loop, one command |
+| `run-simulator.sh` | the whole loop in the simulator, one command |
+| `install-phone.sh` | build, sign, install and start on a connected iPhone |
 
 ## Run it in the simulator
 
@@ -87,23 +88,58 @@ Everything here is compiled only for the simulator
   app takes it from there.
 - **The app's log** also goes to a file in that directory, for the robot.
 
-## On an iPhone (not run yet)
+## On an iPhone
 
-What `docs/MOBILE_DEV_MODE.md` §3 describes: a free Apple Account signed
-in to Xcode, Developer Mode on the phone, `./build-core.sh` (with
-`OWNER_CORE_FEATURES=ffi,test-chains` for the anvil run), `xcodegen
-generate`, then build and run from Xcode with your team selected. The
-enrollment needs `--allow-no-attestation`: there is no App Attest without
-an organisation (§3.5).
+What `docs/MOBILE_DEV_MODE.md` §3 describes, as it went on 2026-11-13 with
+a free personal Apple Account:
+
+1. Sign the Apple Account in to Xcode (Settings → Accounts). It need not be
+   the account the phone itself uses.
+2. Plug the phone in, tap "Trust This Computer", and turn on Developer
+   Mode (Settings → Privacy & Security; the phone restarts).
+3. Pick the team once. `xcodegen generate`, open `OwnerApp.xcodeproj`,
+   target OwnerApp → Signing & Capabilities → Team. Xcode writes the
+   team's id into the generated project (`grep DEVELOPMENT_TEAM
+   OwnerApp.xcodeproj/project.pbxproj`). Keep it somewhere of your own: it
+   is not in the repository and the project is regenerated.
+4. Build, install and start:
+   ```sh
+   OWNER_CORE_FEATURES=ffi,test-chains ./build-core.sh     # the anvil run needs the test chain's facts
+   DEVELOPMENT_TEAM=<your team id> ./install-phone.sh
+   ```
+   The first time, the phone refuses to start the app until the developer
+   is trusted there: Settings → General → VPN & Device Management.
+5. Run the loop from `signer/`, phone and Mac on the same Wi-Fi:
+   ```sh
+   TPMSIGN_PHONE_NO_ATTESTATION=1 TPMSIGN_PHONE_HANDOVER_BACK=1 \
+     cargo test -p agent-signer --features insecure-software-keys \
+     --test anvil_cli phone_owner_real_device -- --ignored --nocapture
+   ```
+   Three QR codes follow; for each, "Scan the laptop's QR" in the app.
+   `--allow-no-attestation` is what the first variable adds: there is no
+   App Attest without an organisation (§3.5).
 
 On a phone the key is a CryptoKit Secure Enclave key, usable only after
 Face ID or Touch ID on every signature and invalidated by a change of the
 enrolled biometrics; its handle (not the key) is kept in the app's files,
-as the CLI's Mac backend does. The QR comes through the system's scanner.
-**Open until a phone has run it:** that the Secure Enclave signs the
-32-byte digest in the form `P256Validator` accepts (the Mac backend does,
-with the same call), the biometric prompt, the camera, the local-network
-permission prompt, and what a reinstall keeps.
+as the CLI's Mac backend does.
+
+What the phone run showed, beyond the loop passing:
+
+- **The first fetch fails while iOS asks for the local network.** The app
+  logs "offline"; scanning the same QR again works, and the question comes
+  once per install. A known rough edge, not yet smoothed.
+- **A failed biometric check is a refusal.** When Face ID did not
+  recognise the owner, nothing was signed and the laptop got "the phone
+  refused: user", with the system's message.
+- **A reinstall keeps the enrollments.** After installing a new build over
+  the app, with the same team and bundle id, the stored records and key
+  handles were still there. Signing with a key from before a reinstall
+  was not exercised.
+
+Still open on a phone: the 7-day expiry of a free account's profile and
+what a rebuild after it keeps, a key after a change of the enrolled
+biometrics, Touch ID, and everything about distribution.
 
 ## A release build is refused
 
@@ -117,6 +153,66 @@ error: the bundle id dev.tpmsign.owner.spike is provisional: it is the owner's d
 error: owner-core was built with test-chains: run ./build-core.sh without OWNER_CORE_FEATURES
 ** BUILD FAILED **
 ```
+
+## Run record — the loop on an iPhone (2026-11-13, app 0.4.0)
+
+A development build under a free personal team, the phone on the same
+Wi-Fi as the laptop. Session addresses, tokens and paths are masked. A
+first run stopped at the first signature, because Face ID did not
+recognise the owner:
+
+```
+waiting up to 180s for the phone…
+Error: key unavailable: phone "owner-phone": the phone refused: user (<the system's message for a cancelled check>)
+```
+
+The second run:
+
+```
+enrolled phone owner key "owner-phone" for account 0x2e13d3d04D09a38c6F3f7D735c6071F36a69B729 (chain 31337)
+  public key     x = 0x1ae9…7194
+                 y = 0x57d3…10a1
+  fingerprint    6SQSW-VSOWR-SSGGR-EG3LE   ← not confirmed here (--phone-skip-fingerprint): the phone shows the same one
+  security level secure-enclave (the phone's own word)
+  attestation    none — the laptop cannot place this key in hardware
+  app            ios 0.4.0 (core 0.2.0+test-chains)
+…
+root handed to the phone key 6SQSW-VSOWR-SSGGR-EG3LE.
+…
+tpmsign:1?u=http://192.168.x.x:61213/s/<token>&h=<commitment>&k=<in the QR only>
+waiting up to 180s for the phone…
+phone:          signed, signature verified against the owner key
+path:           root (owner key)
+gas paid by:    the account
+userOpHash:     0x003f58dead0c9a1c09e3983f6f76f199458d173810f5a726f8b5e4cdec010729
+added permission 0x74657332 (valid 0 … 1826095043): tx 0x58b1…f1d5 (block 5, 399078 gas)
+the permission the phone installed is on-chain; the agent runs under it:
+
+Now the phone signs a change of the root key, to 36YE2-V45UT-KFLGX-7H5BF: scan the QR below. The review shows the new
+key's fingerprint in bold, and Sign asks a second time.
+…
+phone:          signed, signature verified against the owner key
+userOpHash:     0x523a482a732d34823afd0b5d3516a75e16091a68b39b262f1ec72045404d5edf
+root handed to 0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2: tx 0x05e5…97c3 (block 8, 171252 gas)
+test phone_owner_real_device ... ok
+```
+
+The app's own log of that run, as the launching console kept it:
+
+```
+owner-core 0.2.0+test-chains loaded; key tier on this device: secure-enclave
+new key: tier secure-enclave
+  FINGERPRINT  6SQSW-VSOWR-SSGGR-EG3LE
+enrollment confirmed by the laptop. Next there: owner set-root … --expect-fingerprint 6SQSW-VSOWR-SSGGR-EG3LE
+signed 0x003f58de…010729 and posted: confirmed by the laptop
+signed 0x523a482a…4d5edf and posted: confirmed by the laptop
+```
+
+So the Secure Enclave signs the raw 32-byte `userOpHash` in the form
+`P256Validator` accepts, twice through root operations on the chain; the
+laptop's "what the phone will show" for both operations is the text the
+core gave the phone. What the screen itself showed is checked in the
+simulator, by the robot; nobody recorded the phone's screen.
 
 ## Run record — the loop in the simulator (2026-11-13, app 0.4.0)
 

@@ -225,7 +225,9 @@ response, a signature that does not verify, or a `userOpHash` mismatch.
 
 - **iOS** needs `NSLocalNetworkUsageDescription`, and the first fetch
   shows the system's local-network prompt. Plain HTTP to a local address
-  needs `NSAllowsLocalNetworking` in App Transport Security.
+  needs `NSAllowsLocalNetworking` in App Transport Security. Seen on an
+  iPhone in P4: that first fetch fails while the prompt is up, and
+  scanning the same QR again works.
 - **Android** blocks cleartext HTTP by default (API 28+). The network
   security config permits it, and the app itself enforces the
   private-address rule from §3.2 before connecting.

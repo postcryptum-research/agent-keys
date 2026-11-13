@@ -52,6 +52,8 @@ final class Model: ObservableObject {
 
     func say(_ line: String) {
         log.append(line)
+        // to the console of whoever launched the app (`xcrun devicectl device process launch --console`)
+        print(line)
         #if targetEnvironment(simulator)
         // out to the run that drives the simulator: a request holds the whole screen, so the log is not on it
         if let file = Model.exchange?.appendingPathComponent("tpmsign-app-log.json") { try? JSONEncoder().encode(log).write(to: file, options: .atomic) }
