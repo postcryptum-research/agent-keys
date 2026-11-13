@@ -288,6 +288,54 @@ confirmation was shown to the laptop, became root, and signed twice. Face
 ID was asked three times, once for each use of the key: the proof and the
 two signatures. Creating the key asks for none.
 
+### The same on the iPhone with the confirmation arriving
+
+The run without the host on the path, right after it (app 0.4.1): the
+first QR is the laptop's own, the laptop's confirmation reaches the app,
+and the handover still waits for the phone to show the key.
+
+```
+enrolled phone owner key "owner-phone" for account 0x202c2962d06Fd7c1B68c279eB42b584c1BF20C6D (chain 31337)
+  fingerprint    VT4SN-YQ5KF-WARDA-IUKSP   ← not confirmed here (--phone-skip-fingerprint): the phone shows the same one
+  security level secure-enclave (the phone's own word)
+  attestation    none — the laptop cannot place this key in hardware
+  app            ios 0.4.1 (core 0.3.0+test-chains)
+…
+Before root goes to the phone's key, the phone shows that it holds it: scan the QR below and confirm on the phone.
+
+new root key:   fingerprint VT4SN-YQ5KF-WARDA-IUKSP
+…
+waiting up to 180s for the phone…
+phone:          holds the key VT4SN-YQ5KF-WARDA-IUKSP (signed a fresh digest)
+nonce:          0x1
+…
+root handed to 0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2: tx 0x8134…98c3 (block 4, 171252 gas)
+
+root handed to the phone key VT4SN-YQ5KF-WARDA-IUKSP.
+…
+phone:          signed, signature verified against the owner key
+added permission 0x74657332 (valid 0 … 1826114247): tx 0x6cba…60ce (block 5, 399078 gas)
+…
+phone:          signed, signature verified against the owner key
+root handed to 0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2: tx 0x8fb6…b610 (block 8, 171240 gas)
+test phone_owner_real_device ... ok
+```
+
+The app's log:
+
+```
+new key: tier secure-enclave
+  FINGERPRINT  VT4SN-YQ5KF-WARDA-IUKSP
+enrollment confirmed by the laptop. Next there: owner set-root … --expect-fingerprint VT4SN-YQ5KF-WARDA-IUKSP --to-phone owner-phone
+PROOF asked: key VT4SN-YQ5KF-WARDA-IUKSP, account 0x202c2962d06Fd7c1B68c279eB42b584c1BF20C6D
+showed the key VT4SN-YQ5KF-WARDA-IUKSP and posted: confirmed by the laptop
+signed 0xef95eae4…e15697 and posted: confirmed by the laptop
+signed 0x5769afe1…5d9b5e and posted: confirmed by the laptop
+```
+
+In both runs the handover back to the software key carried
+`--not-a-phone`, and the one to the phone `--to-phone`.
+
 ## Run record — the loop in the simulator (2026-11-13, app 0.4.0)
 
 `./run-simulator.sh` on an Apple-silicon Mac, Xcode 27.2, the iPhone 17e
