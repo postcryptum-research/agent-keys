@@ -3,6 +3,7 @@
 // into the app and checks what comes back, and this taps what a person would. It keeps each screen it saw, and checks what only the screen
 // can show (design §6.6): every row owner-core produced is on the review, Sign is not offered
 // before the end of the review is on screen, and a review with bold effects asks a second time.
+// At the end it deletes the enrollment as an owner would, which the app asks about twice.
 
 import XCTest
 
@@ -31,6 +32,7 @@ final class OwnerRobot: XCTestCase {
                 if signatures == 2 {
                     XCTAssertEqual(secondConfirmations, 1, "exactly the change of the root key asks a second time")
                     XCTAssertEqual(proofs, 1, "the handover to this phone waits for the phone to show the key, once")
+                    try deleteTheEnrollment(app)
                     return
                 }
             }
@@ -112,6 +114,37 @@ final class OwnerRobot: XCTestCase {
             XCTAssertTrue(shown.contains(expected), "the review does not show the row: \(expected)")
         }
         return rows.contains { $0.hasPrefix("! ") }
+    }
+
+    /// The run ends as an owner's would after handing root on: the phone's key is deleted on
+    /// purpose (design §5.4). Asked twice, in owner-core's words; one tap deletes nothing.
+    private func deleteTheEnrollment(_ app: XCUIApplication) throws {
+        let row = app.buttons["delete-enrollment"].firstMatch
+        var swipes = 0
+        while !(row.exists && row.isHittable) && swipes < 6 {
+            app.swipeUp()
+            swipes += 1
+        }
+        row.tap()
+        let first = app.buttons["delete"]
+        XCTAssertTrue(first.waitForExistence(timeout: 5), "the delete prompt did not open")
+        let text = app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: "\n")
+        for needed in ["takes the account with it", "recovery key", "agent-signer owner status", "cannot be brought back"] {
+            XCTAssertTrue(text.contains(needed), "the delete prompt does not say: \(needed)")
+        }
+        XCTAssertFalse(app.buttons["confirm-delete"].exists, "the second question comes after the first")
+        keep("the delete prompt")
+        first.tap()
+        let second = app.buttons["confirm-delete"]
+        XCTAssertTrue(second.waitForExistence(timeout: 5), "the second question did not come")
+        XCTAssertFalse(appLog().contains { $0.hasPrefix("deleted the key") }, "one tap deleted the key")
+        keep("the second question before the delete")
+        second.tap()
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline && !appLog().contains(where: { $0.hasPrefix("deleted the key") }) { usleep(200_000) }
+        XCTAssertTrue(appLog().contains { $0.hasPrefix("deleted the key") }, "the app did not delete the enrollment")
+        XCTAssertFalse(app.buttons["delete-enrollment"].waitForExistence(timeout: 1), "the enrollment is still listed")
+        keep("after the delete")
     }
 
     /// The app's log, which a simulator build also writes to the simulated device's tmp

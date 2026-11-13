@@ -52,6 +52,16 @@ enum OwnerKey {
         #endif
     }
 
+    /// The owner's presence for something that uses no key: deleting one (design §5.4). The same
+    /// biometric check as for every use of a key; the simulator has none.
+    static func confirmPresence(reason: String) async throws {
+        #if !targetEnvironment(simulator)
+        guard try await LAContext().evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) else {
+            throw Failure("the biometric check did not pass")
+        }
+        #endif
+    }
+
     /// CryptoKit signs a `Digest` and has no constructor for one from bytes already hashed (the
     /// userOpHash). SHA256Digest is a plain 32-byte value: start from a real one and overwrite
     /// it, as the Mac backend does. owner-core verifies the signature over the reviewed digest

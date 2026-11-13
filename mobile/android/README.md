@@ -212,6 +212,18 @@ gave root to a key nobody held. Two changes in the app, one on the laptop:
   <label>`, and `key check --phone <label>` at any time. The CLI accepts
   this app from version code 11.
 
+### Deleting an enrollment (version 0.4.1-p4, issue #40)
+
+**Delete an enrollment…** lists every key the phone holds a record of,
+confirmed by the laptop or not. For the one picked, the app asks twice in
+`owner-core`'s words (the same as on the iPhone): which key and account,
+that the phone cannot see whether the key is root, that deleting the root
+key takes the account with it unless a recovery key is installed, and to
+look at `agent-signer owner status` on the laptop first, which prints the
+root key's fingerprint. Then the fingerprint sensor. The Keystore entry
+goes first and its record after it; if either cannot be removed the app
+says which, and a record without its key shows as KEY MISSING.
+
 ### Run record — the key shown before the handover (2026-11-13, app 0.4.0-p4)
 
 The real-device test on the same TEE-only phone, three QR codes: the

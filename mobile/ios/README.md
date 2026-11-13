@@ -152,6 +152,19 @@ Still open on a phone: the 7-day expiry of a free account's profile and
 what a rebuild after it keeps, a key after a change of the enrolled
 biometrics, Touch ID, and everything about distribution.
 
+## Deleting an enrollment (version 0.4.2, issue #40)
+
+Each enrolled account has **Delete…**. The app asks twice in
+`owner-core`'s words (the same as on Android, and the same for a key the
+laptop never confirmed): which key and account, that the phone cannot see
+whether the key is root, that deleting the root key takes the account
+with it unless a recovery key is installed, and to look at `agent-signer
+owner status` on the laptop first, which prints the root key's
+fingerprint. Then Face ID or Touch ID. The key's handle lives in the
+record, so one write removes both or neither. The simulator run ends with
+this delete, and its robot checks the words, that one tap deletes
+nothing, and that the enrollment is gone afterwards.
+
 ## A release build is refused
 
 The Release configuration is the one that can be handed to someone. It

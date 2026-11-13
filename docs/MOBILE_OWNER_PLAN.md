@@ -391,6 +391,12 @@ suite replays the attack with a host on the path, against a phone that
 lost the key and one that kept it; the iOS simulator run does the same
 against the real app. The Android minimum version code is 11.
 
+Issue #40 (2026-11-13): the owner can delete an enrollment on the phone on
+purpose (design §5.4): asked twice in `owner-core`'s words, the same on
+both apps and for confirmed and unconfirmed keys, then the biometric
+check; `owner status` prints the root key's fingerprint to compare first,
+and `key evict --phone` points at the screen.
+
 ## Threat model, briefly
 
 - **The laptop is compromised.** It can request a malicious operation, but

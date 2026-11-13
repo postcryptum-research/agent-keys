@@ -870,7 +870,11 @@ fn phone_key(label: &str, cfg_path: &Path, op: KeyOp) -> Result<()> {
             }
         }
         KeyOp::Create { .. } => unreachable!("handled by phone_enroll"),
-        KeyOp::Evict => bail!("a phone key is deleted on the phone, after a `set-root` away from it"),
+        KeyOp::Evict => bail!(
+            "a phone key is deleted on the phone, after a `set-root` away from it: in the owner app, Delete on that enrollment \
+             (it asks twice, then for the biometric check). Look at `owner status` first: a key that is still the root key \
+             takes the account with it"
+        ),
         KeyOp::Check { .. } => {
             let pk = public_key.parse()?;
             let account = cfg.account.context("the health check names the account the key is for: pin `account` in the config first")?;

@@ -739,6 +739,16 @@ impl Session {
         let root = kernel.rootValidator().call().await?;
         println!("account:        {}", self.account);
         println!("root validator: 0x{} (type 0x{:02x})", hex::encode(&root[1..]), root[0]);
+        // which key that is: what the owner compares with a phone's screen before a key is
+        // deleted there (docs/MOBILE_OWNER_DESIGN.md §5.4)
+        let validator = Address::from_slice(&root[1..21]);
+        if root[0] == 0x01 && self.known_validators().contains(&validator) {
+            let k = IP256ValidatorView::new(validator, self.provider.clone()).publicKeys(self.account).call().await?;
+            let key = hw_signer::PublicKey { x: k.x.0, y: k.y.0 };
+            println!("root key:       fingerprint {} (x = 0x{}…)", owner_core::fingerprint::fingerprint(&key), hex::encode(&key.x[..4]));
+        } else {
+            println!("root key:       not readable here (the root validator is not one of this repository's P-256 validators)");
+        }
         match self.dep.p256_recovery_validator {
             Some(v) => {
                 let vid = kernel::validator_id(v);

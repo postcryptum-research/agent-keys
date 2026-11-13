@@ -1136,10 +1136,15 @@ fn phone_is_enrolled_then_takes_over_root() {
         assert!(!err.contains("userOpHash"), "{mode}: no operation was built for signing: {err}");
         let _ = std::fs::remove_file(&qr_file);
     }
-    // nothing was sent: the old owner key is still root, and signs
+    // nothing was sent: the old owner key is still root, and signs. `owner status` names the
+    // root key, which is what the owner compares with a phone's screen before a key is deleted
+    // there (design §5.4, issue #40)
     let before = chain.counter();
     chain.ok(&["op", "send", "--agent", &cfg, "--root", "--target", &counter, "--data", INCREMENT]);
     assert_eq!(chain.counter(), before + U256::from(1), "root did not move");
+    let status = chain.ok(&["owner", "status", "--agent", &cfg]);
+    assert!(status.contains(&format!("root key:       fingerprint {}", fingerprint_of(&owner))), "{status}");
+    assert!(!status.contains(&fp), "the phone's key is not root yet: {status}");
 
     // 4b. the phone holds the key and shows it: the handover goes through
     let sim = phone_simulator(qr_file.clone(), key(9), "prove");
@@ -1147,6 +1152,8 @@ fn phone_is_enrolled_then_takes_over_root() {
     assert!(sim.join().unwrap(), "the laptop confirms the proof");
     assert!(text.contains(&format!("fingerprint {fp}")) && text.contains(&format!("phone:          holds the key {fp}")), "{text}");
     let _ = std::fs::remove_file(&qr_file);
+    let status = chain.ok(&["owner", "status", "--agent", &cfg]);
+    assert!(status.contains(&format!("root key:       fingerprint {fp}")) && status.contains("installed = true"), "{status}");
 
     // 5. the phone is root: the config points at it; a root operation goes through the session
     let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
@@ -1157,6 +1164,9 @@ fn phone_is_enrolled_then_takes_over_root() {
     let shown = chain.ok(&["key", "show", "--phone", "owner-phone", "--agent", phone_cfg]);
     assert!(shown.contains(&format!("fingerprint {fp}")) && shown.contains("attestation none") && shown.contains("revocation  not checked"), "{shown}");
     assert!(shown.contains("boot state  none"), "{shown}");
+    // a phone's key is deleted on the phone; the laptop says where, and what to look at first
+    let err = chain.fails(&["key", "evict", "--phone", "owner-phone", "--agent", phone_cfg]);
+    assert!(err.contains("Delete on that enrollment") && err.contains("owner status") && err.contains("takes the account with it"), "{err}");
     // the health check (§2.4): the same proof, any time, without a transaction
     let check = ["key", "check", "--phone", "owner-phone", "--agent", phone_cfg, "--listen", "127.0.0.1:0", "--phone-qr-file", qr, "--phone-timeout", "60"];
     let sim = phone_simulator(qr_file.clone(), key(9), "prove");

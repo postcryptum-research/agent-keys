@@ -43,6 +43,40 @@ pub fn attestation_challenge(request_bytes: &[u8]) -> [u8; 32] {
     h.finalize().into()
 }
 
+/// What the phone says before it deletes an enrollment on the owner's word
+/// (§5.4): the same on both platforms. The phone has no view of the chain
+/// (T21), so it cannot know whether the key is the account's root. The text
+/// sends the owner to the laptop first, and it is the same for a key the
+/// laptop confirmed and for one it did not: either may be root.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeletionPrompt {
+    pub title: String,
+    /// The first question: what is deleted, what it may cost, where to look.
+    pub warning: String,
+    /// The second question, in one sentence.
+    pub second: String,
+    /// What the biometric check is asked for.
+    pub reason: String,
+}
+
+pub fn deletion_prompt(label: &str, chain_id: u64, account: Address, key: &PublicKey) -> DeletionPrompt {
+    let fp = crate::fingerprint::fingerprint(key);
+    let account = account.to_checksum(None);
+    DeletionPrompt {
+        title: "Delete this key?".into(),
+        warning: format!(
+            "Key {fp} of account {account} on chain {chain_id} ({label}).\n\n\
+             This phone cannot see whether the key is the account's root key. If it is, deleting it takes the account with it, \
+             unless a recovery key is installed.\n\n\
+             Look on the laptop first: \"agent-signer owner status\" prints the root key's fingerprint and whether a recovery key \
+             is installed. Delete only when the root key there is another one than {fp}.\n\n\
+             A deleted key cannot be brought back."
+        ),
+        second: format!("Delete the key {fp} for good? If it is still the root key of {account}, the account goes with it."),
+        reason: format!("Delete the key {fp}"),
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct EnrollRequest {
@@ -297,6 +331,26 @@ impl EnrollResponse {
 mod tests {
     use super::*;
     use alloy_primitives::address;
+
+    /// §5.4: the words before a deliberate delete name what is deleted and
+    /// where to look first, and there is one text for every key, confirmed
+    /// by the laptop or not.
+    #[test]
+    fn the_deletion_prompt_names_the_key_and_sends_the_owner_to_the_laptop() {
+        let account = address!("D62Dd4afD4e77cDFA6f8eaD1D2655745cF5af628");
+        let sk = p256::ecdsa::SigningKey::from_bytes(&[5u8; 32].into()).unwrap();
+        let p = sk.verifying_key().to_encoded_point(false);
+        let pk = PublicKey { x: (*p.x().unwrap()).into(), y: (*p.y().unwrap()).into() };
+        let fp = crate::fingerprint::fingerprint(&pk);
+        let d = deletion_prompt("owner-phone", 84532, account, &pk);
+        for needed in [fp.as_str(), "0xD62Dd4afD4e77cDFA6f8eaD1D2655745cF5af628", "chain 84532", "owner-phone", "takes the account with it", "recovery key", "agent-signer owner status", "cannot be brought back"] {
+            assert!(d.warning.contains(needed), "{needed:?} is not in: {}", d.warning);
+        }
+        assert!(d.second.contains(&fp) && d.second.contains("the account goes with it"), "{}", d.second);
+        assert!(d.reason.contains(&fp) && !d.title.is_empty());
+        // nothing in it depends on what the laptop confirmed: the function is not told
+        assert_eq!(d, deletion_prompt("owner-phone", 84532, account, &pk));
+    }
 
     fn request() -> Vec<u8> {
         EnrollRequest::new(

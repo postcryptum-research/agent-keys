@@ -29,6 +29,12 @@ struct ProofPrompt {
     let qr: FfiQr
 }
 
+/// The owner asked to delete an enrollment (design §5.4): owner-core's words, asked twice.
+struct DeletePrompt {
+    let enrollment: Enrollment
+    let words: FfiDeletionPrompt
+}
+
 struct ShownFingerprint {
     let text: String
     let account: String
@@ -42,6 +48,7 @@ final class Model: ObservableObject {
     @Published var enrollPrompt: EnrollPrompt?
     @Published var reviewPrompt: ReviewPrompt?
     @Published var proofPrompt: ProofPrompt?
+    @Published var deletePrompt: DeletePrompt?
     /// The new key's fingerprint, kept on screen while the owner types it on the laptop.
     @Published var fingerprint: ShownFingerprint?
     /// Something the owner must not miss, kept at the top of the screen until acknowledged.
@@ -110,7 +117,7 @@ final class Model: ObservableObject {
         Task {
             while true {
                 // one request at a time: the next QR waits for the decision on this one
-                if enrollPrompt == nil, reviewPrompt == nil, proofPrompt == nil, let text = try? String(contentsOf: file, encoding: .utf8), !text.isEmpty {
+                if enrollPrompt == nil, reviewPrompt == nil, proofPrompt == nil, deletePrompt == nil, let text = try? String(contentsOf: file, encoding: .utf8), !text.isEmpty {
                     try? FileManager.default.removeItem(at: file)
                     handleQr(text.trimmingCharacters(in: .whitespacesAndNewlines))
                 }
@@ -296,6 +303,37 @@ final class Model: ObservableObject {
                 }
                 say("showed the key \(fp) and posted: \(try await Http.post(prompt.qr, answer).description)")
             } catch { say("ERROR \(error.localizedDescription)") }
+        }
+    }
+
+    // ---- deleting an enrollment on purpose (design §5.4) -------------------------
+
+    /// The words are owner-core's, the same for a key the laptop confirmed and one it did not.
+    func askToDelete(_ e: Enrollment) {
+        do {
+            deletePrompt = DeletePrompt(enrollment: e, words: try deletionPrompt(label: e.label, chainId: e.chainId, account: e.account, publicKey: e.publicKey))
+        } catch { say("ERROR \(error.localizedDescription)") }
+    }
+
+    /// After both questions: the biometric check, then the key and its record go together.
+    func delete(_ prompt: DeletePrompt) {
+        deletePrompt = nil
+        let e = prompt.enrollment
+        Task {
+            do { try await OwnerKey.confirmPresence(reason: prompt.words.reason) } catch {
+                say("not deleted: \(error.localizedDescription)")
+                return
+            }
+            // the key's handle lives in the record, so one write removes both, or neither
+            let kept = enrollments
+            enrollments.removeAll { $0.id == e.id }
+            do {
+                try Store.save(enrollments)
+                say("deleted the key \((try? fingerprintOf(publicKey: e.publicKey)) ?? "?") and its record (account \(e.account), chain \(e.chainId))")
+            } catch {
+                enrollments = kept
+                say("ERROR the key and its record could not be removed (\(error.localizedDescription)): nothing was deleted")
+            }
         }
     }
 
