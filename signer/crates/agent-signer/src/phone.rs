@@ -26,6 +26,7 @@ use hw_signer::{HardwareSigner, PublicKey, Signature, SignerError, UserOpContext
 use crate::attestation::{self, Attested};
 use owner_core::enroll::{EnrollRequest, EnrollResponse, Enrollment};
 use owner_core::fingerprint::fingerprint;
+use owner_core::health::{HealthRequest, HealthResponse};
 use owner_core::request::{commitment, confirmation_mac, verify_answer_mac, QrPayload, RequestError, SignResponse, MAC_HEADER, SESSION_SECRET_BYTES};
 use rand_core::{OsRng, RngCore};
 
@@ -275,6 +276,32 @@ pub fn enroll(
     Ok(Enrolled { request, answer: body, enrollment, evidence })
 }
 
+/// The health check (design §2.4), which is also the proof a handover waits
+/// for (§2.2): the phone signs a digest it co-randomizes, with the key the
+/// laptop names, and the laptop verifies it against that key. No
+/// transaction. A phone that lost the key, or never kept it because the
+/// laptop's confirmation of the enrollment did not reach it, fails here.
+pub fn prove_possession(label: &str, chain_id: u64, account: Address, key: &PublicKey) -> Result<(), SignerError> {
+    let mut nonce = [0u8; 32];
+    OsRng.fill_bytes(&mut nonce);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| SignerError::Backend(e.to_string()))?;
+    let request = HealthRequest::new(chain_id, account, key, B256::from(nonce), now.as_secs() + options().timeout.as_secs()).to_bytes();
+    let headline = format!(
+        "phone key {label:?} for account {account} on chain {chain_id}: scan this with the owner app and confirm there.          The phone shows that it holds the key {}; nothing goes to the chain.",
+        fingerprint(key)
+    );
+    lan_session(&request, &headline, |body| match HealthResponse::verify(body, &request) {
+        // the answer is the phone's own (the session MAC): another answer would not differ
+        Err(e @ RequestError::NotHeld) => Err(Rejection::End(e.to_string())),
+        other => Ok(other?),
+    })
+    .map_err(|e| match e {
+        SessionError::Refused(e) => SignerError::Key(format!("phone {label:?} did not show that it holds the key: {e}")),
+        SessionError::Rejected(m) => SignerError::Key(format!("phone {label:?} did not show that it holds the key: {m}")),
+        SessionError::Backend(m) => SignerError::Key(format!("phone {label:?} did not show that it holds the key: {m}")),
+    })
+}
+
 /// Names from the laptop's deployments file for the addresses the phone's
 /// build does not know (design §4.3, §6.7): a variant's paymaster, a chain
 /// without embedded facts. The phone shows them as unverified labels and
@@ -465,7 +492,11 @@ fn lan_session<T>(
                     Ok(t) => {
                         // the phone keeps its key only on this: a bare 200 could come from anyone in the path
                         let confirmation = confirmation_mac(&secret, &body).map_err(|e| SessionError::Backend(e.to_string()))?;
-                        let _ = req.respond(tiny_http::Response::from_string(confirmation));
+                        // a write the system reports as failed is one the phone did not get; a write it
+                        // reports as done may still not have arrived, which no side can see from here
+                        if let Err(e) = req.respond(tiny_http::Response::from_string(confirmation)) {
+                            eprintln!("the answer was accepted, but the confirmation could not be written back to the phone ({e}): the phone will show it as not confirmed");
+                        }
                         drop(server); // the port closes; later requests get nothing
                         return Ok(t);
                     }

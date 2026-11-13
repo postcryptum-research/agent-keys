@@ -1,6 +1,6 @@
 // The owner's hands for the simulator run (README.md, run-simulator.sh): agent-signer's phone
-// test drives an enrollment and two signatures into the app and checks what comes back, and
-// this taps what a person would. It keeps each screen it saw, and checks what only the screen
+// test drives an enrollment, the proof that the phone holds the new key, and two signatures
+// into the app and checks what comes back, and this taps what a person would. It keeps each screen it saw, and checks what only the screen
 // can show (design §6.6): every row owner-core produced is on the review, Sign is not offered
 // before the end of the review is on screen, and a review with bold effects asks a second time.
 
@@ -19,6 +19,7 @@ final class OwnerRobot: XCTestCase {
         var awaited: String?
         var signatures = 0
         var secondConfirmations = 0
+        var proofs = 0
         while Date() < end {
             if let line = awaited, appLog().contains(where: { $0.contains(line) }) {
                 awaited = nil
@@ -27,6 +28,7 @@ final class OwnerRobot: XCTestCase {
                 // the run's two signatures are with the laptop: a permission install, then the change of the root key
                 if signatures == 2 {
                     XCTAssertEqual(secondConfirmations, 1, "exactly the change of the root key asks a second time")
+                    XCTAssertEqual(proofs, 1, "the handover to this phone waits for the phone to show the key, once")
                     return
                 }
             }
@@ -39,6 +41,13 @@ final class OwnerRobot: XCTestCase {
             if done.exists && done.isHittable {
                 keep("the new key's fingerprint")
                 done.tap()
+            }
+            let prove = app.buttons["prove"]
+            if prove.exists && prove.isHittable {
+                XCTAssertEqual(signatures, 0, "the key is shown before it is root, not after")
+                keep("the proof prompt")
+                proofs += 1
+                prove.tap()
             }
             let yes = app.buttons["confirm-sign"]
             if yes.exists && yes.isHittable {

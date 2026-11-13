@@ -56,9 +56,11 @@ pub const STATUS_URL: &str = "https://android.googleapis.com/attestation/status"
 /// (docs/APP_ATTEST_ORG.md §8).
 pub const ANDROID_PACKAGES: &[&str] = &["dev.tpmsign.owner.spike"];
 
-/// T14: the first `versionCode` whose answers carry the session MAC and that
-/// keeps a key only on the laptop's authenticated confirmation.
-pub const MIN_ANDROID_VERSION_CODE: u64 = 10;
+/// T14: the first `versionCode` that keeps a key whose enrollment the laptop
+/// did not confirm to it, and that can show the laptop a key it holds (issue
+/// #38). An older app deletes such a key and cannot answer the proof a
+/// handover waits for.
+pub const MIN_ANDROID_VERSION_CODE: u64 = 11;
 
 /// SHA-256 digests of the signing certificates of distributed builds, per
 /// channel (§5.2, docs/MOBILE_DEV_MODE.md §2.2). Empty until the project

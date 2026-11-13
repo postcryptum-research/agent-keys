@@ -82,12 +82,41 @@ only scan, fetch, sign in hardware and render a list of sections.
    fingerprint, and writes the config snippet (§8.1).
 6. The phone stores the enrollment record (§5.4). Nothing is on-chain yet.
 
+**The two sides can end apart** (issue #38). The laptop accepts the answer
+and replies with its confirmation (§3.3); only that reply tells the phone
+that the laptop has the key. A reply that is lost — the phone locked, the
+Wi-Fi dropped — or replaced by a host on the path, which needs no secret,
+leaves the laptop saying "enrolled" and the phone without a confirmation.
+So:
+- **the phone keeps the key, as unconfirmed.** A timeout, a network error
+  and any reply that is not the laptop's confirmation say nothing about
+  what the laptop has. Deleting the key is the one step that cannot be
+  undone, and the laptop may be about to make that key root;
+- **the handover does not take the laptop's word for it** (§2.2): the
+  phone shows that it holds the key first.
+An unconfirmed key is replaced only by a new enrollment of the same
+account, which the owner starts and confirms on the phone.
+
 ### 2.2 Handover
 
 The phone becomes root through `owner set-root --validator <P256Validator>
 --retire <P256Validator> --public-key <phone x,y>` (V: this exact sequence
 is `tests/anvil_cli.rs::recovery_drill`). After it, the old owner key signs
-nothing (AA24). Who signs the `set-root` decides how safe it is (T2):
+nothing (AA24).
+
+**The phone shows the key first** (issue #38). `--to-phone <label>` makes
+the handover wait for a session of its own, before anything is signed or
+sent: the phone signs the health digest of §2.4 with the key that is
+about to become root, and the laptop verifies it against that key. A
+phone that did not keep the key, that holds another one for the account,
+or that is not there at all stops the handover; without this, root would
+go to a key nobody holds, and the account with it unless a recovery key
+is installed. On the phone, a key it has shown is confirmed from then on,
+whatever becomes of the laptop's reply: it may be root. The CLI cannot
+tell a phone's key from any other pasted `--public-key`, so the flag is
+the owner's to pass; `key create --phone` prints the command with it.
+
+Who signs the `set-root` decides how safe it is (T2):
 
 - **Phone to phone** (a new phone, or a second enrolled one), and a **new
   key on the same phone** (§5.4). Kernel never uninstalls the validator
@@ -133,6 +162,13 @@ without any transaction. The digest is
 `sha256("TPM_sign/v1/health" ‖ laptopNonce ‖ phoneNonce)`. The phone
 contributes `phoneNonce`, so the laptop cannot choose the digest and cannot
 use a health check to obtain a signature over a meaningful hash (§6.5).
+`owner-core` draws `phoneNonce` itself; the app never chooses it.
+
+The same session is the proof a handover waits for (§2.2). The request
+(§4.4) names the key; the phone answers for the key it holds for that
+chain and account, confirmed or not, and refuses with `no-key` or
+`other-key` otherwise, so the laptop learns which it is. The phone asks
+the owner and the key's biometric check before it signs.
 
 ## 3. Transport: QR, then the local network
 
@@ -220,6 +256,10 @@ path, because a system camera may open the URI in another app.
 **CLI-side errors**, each with a plain message and a non-zero exit:
 timeout, a refusal reported by the phone (with its reason), a malformed
 response, a signature that does not verify, or a `userOpHash` mismatch.
+
+The confirmation can fail to arrive, or be replaced on the way, and the
+laptop cannot see that: it reports a write the system says failed, and
+no more. What follows from that is in §2.1 and §2.2.
 
 ### 3.4 Platform notes (I, confirmed in P1)
 
@@ -330,6 +370,18 @@ The response carries `publicKey`, the key's `securityLevel` as the phone
 sees it, `deviceCredential` (whether the PIN opt-in was chosen, §5.4), and
 `attestation`. On Android that is the certificate chain, base64 DER. On iOS
 it is the App Attest object and key id (§5.3).
+
+### 4.4 Health request and response
+
+The request carries `"tpmSign": "health-request"`, `expires`, `chainId`,
+`account`, the `publicKey` to prove and a 32-byte `nonce` (the laptop's
+half of the digest). The response carries `"tpmSign": "health-response"`,
+the `request` commitment, `result` (`signed` or `refused`), and for
+`signed` the `phoneNonce` and the 64-byte `signature` over
+`sha256("TPM_sign/v1/health" ‖ nonce ‖ phoneNonce)`. The laptop verifies
+it against the key its own request named. A refusal carries `reason`:
+`user`, `no-key` (the phone holds no key for the account) or `other-key`
+(it holds another one; `detail` names both fingerprints).
 
 ## 5. Keys, enrollment and attestation
 
@@ -777,7 +829,10 @@ one (T19). So the facts come from the **build**:
     device_credential: bool, attestation: Vec<Vec<u8>>, app: AppInfo) -> Result<Vec<u8>, CoreError>;
 #[uniffi::export] fn enroll_refusal(commitment: String, reason: String, detail: Option<String>,
     app: AppInfo) -> Vec<u8>;
-#[uniffi::export] fn health_digest(laptop_nonce: Vec<u8>) -> HealthChallenge;
+// §2.4: which of the phone's keys the request is about, the digest (the core draws the phone's
+// nonce), the answer or the refusal.
+#[uniffi::export] fn open_health(bytes: Vec<u8>, commitment: String, now: u64, held: Vec<HeldKey>)
+    -> Result<Arc<Health>, CoreError>;
 #[uniffi::export] fn fingerprint(public_key: Vec<u8>) -> String;   // 100 bits, 4 × 5 base32
 // Enrollment carries its options: gas cap, expert mode, device PIN.
 // Plan B: Review::webauthn_message() is the only input SHA256withECDSA may sign.
@@ -823,7 +878,8 @@ translation can follow.
 |---|---|
 | `key create --phone <label> --agent <cfg>` | the enrollment session (§2.1); verifies attestation, prints the public key, fingerprint, security tier and config snippet; `--allow-no-attestation` for iOS without App Attest; `--allow-dev-build` for development-signed iOS builds, test chains only (with iOS); `--require-strongbox` to refuse a TEE-only key (§5.6); `--android-app-digest <sha256>` to accept one's own build of the app; `--require-revocation-check` to refuse when Google's revocation list cannot be fetched; `--allow-unverified-boot` to accept a phone whose boot state is Unverified (§5.2); `--phone-skip-fingerprint` to rely on the QR's secret without the fingerprint prompt, `--phone-fingerprint <fp>` to give the fingerprint to a script (§3.1); `--out <dir>` to keep the request, the answer and the chain |
 | `owner set-root … --expect-fingerprint <fp>` | refuses unless `--public-key` has that fingerprint; for the first handover (§2.2) |
-| `key check --phone <label>` | the health check (§2.4) |
+| `owner set-root … --to-phone <label>` | the new key is that phone key: the phone shows that it holds it, in a session of its own, before anything is signed or sent (§2.2). Always for a handover to a phone |
+| `key check --phone <label>` | the health check (§2.4): the phone signs a digest it co-randomizes with the configured key; no transaction |
 | `key show --phone <label>` | prints the configured public key and fingerprint, and what the enrollment recorded: attestation, revocation, boot state (no session) |
 | every owner command | unchanged syntax; with a phone owner they open a session. New flags `--listen`, `--phone-timeout` |
 
@@ -973,7 +1029,7 @@ signed on the laptop's word.
 |---|---|---|---|
 | T1 | **The laptop is compromised** and requests a malicious operation | the phone decodes, recomputes the hash and shows the real effect; laptop labels are marked as such; addresses are shown in full; gas cap | a user who approves without reading. The bold second confirmation targets the dangerous cases |
 | T2 | **The laptop is compromised during a handover** and substitutes its own key in `set-root` | phone to phone: the current phone decodes the `set-root` and shows the new key's fingerprint, which prevents it (§2.2). First handover: `--expect-fingerprint`, a clean machine, and a check from a **third** device of `P256Validator.publicKeys(account)` | the first handover is signed blind. Between a substituted `set-root` landing and the third-device check, the attacker holds root and can rotate again or drain. v2 adds on-chain checks by the phone itself (§14) |
-| T3 | **A LAN attacker** swaps the request or the response, or answers an enrollment with its own key | QR commitment; every answer carries a MAC under the QR's secret (§3.1); the laptop verifies the signature against its own hash | denial of service by dropping traffic only. An attacker who can also read the QR has the secret: the fingerprint the CLI asks for at enrollment covers that, unless the owner skips it (`--phone-skip-fingerprint`) |
+| T3 | **A LAN attacker** swaps the request or the response, or answers an enrollment with its own key | QR commitment; every answer carries a MAC under the QR's secret (§3.1); the laptop verifies the signature against its own hash | denial of service by dropping traffic only. Replacing the laptop's confirmation of an enrollment needs no secret; it used to make the phone delete a key the laptop had accepted, and no longer does: the phone keeps the key, and a handover waits for the phone to show it (§2.1, §2.2, issue #38). An attacker who can also read the QR has the secret: the fingerprint the CLI asks for at enrollment covers that, unless the owner skips it (`--phone-skip-fingerprint`) |
 | T4 | **A foreign QR** (another screen, a poster) | unenrolled accounts are refused; for an enrolled one, the normal review applies | as T1 |
 | T5 | **Malware on the phone** (user level) | Keystore and keychain keys are bound to our app; use needs biometrics enforced by hardware | a rooted or jailbroken phone. Treat a phone that cannot pass attestation as untrusted: an unlocked bootloader or a failed boot is refused at enrollment, an Unverified boot state too unless the owner asks for it (`--allow-unverified-boot`, §5.2), and the config records the state. That is the phone as it was at enrollment; nothing re-checks it later. On a TEE-only phone, a bug in the trusted OS reaches the key; the app says so (§5.6) |
 | T6 | **Our app itself is malicious or compromised** (supply chain, a bad update) | open source; minimal dependencies; release signing; the Android attestation names our signing certificate, which means something only on a system whose boot is verified (§5.2); a build to distribute cannot be made while no certificate is pinned or the package is provisional (§5.2); custody of the signing keys and release roles (`APP_ATTEST_ORG.md` §4) | it could show one operation and sign another. Mitigation by reproducible Android builds (P5); none on iOS beyond App Store review. Store distribution also puts the store operator in this root (Google signs Play builds, Apple re-signs App Store builds). The largest residual risk; say so in user docs |

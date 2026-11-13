@@ -22,6 +22,8 @@ struct ContentView: View {
             ReviewScreen(prompt: prompt).id(prompt.id)
         } else if let prompt = model.enrollPrompt {
             EnrollScreen(prompt: prompt)
+        } else if let prompt = model.proofPrompt {
+            ProofScreen(prompt: prompt)
         } else {
             accounts
         }
@@ -118,7 +120,7 @@ struct EnrollScreen: View {
                         Text(unhyphenated("Names from the laptop that are IGNORED, because this app knows these addresses itself:\n" + e.ignoredPins.joined(separator: "\n")))
                     }
                     if prompt.replacesUnconfirmed {
-                        Text("An earlier enrollment of this account was never confirmed by the laptop; its key is replaced.")
+                        Text("An earlier enrollment of this account was never confirmed by the laptop, and this phone never showed its key to the laptop; that key is replaced. If root was handed to it all the same, refuse here.").bold()
                     }
                     Text("A new key is created on this phone for this account. Nothing changes on-chain until the laptop hands root to it.")
                 }
@@ -135,6 +137,40 @@ struct EnrollScreen: View {
                 .background(.bar)
             }
             .navigationTitle("Enroll this phone as the owner key?")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+}
+
+/// §2.4: the laptop asks whether this phone holds a key. What the key signs is a check value
+/// both sides contribute to, never an operation.
+struct ProofScreen: View {
+    @EnvironmentObject private var model: Model
+    let prompt: ProofPrompt
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(unhyphenated("The laptop asks this phone to show that it holds the key \(prompt.health.fingerprint()) of account \(prompt.health.account()) (\(prompt.enrollment.label), chain \(String(prompt.enrollment.chainId)))."))
+                    Text("The key signs a one-time check value, not an operation: nothing goes to the chain, and nothing changes on it.")
+                    if !prompt.enrollment.confirmed {
+                        Text("The laptop never confirmed this key's enrollment to this phone. Showing the key is how the laptop learns that the phone has it; the laptop may then hand the account's root to it.").bold()
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+            }
+            .safeAreaInset(edge: .bottom) {
+                HStack {
+                    Button("Refuse", role: .cancel) { model.refuseProof(prompt) }
+                    Spacer()
+                    Button("Show the key") { model.prove(prompt) }.buttonStyle(.borderedProminent).accessibilityIdentifier("prove")
+                }
+                .padding()
+                .background(.bar)
+            }
+            .navigationTitle("Show that this phone holds the key?")
             .navigationBarTitleDisplayMode(.inline)
         }
     }

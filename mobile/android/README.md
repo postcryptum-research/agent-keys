@@ -187,6 +187,29 @@ phone-signed root operation included on anvil; the agent still runs:
 test phone_owner_real_device ... ok
 ```
 
+## Showing a key, and keeping one (version 0.4.0-p4, issue #38)
+
+An enrollment could end with the laptop saying "enrolled" and the phone
+having deleted the key: the laptop's confirmation lost on the way, or
+replaced by a host on the path, which needs no secret. The handover then
+gave root to a key nobody held. Two changes in the app, one on the laptop:
+
+- **The key is kept.** A missing or foreign reply to the enrollment answer
+  says nothing about what the laptop has, so the app keeps the key as
+  unconfirmed and says so. Only a key that never left the phone (its
+  creation failed) is deleted. An unconfirmed key is replaced by the next
+  enrollment of the same account, after the owner's yes.
+- **The phone can show a key** (design §2.2, §2.4). Either scan button
+  answers a `health-request`: the core checks it and decides whether this
+  phone can answer, the dialog says which key and account, and after the
+  fingerprint the key signs `sha256("TPM_sign/v1/health" ‖ laptopNonce ‖
+  phoneNonce)`, with a nonce the core draws. It is never an operation. A
+  key the phone has shown is confirmed from then on: the laptop may make
+  it root on that answer.
+- **The laptop asks before the handover**: `owner set-root … --to-phone
+  <label>`, and `key check --phone <label>` at any time. The CLI accepts
+  this app from version code 11.
+
 ## P3: authenticated answers (version 0.3.1-p3)
 
 The QR now carries the session's secret (`&k=…`, design §3.2). The core's

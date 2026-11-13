@@ -375,6 +375,20 @@ screen's rules checked by anything but the simulator's robot, the 7-day
 expiry of the free profile, and the first fetch, which fails once while
 iOS asks for the local network.
 
+Issue #38 (2026-11-13): an enrollment could end with the laptop saying
+"enrolled" and the phone having deleted the key, when the laptop's
+confirmation was lost or replaced on the way, and the handover had no way
+to notice. Closed on three sides. The phone health check of design §2.4
+exists (`key check --phone`; `owner-core` 0.3.0, `health.rs`): the phone
+signs `sha256("TPM_sign/v1/health" ‖ laptopNonce ‖ phoneNonce)` with a
+nonce the core draws. `owner set-root --to-phone <label>` runs it against
+the key that is about to become root, before anything is signed or sent.
+And both apps keep a key whose enrollment was not confirmed, instead of
+deleting it; showing the key to the laptop is what confirms it. The anvil
+suite replays the attack with a host on the path, against a phone that
+lost the key and one that kept it; the iOS simulator run does the same
+against the real app. The Android minimum version code is 11.
+
 ## Threat model, briefly
 
 - **The laptop is compromised.** It can request a malicious operation, but

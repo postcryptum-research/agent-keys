@@ -50,8 +50,10 @@ against the app on a local anvil:
 1. **Enrollment.** `key create --phone … --allow-no-attestation`; the app
    shows the account, the notice about its key and asks; a new key; the
    laptop confirms.
-2. **Handover**, signed by the account's current software key, to the
-   app's key.
+2. **The app shows that it holds the new key** (`owner set-root …
+   --to-phone`, design §2.2): it signs a check value both sides contribute
+   to. Only then the **handover**, signed by the account's current
+   software key, to the app's key.
 3. **A new agent permission, signed in the app.** The review names
    AgentPolicy, P256Signer and the demo counter from the build's own
    table, and shows the whole mandate.
@@ -59,6 +61,12 @@ against the app on a local anvil:
    calls, each effect in bold, and a second confirmation that lists them.
    Root then is the software key's again, which the test proves by using
    it.
+
+The script runs the loop twice. The second time a host on the path
+replaces the laptop's confirmation of the enrollment (issue #38): the
+laptop says "enrolled", the app saw no confirmation. The app must keep its
+key, unconfirmed, show it when the handover asks, and go on; the script
+checks the app's own log for exactly that.
 
 `ROBOT=0 ./run-simulator.sh` leaves the taps to you, in the Simulator
 window. By default a UI test is the owner's hands. It taps what a person
@@ -68,10 +76,11 @@ would and checks what only the screen can show:
   emphasised ones marked `⚠` and no others;
 - Sign is not enabled before the end of the review is on screen (§6.6);
 - a second confirmation appears for the review with bold effects, and only
-  for that one.
+  for that one;
+- the app is asked to show its key once, before any signature.
 
-It keeps a screenshot of each step in `build/robot-screens`, and its log
-(`build/robot.log`) has each review as the screen showed it. The script
+It keeps a screenshot of each step in `build/robot-screens-<run>`, and its
+log (`build/robot-<run>.log`) has each review as the screen showed it. The script
 fails if either half fails: the CLI's test, or the robot's checks.
 
 ### What is different in the simulator
@@ -115,7 +124,8 @@ a free personal Apple Account:
      cargo test -p agent-signer --features insecure-software-keys \
      --test anvil_cli phone_owner_real_device -- --ignored --nocapture
    ```
-   Three QR codes follow; for each, "Scan the laptop's QR" in the app.
+   Four QR codes follow (enrollment, showing the key, two signatures); for
+   each, "Scan the laptop's QR" in the app.
    `--allow-no-attestation` is what the first variable adds: there is no
    App Attest without an organisation (§3.5).
 

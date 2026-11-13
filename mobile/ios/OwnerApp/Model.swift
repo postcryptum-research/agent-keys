@@ -22,6 +22,13 @@ struct ReviewPrompt: Identifiable {
     let qr: FfiQr
 }
 
+/// The laptop asks this phone to show that it holds a key (design §2.4).
+struct ProofPrompt {
+    let health: HealthHandle
+    let enrollment: Enrollment
+    let qr: FfiQr
+}
+
 struct ShownFingerprint {
     let text: String
     let account: String
@@ -34,6 +41,7 @@ final class Model: ObservableObject {
     /// A request waiting for the owner's decision: it holds the screen until it has one.
     @Published var enrollPrompt: EnrollPrompt?
     @Published var reviewPrompt: ReviewPrompt?
+    @Published var proofPrompt: ProofPrompt?
     /// The new key's fingerprint, kept on screen while the owner types it on the laptop.
     @Published var fingerprint: ShownFingerprint?
 
@@ -83,6 +91,7 @@ final class Model: ObservableObject {
                 switch (try JSONSerialization.jsonObject(with: bytes) as? [String: Any])?["tpmSign"] as? String {
                 case "enroll-request": try openEnroll(bytes, qr)
                 case "sign-request": try openReview(bytes, qr)
+                case "health-request": try openProof(bytes, qr)
                 case let other: throw Failure("unknown request type \(other ?? "none")")
                 }
             } catch { say("ERROR \(error.localizedDescription)") }
@@ -99,7 +108,7 @@ final class Model: ObservableObject {
         Task {
             while true {
                 // one request at a time: the next QR waits for the decision on this one
-                if enrollPrompt == nil, reviewPrompt == nil, let text = try? String(contentsOf: file, encoding: .utf8), !text.isEmpty {
+                if enrollPrompt == nil, reviewPrompt == nil, proofPrompt == nil, let text = try? String(contentsOf: file, encoding: .utf8), !text.isEmpty {
                     try? FileManager.default.removeItem(at: file)
                     handleQr(text.trimmingCharacters(in: .whitespacesAndNewlines))
                 }
@@ -149,16 +158,17 @@ final class Model: ObservableObject {
                 say("new key: tier \(OwnerKey.tier)\n  FINGERPRINT  \(fp)\n  the laptop confirms the enrollment once it has the answer, and by default only after you typed the fingerprint there (waiting up to 5 minutes)")
                 fingerprint = ShownFingerprint(text: fp, account: e.account)
                 let reply = try? await Http.post(prompt.qr, answer, timeout: 300)
-                // the key is kept only when the laptop itself says it has the answer
+                // the laptop itself says it has the answer: the enrollment is confirmed
                 if reply?.confirmed == true, let i = enrollments.firstIndex(where: { $0.id == id }) {
                     enrollments[i].confirmed = true
                     try Store.save(enrollments)
-                    say("enrollment confirmed by the laptop. Next there: owner set-root … --expect-fingerprint \(fp)")
+                    say("enrollment confirmed by the laptop. Next there: owner set-root … --expect-fingerprint \(fp) --to-phone \(e.label)")
                 } else {
-                    enrollments.removeAll { $0.id == id }
-                    try Store.save(enrollments)
-                    fingerprint = nil
-                    say("enrollment not confirmed (\(reply?.description ?? "the POST failed")): the key and the record are deleted; scan a new QR to try again")
+                    // Anything else says nothing about what the laptop has: a lost reply, a reply
+                    // replaced on the way, and a real rejection look the same from here. The key is
+                    // kept, unconfirmed. Deleting it is the one step that cannot be undone, and the
+                    // laptop may be about to make it root (issue #38).
+                    say("enrollment NOT confirmed (\(reply?.description ?? "the POST failed")). The key is kept, unconfirmed: the laptop may have accepted it all the same. If the laptop says \"enrolled\", its handover asks this phone to show the key (--to-phone), which settles it. If it does not, enroll again: the unconfirmed key is replaced then.")
                 }
             } catch { say("ERROR \(error.localizedDescription)") }
         }
@@ -223,6 +233,63 @@ final class Model: ObservableObject {
                 // owner-core converts DER to r‖s, normalizes low-s and verifies before it builds the response
                 let response = try prompt.review.finish(derSignature: der, publicKey: prompt.enrollment.publicKey, app: app)
                 say("signed \(hash) and posted: \(try await Http.post(prompt.qr, response).description)")
+            } catch { say("ERROR \(error.localizedDescription)") }
+        }
+    }
+
+    // ---- showing a key (design §2.2, §2.4) ---------------------------------------
+
+    /// owner-core checks the request and decides whether this phone can answer it: it can for
+    /// the key it holds for that account, confirmed by the laptop or not.
+    private func openProof(_ bytes: Data, _ qr: FfiQr) throws {
+        let health = try openHealth(bytes: bytes, commitment: qr.commitment, now: now, held: enrollments.map {
+            FfiHeldKey(chainId: $0.chainId, account: $0.account, publicKey: $0.publicKey)
+        })
+        if let why = health.cannot() {
+            say("CANNOT SHOW the key \(health.fingerprint()) for \(health.account()): \(why) — telling the laptop")
+            let refusal = health.refuseAsUnable(app: app)
+            Task { _ = try? await Http.post(qr, refusal) }
+            return
+        }
+        guard let enrollment = enrollments.first(where: { $0.id == Enrollment.id((try? health.chainId()) ?? 0, health.account()) }) else {
+            throw Failure("no key for this account on this phone")
+        }
+        say("PROOF asked: key \(health.fingerprint()), account \(health.account())")
+        proofPrompt = ProofPrompt(health: health, enrollment: enrollment, qr: qr)
+    }
+
+    func refuseProof(_ prompt: ProofPrompt, detail: String? = nil) {
+        proofPrompt = nil
+        say("did not show the key — telling the laptop")
+        let refusal = prompt.health.refuse(detail: detail, app: app)
+        Task { _ = try? await Http.post(prompt.qr, refusal) }
+    }
+
+    func prove(_ prompt: ProofPrompt) {
+        proofPrompt = nil
+        let fp = prompt.health.fingerprint()
+        Task {
+            let der: Data
+            do {
+                let digest = try prompt.health.digestToSign()
+                let handle = prompt.enrollment.keyHandle
+                // off the main thread: the Secure Enclave waits here for the biometric check
+                der = try await Task.detached { try OwnerKey.sign(handle: handle, digest: digest, reason: "Show the laptop that this phone holds the key \(fp)") }.value
+            } catch {
+                say("key not shown: \(error.localizedDescription)")
+                refuseProof(prompt, detail: error.localizedDescription)
+                return
+            }
+            do {
+                // owner-core verifies the signature against the key the laptop named before the answer exists
+                let answer = try prompt.health.finish(derSignature: der, app: app)
+                // On this answer the laptop may make the key root, whatever becomes of its reply: from
+                // here on the key is one in use, never one to replace.
+                if let i = enrollments.firstIndex(where: { $0.id == prompt.enrollment.id }), !enrollments[i].confirmed {
+                    enrollments[i].confirmed = true
+                    try Store.save(enrollments)
+                }
+                say("showed the key \(fp) and posted: \(try await Http.post(prompt.qr, answer).description)")
             } catch { say("ERROR \(error.localizedDescription)") }
         }
     }
