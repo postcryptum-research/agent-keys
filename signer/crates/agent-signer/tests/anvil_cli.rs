@@ -1051,6 +1051,14 @@ fn phone_is_enrolled_then_takes_over_root() {
 /// of the app is signed with (the CLI prints the digest it saw when it refuses).
 /// `TPMSIGN_PHONE_OUT=<dir>` keeps the enrollment (request, answer, attestation
 /// DER) after the run; the temp directory is removed otherwise.
+///
+/// The same run drives the iPhone app in the iOS simulator
+/// (`mobile/ios/run-simulator.sh`): `TPMSIGN_PHONE_QR_FILE` hands each QR's
+/// text to the app, which has no camera there, and
+/// `TPMSIGN_PHONE_NO_ATTESTATION=1` accepts its key, which has no hardware
+/// and so no evidence. `TPMSIGN_PHONE_HANDOVER_BACK=1` adds a last session,
+/// for either phone: the phone signs the change of the root key itself
+/// (§2.2), which its review shows in bold and asks about a second time.
 #[test]
 #[ignore = "needs a phone with the owner app on the same network"]
 fn phone_owner_real_device() {
@@ -1089,6 +1097,9 @@ fn phone_owner_real_device() {
     let mut args = vec!["key", "create", "--phone", "owner-phone", "--agent", &cfg, "--phone-skip-fingerprint", "--out", out_dir.to_str().unwrap()];
     if let Some(d) = &digest {
         args.extend(["--android-app-digest", d.as_str()]);
+    }
+    if std::env::var_os("TPMSIGN_PHONE_NO_ATTESTATION").is_some() {
+        args.push("--allow-no-attestation");
     }
     let status = run(&args);
     assert!(status.success(), "the enrollment failed");
@@ -1143,6 +1154,20 @@ fn phone_owner_real_device() {
     chain.ok(&["demo", "--agent", &cfg2]);
     assert_eq!(chain.counter(), before + U256::from(1), "the agent acts under the mandate the phone signed");
     chain.ok(&["demo", "--agent", phone_cfg]);
+
+    // 4. on request: the phone hands root on, here back to the software key
+    if std::env::var_os("TPMSIGN_PHONE_HANDOVER_BACK").is_some() {
+        let back = fingerprint_of(&owner);
+        eprintln!("\nNow the phone signs a change of the root key, to {back}: scan the QR below. The review shows the new\nkey's fingerprint in bold, and Sign asks a second time.\n");
+        let status = run(&[
+            "owner", "set-root", "--agent", phone_cfg, "--validator", &validator, "--retire", &validator,
+            "--public-key", &format!("{},{}", owner.x, owner.y), "--expect-fingerprint", &back,
+        ]);
+        assert!(status.success(), "the phone-signed handover failed");
+        let before = chain.counter();
+        chain.ok(&["op", "send", "--agent", &cfg, "--root", "--target", &counter, "--data", INCREMENT]);
+        assert_eq!(chain.counter(), before + U256::from(1), "root is the software key's again");
+    }
     eprintln!("done. The enrollment (request, answer, attestation DER) is in {}", out_dir.display());
 }
 

@@ -168,8 +168,8 @@ Team": no company, no payment, no store. Excluded:
 | Item | What | Mark |
 |---|---|---|
 | A Mac | Xcode runs only on macOS. Apple silicon matches our Secure Enclave shim, verified on a Mac (`SECURE_ENCLAVE.md`) | V |
-| iPhone | iOS 16 or later (D7), with **Developer Mode** on (Settings → Privacy & Security; needs a restart) | I, P0 |
-| Software | Xcode (free); Rust with `aarch64-apple-ios` (and the simulator target); `uniffi-bindgen` | I, P0 |
+| iPhone | iOS 16 or later (D7), with **Developer Mode** on (Settings → Privacy & Security; needs a restart) | V, P4 |
+| Software | Xcode (free); Rust with `aarch64-apple-ios` (and the simulator target); `uniffi-bindgen` | V, P4 |
 | Account | a free personal Apple Account signed in to Xcode | V |
 
 ### 3.3 The Personal Team's limits
@@ -207,6 +207,13 @@ reliably (I). So plan B uses what the Mac backend already does (V,
 expired app, with the same bundle id and the same team, should keep the
 app's files and therefore the key handle (I, P0). **Deleting the app
 deletes the handle**, and then the account goes through recovery.
+
+**Run on an iPhone in P4 (2026-11-13, `mobile/ios/README.md`):** the key
+of this section was created under a free personal team and signed the
+32-byte digest after Face ID, accepted by `P256Validator` (V). Installing
+a new build over the app, same team and bundle id, kept the stored
+handles (V); signing with a handle from before a reinstall, and the
+expiry itself, were not exercised (I).
 
 ### 3.5 Attestation: none
 

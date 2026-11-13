@@ -346,6 +346,35 @@ directory outside the repository, and one such run passed: five
 certificates to the remote-provisioning root, tier TEE. Not done: iOS
 (App Attest, design §5.3), which waits for the organization account.
 
+P4 status (2026-11-13, slice 1): the iPhone app exists (`mobile/ios`,
+SwiftUI on the same `owner-core` through its Swift bindings) and passes
+the loop **in the iOS simulator**, against the real CLI on a local anvil:
+enrollment, handover, an agent permission reviewed and signed in the app,
+and the app signing a change of the root key itself, with the second
+confirmation. One command runs it (`mobile/ios/run-simulator.sh`); a UI
+test stands in for the owner and checks the screen: every row the core
+produced is shown, Sign waits for the end of the review, the second
+confirmation appears exactly for the review with bold effects. The
+simulator has no Secure Enclave and no camera, so there the key is
+software with the tier `simulator`, accepted only with
+`--allow-no-attestation`, and the QR's text arrives through a file; all
+of that is compiled for the simulator only. `owner-core` now builds the
+enrollment answer for the apps (`enroll_answer`, `enroll_refusal`).
+
+P4 status (2026-11-13, on an iPhone): the same loop passed on a real
+iPhone, as a development build under a free personal team
+(`MOBILE_DEV_MODE.md` §3; run record in `mobile/ios/README.md`). The key
+was created in the Secure Enclave (design §5.3, the CryptoKit handle of
+`MOBILE_DEV_MODE.md` §3.4) and signed the raw `userOpHash` after Face ID,
+in the form `P256Validator` accepts, through two root operations on a
+local anvil: an agent permission, and the change of the root key itself.
+The QR came through the camera; a failed Face ID check became a refusal
+on the laptop. So P0–P2 pass on the second platform, without attestation,
+which iOS under plan B does not have. Not done there: Base Sepolia, the
+screen's rules checked by anything but the simulator's robot, the 7-day
+expiry of the free profile, and the first fetch, which fails once while
+iOS asks for the local network.
+
 ## Threat model, briefly
 
 - **The laptop is compromised.** It can request a malicious operation, but

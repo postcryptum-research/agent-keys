@@ -24,6 +24,10 @@ examples/olas/open-autonomy/
 # Local per-machine agent configs (e.g. with a recovery key file path). Never commit.
 signer/*.local.json
 
+# iOS (mobile/ios): the core's libraries and bindings, Xcode's output, the generated project
+mobile/ios/build/
+mobile/ios/OwnerApp.xcodeproj/
+
 # Android (mobile/android)
 mobile/android/.gradle/
 mobile/android/.kotlin/
