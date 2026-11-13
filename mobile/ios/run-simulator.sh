@@ -65,10 +65,12 @@ said() { grep -q "$1" "$applog" || { echo "the app's log does not say: $1"; exit
 # 1. the laptop's confirmation of the enrollment reaches the phone
 pass confirmed ""
 said "enrollment confirmed by the laptop"
+[ "$ROBOT" != 1 ] || said "deleted the key"
 # 2. a host on the path replaces it (issue #38): the laptop says "enrolled", the phone saw no
 #    confirmation. The phone keeps its key, shows it when the handover asks, and the loop goes on.
 pass lost-confirmation TPMSIGN_PHONE_PATH_ATTACKER=1
 said "enrollment NOT confirmed"
 said "showed the key"
+[ "$ROBOT" != 1 ] || said "deleted the key"
 [ "$ROBOT" != 1 ] || grep -q "the not-confirmed notice" build/robot-lost-confirmation.log || { echo "the app did not put its not-confirmed notice on screen"; exit 1; }
 echo "both runs passed: with the laptop's confirmation, and with it replaced on the way"

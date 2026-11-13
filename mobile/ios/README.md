@@ -152,6 +152,48 @@ Still open on a phone: the 7-day expiry of a free account's profile and
 what a rebuild after it keeps, a key after a change of the enrolled
 biometrics, Touch ID, and everything about distribution.
 
+## Deleting an enrollment (version 0.4.2, issue #40)
+
+Each enrolled account has **Delete…**. The app asks twice in
+`owner-core`'s words (the same as on Android, and the same for a key the
+laptop never confirmed): which key and account, that the phone cannot see
+whether the key is root, that deleting the root key takes the account
+with it unless a recovery key is installed, and to look at `agent-signer
+owner status` on the laptop first, which prints the root key's
+fingerprint. Then Face ID or Touch ID. The key's handle lives in the
+record, so one write removes both or neither. The simulator run ends with
+this delete, and its robot checks the words, that one tap deletes
+nothing, and that the enrollment is gone afterwards.
+
+### Run record — deleting an enrollment on an iPhone (2026-11-13, app 0.4.2)
+
+On the iPhone of the earlier runs, which held five enrollments left by
+them, all confirmed. No laptop session is involved; the app was started
+with its console captured, and its records were read off the phone before
+and after. Two things were done by hand:
+
+1. **Delete…** on an account, both questions answered, then Face ID
+   **cancelled**;
+2. **Delete…** on the first account, both questions answered, Face ID
+   passed.
+
+The app's log:
+
+```
+owner-core 0.3.1+test-chains loaded; key tier on this device: secure-enclave
+not deleted: Authentication canceled.
+deleted the key IKQLB-AR4JF-EW5CB-NUJD4 and its record (account 0x472934c09B6fCc9EEFff2cdD5C6976600d91Fbb1, chain 31337)
+```
+
+The records: five before, four after. The one deleted is gone, with the
+handle of its Secure Enclave key; the other four are byte for byte what
+they were, so the attempt that stopped at Face ID deleted nothing. The
+biometric check stands between the second answer and the delete on the
+device as well.
+
+Not exercised: a failed write of the records, which restores the list
+and says that nothing was deleted.
+
 ## A release build is refused
 
 The Release configuration is the one that can be handed to someone. It

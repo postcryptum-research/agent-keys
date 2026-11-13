@@ -77,7 +77,7 @@ class MainActivity : AppCompatActivity() {
         const val ALIAS = "tpmsign-p0-owner"
         /** One key per enrolled account (§5.1): alias by chain and account. */
         fun aliasFor(chainId: String, account: String) = "tpmsign-owner-$chainId-${account.lowercase()}"
-        const val APP_VERSION = "0.4.0-p4"
+        const val APP_VERSION = "0.4.1-p4"
         const val PREFS = "enrollments"
         /** owner-core `user_op::tests`: the golden operation's userOpHash on chain 31337 (anvil). */
         const val GOLDEN_DIGEST_HEX = "48e286b71f896beef7a0b4d23fd82d6afae60a64e7976118de492a2fba4c1947"
@@ -100,10 +100,11 @@ class MainActivity : AppCompatActivity() {
         val create = Button(this).apply { text = "1. Create the owner key"; setOnClickListener { safely { createKey() } } }
         val sign = Button(this).apply { text = "2. Sign the golden digest (fingerprint)"; setOnClickListener { safely { signGolden() } } }
         val wipe = Button(this).apply { text = "Delete the P0 key"; setOnClickListener { safely { deleteKey() } } }
+        val delete = Button(this).apply { text = "Delete an enrollment…"; setOnClickListener { safely { chooseEnrollmentToDelete() } } }
         val wipeTest = Button(this).apply { text = "Delete test-chain enrollments (anvil 31337)"; setOnClickListener { safely { deleteTestEnrollments() } } }
         val scan = Button(this).apply { text = "3. Scan the laptop's QR and sign (P1)"; setOnClickListener { safely { startScan() } } }
         val enroll = Button(this).apply { text = "4. Enroll this phone for an account (P1)"; setOnClickListener { safely { startScan(enrollOnly = true) } } }
-        column.addView(create); column.addView(sign); column.addView(scan); column.addView(enroll); column.addView(wipe); column.addView(wipeTest); column.addView(out)
+        column.addView(create); column.addView(sign); column.addView(scan); column.addView(enroll); column.addView(delete); column.addView(wipe); column.addView(wipeTest); column.addView(out)
         setContentView(ScrollView(this).apply { addView(column) })
 
         savedInstanceState?.getCharSequence("out")?.let { out.text = it }
@@ -713,6 +714,74 @@ class MainActivity : AppCompatActivity() {
 
     private fun deleteKey() {
         if (keyStore.containsAlias(ALIAS)) { keyStore.deleteEntry(ALIAS); say("key deleted") } else say("no key")
+    }
+
+    // ---- 6. deleting an enrollment on purpose (design §5.4, issue #40) -----------
+
+    /** The owner picks which: every key this phone holds a record of, confirmed by the laptop or not. */
+    private fun chooseEnrollmentToDelete() {
+        val records = prefs().all.mapNotNull { (alias, v) -> JSONObject(v.toString()).takeIf { it.has("x") }?.let { alias to it } }
+        if (records.isEmpty()) { say("no enrollments to delete"); return }
+        val names = records.map { (_, e) ->
+            "${e.getString("label")} — chain ${e.getString("chainId")}\n${e.getString("account")}\n" +
+                fingerprint(e.getString("x").removePrefix("0x"), e.getString("y").removePrefix("0x"))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Which enrollment?")
+            .setItems(names.toTypedArray()) { _, i -> safely { askToDelete(records[i].first, records[i].second) } }
+            .setNegativeButton("None", null)
+            .show()
+    }
+
+    /**
+     * Asked twice, in owner-core's words (the same on the iPhone, the same for a key the laptop
+     * confirmed and one it did not), then the fingerprint. The phone cannot see whether the key
+     * is root; the words send the owner to the laptop first.
+     */
+    private fun askToDelete(alias: String, e: JSONObject) {
+        val xy = (e.getString("x").removePrefix("0x") + e.getString("y").removePrefix("0x")).hexToBytes()
+        val words = deletionPrompt(e.getString("label"), e.getString("chainId").toULong(), e.getString("account"), xy)
+        AlertDialog.Builder(this)
+            .setTitle(words.title)
+            .setMessage(words.warning)
+            .setNegativeButton("Keep the key", null)
+            .setPositiveButton("Delete…") { _, _ ->
+                AlertDialog.Builder(this)
+                    .setTitle(words.title)
+                    .setMessage(words.second)
+                    .setNegativeButton("Keep the key", null)
+                    .setPositiveButton("Yes, delete") { _, _ -> safely { deleteAfterBiometric(alias, e, words.reason) } }
+                    .setCancelable(false).show()
+            }
+            .setCancelable(false)
+            .show()
+    }
+
+    private fun deleteAfterBiometric(alias: String, e: JSONObject, reason: String) {
+        val fp = fingerprint(e.getString("x").removePrefix("0x"), e.getString("y").removePrefix("0x"))
+        val prompt = BiometricPrompt(this, ContextCompat.getMainExecutor(this), object : BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                safely {
+                    // the key first: a record without its key says so on the list, a key without its record would say nothing
+                    val keyGone = try {
+                        if (keyStore.containsAlias(alias)) keyStore.deleteEntry(alias)
+                        !keyStore.containsAlias(alias)
+                    } catch (ex: Exception) { say("the Keystore refused: ${ex.message}"); false }
+                    if (!keyGone) { say("NOT deleted: the key $fp could not be removed from the Keystore; its record is kept and nothing changed"); return@safely }
+                    if (prefs().edit().remove(alias).commit()) say("deleted the key $fp and its record (account ${e.getString("account")}, chain ${e.getString("chainId")})")
+                    else say("the key $fp is deleted, but its record could not be removed: the list shows it as KEY MISSING until it is")
+                }
+            }
+            override fun onAuthenticationError(code: Int, msg: CharSequence) { say("not deleted: biometric error $code: $msg") }
+            override fun onAuthenticationFailed() { say("biometric not recognised, try again") }
+        })
+        // no CryptoObject, unlike every other prompt here: nothing is signed, this is the owner's presence
+        prompt.authenticate(
+            BiometricPrompt.PromptInfo.Builder().setTitle(reason)
+                .setSubtitle("account ${e.getString("account")}")
+                .setNegativeButtonText("Keep the key")
+                .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG).build()
+        )
     }
 
     /** Development only: a local anvil is recreated on every run, so its accounts recur with new owners. */

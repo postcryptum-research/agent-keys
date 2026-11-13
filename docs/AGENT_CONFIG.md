@@ -43,7 +43,10 @@ DIFF allow           0x…dEaD 0x00000000  — in the config, NOT allowed on cha
 
 (`DIFF` lines here come from a deliberately edited copy: the chain kept its
 values.) `account status` and `owner status` show the account, its balances
-and its root / recovery keys the same way.
+and its root / recovery keys the same way. `owner status` also prints the
+fingerprint of the account's root key: compare it with the fingerprint a
+phone shows before a key is deleted there
+([`MOBILE_OWNER_DESIGN.md`](MOBILE_OWNER_DESIGN.md) §5.4).
 
 ## Example
 

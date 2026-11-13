@@ -278,6 +278,24 @@ pub fn enroll_refusal(commitment: String, reason: String, detail: Option<String>
     EnrollResponse::refused(&commitment, &reason, detail, app_info(app)).to_bytes()
 }
 
+/// The words before a deliberate delete of an enrollment (§5.4).
+#[derive(uniffi::Record)]
+pub struct FfiDeletionPrompt {
+    pub title: String,
+    pub warning: String,
+    pub second: String,
+    pub reason: String,
+}
+
+/// What the phone asks before it deletes a key on the owner's word: once
+/// with `warning`, once with `second`, then the biometric check with
+/// `reason`. The same for a key the laptop confirmed and one it did not.
+#[uniffi::export]
+pub fn deletion_prompt(label: String, chain_id: u64, account: String, public_key: Vec<u8>) -> Result<FfiDeletionPrompt, CoreError> {
+    let d = crate::enroll::deletion_prompt(&label, chain_id, parse_address(&account)?, &parse_key(&public_key)?);
+    Ok(FfiDeletionPrompt { title: d.title, warning: d.warning, second: d.second, reason: d.reason })
+}
+
 /// A key this phone holds, confirmed by the laptop or not (§5.4).
 #[derive(uniffi::Record)]
 pub struct FfiHeldKey {

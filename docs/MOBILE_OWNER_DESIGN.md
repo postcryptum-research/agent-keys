@@ -565,6 +565,29 @@ Per enrollment, the phone stores:
 None of this is secret. Losing it only loses the key reference, and
 recovery covers that.
 
+**Deleting an enrollment** (issue #40). The apps never delete a key the
+laptop may have (§2.1), so the owner needs a way to do it on purpose: an
+abandoned enrollment, a key root has been handed away from, a phone being
+given up. It is per enrollment and cannot happen by accident:
+- the phone has no view of the chain (T21), so it **cannot know whether
+  the key is root**, and says so. Deleting the root key takes the account
+  with it, unless a recovery key is installed. The screen sends the owner
+  to the laptop first: `owner status`, for that account, prints the root
+  key's fingerprint and the recovery state, to compare with the
+  fingerprint on the phone. The comparison covers the root key only: a
+  key that is not root but sits on a validator that was granted `execute`
+  (§6.3) still acts for the account, and the phone cannot see that
+  either;
+- it asks **twice**, then for the **biometric check**;
+- the words are `owner-core`'s (`enroll::deletion_prompt`), so both apps
+  say the same, and they are the same for a key the laptop confirmed and
+  for one it did not: an unconfirmed key may be root all the same;
+- the key and its record go **together**. Where they are two things
+  (Android: a Keystore entry and a record), the key goes first, and the
+  app says which of the two it could not remove; where the record holds
+  the key's handle (iOS), one write removes both or neither.
+On the laptop, `key evict --phone` names this screen.
+
 ### 5.5 Why no `initCode`
 
 A counterfactual account's address depends on its owner key (the root
@@ -886,6 +909,8 @@ translation can follow.
 | `owner set-root … --not-a-phone` | the new key is not a phone's: no phone session. One of the two is required; with neither the command refuses before anything is built |
 | `key check --phone <label>` | the health check (§2.4): the phone signs a digest it co-randomizes with the configured key; no transaction |
 | `key show --phone <label>` | prints the configured public key and fingerprint, and what the enrollment recorded: attestation, revocation, boot state (no session) |
+| `key evict --phone <label>` | refuses: a phone's key is deleted on the phone (§5.4), and says to look at `owner status` first |
+| `owner status` | also prints the root key's fingerprint, which is what the owner compares with the phone's screen before deleting a key there |
 | every owner command | unchanged syntax; with a phone owner they open a session. New flags `--listen`, `--phone-timeout` |
 
 ### 8.3 Signing path (`chain.rs`)

@@ -24,6 +24,8 @@ struct ContentView: View {
             EnrollScreen(prompt: prompt)
         } else if let prompt = model.proofPrompt {
             ProofScreen(prompt: prompt)
+        } else if let prompt = model.deletePrompt {
+            DeleteScreen(prompt: prompt)
         } else {
             accounts
         }
@@ -64,6 +66,8 @@ struct ContentView: View {
                             Text("\(e.label) — chain \(e.chainId), tier \(e.tier)" + (e.confirmed ? "" : " — NOT CONFIRMED by the laptop"))
                             Text(unhyphenated(e.account)).font(.footnote.monospaced())
                             Text((try? fingerprintOf(publicKey: e.publicKey)) ?? "?").font(.footnote.monospaced())
+                            Button("Delete…", role: .destructive) { model.askToDelete(e) }
+                                .buttonStyle(.borderless).font(.footnote).accessibilityIdentifier("delete-enrollment")
                         }
                     }
                 }
@@ -177,6 +181,40 @@ struct ProofScreen: View {
                 .background(.bar)
             }
             .navigationTitle("Show that this phone holds the key?")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+}
+
+/// §5.4: a key is deleted only on the owner's word, asked twice in owner-core's words, and then
+/// after the biometric check. The phone cannot see whether the key is root, and says so.
+struct DeleteScreen: View {
+    @EnvironmentObject private var model: Model
+    let prompt: DeletePrompt
+    @State private var confirming = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                Text(unhyphenated(confirming ? prompt.words.second : prompt.words.warning))
+                    .fontWeight(confirming ? .bold : .regular)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+            }
+            .safeAreaInset(edge: .bottom) {
+                HStack {
+                    Button("Keep the key", role: .cancel) { model.deletePrompt = nil }.accessibilityIdentifier("keep-key")
+                    Spacer()
+                    if confirming {
+                        Button("Yes, delete", role: .destructive) { model.delete(prompt) }.buttonStyle(.borderedProminent).accessibilityIdentifier("confirm-delete")
+                    } else {
+                        Button("Delete…", role: .destructive) { confirming = true }.buttonStyle(.borderedProminent).accessibilityIdentifier("delete")
+                    }
+                }
+                .padding()
+                .background(.bar)
+            }
+            .navigationTitle(prompt.words.title)
             .navigationBarTitleDisplayMode(.inline)
         }
     }
