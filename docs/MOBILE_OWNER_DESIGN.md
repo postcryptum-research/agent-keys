@@ -100,7 +100,7 @@ account, which the owner starts and confirms on the phone.
 ### 2.2 Handover
 
 The phone becomes root through `owner set-root --validator <P256Validator>
---retire <P256Validator> --public-key <phone x,y>` (V: this exact sequence
+--retire <P256Validator> --public-key <phone x,y> --to-phone <label>` (V: this sequence
 is `tests/anvil_cli.rs::recovery_drill`). After it, the old owner key signs
 nothing (AA24).
 
@@ -113,8 +113,12 @@ or that is not there at all stops the handover; without this, root would
 go to a key nobody holds, and the account with it unless a recovery key
 is installed. On the phone, a key it has shown is confirmed from then on,
 whatever becomes of the laptop's reply: it may be root. The CLI cannot
-tell a phone's key from any other pasted `--public-key`, so the flag is
-the owner's to pass; `key create --phone` prints the command with it.
+tell a phone's key from any other pasted `--public-key`, so **it must be
+told** (the owner's decision): `owner set-root` refuses, before anything
+is read or built, unless it is given `--to-phone <label>` or the
+statement `--not-a-phone`. The two together are a usage error, and a
+handover after a recovery (`--as-recovery`) is under the same rule. `key
+create --phone` prints the command with `--to-phone`.
 
 Who signs the `set-root` decides how safe it is (T2):
 
@@ -878,7 +882,8 @@ translation can follow.
 |---|---|
 | `key create --phone <label> --agent <cfg>` | the enrollment session (§2.1); verifies attestation, prints the public key, fingerprint, security tier and config snippet; `--allow-no-attestation` for iOS without App Attest; `--allow-dev-build` for development-signed iOS builds, test chains only (with iOS); `--require-strongbox` to refuse a TEE-only key (§5.6); `--android-app-digest <sha256>` to accept one's own build of the app; `--require-revocation-check` to refuse when Google's revocation list cannot be fetched; `--allow-unverified-boot` to accept a phone whose boot state is Unverified (§5.2); `--phone-skip-fingerprint` to rely on the QR's secret without the fingerprint prompt, `--phone-fingerprint <fp>` to give the fingerprint to a script (§3.1); `--out <dir>` to keep the request, the answer and the chain |
 | `owner set-root … --expect-fingerprint <fp>` | refuses unless `--public-key` has that fingerprint; for the first handover (§2.2) |
-| `owner set-root … --to-phone <label>` | the new key is that phone key: the phone shows that it holds it, in a session of its own, before anything is signed or sent (§2.2). Always for a handover to a phone |
+| `owner set-root … --to-phone <label>` | the new key is that phone key: the phone shows that it holds it, in a session of its own, before anything is signed or sent (§2.2) |
+| `owner set-root … --not-a-phone` | the new key is not a phone's: no phone session. One of the two is required; with neither the command refuses before anything is built |
 | `key check --phone <label>` | the health check (§2.4): the phone signs a digest it co-randomizes with the configured key; no transaction |
 | `key show --phone <label>` | prints the configured public key and fingerprint, and what the enrollment recorded: attestation, revocation, boot state (no session) |
 | every owner command | unchanged syntax; with a phone owner they open a session. New flags `--listen`, `--phone-timeout` |

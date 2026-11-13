@@ -512,7 +512,7 @@ fn recovery_drill() {
     let validator = chain.addr("p256Validator");
     let public_key = format!("{},{}", new_owner.x, new_owner.y);
     chain.ok(&[
-        "owner", "set-root", "--agent", &old_cfg, "--as-recovery",
+        "owner", "set-root", "--agent", &old_cfg, "--as-recovery", "--not-a-phone",
         "--validator", &validator, "--retire", &validator, "--public-key", &public_key,
     ]);
 
@@ -551,15 +551,25 @@ fn owner_rotates_its_key_on_the_root_validator() {
     let bare = with("owner-norec.json", &owner, None);
     let refused = chain.fails(&[
         "owner", "set-root", "--agent", &bare, "--validator", &validator, "--retire", &validator, "--public-key", &public_key,
+        "--not-a-phone",
     ]);
     assert!(refused.contains("owner add-recovery"), "{refused}");
 
     // with the recovery key installed, the rotation goes through in one operation
     let old_cfg = with("owner.json", &owner, Some(&recovery));
     chain.ok(&["owner", "add-recovery", "--agent", &old_cfg]);
-    chain.ok(&[
-        "owner", "set-root", "--agent", &old_cfg, "--validator", &validator, "--retire", &validator, "--public-key", &public_key,
-    ]);
+    // the handover must be told what the new key is (issue #38): with neither statement it
+    // refuses before anything is read or built, and the two together are a usage error
+    let untold = ["owner", "set-root", "--agent", &old_cfg, "--validator", &validator, "--retire", &validator, "--public-key", &public_key];
+    let err = chain.fails(&untold);
+    assert!(err.contains("say what the new key is") && err.contains("--to-phone") && err.contains("--not-a-phone"), "{err}");
+    assert!(err.contains("Nothing built, nothing sent") && !err.contains("new root key"), "{err}");
+    let err = chain.fails(&[&untold[..], &["--to-phone", "p", "--not-a-phone"]].concat());
+    assert!(err.contains("cannot be used with"), "{err}");
+    // after a recovery too: the same command, the same rule
+    let err = chain.fails(&[&untold[..], &["--as-recovery"]].concat());
+    assert!(err.contains("say what the new key is"), "{err}");
+    chain.ok(&[&untold[..], &["--not-a-phone"]].concat());
     let status = chain.ok(&["owner", "status", "--agent", &old_cfg]);
     assert!(status.contains(&validator.to_lowercase()), "root is back on the validator: {status}");
     assert!(status.contains("is root now = false"), "{status}");
@@ -1095,12 +1105,13 @@ fn phone_is_enrolled_then_takes_over_root() {
     let other = fingerprint_of(&key(8));
     let err = chain.fails(&[
         "owner", "set-root", "--agent", &cfg, "--validator", &validator, "--retire", &validator, "--public-key", &public_key,
-        "--expect-fingerprint", &other,
+        "--expect-fingerprint", &other, "--to-phone", "owner-phone",
     ]);
     assert!(err.contains(&format!("has fingerprint {fp}, not the expected {other}")), "{err}");
     let err = chain.fails(&[
         "owner", "set-root", "--agent", &cfg, "--validator", &validator, "--retire", &validator, "--public-key",
         &format!("{},{}", phone.x, "0x".to_string() + &"11".repeat(32)),
+        "--to-phone", "owner-phone",
     ]);
     assert!(err.contains("not a point on P-256"), "{err}");
 
@@ -1402,7 +1413,7 @@ fn phone_owner_real_device() {
         eprintln!("\nNow the phone signs a change of the root key, to {back}: scan the QR below. The review shows the new\nkey's fingerprint in bold, and Sign asks a second time.\n");
         let status = run(&[
             "owner", "set-root", "--agent", phone_cfg, "--validator", &validator, "--retire", &validator,
-            "--public-key", &format!("{},{}", owner.x, owner.y), "--expect-fingerprint", &back,
+            "--public-key", &format!("{},{}", owner.x, owner.y), "--expect-fingerprint", &back, "--not-a-phone",
         ]);
         assert!(status.success(), "the phone-signed handover failed");
         let before = chain.counter();

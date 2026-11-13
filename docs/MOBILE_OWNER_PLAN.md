@@ -56,7 +56,7 @@ phone must sign the raw 32-byte digest, without hashing it again.
 
 **Making the phone the owner** is one root operation, signed by the current
 owner: `owner set-root --validator <P256Validator> --retire <P256Validator>
---public-key <x>,<y>`.
+--public-key <x>,<y> --to-phone <label>`.
 - `--retire` matters here. Re-pointing root at an already installed
   validator keeps its old key; `--retire` uninstalls it first.
 - This exact flow is exercised in `tests/anvil_cli.rs::recovery_drill`.
@@ -382,7 +382,9 @@ to notice. Closed on three sides. The phone health check of design §2.4
 exists (`key check --phone`; `owner-core` 0.3.0, `health.rs`): the phone
 signs `sha256("TPM_sign/v1/health" ‖ laptopNonce ‖ phoneNonce)` with a
 nonce the core draws. `owner set-root --to-phone <label>` runs it against
-the key that is about to become root, before anything is signed or sent.
+the key that is about to become root, before anything is signed or sent;
+the command refuses unless it is told what the new key is, that or
+`--not-a-phone` (the owner's decision on #39).
 And both apps keep a key whose enrollment was not confirmed, instead of
 deleting it; showing the key to the laptop is what confirms it. The anvil
 suite replays the attack with a host on the path, against a phone that

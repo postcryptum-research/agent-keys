@@ -44,7 +44,7 @@ are `agent-signer …`, run where the key in question lives.
 | 2 | `owner add-recovery --agent recovery.json` (owner key signs) | `recovery key installed: tx …`; `owner status` shows `installed = true, may take root = true, is root now = false` |
 | 3 | *simulate the loss*: put the owner device away, or use a config that no longer names it | — |
 | 4 | `owner recover --agent recovery.json` (recovery key signs, passphrase) | `the recovery key is root now: tx …`; `owner status`: `is root now = true` |
-| 5 | `owner set-root --agent recovery.json --as-recovery --validator <P256Validator> --retire <P256Validator> --public-key <x>,<y of the new owner key>` | `root handed to …: tx …`; `owner status`: root validator is `P256Validator`, `is root now = false` |
+| 5 | `owner set-root --agent recovery.json --as-recovery --validator <P256Validator> --retire <P256Validator> --public-key <x>,<y of the new owner key> --not-a-phone` (or `--to-phone <label>` when the new owner key is a phone's: the phone then shows that it holds the key first; with neither the command refuses) | `root handed to …: tx …`; `owner status`: root validator is `P256Validator`, `is root now = false` |
 | 6 | a root operation with the **new** owner key (`op send --root …`) | included |
 | 7 | the same root operation with the **lost** owner key | refused before anything is sent: `the key about to sign (…) is not the account's root key (… in validator …)`. The CLI reads the root validator's key from the chain; the validator's own `AA24` is what the forge tests exercise |
 | 8 | `demo --agent <new owner config>` (the agent key) | included: the permission survived |

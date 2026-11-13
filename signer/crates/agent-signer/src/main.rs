@@ -364,9 +364,17 @@ enum OwnerCmd {
         /// key, by signing a fresh digest in a session of its own (the
         /// health check, `key check --phone`). An enrollment the phone did
         /// not keep stops here, not after root has gone to a key nobody
-        /// holds. Always pass it for a handover to a phone.
+        /// holds. One of this and `--not-a-phone` is required.
         #[arg(long)]
         to_phone: Option<String>,
+        /// The new key is not a phone's key, so no phone is asked to show
+        /// it. One of this and `--to-phone` is required: the command cannot
+        /// tell a phone's key from any other pasted `--public-key`, and
+        /// root handed to a key nobody holds takes the account with it.
+        /// For a key on another device, check first that the device signs
+        /// (`key check`).
+        #[arg(long, conflicts_with = "to_phone")]
+        not_a_phone: bool,
         #[arg(long)]
         sponsored: bool,
     },
@@ -1176,9 +1184,17 @@ async fn main() -> Result<()> {
             OwnerCmd::Recover { agent, sponsored } => {
                 let s = session(&agent).await?;
                 let inc = s.recover(sponsored).await?;
-                println!("the recovery key is root now: tx {}; next, `owner set-root --as-recovery` to a new owner device", inc.tx);
+                println!("the recovery key is root now: tx {}; next, `owner set-root --as-recovery` to a new owner device (--to-phone <label>, or --not-a-phone)", inc.tx);
             }
-            OwnerCmd::SetRoot { agent, validator, public_key, retire, as_recovery, expect_fingerprint, to_phone, sponsored } => {
+            OwnerCmd::SetRoot { agent, validator, public_key, retire, as_recovery, expect_fingerprint, to_phone, not_a_phone, sponsored } => {
+                // before anything is read, built or asked of a key (issue #38)
+                if to_phone.is_none() && !not_a_phone {
+                    bail!(
+                        "say what the new key is: --to-phone <label> when it is a phone's key (the phone then shows that it holds \
+                         the key, before anything is signed or sent), or --not-a-phone for any other key. Root handed to a key \
+                         nobody holds takes the account with it. Nothing built, nothing sent"
+                    );
+                }
                 let (x, y) = public_key.split_once(',').context("--public-key x,y")?;
                 let key = hw_signer::PublicKey { x: agent::parse32(x.trim())?, y: agent::parse32(y.trim())? };
                 if !hw_signer::valid_public_key(&key) {

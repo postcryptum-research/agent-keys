@@ -33,7 +33,8 @@
 > ```sh
 > agent-signer owner recover  --agent … --sponsored     # recovery key becomes root
 > agent-signer owner set-root --agent … --as-recovery --sponsored \
->     --validator <P256Validator> --retire <lost owner's validator> --public-key <x>,<y>
+>     --validator <P256Validator> --retire <lost owner's validator> --public-key <x>,<y> \
+>     --not-a-phone                                    # or --to-phone <label>: say what the new key is
 > ```
 >
 > `agent-signer key check --keyfile …` proves the passphrase still opens the
