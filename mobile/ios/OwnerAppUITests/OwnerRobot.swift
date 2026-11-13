@@ -21,6 +21,7 @@ final class OwnerRobot: XCTestCase {
         var secondConfirmations = 0
         var proofs = 0
         var noticeKept = false
+        var fingerprintKept = false
         while Date() < end {
             if let line = awaited, appLog().contains(where: { $0.contains(line) }) {
                 awaited = nil
@@ -38,16 +39,16 @@ final class OwnerRobot: XCTestCase {
                 keep("the enrollment prompt")
                 enroll.tap()
             }
-            // the app's word that the laptop did not confirm an enrollment: recorded once, and left on
-            // screen, where it waits for a person and is in nobody's way
+            // What the main screen says is recorded and left there: a request can take the screen over
+            // at any moment, and a tap aimed at a row that has just gone fails the whole run. The robot
+            // taps only on a request's own screen, which stays until it is decided.
             if !noticeKept && app.buttons["notice-ok"].exists {
                 noticeKept = true
                 keep("the not-confirmed notice")
             }
-            let done = app.buttons["fingerprint-done"]
-            if done.exists && done.isHittable {
+            if !fingerprintKept && app.buttons["fingerprint-done"].exists {
+                fingerprintKept = true
                 keep("the new key's fingerprint")
-                done.tap()
             }
             let prove = app.buttons["prove"]
             if prove.exists && prove.isHittable {
