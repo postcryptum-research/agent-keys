@@ -1,0 +1,480 @@
+# Key stores on a server: vTPMs and their relatives — study
+
+*Draft, 2026-11-14, for issue #42. The question: what plays the part of
+"the TPM" when the agent runs on a remote server or a cloud VM. The
+process does not change: a P-256 key that cannot be exported signs
+ERC-4337 UserOperations, the on-chain `AgentPolicy` bounds it, the owner's
+key is elsewhere. TEEs and confidential VMs are out of scope. Which role
+such a key may hold is the owner's decision; this page gathers the facts
+and ends with the open questions.*
+
+Evidence marks: **F** first-hand, run by us (§8). **D** stated by a
+primary source: the vendor's documentation, a specification, or the
+vendor's published source code, read on 2026-11-14. **I** inferred, or
+from a secondary source.
+
+**Nothing here was run on a cloud VM.** For the clouds every mark is D or
+I, and §8.3 lists what the Azure run has to settle. Every sentence quoted
+word for word from a documentation page was checked against that page a
+second time. The other comparison facts (§4 to §6) were read once, part
+of them through a text extractor: re-read the source before relying on a
+figure from them.
+
+## 1. Summary
+
+1. **The `tpm` backend needs nothing new for a vTPM.** It ran unchanged
+   against the software TPM that QEMU, libvirt and Proxmox put behind a
+   VM (F). What it asks of a TPM (§2) is in every vTPM looked at, by
+   documentation or source. For Azure that is still I.
+2. **On a vTPM, "non-exportable" is a promise of the host, not a property
+   of a chip.** The guest cannot read the key, its root included: that is
+   the property [`KEY_POLICY.md`](KEY_POLICY.md) builds on, and it holds.
+   But the whole vTPM is data the host keeps, and whoever copies that
+   data has the key: a copy of the state signed with the same key (F).
+3. **A new party appears: the cloud account.** Whoever administers the
+   subscription can run commands as root in the VM (all three clouds, D).
+   That is the server's form of "whoever holds the machine". On Azure the
+   vTPM state also travels with snapshots, restore points and Site
+   Recovery, and has an export call (D); AWS and Google document that the
+   state stays with the instance (D). Whether an Azure copy signs with
+   our key is the main thing the run has to show (expected: yes, I).
+4. **The on-chain bound does not change; one guarantee of the chip gets
+   weaker.** "Once the host is cleaned, nothing they took lets them sign
+   again" becomes "unless they took a copy of the VM". The remedy is the
+   one the FAQ already gives: after a compromise, revoke or rotate the
+   agent's permission, never only clean up.
+5. **Cost.** vTPMs and a chip in a rented server: no code, a line in the
+   FAQ (in this change) and the run on Azure. A cloud key service or an
+   HSM: a new backend each, and another trust model (§6, §9).
+
+| Kind | Backend unchanged? | Who else can use the key | Who can copy it | Evidence for a third party |
+|---|---|---|---|---|
+| **Azure Trusted Launch vTPM** | expected (I), run pending | Microsoft's host (D); the subscription, through Run Command (D) | the state is in snapshots, restore points and Site Recovery replicas, and has an export call (D); that a copy signs: I | an attestation-key certificate under Microsoft's vTPM root (D); no EK certificate (I) |
+| AWS NitroTPM | expected (I); P-256 and the SHA-256 bank are not documented | AWS says its staff cannot reach customer content (D, not the vTPM by name); the account, through Systems Manager (D) | not in snapshots (D); no export call (I) | a document signed by the hypervisor over PCRs and caller data (D); no EK certificate (I) |
+| Google Shielded VM vTPM | expected (I); P-256 is there (D) | Google's host: the state is plain text in host memory (D); the project, through a startup script (D) | "permanently associated with the VM" (D); no export call (I) | EK and AK public keys from the API (D); an AK certificate signed by Google (D for confidential VMs, not established for a plain Shielded VM) |
+| swtpm: QEMU, libvirt, Proxmox | **yes (F)** | the host's root | the host's root: the state file is the key (D, F); a Proxmox clone and backup carry it (D) | none: the EK certificate is from the operator's own CA (D) |
+| VMware vSphere vTPM | expected (I): the guest is given a TPM 2.0 device | vCenter administrators hold the encryption keys (D) | **a clone duplicates the vTPM and its secrets, by default** (D) | none beyond the operator's CA (D) |
+| Hyper-V vTPM, own server | not looked at for a Linux guest | the host's administrator, unless the VM is shielded under a guardian service (D) | not established | no published root (I) |
+| A chip in a rented server | yes: the case we run today | the provider's staff, by starting another system (an unsealed key) | nobody, from a discrete chip (I) | the manufacturer's EK certificate (D) |
+| Cloud key service (KMS, managed HSM) | **no: a new backend** | any principal the key's policy admits, from anywhere (D) | the provider replicates it, by design (D) | key attestation on Azure Managed HSM and Google Cloud HSM only (D) |
+| YubiHSM 2 inside the server | no: a new backend | whoever is on the host, which holds the device's password (I) | nobody, unless exported under a wrap key (D) | Yubico's attestation chain (D) |
+
+## 2. What the backend asks of a TPM
+
+Read from `signer/crates/hw-signer/src/tpm.rs`; this is the whole list.
+
+- A TPM 2.0 reached through tpm2-tss: `/dev/tpmrm0`, or the address in
+  `TPM2TOOLS_TCTI`.
+- A storage parent persisted at `0x81000001` (`--parent` names another).
+- `TPM2_Create` of an unrestricted ECDSA P-256 signing key (fixedTPM,
+  fixedParent, sensitiveDataOrigin), `TPM2_Load`, and `TPM2_EvictControl`
+  in the owner hierarchy, whose authorization is empty.
+- `TPM2_Sign` over a digest the host computed.
+- Optional: an authValue on the key, or `TPM2_PolicyPCR` over the SHA-256
+  bank.
+
+No endorsement key, no certificate, no NV index, no clock. So a TPM 2.0
+with P-256 and a SHA-256 PCR bank fits.
+
+## 3. Azure: the vTPM of a Trusted Launch VM
+
+### 3.1 What it is
+
+- TPM 2.0, one instance per VM: "compliant with the TPM2.0 spec", "runs
+  in a secure environment outside the reach of any VM" (D). It is hosted
+  by "the paravisor", an environment that "runs inside the VM" (D). Which
+  implementation a given VM size gets is not documented; the open-source
+  one is OpenHCL, and the marks "source" below are readings of its code.
+- Its state is in the **VM guest state** blob: "a blob managed by Azure",
+  and "the lifecycle of the VMGS blob is tied to that of the OS disk"
+  (D). Whether that blob is encrypted beyond the storage's own
+  encryption, and under whose key, is not documented.
+- Default for new Gen2 VMs, at no extra price (D).
+
+### 3.2 Does the backend run against it? (question 1)
+
+| Needed (§2) | On Azure | Mark |
+|---|---|---|
+| `/dev/tpmrm0` in a Linux guest | Azure's pages do not name the device; Microsoft's own guest test tool opens it | I |
+| a storage parent at `0x81000001` | not provisioned: the open-source paravisor reserves the handle and reports "SRK not found". systemd 255 and later create one only on a measured boot | I, D |
+| ECDSA P-256, unrestricted | not stated; the Microsoft reference TPM the paravisor builds on enables it. Azure's own keys in the vTPM are RSA | I |
+| the SHA-256 PCR bank | not stated; Microsoft's attestation client reads that bank | D (source) |
+| PCRs 0, 2, 4, 7 for sealing | PCR 0 to 7 are reported to Azure Attestation; PCR 7 follows the Secure Boot variables, PCR 4 the boot loader and kernel. Whether Microsoft's own firmware updates change them is not documented | D |
+| free handles | Azure keeps its attestation key at `0x81000003` and a certificate at NV `0x01C101D0`; ours are `0x8101xxxx` | D |
+
+Expected to work unchanged, with the storage parent created once, as the
+FAQ already describes. Nothing documented contradicts it, and none of it
+is first-hand.
+
+### 3.3 Who can use or copy the key? (question 2)
+
+**Use.**
+- Whoever is root in the guest, as on a chip.
+- **Microsoft's host.** Microsoft's own design guidance for Trusted
+  Launch says so: "Everything above trusts the host. If you can't trust
+  the hypervisor, run the workload on a Confidential VM", and its table
+  answers "Protects asset from the host / hypervisor" with "No (accepted
+  risk)" (D).
+- **The subscription.** The same page lists what the subscription's owner
+  can do: "`az vm run-command`, custom script extensions, OS disk
+  snapshot and swap, serial console, managed-identity token theft via
+  IMDS—all without SSH" (D). Run Command needs the Virtual Machine
+  Contributor role and runs "as an elevated user on Linux" (D). Root in
+  the guest opens `/dev/tpmrm0` and reads an `authFile`.
+
+**Copy.** The state is in the guest state blob, and that blob:
+
+| Operation | What happens to the vTPM state | Mark |
+|---|---|---|
+| Stop, deallocate, start; redeploy; resize; live migration | not documented; expected kept, since the blob stays with the OS disk | I |
+| Reimage or service healing, **ephemeral** OS disk | keys made after creation "might not be persisted" | D |
+| OS disk snapshot, restore point | included | D |
+| A VM made from that snapshot or restore point | gets the state: the documented failure is a snapshot whose "vTPM state is locked" | I |
+| Site Recovery | "replicates the VM guest state" to the other region | D |
+| Export | `beginGetAccess` with `getSecureVMGuestStateSAS` returns a download address for the blob; a new disk can be made from such a blob | D |
+| Gallery image of kind `TrustedLaunchSupported` | "does not contain the VMGS blob": a new vTPM | D |
+| Gallery image of kind `TrustedLaunch` (captured from a VM) | not documented | — |
+| Restore of the same VM from a backup | expected: the vTPM goes back to the backup's day | I |
+| Deleting the OS disk | expected: the keys go with it | I |
+
+The export call needs the right `disks/beginGetAccess/action`. Virtual
+Machine Contributor does not have it; Contributor and Owner do, and so do
+the disk backup and snapshot roles (D for the roles listed, I for the
+wildcard).
+
+**Does a copy sign with our key?** Azure does not say. Expected yes:
+- a copied state did, on the software TPM (F);
+- the paravisor's source, when the host signals a new VM identity,
+  renews the endorsement and platform seeds and the attestation key, and
+  leaves the storage hierarchy alone (I, from reading the code; which
+  operations send that signal is not documented).
+
+This is the first thing for the run (§8.3).
+
+### 3.4 What evidence is there? (question 3)
+
+- **No EK certificate** is documented, and the paravisor's source does
+  not persist an EK (D, source). The manufacturer's statement "this is a
+  genuine chip" has no equivalent.
+- **An attestation key** (RSA, restricted) at `0x81000003`, its
+  certificate at NV `0x01C101D0`, issued under the "Azure Virtual TPM
+  Root Certificate Authority 2023", which the FAQ publishes (D).
+- **What a verifier could do with it, without calling Microsoft:** check
+  that certificate, then have the attestation key certify our key
+  (`TPM2_Certify`). That shows: this P-256 key is an object in a vTPM
+  whose attestation key Microsoft certified. Microsoft's client does this
+  for a key of its own (D, source); for a user's key it is not a
+  documented procedure (I).
+- **What that does not show:** that the key exists once (copies), that
+  the host cannot use it, or which VM it is (the certificate's fields are
+  not documented).
+- **Azure Attestation** signs a statement about the boot (the Secure
+  Boot claim, PCR 0 to 7). It is about the system that started, not about
+  our key.
+
+To whom it matters: our CLI checks no evidence for a TPM key today, chip
+or not. The precedents are the YubiKey's `key attest` and the phone's
+attestation. Somebody who made the key on their own VM learns nothing
+from the certificate; a third party asked to trust that an agent's key is
+not a file would.
+
+## 4. The other clouds, for comparison
+
+| | AWS NitroTPM | Google Shielded VM vTPM |
+|---|---|---|
+| State | location and encryption not documented | encrypted at rest and in transit; plain text in host memory while the VM runs (D) |
+| P-256, SHA-256 bank | neither documented; the attestation document uses SHA-384 | P-256 yes (D); SHA-1, SHA-256, SHA-384 banks (D for confidential VMs, I here) |
+| Stop and start | "persists through stop/starts" (D); the measurements change (D) | not stated; expected kept (I) |
+| Snapshot | "The NitroTPM state is not included in Amazon EBS snapshots" (D) | "you can restore a snapshot … but you can't decrypt it because the vTPM … isn't available" (D) |
+| Images, backup | no sentence; expected a new vTPM (I). Root volume replacement: two AWS pages disagree | machine images list UEFI variables, not the vTPM (I) |
+| Export call | none found (I) | none found (I) |
+| Operators | "no technical means or APIs available to AWS personnel to read, copy, extract" customer content (D, service terms; the design was reviewed by an outside firm) | access needs "an end user permission ticket" (D, 2018) |
+| The account | Systems Manager gives "root or SYSTEM permissions" (D) | whoever may set metadata runs a startup script as root (D) |
+| Evidence | a document signed by the hypervisor: PCRs and up to 1 kB of caller data (D, since 2025-09); an EK public key from the API, no certificate (I) | EK and AK public keys from the API (D); an AK certificate under a Google root, naming the instance (D for confidential VMs, not established here) |
+| To get one | the image must be registered with TPM support; "There are no preconfigured AMIs" for Linux; only at launch (D) | on by default (D) |
+
+Others, one line each: Oracle Cloud and Alibaba Cloud have a vTPM (D);
+Hetzner Cloud says it has none (D); for IBM's virtual servers and
+DigitalOcean none is documented.
+
+## 5. Our own hypervisor, and a chip in a rented server
+
+**swtpm** (the software TPM under QEMU, libvirt, Proxmox, XCP-ng).
+- The state is a file on the host, plain unless a key is given; its
+  author: "Whoever can access those files can extract its secrets" (D).
+  With a key, the copy needs that key too (F), and the key is on the same
+  host. The state holds the hierarchy seeds (I, from the source).
+- Proxmox starts it without a key, clones the state with the VM and
+  includes it in backups (D). libvirt's `virt-clone` gives the clone an
+  empty one (I).
+- A snapshot that is reverted takes the vTPM back with it (I).
+
+**VMware vSphere.** The state is in the VM's `.nvram`, under VM
+encryption, whose keys the administrators hold (D). "Cloning a virtual
+machine duplicates the entire virtual machine, including the vTPM and its
+secrets"; since vSphere 8 a clone can instead be given a new one, and
+copying is the default (D).
+
+**Hyper-V on one's own server.** The host's administrator can export the
+certificates that protect the state unless the VM is shielded under a
+separate guardian service (D for the shielded case, I for the rest).
+
+**A chip in a rented or colocated server.** This is the case the project
+already runs, with other hands near the machine.
+- Present on some offers and not on others: Oracle and IBM document it
+  (IBM: off by default); for Hetzner and OVHcloud there is no official
+  page; AWS's `.metal` instances have no NitroTPM (D).
+- The provider's staff cannot copy a key out of a discrete chip (I). They
+  can **destroy** it: `TPM2_Clear` needs only the platform's authority,
+  which firmware and a management controller have (D). And they can
+  **use** an unsealed key by starting another system, the row the FAQ has
+  for a stolen laptop.
+- Between tenants: IBM documents that the chip is cleared (D); nobody
+  else does. Evict our keys before giving a machine back.
+- Known attacks need the machine in hand (bus interposers; faulTPM on
+  AMD's firmware TPM), or are fixed in firmware: TPM-FAIL (2019)
+  recovered ECDSA keys by timing from Intel's firmware TPM and an ST chip
+  (D). A rented machine's firmware is the provider's to update.
+
+## 6. Other stores, for comparison
+
+They sign a digest we give them with a P-256 key that has no export
+call (D for each). What differs from any TPM:
+
+| | TPM or vTPM | AWS KMS · Azure Key Vault / Managed HSM · Google Cloud KMS |
+|---|---|---|
+| Who may sign | whoever is on the machine | any principal the key's policy admits, **from anywhere** unless the policy also names a network (D) |
+| How the server proves itself | it does not; it is there | a token from the metadata service. It is a bearer credential: stolen, it works elsewhere until it expires (D for AWS, I for the others). That is about 24 hours on Azure, and it cannot be cut short (D); about an hour on Google (D, an example value); AWS states no figure |
+| Audit of each signature | none | yes: on by default on AWS, to be switched on in Azure and Google (D) |
+| Switch off | on-chain only | the administrator disables the key at once (D) |
+| Bound to the boot state | PCR policy | no (D for AWS and Azure) |
+| Copies | none intended | the provider replicates the key (D) |
+| Key attestation | §3.4, §4 | Azure Managed HSM and Google Cloud HSM (D); not for AWS KMS or a Key Vault key (I) |
+| Price | none | Azure Premium, an HSM key: $5 a month and $0.15 per 10,000 signatures; Managed HSM $3.20 an hour. AWS: $1 a month and $0.15 per 10,000. Google Cloud HSM: $1 to $2.50 a month per key version, its price per signature not established (D, list prices read 2026-11-14) |
+| Signature | raw `(r, s)` | DER on AWS and Google (D), `r ‖ s` on Azure (I) |
+
+**YubiHSM 2**: made for a server's internal USB port; signs a given
+digest, attests keys it generated, and is opened with a password the host
+holds (D). It answers "a key fob is hard to plug into a server" only for
+a machine somebody can open. Row and price:
+[`HARDWARE_WISHLIST.md`](HARDWARE_WISHLIST.md). **HashiCorp Vault
+Transit** signs a pre-hashed P-256 input, with a software key unless it
+delegates to one of the stores above (D).
+
+## 7. What changes in the threat model (question 4)
+
+| What we say today | Where | On a server's vTPM |
+|---|---|---|
+| "Key cannot be copied or extracted", enforced by the TPM | `ARCHITECTURE.md`, threat table | enforced by the hypervisor, against the guest. Not against the host, nor against whoever may copy the VM (Azure, VMware, Proxmox) |
+| "once the host is cleaned, nothing they took lets them sign again" | `KEY_POLICY.md`, What follows | true for an attacker who stayed inside the guest; not for one who reached the cloud account or the hypervisor |
+| the owner key on "another host's TPM" is out of the agent's reach | `KEY_POLICY.md`, rule 3 | two VMs in one subscription are one host to that subscription's administrator |
+| the owner key on the same chip behind the root/user boundary | `KEY_POLICY.md`, rule 3 | Run Command arrives as root: the cloud account's credentials are owner credentials |
+| "PCR sealing guards against booting another OS or firmware" | `KEY_POLICY.md`, rule 4 | still true, and worth less: the administrator needs no other OS, and a copy of the VM starts the same measurements (I) |
+| a firmware update or "Clear TPM" wipes the keys | `FAQ.md`, failures; `RESILIENCE.md` §1 | new events: the VM or its OS disk is deleted; a restore takes the vTPM back in time; a clone makes a second holder; an ephemeral OS disk loses keys on reimage (D, Azure) |
+| "Dictionary-attack lockout: temporary" | `RESILIENCE.md` §1.1 | the threshold may be 3, not 31 (§8.2) |
+
+**What the on-chain policy still bounds: all of it.** The allow-list,
+the cap per operation, the budget, the expiry and the refusal of
+ERC-1271 never relied on the chip. A copy of the agent's key can do what
+the agent can, out of the same budget, until the permission is revoked.
+
+**The roles, with the consequences and no verdict.**
+- **Agent key.** Inside today's model: `KEY_POLICY.md` rule 2 already
+  treats the key's holder as possibly hostile. What changes is the
+  procedure after an incident that touched the cloud account: rotate,
+  because cleaning the VM no longer ends the attacker's access.
+- **Owner key.** Its placement rule is "out of the agent's reach". In a
+  VM of the same subscription as the agent it is within reach of one
+  stolen cloud credential, with no on-chain bound behind it. In another
+  subscription, or with another provider, it is as separate as those
+  accounts are.
+- **Recovery key.** Its job is to outlive the others. A vTPM's state
+  goes with the VM's disk and the subscription, and a restore can take
+  it back in time.
+
+## 8. First-hand
+
+### 8.1 The run (2026-11-14)
+
+`scripts/tpm-check.sh --swtpm`, in an Ubuntu 24.04 container on arm64:
+swtpm 0.7.3, libtpms 0.9.3, tpm2-tss 4.0.1, tpm2-tools 5.6, rustc 1.94.1;
+the tree mounted read-only. No VM and no hypervisor were involved: it is
+the TPM that those hypervisors run, reached over its socket.
+
+```
+== the TPM
+TPM2_PT_FAMILY_INDICATOR: "2.0"
+TPM2_PT_MANUFACTURER: "IBM"
+TPM2_PT_VENDOR_STRING_1: "SW"
+TPM2_PT_VENDOR_STRING_2: "TPM"
+TPM2_PT_FIRMWARE_VERSION_1: 0x20191023
+P-256: 1 | PCR banks: sha1 sha256 sha384 sha512
+persistent handles:
+NV indices:
+dictionary-attack lockout: 0 failed of 3 allowed, one forgiven every 1000 s; lockoutAuthSet 0, ownerAuthSet 0
+== no storage parent yet: what the CLI says
+refused, as it must be: Error: backend error: the handle is not correct for the use (associated with handle number 1)
+== the backend's hardware tests
+test tpm::tests::protected_key_signs_only_with_its_auth ... ok
+test tpm::tests::sealed_key_follows_pcr16 ... ok
+test tpm::tests::tpm_key_signs_and_verifies ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.05s
+== the CLI: a plain key, a key sealed to PCRs 0,2,4,7, a key behind an authValue
+OK: 0x8101ff01 signs (0xd359ff6e…)
+sealed to PCRs [0, 2, 4, 7]: reference it as {"tpm": {"handle": "0x8101ff02", "pcrs": [0, 2, 4, 7]}}
+OK: 0x8101ff03 signs (0x4ea81f92…)
+evicted 0x8101ff02
+evicted 0x8101ff03
+failed authorizations counted now: 0
+== a copy of the state directory, opened by a second TPM
+OK: 0x8101ff01 signs (0xd359ff6e…)
+the copy signs with the same key as the original: {"key":"0x8101ff01","x":"0xd359ff6e…","y":"0x8185abd1…"}
+```
+
+Left out above: the PCR values (all zero), the build's warnings, the
+keys' JSON, and the tail of the two long public-key values.
+
+### 8.2 What it showed, beyond "it works"
+
+By hand in the same container, all F for libtpms 0.9.3:
+
+1. **A copy of the state is a second holder of the key.** With the state
+   encrypted (`--key`), the copy would not open without the key file and
+   signed with it.
+2. **The storage parent matters only when a key is made.** With
+   `0x81000001` evicted, a key persisted earlier still signed.
+3. **Lockout after 3 failures, one forgiven per 1000 s.** These are the
+   reference defaults; the backend's own test notes 31 for Intel's
+   firmware TPM. In lockout a key with an authValue, an empty one
+   included, refuses to sign, and no key can be made. A PCR-sealed key
+   kept signing: it authorizes by policy.
+4. **An unclean stop counts as a failure.** Each time the TPM was killed
+   after a signature, without `TPM2_Shutdown`, the next start added one:
+   three such stops and it was in lockout. Idle periods that ended the
+   same way added nothing, and a clean stop did not reset the count.
+5. **Two rough edges in our CLI**, tracked in #43: the message when the
+   storage parent is missing does not say so; and `key check` cannot
+   check a PCR-sealed key (it has no `--pcrs`).
+
+Not shown by this run: anything about a hypervisor's handling of the
+state, a guest's `/dev/tpmrm0` (the socket has no resource manager, so
+the script flushes the tools' objects itself), or PCRs that a firmware
+fills (all zero here, so sealing to 0, 2, 4, 7 bound nothing).
+
+### 8.3 The Azure run: what it has to settle
+
+On a Trusted Launch VM with a **managed** OS disk; the script's
+`--make-srk --keep` first, then `--again` after each step.
+
+1. The script passes: the device, P-256, the SHA-256 bank, the three
+   tests. Its first lines record the handles and NV indices Azure ships,
+   and **the lockout numbers** (3, or something else).
+2. PCRs 0, 2, 4, 7: which are filled, and whether they are the same
+   after a restart, a deallocate and start, a redeploy, a resize.
+3. The key after each of those four.
+4. **A VM made from a snapshot of the OS disk: does it sign with the same
+   key?** Then the same question for a restore point.
+5. A stop that skips the guest's shutdown, three times with a signature
+   between: does the count rise as in §8.2, point 4?
+6. The export call returns an address for the guest state blob. (Fetching
+   and reading the blob is not needed for the conclusion.)
+
+Needs: an Azure subscription and about two hours of a small VM (a
+B-series size with 4 GiB, to compile).
+
+## 9. Cost to support (question 5)
+
+| Kind | Cost | Why |
+|---|---|---|
+| A cloud VM's vTPM, Azure first | no code; the run (§8.3); then a paragraph of guidance in the FAQ | same device, same commands; the storage parent is made once (FAQ, question 1, step 3) |
+| A VM under swtpm | nothing (F); the FAQ line in this change | |
+| VMware, Hyper-V guests | nothing expected; not run | they present a TPM 2.0 to the guest |
+| A chip in a rented server | nothing | the supported case |
+| A cloud key service | a new backend each. The signer trait fits (a digest in, `(r, s)` out; DER to unpack on two of three); added: the provider's authentication, and a test account per provider | another trust model (§6). It buys an audit record per signature and a switch |
+| YubiHSM 2 | a new backend, and the device | only where somebody can open the machine |
+| Vault Transit | not worth it | a software key, or a proxy for one of the above |
+
+## 10. Open questions for the owner
+
+1. **Which roles may a vTPM key hold?** The consequences are in §7. No
+   recommendation, as asked.
+2. **The Azure run: whose subscription, and when?** Recommended before
+   any page tells a user that Azure works. Until then the FAQ says
+   "not yet run on a cloud VM".
+3. **Guidance for a cloud deployment, once the run is in?** Proposed
+   content: a managed OS disk; the VM's managed identity holds no rights
+   over disks or VMs; images, snapshots and backups of the agent's VM
+   are key material; after any incident in the cloud account, rotate.
+4. **A check of Azure's attestation-key certificate in the CLI?**
+   Recommended: not now. The TPM path checks nothing for a chip either,
+   and what the certificate proves is narrow (§3.4). Worth it when a
+   third party has to verify where an agent's key lives.
+5. **A Key Vault backend next to the vTPM?** Recommended: only when a
+   deployment asks for the audit record or the switch. It is a different
+   product in one respect: the key is used by an identity, from
+   anywhere, and a stolen token lasts about a day.
+6. **Should the agent's key ignore the lockout?** A key with an empty
+   authValue gains nothing from it and loses availability (§8.2, points
+   3 and 4). Creating it with the `noDA` attribute would do it; that is a
+   code change for new keys, in #43.
+
+## 11. Sources
+
+Azure:
+[Trusted Launch](https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch),
+[its FAQ](https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch-faq),
+[the key-release pattern](https://learn.microsoft.com/en-us/azure/virtual-machines/secure-key-release-pattern-trusted-launch),
+[Disks: Grant Access](https://learn.microsoft.com/en-us/rest/api/compute/disks/grant-access),
+[Site Recovery](https://learn.microsoft.com/en-us/azure/site-recovery/concepts-trusted-vm),
+[Compute Gallery](https://learn.microsoft.com/en-us/azure/virtual-machines/shared-image-galleries),
+[Run Command](https://learn.microsoft.com/en-us/azure/virtual-machines/linux/run-command),
+[built-in roles](https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/compute),
+[restore points](https://learn.microsoft.com/en-us/azure/virtual-machines/concepts-restore-points),
+[reserved NV indices](https://learn.microsoft.com/en-us/azure/confidential-computing/guest-attestation-confidential-virtual-machines-design),
+[Secure Boot certificate updates](https://support.microsoft.com/en-us/topic/secure-boot-certificate-updates-for-linux-on-azure-virtual-machines-df51ba85-4e1e-4eda-b1d8-f0881970e997);
+source: [openvmm, the TPM device](https://github.com/microsoft/openvmm/tree/main/vm/devices/tpm),
+[the reference TPM's profile](https://github.com/microsoft/ms-tpm-20-ref/blob/main/TPMCmd/TpmConfiguration/TpmConfiguration/TpmProfile_Common.h),
+[the guest attestation client](https://github.com/Azure/confidential-computing-cvm-guest-attestation/tree/main/client-library/src/Attestation).
+
+AWS:
+[NitroTPM](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/nitrotpm.html),
+[prerequisites](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/enable-nitrotpm-prerequisites.html),
+[attestable AMIs](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/working-with-isolated-amis.html),
+[replace a root volume](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/replace-root.html),
+[the attestation document](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/nitrotpm-attestation-document-content.html),
+[service terms](https://aws.amazon.com/service-terms/),
+[SSM Agent](https://docs.aws.amazon.com/systems-manager/latest/userguide/ssm-agent-restrict-root-level-commands.html).
+Google:
+[Shielded VM](https://docs.cloud.google.com/compute/shielded-vm/docs/shielded-vm),
+[the vTPM, 2018](https://cloud.google.com/blog/products/identity-security/virtual-trusted-platform-module-for-shielded-vms-security-in-plaintext),
+[getShieldedInstanceIdentity](https://docs.cloud.google.com/compute/docs/reference/rest/v1/instances/getShieldedInstanceIdentity),
+[go-tpm-tools](https://github.com/google/go-tpm-tools).
+
+Hypervisors and chips:
+[swtpm wiki](https://github.com/stefanberger/swtpm/wiki),
+[swtpm(8)](https://github.com/stefanberger/swtpm/blob/master/man/man8/swtpm.pod),
+[libtpms state](https://github.com/stefanberger/libtpms/blob/master/src/tpm2/NVMarshal.c),
+[Proxmox QEMU chapter](https://pve.proxmox.com/pve-docs/chapter-qm.html),
+[vSphere vTPM](https://techdocs.broadcom.com/us/en/vmware-cis/vsphere/vsphere/8-0/vsphere-security/securing-virtual-machines-with-virtual-trusted-platform-module/vtpm-overview.html),
+[vSphere: cloning](https://techdocs.broadcom.com/us/en/vmware-cis/vsphere/vsphere/8-0/vsphere-security/use-encryption-in-your-vsphere-environment/clone-an-encrypted-virtual-machine.html),
+[Hyper-V shielded VMs](https://learn.microsoft.com/en-us/windows-server/security/guarded-fabric-shielded-vm/guarded-fabric-and-shielded-vms),
+[systemd, NEWS for 255](https://github.com/systemd/systemd/blob/main/NEWS),
+[TPM 2.0 Part 3, `TPM2_Clear`](https://trustedcomputinggroup.org/wp-content/uploads/TPM-Rev-2.0-Part-3-Commands-01.38.pdf),
+[EK credential profile](https://trustedcomputinggroup.org/wp-content/uploads/EK-Credential-Profile-For-TPM-Family-2.0-Level-0-V2.5-R1.0_28March2022.pdf),
+[IBM bare metal](https://www.ibm.com/new/announcements/securing-the-boot-process-for-ibm-cloud-bare-metal-servers-for-vpc),
+[TPM-FAIL](https://tpm.fail/),
+[faulTPM](https://arxiv.org/abs/2304.14717),
+[TPM Genie](https://github.com/nccgroup/TPMGenie).
+
+Key services:
+[AWS KMS Sign](https://docs.aws.amazon.com/kms/latest/APIReference/API_Sign.html),
+[AWS KMS data protection](https://docs.aws.amazon.com/kms/latest/developerguide/data-protection.html),
+[AWS KMS pricing](https://aws.amazon.com/kms/pricing/),
+[Key Vault keys](https://learn.microsoft.com/en-us/azure/key-vault/keys/about-keys-details),
+[managed identities](https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/managed-identity-best-practice-recommendations),
+[Managed HSM key attestation](https://learn.microsoft.com/en-us/azure/key-vault/managed-hsm/key-attestation),
+[Azure retail prices](https://prices.azure.com/api/retail/prices?$filter=serviceName%20eq%20%27Key%20Vault%27%20and%20armRegionName%20eq%20%27eastus%27),
+[Google asymmetricSign](https://docs.cloud.google.com/kms/docs/reference/rest/v1/projects.locations.keyRings.cryptoKeys.cryptoKeyVersions/asymmetricSign),
+[Cloud HSM attestation](https://docs.cloud.google.com/kms/docs/attest-key),
+[YubiHSM 2 concepts](https://docs.yubico.com/hardware/yubihsm-2/hsm-2-user-guide/hsm2-intro-core-concepts.html),
+[Vault Transit](https://developer.hashicorp.com/vault/api-docs/secret/transit).
