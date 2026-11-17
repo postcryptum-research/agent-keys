@@ -38,8 +38,8 @@
 > ```
 >
 > `agent-signer key check --keyfile …` proves the passphrase still opens the
-> file (and `key check --handle …` that a TPM key still signs) without
-> sending anything — run it periodically. Claims are marked [V]
+> file (and `key check --handle …` that a TPM key still signs; a PCR-sealed
+> one with `--pcrs`) without sending anything — run it periodically. Claims are marked [V]
 > verified or [I] inferred. Written by a research agent.
 
 
@@ -153,7 +153,7 @@
 | Замена CPU (AMD fTPM) | **уничтожен** при ответе «Y» | §1.2 |
 | Замена материнской платы | fTPM — **уничтожен**; пинновый dTPM-модуль, переставленный на новую плату, — ключ жив [I], PCR-запечатанные — молчат | |
 | Изменение PCR (BIOS, Secure Boot db/dbx, загрузчик) | ключ жив, но **PCR-запечатанный не подписывает** | §1.4 |
-| Dictionary-attack lockout (неверный authValue N раз) | жив; **временная** блокировка | восстанавливается по таймеру или через lockoutAuth [I] |
+| Dictionary-attack lockout (неверный authValue N раз) | жив; **временная** блокировка. Она останавливает ключ с authValue. Ключ, созданный без него после #43, несёт `noDA` и продолжает подписывать [V, на программном TPM]; созданный раньше — нет | восстанавливается по таймеру или через lockoutAuth [I]; пороги и причины на виртуальном TPM: [`SERVER_KEY_STORES.md`](SERVER_KEY_STORES.md) §8.2 |
 
 **Защита от случайного/злонамеренного Clear из ОС:**
 `tpm2_clearcontrol -C l s` выставляет `disableClear`, и lockout-иерархия
@@ -222,6 +222,8 @@ https://man.archlinux.org/man/extra/tpm2-tools/tpm2_clearcontrol.1.en].
   (правило 4 KEY_POLICY и так говорит, что он не защищает от компрометации
   работающей системы). Альтернатива, переживающая обновления, —
   `PolicyAuthorize` с подписанными политиками [I], для нас избыточна.
+  После обновления `key check --handle … --pcrs 0,2,4,7` сразу показывает,
+  подписывает ли запечатанный ключ.
 
 ### 1.5 Apple Secure Enclave (CryptoKit `dataRepresentation`)
 

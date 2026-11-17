@@ -21,12 +21,16 @@
 //! chip only signs while the measured boot state equals the one the key was
 //! created under. After a firmware or bootloader change the key goes silent
 //! and the owner rotates the agent permission to a fresh one.
+//!
+//! A key *without* an authValue is exempt from the dictionary-attack lockout
+//! (`noDA`): see [`p256_signing_template`].
 
 use std::str::FromStr;
 use std::sync::Mutex;
 
 use sha2::{Digest as Sha2Digest, Sha256};
 use tss_esapi::attributes::{ObjectAttributesBuilder, SessionAttributesBuilder};
+use tss_esapi::constants::response_code::Tss2ResponseCodeKind;
 use tss_esapi::constants::tss::{TPM2_RH_NULL, TPM2_ST_HASHCHECK};
 use tss_esapi::constants::SessionType;
 use tss_esapi::handles::{KeyHandle, ObjectHandle, PersistentTpmHandle, SessionHandle, TpmHandle};
@@ -105,11 +109,22 @@ fn connect() -> Result<Context, SignerError> {
 /// `auth_policy` makes the key usable only through a session that satisfies
 /// that policy; `user_with_auth` is then cleared so the (empty) password
 /// cannot bypass it.
-fn p256_signing_template(auth_policy: Option<Digest>) -> Result<Public, SignerError> {
+///
+/// `no_da` exempts the key from the dictionary-attack lockout, and a key
+/// without an authValue gets it (#43): there is no secret to guess, and
+/// without the exemption the key stops signing whenever the TPM is in
+/// lockout. Another key's wrong authValues cause that, and so do unclean
+/// stops of the TPM after a signature; a virtual TPM allows three
+/// (docs/SERVER_KEY_STORES.md §8.2). The attribute is part of the key's
+/// public area, so it changes the key's name and not its public point: a
+/// config that references the handle is unaffected. Attributes are fixed at
+/// creation, so a key made before this keeps the old behaviour.
+fn p256_signing_template(auth_policy: Option<Digest>, no_da: bool) -> Result<Public, SignerError> {
     let attributes = ObjectAttributesBuilder::new()
         .with_fixed_tpm(true)
         .with_fixed_parent(true)
         .with_sensitive_data_origin(true)
+        .with_no_da(no_da)
         .with_user_with_auth(auth_policy.is_none())
         .with_sign_encrypt(true)
         .with_restricted(false)
@@ -253,15 +268,27 @@ fn pcr_policy_digest(ctx: &mut Context, selection: &PcrSelectionList, pcrs: &[u8
 }
 
 impl TpmSigner {
-    fn resolve(ctx: &mut Context, handle: u32) -> Result<KeyHandle, SignerError> {
-        let handle = PersistentTpmHandle::new(handle).map_err(tss)?;
+    /// `what` is expected at `handle`; `hint` is what to do when nothing is
+    /// there. The TPM's own words for an empty handle are "the handle is not
+    /// correct for the use", which names neither (#43).
+    fn resolve(ctx: &mut Context, handle: u32, what: &str, hint: &str) -> Result<KeyHandle, SignerError> {
+        let persistent = PersistentTpmHandle::new(handle).map_err(tss)?;
         // ReadPublic takes no authorization, so resolve outside the password
         // session (tss-esapi's documented usage). With the session set this
         // crashed inside Esys_TR_FromTPMPublic_Finish on tpm2-tss 4.0.1.
         let object = ctx
-            .execute_without_session(|ctx| ctx.tr_from_tpm_public(TpmHandle::Persistent(handle)))
-            .map_err(tss)?;
+            .execute_without_session(|ctx| ctx.tr_from_tpm_public(TpmHandle::Persistent(persistent)))
+            .map_err(|e| match e {
+                tss_esapi::Error::Tss2Error(rc) if rc.kind() == Some(Tss2ResponseCodeKind::Handle) => {
+                    SignerError::Key(format!("no {what} at 0x{handle:08x}{hint}"))
+                }
+                other => tss(other),
+            })?;
         Ok(object.into())
+    }
+
+    fn resolve_key(ctx: &mut Context, handle: u32) -> Result<KeyHandle, SignerError> {
+        Self::resolve(ctx, handle, "key", "")
     }
 
     fn create(parent: u32, sealed_to: Option<&[u8]>, secret: Option<&[u8]>) -> Result<Self, SignerError> {
@@ -279,9 +306,14 @@ impl TpmSigner {
                 (Some(policy), Some(selection))
             }
         };
-        let parent = Self::resolve(&mut ctx, parent)?;
+        let parent = Self::resolve(
+            &mut ctx,
+            parent,
+            "storage parent",
+            ": persist one there first (docs/FAQ.md, \"Create the keys\"), or name another parent",
+        )?;
         let created = ctx
-            .create(parent, p256_signing_template(policy)?, auth.clone(), None, None, None)
+            .create(parent, p256_signing_template(policy, auth.is_none())?, auth.clone(), None, None, None)
             .map_err(tss)?;
         let key = ctx
             .load(parent, created.out_private, created.out_public)
@@ -314,7 +346,7 @@ impl TpmSigner {
     /// Use a key previously persisted at `handle`.
     pub fn open_persistent(handle: u32) -> Result<Self, SignerError> {
         let mut ctx = connect()?;
-        let key = Self::resolve(&mut ctx, handle)?;
+        let key = Self::resolve_key(&mut ctx, handle)?;
         Ok(Self { ctx: Mutex::new(ctx), key, persistent: true, sealed_to: None, auth: None })
     }
 
@@ -324,7 +356,7 @@ impl TpmSigner {
     pub fn open_persistent_protected(handle: u32, secret: &[u8]) -> Result<Self, SignerError> {
         let auth = auth_from_secret(secret)?;
         let mut ctx = connect()?;
-        let key = Self::resolve(&mut ctx, handle)?;
+        let key = Self::resolve_key(&mut ctx, handle)?;
         ctx.tr_set_auth(key.into(), auth.clone()).map_err(tss)?;
         Ok(Self { ctx: Mutex::new(ctx), key, persistent: true, sealed_to: None, auth: Some(auth) })
     }
@@ -333,7 +365,7 @@ impl TpmSigner {
     /// the selection with the key, so the caller supplies it).
     pub fn open_persistent_sealed(handle: u32, pcrs: &[u8]) -> Result<Self, SignerError> {
         let mut ctx = connect()?;
-        let key = Self::resolve(&mut ctx, handle)?;
+        let key = Self::resolve_key(&mut ctx, handle)?;
         let selection = pcr_selection(&normalize_pcrs(pcrs)?)?;
         Ok(Self { ctx: Mutex::new(ctx), key, persistent: true, sealed_to: Some(selection), auth: None })
     }
@@ -364,10 +396,8 @@ impl TpmSigner {
     pub fn evict(handle: u32) -> Result<(), SignerError> {
         let mut ctx = connect()?;
         let target = PersistentTpmHandle::new(handle).map_err(tss)?;
-        let object = ctx
-            .execute_without_session(|ctx| ctx.tr_from_tpm_public(TpmHandle::Persistent(target)))
-            .map_err(tss)?;
-        ctx.evict_control(Provision::Owner, object, Persistent::Persistent(target))
+        let object = Self::resolve_key(&mut ctx, handle)?;
+        ctx.evict_control(Provision::Owner, object.into(), Persistent::Persistent(target))
             .map_err(tss)?;
         Ok(())
     }
