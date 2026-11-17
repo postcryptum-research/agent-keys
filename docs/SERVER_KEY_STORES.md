@@ -20,6 +20,9 @@ second time. The other comparison facts (§4 to §6) were read once, part
 of them through a text extractor: re-read the source before relying on a
 figure from them.
 
+Which rented machines have a TPM 2.0 at all, clouds and physical servers
+by price, is in §12.
+
 ## 1. Summary
 
 1. **The `tpm` backend needs nothing new for a vTPM.** It ran unchanged
@@ -193,9 +196,7 @@ not a file would.
 | Evidence | a document signed by the hypervisor: PCRs and up to 1 kB of caller data (D, since 2025-09); an EK public key from the API, no certificate (I) | EK and AK public keys from the API (D); an AK certificate under a Google root, naming the instance (D for confidential VMs, not established here) |
 | To get one | the image must be registered with TPM support; "There are no preconfigured AMIs" for Linux; only at launch (D) | on by default (D) |
 
-Others, one line each: Oracle Cloud and Alibaba Cloud have a vTPM (D);
-Hetzner Cloud says it has none (D); for IBM's virtual servers and
-DigitalOcean none is documented.
+The other clouds, and the low-priced VPS hosts, are in §12.1.
 
 ## 5. Our own hypervisor, and a chip in a rented server
 
@@ -478,3 +479,197 @@ Key services:
 [Cloud HSM attestation](https://docs.cloud.google.com/kms/docs/attest-key),
 [YubiHSM 2 concepts](https://docs.yubico.com/hardware/yubihsm-2/hsm-2-user-guide/hsm2-intro-core-concepts.html),
 [Vault Transit](https://developer.hashicorp.com/vault/api-docs/secret/transit).
+
+## 12. Where there is one: an availability survey
+
+*Added 2026-11-17, at the owner's request. The reader is one person
+renting one machine with a card: which machines have a TPM 2.0 for the
+`tpm` backend to talk to. Nothing here was rented or run.*
+
+How it was gathered, and what that is worth: by automated reading on
+2026-11-17. Manufacturers' manuals and the hosts' order pages were read
+directly. **WebHostingTalk and LowEndTalk refused automated reading**, so
+their offers are known from search excerpts, not from the threads. Almost
+no price page of a cloud could be read; cloud prices are from third-party
+price trackers. Quotes were relayed by a text extractor: re-read the
+source before citing one. Marks as in the rest of the page; here **D**
+means the vendor's or the host's own document, and a forum post, a
+reseller or a price tracker is always **I**.
+
+### 12.1 Cloud VMs: who gives the guest a vTPM
+
+| Platform | vTPM | How | Does a copy of the VM carry the state | Cheapest VM with it, per month (I) |
+|---|---|---|---|---|
+| Azure, Trusted Launch | yes (D) | default for new Gen2 VMs | yes, §3.3 | about $4 (B1ls) |
+| AWS, NitroTPM | yes (D) | not default: the image must be registered with TPM support, at launch only | no, §4 | about $4 (t3.nano), plus making the image |
+| Google, Shielded VM | yes (D) | default | no, §4 | about $6 to $7 (e2-micro) |
+| Oracle Cloud, shielded instances | yes (D) | chosen at creation; listed shapes and images only; not the Always Free shapes; custom images unsupported | no: "the TPM data is not retained during migration" (D) | about $19 to $25; two sources disagree |
+| Alibaba Cloud, trusted instances | yes (D) | at creation; listed instance families, a supported image, the key service activated | not documented | about $41 to $46 |
+| Huawei Cloud, QingTian TPM | yes (D) | at purchase; C9 / aC9 / aC8 families, **8 vCPU and 16 GiB or more** | no: "not included in image snapshots" (D) | not read; a VM of that size is above $100 |
+| Exoscale | yes (D) | a flag at creation (`--tpm`), any instance type; a command exists for an existing instance | not documented | about EUR 6 |
+| Gcore | yes (D) | a flavor family, `g2-tpm-…` | not documented | not read |
+| Infomaniak Public Cloud (OpenStack) | yes (D, read through a search excerpt) | image properties `hw_tpm_version=2.0`; one's own uploaded image; no live migration | not documented | about EUR 4 to 5 |
+| T Cloud Public | GPU family only (D, excerpt) | | not documented | not read |
+| **Hetzner Cloud** | **no** (D): "our cloud servers do not support vTPM" (FAQ, 2024-09) | | | |
+| IBM Cloud VPC, IONOS Cloud | not documented | secure boot (IBM) and a confidential VM (IONOS) are; a TPM device is not | | |
+| DigitalOcean, Vultr, Akamai (Linode), UpCloud, Contabo, Scaleway Instances, OVHcloud Public Cloud and VPS, Tencent Cloud, Kamatera, Hostinger, netcup | not documented | for OVHcloud's VPS and for Scaleway an open customer request for a vTPM exists (I), which reads as "no" | | |
+
+OpenStack can give a guest a software TPM when the operator sets it up;
+Infomaniak is the only public one found that documents it for tenants.
+Some small hosts on Proxmox attach a vTPM on request (I, forum replies):
+that is swtpm, §5.
+
+**What it comes to.** Outside the three large clouds, the low-priced
+choices with a documented vTPM are Exoscale and Infomaniak. The popular
+low-priced VPS hosts have none, or do not say. Where a copy of the VM
+carries the keys is documented only for Azure (yes) and for AWS, Google,
+Oracle and Huawei (no).
+
+### 12.2 Rented physical servers: what the hardware is
+
+About 75 offers from about 35 hosts. Only a few hosts name the chassis or
+the board (Worldstream, Dediroom, NovoServe, Leaseweb, HostSailor, and
+Hetzner for its DX line); for the rest the platform is inferred from the
+processor (I). No host named a Supermicro board.
+
+| Per month | What is rented | Whose hardware | A TPM 2.0 in it (§12.3) |
+|---|---|---|---|
+| **under $100** | Xeon E3 v1 to v6, E5-16xx v2, Xeon D, Atom, 16 to 64 GB (platforms of 2011 to 2017); decommissioned dual E5-26xx v2 to v4 with 128 GB at $65 to $100 | Dell 12G / 13G, HPE Gen8 / Gen9, Supermicro X9 to X11 class (I); OVHcloud's own assembly on Intel, ASUS and ASRock Rack boards (I) | **realistically none.** A header for a module at most, and the module is not fitted; Gen8 and 12G cannot take a 2.0 at all |
+| | desktop-class: Ryzen 5 3600, Ryzen 7 5800X, Core i5-13500, i9-9900K, 64 GB (Hetzner AX41 and EX44 from EUR 59, OVHcloud Rise-Game, US budget hosts) | consumer AM4 and LGA1700 boards; for Hetzner an ASRock Rack board made for it (I) | **yes, the processor's firmware TPM**, with no module. It may be switched off: on Hetzner, a free remote-console session to enable it (I) |
+| | entry branded 1U at European hosts: Dell R250, HPE DL20 / DL120 Gen9, Fujitsu RX1330 M3 / M4 (EUR 49 to 77) | as named (D) | Dell: only if the module was ordered. HPE Gen9: only if the kit was. Fujitsu: not looked at |
+| **$100 to $200** | new single-socket AM5: Ryzen 9 7950X3D / 9900X / 9950X, EPYC 4244P to 4545P, DDR5 (about half of the segment) | ASRock Rack 1U2S-B650 where named (D); otherwise AM5 server or desktop boards (I) | **yes, firmware TPM**; on the ASRock Rack AM5 board the default is "Auto for fTPM" (D) |
+| | refurbished 2017 to 2020 servers: Xeon Silver 41xx / 42xx, Gold 6148, EPYC 7402P; dual E5 v3 / v4 in branded chassis | Dell R640, R6515, R730xd, R740; HPE DL360 / DL380 Gen9 and Gen10 (D where named) | **only if the first owner ordered it.** Dell: a plug-in module, and "TPM Security" is Off as shipped. HPE Gen9 / Gen10: a separate kit |
+| **over $200** | current server platforms: EPYC 9004 / 9005, Xeon 6, Xeon Scalable 5th generation, 128 to 512 GB | Dell R660xs, R470, Hetzner DX ("Dell PowerEdge"); HPE DL325 Gen11, DL320 Gen12 (D); unnamed boards presumed Supermicro, ASRock Rack or Gigabyte (I) | **likely.** HPE Gen11: embedded (D). Dell 16G: a module, and TPM 2.0 is Dell's default factory option, Off as shipped (D). Unnamed EPYC boards: a header only, so none unless the host fitted one |
+| | AM5 with 96 to 256 GB | as in the row above | yes, firmware TPM |
+
+**What it comes to.** Below $100 the way to a TPM 2.0 is a desktop-class
+machine and its firmware TPM, not an old server. A refurbished brand-name
+server has one only by the luck of how it was first ordered. From about
+$200, on current Dell and HPE hardware, it is usually there and has to be
+switched on.
+
+### 12.3 The hardware, by vendor and generation
+
+| Hardware | The TPM is | 2.0 | As delivered |
+|---|---|---|---|
+| Dell 12G (R620, R720) | on the board (I) | no: 1.2 at best (I) | "TPM Security" Off (D) |
+| Dell 13G (R630, R730) | a plug-in module, absent unless ordered | yes, the first Dell generation (1.2 and 2.0 are different parts) | "The TPM menu is available only when the TPM module is installed"; Off by default (D) |
+| Dell 14G, 15G (R640, R740, R650, R6515) | a plug-in module, bound to the board | yes | to be set to On in System Security (D) |
+| Dell 16G (R660, R760) | a plug-in module | 2.0 only | "This option is set to Off by default" (D) |
+| HPE Gen8 | a connector and a kit | **no** (D) | |
+| HPE Gen9 | a connector and a kit, 1.2 or 2.0 | yes, in UEFI mode only | absent unless the kit was bought; a module can be installed once (D) |
+| HPE Gen10, and Gen10 Plus with Xeon Scalable | a connector and a kit; pre-configured Gen10 Plus models include it | yes, UEFI mode only | (D) |
+| HPE DL20 Gen10 Plus | embedded | yes | "enabled by default" (D) |
+| HPE Gen11 | embedded: "no longer requires TPM module option kit" | yes | default state not stated for the DL380 (D) |
+| Lenovo x3650 M5, ThinkSystem SR630 / SR650 V1 | a chip on the board | 1.2 or 2.0, a firmware setting | which is active as shipped: not established (D) |
+| Lenovo ThinkSystem V2, V3 | a chip on the board | 2.0 only (D) | |
+| Supermicro X9, X10, most X11; H11 to H13 (EPYC) | a header only; the module (AOM-TPM-9665V, -9670V) is sold separately | with the module | no firmware TPM on these, by Supermicro's own list (D); whether EPYC boards expose AMD's: not established |
+| Supermicro X12, X13 (Intel) | a header, and Intel's firmware TPM (PTT) in the setup menu | yes without a module | default not established (D) |
+| ASRock Rack E3C2xx, EPYCD8, ROMED8 | a header only | with a module | (D) |
+| ASRock Rack X470D4U, B550D4U, X570D4U, B650D4U; Gigabyte MC12-LE0 | a header, and AMD's firmware TPM | **yes without a module** | B650D4U: "Auto for fTPM"; MC12-LE0: "Default setting is AMD fTPM" (D) |
+| Consumer Ryzen and recent Core boards | the processor's firmware TPM | yes | varies; often to be enabled (I) |
+
+Not looked at: Fujitsu, ASUS and Tyan server boards, HPE's AMD models of
+Gen10, Atom C2000 / C3000 and Xeon D boards.
+
+What the hosts themselves say:
+- **IBM Cloud bare metal:** "all support TPM 2.0 from Infineon", installed,
+  to be enabled (D). **Oracle Cloud bare metal:** a hardware TPM, lost on
+  migration to another machine (D).
+- **Scaleway Elastic Metal:** a physical TPM on named offers, and a
+  statement that modules are fitted on new compatible models; a firmware
+  update can reset it (D, read through a search excerpt). Nothing for
+  Dedibox.
+- **OVHcloud:** no official page. Users on its forum: the current
+  non-Eco lines "should have a V2.0 TPM chip", the older Kimsufi and So
+  you Start ones may not (I).
+- **Hetzner:** its documentation does not mention a TPM (D, by absence).
+  A third-party guide: the consumer-grade lines have a firmware TPM, the
+  server-grade ones "will most likely lack TPM support" (I).
+- **Voxility:** a TPM 2.0 module as a paid extra, about $95 a month (I).
+
+### 12.4 What follows for a key kept there
+
+- **Ask before renting, check after.** `cat
+  /sys/class/tpm/tpm0/tpm_version_major` must print 2, and
+  `scripts/tpm-check.sh --make-srk` must pass. A setting in the firmware
+  setup needs the host's remote console; where no module is fitted, no
+  setting exists.
+- **The low-priced route is a firmware TPM**, which is what the project
+  already runs on a laptop. It is not a separate chip: its state is in the
+  board's flash, the known attacks on it need the machine in hand
+  (faulTPM, §5), and a rented machine's firmware is the host's to update.
+- **A replaced board is a lost key.** Dell's and HPE's modules are bound
+  to the system board (D), and a firmware TPM lives on it. Hetzner
+  replaced the boards of three AMD lines in 2025 for a design fault (I).
+  The agent's key is then gone and the owner grants a new one: the case
+  `RESILIENCE.md` already has for a cleared TPM.
+- **The previous tenant.** Only IBM documents clearing the chip between
+  tenants (§5). On taking a machine over, look at the persistent handles
+  before creating keys, and evict ours before giving it back.
+
+### 12.5 Sources for this section
+
+Clouds:
+[Oracle shielded instances](https://docs.oracle.com/iaas/Content/Compute/References/shielded-instances.htm),
+[Alibaba trusted computing](https://www.alibabacloud.com/help/en/ecs/user-guide/overview-of-trusted-computing-capabilities),
+[Huawei QingTian TPM](https://support.huaweicloud.com/intl/en-us/usermanual-ecs/ecs_03_3201.html),
+[Exoscale changelog](https://changelog.exoscale.com/tpm-20-support-for-virtual-machines/),
+[Gcore VM types](https://docs.gcore.com/cloud/virtual-instances/types-of-virtual-machines),
+[Infomaniak](https://docs.infomaniak.cloud/compute/instances/advanced_usage/),
+[Hetzner Cloud FAQ](https://docs.hetzner.com/cloud/servers/faq/),
+[OVHcloud roadmap request](https://github.com/ovh/infrastructure-roadmap/issues/380),
+[OpenStack emulated TPM](https://docs.openstack.org/nova/latest/admin/emulated-tpm.html).
+
+Offers:
+[WebHostingTalk, Dedicated Hosting Offers](https://www.webhostingtalk.com/forumdisplay.php?f=36)
+(excerpts only),
+[Hetzner AX](https://www.hetzner.com/dedicated-rootserver/matrix-ax/),
+[EX](https://www.hetzner.com/dedicated-rootserver/matrix-ex/),
+[DX](https://www.hetzner.com/dedicated-rootserver/matrix-dx/),
+[OVHcloud Kimsufi](https://eco.ovhcloud.com/en/kimsufi/),
+[Rise](https://eco.ovhcloud.com/en/rise/),
+[Advance](https://www.ovhcloud.com/en/bare-metal/advance/),
+[Worldstream](https://www.worldstream.com/en/dedicated-servers/),
+[Dediroom](https://www.dediroom.com/cart.php?gid=101),
+[NovoServe](https://novoserve.com/dedicated-servers),
+[InterServer](https://www.interserver.net/dedicated/),
+[ReliableSite](https://www.reliablesite.net/dedicated-servers/),
+[Hivelocity](https://www.hivelocity.net/dedicated-servers/),
+[Latitude.sh](https://www.latitude.sh/pricing),
+[Contabo](https://contabo.com/en/dedicated-servers/).
+
+Hardware:
+Dell owner's manuals
+([R720](https://dl.dell.com/topicspdf/poweredge-r720_owners-manual_en-us.pdf),
+[R730](https://dl.dell.com/topicspdf/poweredge-r730_owners-manual_en-us.pdf),
+[R640](https://dl.dell.com/topicspdf/poweredge-r640_owners-manual_en-us.pdf),
+[R650](https://dl.dell.com/topicspdf/poweredge-r650_owners-manual_en-us.pdf),
+[R6515](https://dl.dell.com/topicspdf/poweredge-r6515_owners-manual_en-us.pdf))
+and [Dell on the TPM option](https://www.dell.com/en-us/lp/hmc-trusted-platform-module);
+HPE QuickSpecs
+([Gen9](https://support.hpe.com/hpesc/public/api/document/c04346247),
+[Gen10](https://support.hpe.com/hpesc/public/api/document/a00008180enw),
+[DL20 Gen10 Plus](https://support.hpe.com/hpesc/public/api/document/a50002583enw),
+[DL380 Gen11](https://support.hpe.com/hpesc/public/api/document/a50004307enw),
+[TPM kits](https://support.hpe.com/hpesc/public/api/document/c04939549));
+Lenovo Press
+([SR650](https://lenovopress.lenovo.com/lp1050.pdf),
+[V2](https://lenovopress.lenovo.com/lp1392.pdf),
+[V3](https://lenovopress.lenovo.com/lp1601.pdf),
+[x3650 M5](https://lenovopress.lenovo.com/lp0068.pdf));
+Supermicro
+([which boards have PTT](https://www.supermicro.com/support/faqs/faq.cfm?faq=34689),
+[the 9670 module](https://supermicro.com/manuals/other/AOM-TPM-9670V_9670H__X12_H12.pdf));
+ASRock Rack manuals
+([B650D4U](https://download.asrock.com/Manual/B650D4U.pdf),
+[B550D4U](https://download.asrock.com/Manual/B550D4U.pdf),
+[EPYCD8](https://download.asrock.com/Manual/EPYCD8.pdf));
+[Gigabyte MC12-LE0](https://download.gigabyte.com/FileList/Manual/server_manual_MC12-LE0_e_v1.0.pdf).
+
+Hosts on the TPM:
+[IBM bare metal](https://www.ibm.com/new/announcements/securing-the-boot-process-for-ibm-cloud-bare-metal-servers-for-vpc),
+[Scaleway Elastic Metal](https://www.scaleway.com/en/docs/elastic-metal/reference-content/elastic-metal-security-features/),
+[OVHcloud community](https://community.ovhcloud.com/t/which-servers-have-tpm-v2/1278),
+[IncusOS on a Hetzner server](https://linuxcontainers.org/incus-os/docs/main/getting-started/installation/cloud-hetzner/),
+[Hetzner board replacement](https://docs.hetzner.com/robot/dedicated-server/general-information/mainboard-replacement-for-several-dedicated-servers/).
