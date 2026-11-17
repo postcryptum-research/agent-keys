@@ -9,6 +9,7 @@ spending rules**, and **what it would take to reuse it here**.
 | [`CUPCAKE.md`](CUPCAKE.md) | Cake Wallet's Cupcake — "your old phone as a hardware wallet" — read from its source: what it actually does, and where the marketing and the code differ |
 | [`LANDSCAPE.md`](LANDSCAPE.md) | the wider field: other old-phone and air-gapped signers; agent-wallet products (TEE and MPC custodians, on-chain policy modules); device-key P-256 smart accounts; the open-source projects closest to TPM_sign; the Circle Agent Wallets case (I-HITL) |
 | [`BTCPAY.md`](BTCPAY.md) | BTCPay Server's hot-wallet sweep (2026-11): every integration option and what each would take; the integration itself, in all its forms, is the owner's separate project `77ph/BTCPayTEE`, this page is the analysis it builds on |
+| [`CHATGPT_WALLET.md`](CHATGPT_WALLET.md) | OpenAI's ChatGPT Wallet (2026-11): how the card networks bound an agent that pays, per-purchase approval and a one-transaction token; compared with a standing on-chain mandate; nothing to build here |
 | [`INCIDENTS.md`](INCIDENTS.md) | the ledger of incidents that argue for the design (DarkSword on iOS, Circle Agent Wallets, BTCPay): root cause, where the key lived, what TPM_sign answers and what it does not |
 
 Evidence marks, as in `HARDWARE_WISHLIST.md`: **V** — verified at the linked
