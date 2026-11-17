@@ -471,6 +471,11 @@ enum KeyCmd {
         /// TPM: the key's auth file, for a key created with --auth-file.
         #[arg(long)]
         auth_file: Option<PathBuf>,
+        /// TPM: the PCRs the key is sealed to, for a key created with --pcrs.
+        /// The check then also shows that the measured boot state is still
+        /// the one the key was created under.
+        #[arg(long, value_delimiter = ',')]
+        pcrs: Vec<u8>,
         #[command(flatten)]
         session: PhoneSessionArgs,
     },
@@ -645,7 +650,7 @@ enum KeyOp {
     Create { parent: u32, pcrs: Vec<u8>, auth_file: Option<PathBuf> },
     Show,
     Evict,
-    Check { auth_file: Option<PathBuf> },
+    Check { auth_file: Option<PathBuf>, pcrs: Vec<u8> },
 }
 
 /// Sign a random digest with `signer` and verify it against its public key.
@@ -699,9 +704,9 @@ fn run_key(cmd: KeyCmd) -> Result<()> {
         }
         KeyCmd::Show { key } => (key, KeyOp::Show),
         KeyCmd::Evict { key } => (key, KeyOp::Evict),
-        KeyCmd::Check { key, auth_file, session } => {
+        KeyCmd::Check { key, auth_file, pcrs, session } => {
             session.configure();
-            (key, KeyOp::Check { auth_file })
+            (key, KeyOp::Check { auth_file, pcrs })
         }
         KeyCmd::Attest { key, out } => return yubikey_attest(key, &out),
     };
@@ -1014,12 +1019,17 @@ fn tpm_key(handle: u32, op: KeyOp) -> Result<()> {
             print_key(name, &signer.public_key()?)
         }
         KeyOp::Show => print_key(name, &TpmSigner::open_persistent(handle)?.public_key()?),
-        KeyOp::Check { auth_file } => match auth_file {
-            Some(file) => {
+        KeyOp::Check { auth_file, pcrs } => match (auth_file, pcrs.is_empty()) {
+            (Some(file), true) => {
                 let secret = std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
                 check_signer(name, &TpmSigner::open_persistent_protected(handle, &secret)?)
             }
-            None => check_signer(name, &TpmSigner::open_persistent(handle)?),
+            (None, false) => check_signer(name, &TpmSigner::open_persistent_sealed(handle, &pcrs)?),
+            // The TPM's refusal of a sealed or protected key opened plainly
+            // does not say which option is missing (#43).
+            (None, true) => check_signer(name, &TpmSigner::open_persistent(handle)?)
+                .context("a key created with --pcrs or --auth-file is checked with the same option"),
+            (Some(_), false) => bail!("--auth-file and --pcrs do not combine"),
         },
         KeyOp::Evict => {
             TpmSigner::evict(handle)?;

@@ -52,9 +52,9 @@ B=target/debug/agent-signer
 **3. Create the keys.**
 
 Keys are created under the TPM's storage root key at `0x81000001`. Many
-distributions persist one there already. If `key create` fails with "the
-handle is not correct for the use", there is none yet, as on a new
-virtual machine: create it once with tpm2-tools:
+distributions persist one there already. If `key create` says "no storage
+parent at 0x81000001", there is none yet, as on a new virtual machine:
+create it once with tpm2-tools:
 
 ```sh
 sudo apt install tpm2-tools

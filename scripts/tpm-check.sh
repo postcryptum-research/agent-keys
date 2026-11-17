@@ -11,8 +11,9 @@
 #   scripts/tpm-check.sh --swtpm     a software TPM, then a copy of its state
 #
 # Needs tpm2-tools and what `cargo build --features tpm` needs (libtss2-dev,
-# libclang-dev); --swtpm also needs swtpm. Uses the handles 0x8101ff01..03 and
-# refuses to start when one of them is taken.
+# libclang-dev); --swtpm also needs swtpm. Uses the handles 0x8101ff01..03
+# (the tests use 0x8101ff11..13) and refuses to start when one of its own is
+# taken.
 set -euo pipefail
 
 SRK=0x81000001 KEY=0x8101ff01 SEALED=0x8101ff02 PROTECTED=0x8101ff03
@@ -78,17 +79,21 @@ checks() {
     for h in $KEY $SEALED $PROTECTED; do
         if present $h; then echo "handle $h is taken: evict it, or use --again"; exit 1; fi
     done
-    # The tests spend two failed authorizations; in lockout no key of ours signs.
+    # The tests spend two failed authorizations. In lockout a key behind an
+    # authValue does not sign, and none can be made under a parent that is
+    # under the lockout itself.
     if [ $(($(prop TPM2_PT_MAX_AUTH_FAIL) - $(prop TPM2_PT_LOCKOUT_COUNTER))) -lt 3 ]; then
         echo "too close to the dictionary-attack lockout to run the tests: wait, or reset it (tpm2_dictionarylockout -c)"
         exit 1
     fi
-    say "the backend's hardware tests"
+    say "the backend's hardware tests, and the CLI's"
     $CARGO test -p hw-signer --features tpm -- --ignored --test-threads=1 2>&1 | grep -E '^test |^test result|panicked|^error'
+    $CARGO test -p agent-signer --features tpm --test tpm_cli -- --ignored --test-threads=1 2>&1 | grep -E '^test |^test result|panicked|^error'
     say "the CLI: a plain key, a key sealed to PCRs 0,2,4,7, a key behind an authValue"
     "$B" key create --handle $KEY
     "$B" key check --handle $KEY
     "$B" key create --handle $SEALED --pcrs 0,2,4,7
+    "$B" key check --handle $SEALED --pcrs 0,2,4,7
     printf 'a secret only root reads\n' >"$tmp/auth"
     "$B" key create --handle $PROTECTED --auth-file "$tmp/auth"
     "$B" key check --handle $PROTECTED --auth-file "$tmp/auth"

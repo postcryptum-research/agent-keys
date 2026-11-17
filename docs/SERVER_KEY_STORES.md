@@ -168,6 +168,10 @@ This is the first thing for the run (§8.3).
   whose attestation key Microsoft certified. Microsoft's client does this
   for a key of its own (D, source); for a user's key it is not a
   documented procedure (I).
+- **What the verifier must also check:** that the key is `fixedTPM` and
+  `sensitiveDataOrigin`, in the public area that the certified name
+  commits to. Without that, "an object in a vTPM" does not mean
+  "generated there".
 - **What that does not show:** that the key exists once (copies), that
   the host cannot use it, or which VM it is (the certificate's fields are
   not documented).
@@ -335,6 +339,11 @@ the copy signs with the same key as the original: {"key":"0x8101ff01","x":"0xd35
 Left out above: the PCR values (all zero), the build's warnings, the
 keys' JSON, and the tail of the two long public-key values.
 
+That is the run as it was on that day. Since the change for #43 the
+refusal reads "no storage parent at 0x81000001: persist one there
+first …", the script checks the sealed key too, and it runs the tests
+that change added.
+
 ### 8.2 What it showed, beyond "it works"
 
 By hand in the same container, all F for libtpms 0.9.3:
@@ -346,16 +355,23 @@ By hand in the same container, all F for libtpms 0.9.3:
    `0x81000001` evicted, a key persisted earlier still signed.
 3. **Lockout after 3 failures, one forgiven per 1000 s.** These are the
    reference defaults; the backend's own test notes 31 for Intel's
-   firmware TPM. In lockout a key with an authValue, an empty one
-   included, refuses to sign, and no key can be made. A PCR-sealed key
-   kept signing: it authorizes by policy.
+   firmware TPM. In lockout a key under it refuses to sign, and no key
+   can be made under a parent that is under it. A PCR-sealed key kept
+   signing: it authorizes by policy.
 4. **An unclean stop counts as a failure.** Each time the TPM was killed
-   after a signature, without `TPM2_Shutdown`, the next start added one:
-   three such stops and it was in lockout. Idle periods that ended the
-   same way added nothing, and a clean stop did not reset the count.
-5. **Two rough edges in our CLI**, tracked in #43: the message when the
-   storage parent is missing does not say so; and `key check` cannot
-   check a PCR-sealed key (it has no `--pcrs`).
+   after a signature with a key under the lockout, without
+   `TPM2_Shutdown`, the next start added one: three such stops and it was
+   in lockout. Idle periods that ended the same way added nothing, and a
+   clean stop did not reset the count.
+5. **Which keys are under the lockout** (#43). On 2026-11-14 every key
+   was, an empty authValue included. Since #43 a key made without an
+   authValue carries `noDA`: it signed through a lockout, and signatures
+   with it did not make an unclean stop count. A key behind an authValue
+   stays under it, and so do keys made before and a storage parent made
+   by the FAQ's command.
+6. **Two rough edges in our CLI**, fixed with #43: the message for a
+   missing storage parent did not name it, and `key check` could not
+   check a PCR-sealed key (it had no `--pcrs`).
 
 Not shown by this run: anything about a hypervisor's handling of the
 state, a guest's `/dev/tpmrm0` (the socket has no resource manager, so
@@ -414,10 +430,11 @@ B-series size with 4 GiB, to compile).
    deployment asks for the audit record or the switch. It is a different
    product in one respect: the key is used by an identity, from
    anywhere, and a stolen token lasts about a day.
-6. **Should the agent's key ignore the lockout?** A key with an empty
-   authValue gains nothing from it and loses availability (§8.2, points
-   3 and 4). Creating it with the `noDA` attribute would do it; that is a
-   code change for new keys, in #43.
+6. **Existing agent keys and the lockout.** New keys without an
+   authValue are exempt since #43 (§8.2, point 5); a key made before is
+   not, and the attribute cannot be added to it. Recommended: on a
+   virtual TPM, make a new agent key and rotate onto it, which costs one
+   root operation; on a chip that allows 31 failures, leave it.
 
 ## 11. Sources
 

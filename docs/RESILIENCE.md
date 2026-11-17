@@ -40,8 +40,8 @@
 > ```
 >
 > `agent-signer key check --keyfile …` proves the passphrase still opens the
-> file (and `key check --handle …` that a TPM key still signs) without
-> sending anything — run it periodically. Claims are marked [V]
+> file (and `key check --handle …` that a TPM key still signs; a PCR-sealed
+> one with `--pcrs`) without sending anything — run it periodically. Claims are marked [V]
 > verified or [I] inferred. Written by a research agent.
 
 
@@ -155,7 +155,7 @@ State of the code at the time of the study (work is ongoing in parallel):
 | CPU replacement (AMD fTPM) | **destroyed** when answering "Y" | §1.2 |
 | Motherboard replacement | fTPM — **destroyed**; a pin-header dTPM module moved to the new board — key alive [I], PCR-sealed keys go silent | |
 | PCR change (BIOS, Secure Boot db/dbx, bootloader) | key alive, but **a PCR-sealed key does not sign** | §1.4 |
-| Dictionary-attack lockout (wrong authValue N times) | alive; **temporary** lockout | recovers on a timer or via lockoutAuth [I] |
+| Dictionary-attack lockout (wrong authValue N times) | alive; **temporary** lockout. It stops a key behind an authValue. A key created without one since #43 carries `noDA` and keeps signing [V, on a software TPM]; a key created before does not | recovers on a timer or via lockoutAuth [I]; the thresholds and causes on a virtual TPM: [`SERVER_KEY_STORES.md`](SERVER_KEY_STORES.md) §8.2 |
 
 **Protection against an accidental/malicious Clear from the OS:**
 `tpm2_clearcontrol -C l s` sets `disableClear`, and the lockout hierarchy
@@ -224,6 +224,8 @@ setting: it protects against a typo and against a script that runs `tpm2_clear`.
   (rule 4 of KEY_POLICY already says it does not protect against compromise of
   the running system). An alternative that survives updates is
   `PolicyAuthorize` with signed policies [I]; for us it is overkill.
+  After an update, `key check --handle … --pcrs 0,2,4,7` says at once
+  whether the sealed key still signs.
 
 ### 1.5 Apple Secure Enclave (CryptoKit `dataRepresentation`)
 
