@@ -5,8 +5,9 @@
 process does not change: a P-256 key that cannot be exported signs
 ERC-4337 UserOperations, the on-chain `AgentPolicy` bounds it, the owner's
 key is elsewhere. TEEs and confidential VMs are out of scope. Which role
-such a key may hold is the owner's decision; this page gathers the facts
-and ends with the open questions.*
+such a key may hold was the owner's decision; this page gathers the facts
+and ends with the questions put to the owner and the decisions (§10,
+2026-11-19).*
 
 Evidence marks: **F** first-hand, run by us (§8). **D** stated by a
 primary source: the vendor's documentation, a specification, or the
@@ -290,7 +291,8 @@ the cap per operation, the budget, the expiry and the refusal of
 ERC-1271 never relied on the chip. A copy of the agent's key can do what
 the agent can, out of the same budget, until the permission is revoked.
 
-**The roles, with the consequences and no verdict.**
+**The roles, with the consequences.** The owner's decision is in §10:
+the agent key only.
 - **Agent key.** Inside today's model: `KEY_POLICY.md` rule 2 already
   treats the key's holder as possibly hostile. What changes is the
   procedure after an incident that touched the cloud account: rotate,
@@ -375,7 +377,8 @@ By hand in the same container, all F for libtpms 0.9.3:
    authValue carries `noDA`: it signed through a lockout, and signatures
    with it did not make an unclean stop count. A key behind an authValue
    stays under it, and so do keys made before and a storage parent made
-   by the FAQ's command.
+   by the FAQ's command as it was then (it sets `noda` since §10,
+   question 6).
 6. **Two rough edges in our CLI**, fixed with #43: the message for a
    missing storage parent did not name it, and `key check` could not
    check a PCR-sealed key (it had no `--pcrs`).
@@ -473,7 +476,7 @@ was deleted afterwards. All F.
     nothing. In lockout, through two more such stops: **the plain key
     (`noDA`) signed every time**, the key behind the authValue was
     refused, and no key could be created under the storage parent, which
-    the FAQ's command makes without `noDA`.
+    the FAQ's command made without `noDA` until §10, question 6.
 11. **The subscription is root.** Before the run, `az vm run-command`
     read the vTPM's properties on a VM we had no login to.
 
@@ -493,31 +496,46 @@ lasts in wall-clock time across restarts.
 | YubiHSM 2 | a new backend, and the device | only where somebody can open the machine |
 | Vault Transit | not worth it | a software key, or a proxy for one of the above |
 
-## 10. Open questions for the owner
+## 10. Questions for the owner, and the decisions
 
-1. **Which roles may a vTPM key hold?** The consequences are in §7. No
-   recommendation, as asked.
+Put to the owner with the study; decided on 2026-11-19. They change
+documentation only: no code, and nothing on a running machine.
+
+1. **Which roles may a vTPM key hold?** **Decided: the agent key only.**
+   Owner and recovery keys are not placed in a cloud VM's vTPM. Whoever
+   administers the cloud account runs commands as root in the VM and
+   copies it, key included, and every copy starts with a clean lockout
+   counter (§8.4, points 6, 7 and 11). The account's login would be the
+   owner key, with no presence check and no on-chain bound behind it.
+   Recorded in [`KEY_POLICY.md`](KEY_POLICY.md), rule 3; like the other
+   placements there, it is not enforced by the CLI.
 2. *(Closed: the Azure run was made on 2026-11-18, §8.4.)*
-3. **Guidance for a cloud deployment, now that the run is in?** Proposed
-   content: a managed OS disk; the VM's managed identity holds no rights
-   over disks or VMs; images, snapshots and backups of the agent's VM
-   are key material; after any incident in the cloud account, rotate.
-   From the run, to add: an `--auth-file` does not protect the key from
-   someone who can copy the VM (§8.4, points 6 and 7); restart a new VM
-   once before sealing a key to PCR 7 (point 5).
+3. **Guidance for a cloud deployment.** **Decided: now, in the FAQ**, as a
+   checklist under "Which machines and which networks?", with what the
+   run added (§8.4, points 2, 5, 6, 7 and 10).
 4. **A check of Azure's attestation-key certificate in the CLI?**
-   Recommended: not now. The TPM path checks nothing for a chip either,
-   and what the certificate proves is narrow (§3.4). Worth it when a
-   third party has to verify where an agent's key lives.
-5. **A Key Vault backend next to the vTPM?** Recommended: only when a
-   deployment asks for the audit record or the switch. It is a different
-   product in one respect: the key is used by an identity, from
-   anywhere, and a stolen token lasts about a day.
-6. **Existing agent keys and the lockout.** New keys without an
-   authValue are exempt since #43 (§8.2, point 5); a key made before is
-   not, and the attribute cannot be added to it. Recommended: on a
-   virtual TPM, make a new agent key and rotate onto it, which costs one
-   root operation; on a chip that allows 31 failures, leave it.
+   **Decided: not now.** Besides the reasons in §3.4, the run showed that
+   a copy of the VM gets a new endorsement key and attestation key and
+   keeps our key (§8.4, point 6). A check would then pass on a copy too:
+   it shows "in an Azure vTPM", never "only here" (I: the certificate of
+   a copy was not read). To revisit when a third party has to verify
+   where an agent's key lives.
+5. **A Key Vault backend next to the vTPM?** **Decided: not now.** What
+   would change it: a deployment that asks for a record of every
+   signature, or for a switch an administrator can throw. Against the
+   same adversary, someone with rights in the subscription, Key Vault
+   can record each signature and be disabled, while a copy of a vTPM
+   signs with nothing recorded.
+6. **Existing agent keys and the lockout.** **Decided: on a virtual TPM,
+   make a new agent key and rotate onto it, which costs one root
+   operation; on a chip that allows 31 failures, leave it.** No key of
+   the project's own accounts is on a virtual TPM today (the one TPM
+   agent key is on an Intel firmware TPM), so nothing is rotated. With
+   it, the FAQ's command for the storage parent sets `noda`: during a
+   lockout a key can then still be made under it, a plain one and one
+   behind an authValue alike, where the parent made without it refused
+   both (F, swtpm 0.7.3, 2026-11-19). An existing parent is kept as it
+   is.
 
 ## 11. Sources
 

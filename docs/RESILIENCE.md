@@ -155,7 +155,7 @@ State of the code at the time of the study (work is ongoing in parallel):
 | CPU replacement (AMD fTPM) | **destroyed** when answering "Y" | §1.2 |
 | Motherboard replacement | fTPM — **destroyed**; a pin-header dTPM module moved to the new board — key alive [I], PCR-sealed keys go silent | |
 | PCR change (BIOS, Secure Boot db/dbx, bootloader) | key alive, but **a PCR-sealed key does not sign** | §1.4 |
-| Dictionary-attack lockout (wrong authValue N times) | alive; **temporary** lockout. It stops a key behind an authValue. A key created without one since #43 carries `noDA` and keeps signing [V, on a software TPM and on an Azure vTPM]; a key created before does not | recovers on a timer or via lockoutAuth [I]; the thresholds and causes on a virtual TPM: [`SERVER_KEY_STORES.md`](SERVER_KEY_STORES.md) §8.2 |
+| Dictionary-attack lockout (wrong authValue N times) | alive; **temporary** lockout. It stops a key behind an authValue. A key created without one since #43 carries `noDA` and keeps signing [V, on a software TPM and on an Azure vTPM]; a key created before does not. Besides wrong authValues, a stop of the TPM without `TPM2_Shutdown` after a signature with a key under the lockout counts as one failure: a crash, or a hard power-off of a VM. A virtual TPM allows 3 and forgives one every 1000 s [V, on a software TPM and on an Azure vTPM]; Intel PTT allows 31 [I, the backend's test] | recovers on a timer or via lockoutAuth [I]; the thresholds and causes on a virtual TPM: [`SERVER_KEY_STORES.md`](SERVER_KEY_STORES.md) §8.2, §8.4 |
 
 **Protection against an accidental/malicious Clear from the OS:**
 `tpm2_clearcontrol -C l s` sets `disableClear`, and the lockout hierarchy

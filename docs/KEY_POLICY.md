@@ -51,6 +51,12 @@ compromise. What it does guarantee:
      placements carry no such assumption — for the Secure Enclave, the
      presence check must be the enclave-enforced access control
      (`userPresence` / biometry), so user-level code cannot skip it.
+   **Not a placement: a cloud VM's virtual TPM**, for the owner key or the
+   recovery key (the owner's decision, 2026-11-19). Whoever administers
+   the cloud account runs commands as root in the VM and copies it, key
+   included, so that account's login would be the owner key. A vTPM may
+   hold the agent key ([`SERVER_KEY_STORES.md`](SERVER_KEY_STORES.md)
+   §10).
    Owner operations — rotation, revocation, changing the mandate — are rare
    and not part of the agent's autonomous loop, so a human in that loop does
    not contradict premise 1.
