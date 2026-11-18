@@ -58,8 +58,12 @@ create it once with tpm2-tools:
 
 ```sh
 sudo apt install tpm2-tools
-tpm2_createprimary -C o -g sha256 -G ecc -c srk.ctx && tpm2_evictcontrol -C o -c srk.ctx 0x81000001
+tpm2_createprimary -C o -g sha256 -G ecc -a 'fixedtpm|fixedparent|sensitivedataorigin|userwithauth|restricted|decrypt|noda' -c srk.ctx \
+  && tpm2_evictcontrol -C o -c srk.ctx 0x81000001
 ```
+
+(`noda` keeps the parent usable for making keys while the TPM is in a
+dictionary-attack lockout; it has no password to guess.)
 
 Then:
 
@@ -252,7 +256,31 @@ libvirt and Proxmox use (`scripts/tpm-check.sh --swtpm`) and on an Azure
 Trusted Launch VM; other clouds were not run. What changes there is who
 else can reach the key: the host, and whoever may copy the VM. On Azure a
 VM made from a snapshot signed with the same key
-([`SERVER_KEY_STORES.md`](SERVER_KEY_STORES.md)).
+([`SERVER_KEY_STORES.md`](SERVER_KEY_STORES.md)). On a cloud VM:
+
+- **The agent key only.** Keep the owner and recovery keys off it:
+  whoever administers the cloud account can run commands as root in the
+  VM and copy it ([`KEY_POLICY.md`](KEY_POLICY.md), rule 3).
+- **Make the storage parent once** (question 1, step 3). On Azure the
+  vTPM had room for three persistent objects of ours: the parent, the
+  agent key, and one spare for a rotation.
+- **A managed OS disk, not an ephemeral one**: an ephemeral disk can lose
+  the key on a reimage.
+- **No rights over disks, snapshots or VMs** for the VM's own identity.
+- **Snapshots and restore points of the VM are copies of the key**: on
+  Azure a VM made from either signed as the agent. Treat images and
+  backups of the VM the same way. Whoever may make them can sign.
+- **An `--auth-file` does not help here**: it is on the same disk, and
+  every copy starts with a clean lockout counter.
+- **Seal to PCRs only after the VM has restarted once**: on Azure, PCR 7
+  changed between the first and the second boot.
+- **Make the key with a CLI that includes #43.** Such a key, made without
+  `--auth-file`, signs through a lockout; an older one does not, and on a
+  virtual TPM three hard power-offs after signatures lock it out. If
+  yours is older, make a new key and rotate onto it.
+- **After any incident in the cloud account, rotate the agent's
+  permission** (`permission rotate`), even if the VM looks clean: a copy
+  taken during the incident signs until then.
 
 **Networks:** every EVM network that has the contracts it needs — the
 ERC-4337 EntryPoint v0.7, ZeroDev Kernel v3.3 and its factory, a P-256
