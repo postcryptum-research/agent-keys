@@ -94,10 +94,12 @@ checks() {
     "$B" key check --handle $KEY
     "$B" key create --handle $SEALED --pcrs 0,2,4,7
     "$B" key check --handle $SEALED --pcrs 0,2,4,7
+    # One test key goes before the next comes: an Azure vTPM has room for
+    # three persistent objects of ours, the storage parent among them.
+    "$B" key evict --handle $SEALED
     printf 'a secret only root reads\n' >"$tmp/auth"
     "$B" key create --handle $PROTECTED --auth-file "$tmp/auth"
     "$B" key check --handle $PROTECTED --auth-file "$tmp/auth"
-    "$B" key evict --handle $SEALED
     "$B" key evict --handle $PROTECTED
     # Forget the tests' two failures, where the lockout hierarchy has no password.
     if [ "$(prop lockoutAuthSet)" = 0 ]; then tpm2_dictionarylockout -Q -c; fi

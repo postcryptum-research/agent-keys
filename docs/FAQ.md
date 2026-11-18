@@ -248,9 +248,10 @@ a TROPIC01 USB devkit and a Mac's Secure Enclave (all four verified).
 
 **A server or a virtual machine:** the Linux `tpm` backend works as it is
 against a virtual TPM. That is checked against the software TPM that QEMU,
-libvirt and Proxmox use (`scripts/tpm-check.sh --swtpm`), and not yet run
-on a cloud VM. What changes there is who else can reach the key: the host,
-and whoever may copy the VM
+libvirt and Proxmox use (`scripts/tpm-check.sh --swtpm`) and on an Azure
+Trusted Launch VM; other clouds were not run. What changes there is who
+else can reach the key: the host, and whoever may copy the VM. On Azure a
+VM made from a snapshot signed with the same key
 ([`SERVER_KEY_STORES.md`](SERVER_KEY_STORES.md)).
 
 **Networks:** every EVM network that has the contracts it needs — the

@@ -13,8 +13,9 @@ primary source: the vendor's documentation, a specification, or the
 vendor's published source code, read on 2026-11-14. **I** inferred, or
 from a secondary source.
 
-**Nothing here was run on a cloud VM.** For the clouds every mark is D or
-I, and §8.3 lists what the Azure run has to settle. Every sentence quoted
+**One cloud was run: Azure, on 2026-11-18 (§8.4).** Where that run
+settled a point, the mark is now F and the text says so. For AWS and
+Google every mark is still D or I. Every sentence quoted
 word for word from a documentation page was checked against that page a
 second time. The other comparison facts (§4 to §6) were read once, part
 of them through a text extractor: re-read the source before relying on a
@@ -28,7 +29,8 @@ by price, is in §12.
 1. **The `tpm` backend needs nothing new for a vTPM.** It ran unchanged
    against the software TPM that QEMU, libvirt and Proxmox put behind a
    VM (F). What it asks of a TPM (§2) is in every vTPM looked at, by
-   documentation or source. For Azure that is still I.
+   documentation or source. On an Azure Trusted Launch VM it ran unchanged
+   too, once the storage parent was created (F, §8.4).
 2. **On a vTPM, "non-exportable" is a promise of the host, not a property
    of a chip.** The guest cannot read the key, its root included: that is
    the property [`KEY_POLICY.md`](KEY_POLICY.md) builds on, and it holds.
@@ -39,8 +41,9 @@ by price, is in §12.
    That is the server's form of "whoever holds the machine". On Azure the
    vTPM state also travels with snapshots, restore points and Site
    Recovery, and has an export call (D); AWS and Google document that the
-   state stays with the instance (D). Whether an Azure copy signs with
-   our key is the main thing the run has to show (expected: yes, I).
+   state stays with the instance (D). **An Azure copy signs with our
+   key:** a VM made from a snapshot, and one made from a restore point,
+   both did (F, §8.4).
 4. **The on-chain bound does not change; one guarantee of the chip gets
    weaker.** "Once the host is cleaned, nothing they took lets them sign
    again" becomes "unless they took a copy of the VM". The remedy is the
@@ -52,7 +55,7 @@ by price, is in §12.
 
 | Kind | Backend unchanged? | Who else can use the key | Who can copy it | Evidence for a third party |
 |---|---|---|---|---|
-| **Azure Trusted Launch vTPM** | expected (I), run pending | Microsoft's host (D); the subscription, through Run Command (D) | the state is in snapshots, restore points and Site Recovery replicas, and has an export call (D); that a copy signs: I | an attestation-key certificate under Microsoft's vTPM root (D); no EK certificate (I) |
+| **Azure Trusted Launch vTPM** | **yes (F)**, with room for three persistent objects of ours | Microsoft's host (D); the subscription, through Run Command (D, F) | the state is in snapshots, restore points and Site Recovery replicas (D); the export call returns the blob (F); **a copy signs (F)** | an attestation-key certificate under Microsoft's vTPM root (D); no EK certificate (I) |
 | AWS NitroTPM | expected (I); P-256 and the SHA-256 bank are not documented | AWS says its staff cannot reach customer content (D, not the vTPM by name); the account, through Systems Manager (D) | not in snapshots (D); no export call (I) | a document signed by the hypervisor over PCRs and caller data (D); no EK certificate (I) |
 | Google Shielded VM vTPM | expected (I); P-256 is there (D) | Google's host: the state is plain text in host memory (D); the project, through a startup script (D) | "permanently associated with the VM" (D); no export call (I) | EK and AK public keys from the API (D); an AK certificate signed by Google (D for confidential VMs, not established for a plain Shielded VM) |
 | swtpm: QEMU, libvirt, Proxmox | **yes (F)** | the host's root | the host's root: the state file is the key (D, F); a Proxmox clone and backup carry it (D) | none: the EK certificate is from the operator's own CA (D) |
@@ -105,9 +108,11 @@ with P-256 and a SHA-256 PCR bank fits.
 | PCRs 0, 2, 4, 7 for sealing | PCR 0 to 7 are reported to Azure Attestation; PCR 7 follows the Secure Boot variables, PCR 4 the boot loader and kernel. Whether Microsoft's own firmware updates change them is not documented | D |
 | free handles | Azure keeps its attestation key at `0x81000003` and a certificate at NV `0x01C101D0`; ours are `0x8101xxxx` | D |
 
-Expected to work unchanged, with the storage parent created once, as the
-FAQ already describes. Nothing documented contradicts it, and none of it
-is first-hand.
+It works unchanged, with the storage parent created once, as the FAQ
+describes: every row of this table was seen first-hand on 2026-11-18
+(§8.4), except what Microsoft's firmware updates do to the PCRs. One
+thing the table did not foresee: the vTPM has room for few persistent
+objects (§8.4, point 2).
 
 ### 3.3 Who can use or copy the key? (question 2)
 
@@ -129,12 +134,13 @@ is first-hand.
 
 | Operation | What happens to the vTPM state | Mark |
 |---|---|---|
-| Stop, deallocate, start; redeploy; resize; live migration | not documented; expected kept, since the blob stays with the OS disk | I |
+| Restart; deallocate and start; redeploy; resize | kept: the keys signed after each (§8.4) | F |
+| Live migration | not documented; expected kept | I |
 | Reimage or service healing, **ephemeral** OS disk | keys made after creation "might not be persisted" | D |
 | OS disk snapshot, restore point | included | D |
-| A VM made from that snapshot or restore point | gets the state: the documented failure is a snapshot whose "vTPM state is locked" | I |
+| A VM made from that snapshot or restore point | gets the state, our keys and the storage parent included; the endorsement key and Azure's attestation key are new (§8.4) | F |
 | Site Recovery | "replicates the VM guest state" to the other region | D |
-| Export | `beginGetAccess` with `getSecureVMGuestStateSAS` returns a download address for the blob; a new disk can be made from such a blob | D |
+| Export | `beginGetAccess` with `getSecureVMGuestStateSAS` returns a download address for the blob (F: 4 MiB, readable with that address alone); a new disk can be made from such a blob (D) | D, F |
 | Gallery image of kind `TrustedLaunchSupported` | "does not contain the VMGS blob": a new vTPM | D |
 | Gallery image of kind `TrustedLaunch` (captured from a VM) | not documented | — |
 | Restore of the same VM from a backup | expected: the vTPM goes back to the backup's day | I |
@@ -145,14 +151,15 @@ Machine Contributor does not have it; Contributor and Owner do, and so do
 the disk backup and snapshot roles (D for the roles listed, I for the
 wildcard).
 
-**Does a copy sign with our key?** Azure does not say. Expected yes:
+**Does a copy sign with our key?** Azure does not say. **It does (F,
+§8.4).** What pointed to it beforehand:
 - a copied state did, on the software TPM (F);
 - the paravisor's source, when the host signals a new VM identity,
   renews the endorsement and platform seeds and the attestation key, and
   leaves the storage hierarchy alone (I, from reading the code; which
-  operations send that signal is not documented).
-
-This is the first thing for the run (§8.3).
+  operations send that signal is not documented). The run agrees: on
+  both copies the endorsement key and the attestation key had new names,
+  and the storage parent and our keys were the same.
 
 ### 3.4 What evidence is there? (question 3)
 
@@ -378,7 +385,9 @@ state, a guest's `/dev/tpmrm0` (the socket has no resource manager, so
 the script flushes the tools' objects itself), or PCRs that a firmware
 fills (all zero here, so sealing to 0, 2, 4, 7 bound nothing).
 
-### 8.3 The Azure run: what it has to settle
+### 8.3 The Azure run: what it had to settle
+
+The plan as written before the run; the results are in §8.4.
 
 On a Trusted Launch VM with a **managed** OS disk; the script's
 `--make-srk --keep` first, then `--again` after each step.
@@ -399,6 +408,79 @@ On a Trusted Launch VM with a **managed** OS disk; the script's
 Needs: an Azure subscription and about two hours of a small VM (a
 B-series size with 4 GiB, to compile).
 
+### 8.4 The Azure run (2026-11-18)
+
+A throwaway Trusted Launch VM in West Europe: Ubuntu 22.04, Gen2, vTPM
+and Secure Boot on, a managed OS disk, size D2s_v3 (the B-series was not
+offered to the subscription). `scripts/tpm-check.sh --make-srk --keep`
+at master `2a98631`, then the steps of §8.3 by hand. The resource group
+was deleted afterwards. All F.
+
+1. **It is the Microsoft reference TPM.** Manufacturer `MSFT`, vendor
+   string "TPM Simulator", firmware `0x20200312`. P-256 is there; the
+   banks are SHA-1, SHA-256 and SHA-384; `/dev/tpmrm0` belongs to the
+   group `tss`. As shipped: persistent handles `0x81000003` (Azure's
+   attestation key) and `0x81010001` (the endorsement key), NV index
+   `0x01C101D0`, **no storage parent at `0x81000001`**, no owner or
+   lockout password.
+2. **Room for three persistent objects of ours, no more.** The TPM
+   reported three free slots. With the storage parent and two keys in
+   place, the third `key create` failed with "insufficient space for NV
+   allocation". That is enough for an agent (the parent and one key, one
+   slot spare for a rotation) and too few for the script as it was: it
+   kept three test keys at once and stopped at the third. The script now
+   holds two. A VM where another tool has provisioned a key of its own
+   has one slot fewer.
+3. **The tests pass.** The three hardware tests, the two of #43 and the
+   two CLI tests; a plain key, a key sealed to PCRs 0, 2, 4, 7 and a key
+   behind an authValue were created and signed. A plain key carries
+   `noDA`.
+4. **The key survives the VM's lifecycle.** After a restart, a
+   deallocate and start, a redeploy and a resize (D2s_v3 to D4s_v3 and
+   back), both keys signed and the handles were the same. The four were
+   done twice; the keys were checked at the end of the first round and
+   after every step of the second.
+5. **PCRs 0, 2 and 4 held through all of that; PCR 7 changed once.** All
+   four are non-zero. PCR 7 had one value on the VM's first boot and
+   another from the second boot on, the same through every later step.
+   The cause was not looked for. What it means: **a key sealed to PCR 7
+   on the first boot of a new VM would go silent at the next restart**;
+   restart once before sealing. Not tested directly (the sealed key was
+   evicted before the first restart, for the room).
+6. **A copy signs with the same key.** A VM made from a snapshot of the
+   OS disk, and a VM made from a restore point, each taken while the
+   original ran: the same public key at the same handle, both keys
+   signed, the key behind the authValue included (its file is on the
+   disk). On each copy the storage parent's name was the original's;
+   the endorsement key and Azure's attestation key had new names.
+7. **A copy starts with a clean lockout counter.** The original stood
+   at 2 failed authorizations of 3; each copy stood at 0. So the lockout
+   does not limit guesses at an authValue for someone who can copy the
+   VM: every copy brings three more.
+8. **The export call works.** `beginGetAccess` with the guest-state
+   option, on a detached copy of the disk, returned two addresses: the
+   disk, and the guest state. The second is a blob of 4,194,816 bytes
+   that begins `GUESTRTS`; its first 512 bytes were fetched with the
+   address alone. The blob was not downloaded or parsed.
+9. **Lockout: 3 failures, one forgiven per 1000 s, as in §8.2.** The
+   hardware tests leave two failures behind (the script clears them at
+   its end; this run stopped before that, at point 2). The count did not
+   fall during 23 minutes that held eight restarts.
+10. **An unclean stop counts here too.** A power-off that skips the
+    guest's shutdown (`az vm stop --skip-shutdown`), after a signature
+    with the key behind the authValue, raised the count from 2 to 3 and
+    put the TPM in lockout. Clean restarts and deallocations added
+    nothing. In lockout, through two more such stops: **the plain key
+    (`noDA`) signed every time**, the key behind the authValue was
+    refused, and no key could be created under the storage parent, which
+    the FAQ's command makes without `noDA`.
+11. **The subscription is root.** Before the run, `az vm run-command`
+    read the vTPM's properties on a VM we had no login to.
+
+Not done: Site Recovery, a gallery image, a restore of the same VM from
+a backup, a Confidential VM, Windows. Not measured: how long a lockout
+lasts in wall-clock time across restarts.
+
 ## 9. Cost to support (question 5)
 
 | Kind | Cost | Why |
@@ -415,13 +497,14 @@ B-series size with 4 GiB, to compile).
 
 1. **Which roles may a vTPM key hold?** The consequences are in §7. No
    recommendation, as asked.
-2. **The Azure run: whose subscription, and when?** Recommended before
-   any page tells a user that Azure works. Until then the FAQ says
-   "not yet run on a cloud VM".
-3. **Guidance for a cloud deployment, once the run is in?** Proposed
+2. *(Closed: the Azure run was made on 2026-11-18, §8.4.)*
+3. **Guidance for a cloud deployment, now that the run is in?** Proposed
    content: a managed OS disk; the VM's managed identity holds no rights
    over disks or VMs; images, snapshots and backups of the agent's VM
    are key material; after any incident in the cloud account, rotate.
+   From the run, to add: an `--auth-file` does not protect the key from
+   someone who can copy the VM (§8.4, points 6 and 7); restart a new VM
+   once before sealing a key to PCR 7 (point 5).
 4. **A check of Azure's attestation-key certificate in the CLI?**
    Recommended: not now. The TPM path checks nothing for a chip either,
    and what the certificate proves is narrow (§3.4). Worth it when a
