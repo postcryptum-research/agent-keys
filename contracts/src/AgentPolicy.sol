@@ -57,6 +57,8 @@ interface IKernelEntryPoint {
 ///    `increaseAllowance` may only name a listed spender, and an x402
 ///    authorization may only pay a listed address. A token without a list
 ///    is bound in amount only, as before: the agent picks the recipient.
+///    A token with a list can be called through those four functions only,
+///    whatever else the allow-list names on it.
 ///    A listed spender can move what it was approved for wherever it likes;
 ///    list a spender only if you would list everyone it pays.
 ///
@@ -577,7 +579,11 @@ contract AgentPolicy is IPolicy {
     /// @dev ERC-20 accounting: `transfer` / `approve` / `increaseAllowance`
     /// carry the amount in argument 1 and who gets it (the recipient, the
     /// spender) in argument 0; `transferFrom` carries them in arguments 2
-    /// and 1. Any other selector passes untouched.
+    /// and 1. Any other selector passes untouched — unless the target is a
+    /// token with a payee list: such a token moves only through the four
+    /// functions the list understands, so that `transferWithAuthorization`,
+    /// a vault's `withdraw` or anything else allow-listed on it cannot pay
+    /// an address the list does not name.
     function _chargeToken(Mandate storage m, address token, bytes4 selector, bytes calldata data)
         internal
         returns (bool)
@@ -585,9 +591,9 @@ contract AgentPolicy is IPolicy {
         uint256 arg;
         if (selector == ERC20_TRANSFER || selector == ERC20_APPROVE || selector == ERC20_INCREASE_ALLOWANCE) arg = 1;
         else if (selector == ERC20_TRANSFER_FROM) arg = 2;
-        else return true;
 
         TokenLimit storage t = m.tokens[token];
+        if (arg == 0) return !t.payeesOnly;
         if (!t.set) return false;
         uint256 end = 4 + 32 * (arg + 1);
         if (data.length < end) return false;

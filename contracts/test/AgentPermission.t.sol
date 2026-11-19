@@ -1398,8 +1398,11 @@ contract AgentPermissionTest is Test {
     address internal constant STRANGER = address(0xDEAD);
 
     function _payeeTargets() internal view returns (address[] memory targets, bytes4[] memory selectors) {
-        targets = new address[](5);
-        selectors = new bytes4[](5);
+        targets = new address[](7);
+        selectors = new bytes4[](7);
+        // allow-listed by a careless owner: ways to move the token that no list understands
+        (targets[5], selectors[5]) = (address(token), MockToken.mint.selector);
+        (targets[6], selectors[6]) = (address(token), bytes4(0));
         (targets[0], selectors[0]) = (address(policy), AgentPolicy.x402Authorize.selector);
         (targets[1], selectors[1]) = (address(usdc), MockToken.transfer.selector);
         (targets[2], selectors[2]) = (address(token), MockToken.transfer.selector);
@@ -1497,6 +1500,18 @@ contract AgentPermissionTest is Test {
         _expectRefused(_payeeOp(address(token), dirty));
         // a call cut short before the amount
         _expectRefused(_payeeOp(address(token), abi.encodePacked(MockToken.transfer.selector, bytes32(uint256(uint160(PAYEE))))));
+    }
+
+    /// A payee list is a promise about where the token goes. Any other
+    /// function allow-listed on that token would be a way around it.
+    function test_payees_otherFunctionsOfABoundTokenAreRefused() public {
+        _withPayees();
+        _expectRefused(_payeeOp(address(token), abi.encodeCall(MockToken.mint, (STRANGER, 1))));
+        _expectRefused(_payeeOp(address(token), abi.encodeCall(MockToken.mint, (PAYEE, 1))));
+        _expectRefused(_payeeOp(address(token), ""));
+        // usdc is bound too; the first permission's token is not, and its other entries work as before
+        _send(_agentOp(address(counter), 0, abi.encodeWithSelector(Counter.increment.selector)));
+        assertEq(counter.count(), 1);
     }
 
     function test_payees_batchLegsAreBound() public {

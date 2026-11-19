@@ -22,16 +22,16 @@ validation path and a real paymaster.
 
 | payload | address-only | k1 signature | p256 signature | p256 agent + paymaster |
 |---:|---:|---:|---:|---:|
-| 10 B | 3,443 | 7,402 | 7,433 | 81,857 |
-| 100 B | 4,258 | 8,264 | 8,269 | 82,852 |
-| 1 kB | 11,826 | 16,090 | 16,095 | 92,039 |
-| 10 kB | 88,868 | 96,074 | 96,435 | 185,804 |
-| 100 kB | 956,236 | 1,026,826 | 1,064,773 | 1,293,860 |
+| 10 B | 3,443 | 7,402 | 7,433 | 82,109 |
+| 100 B | 4,258 | 8,264 | 8,269 | 83,104 |
+| 1 kB | 11,826 | 16,090 | 16,095 | 92,291 |
+| 10 kB | 88,868 | 96,074 | 96,435 | 186,056 |
+| 100 kB | 956,236 | 1,026,826 | 1,064,773 | 1,294,112 |
 
 The agent column is the 2026-11-19 measurement (`gas.json`) of the policy
 in the source, which is one step ahead of the deployed one: it knows payee
 lists ([#66](https://github.com/postcryptum-research/agent-keys/issues/66)),
-and that costs 36 gas per operation here (the deployed policy measured
+and that costs 288 gas per operation here (the deployed policy measured
 81,821 at 10 B on 2026-11-10). The forbidden-target guard costs 141 gas per
 operation.
 
@@ -55,12 +55,12 @@ precompile. On chains with RIP-7212 (Base, OP-Stack, Polygon, zkSync, Scroll,
 Linea; mainnet via EIP-7951) the curve the secure elements speak is as cheap
 as the one Ethereum was built on.
 
-**The agent account costs about 78k gas per operation on top of a bare
+**The agent account costs about 79k gas per operation on top of a bare
 call.** That buys: EntryPoint accounting and nonce management, Kernel's
 validation routing, the policy check (allow-list, value cap, budget, expiry,
 all read from storage), the P-256 signature check, paymaster validation and
 settlement, and the account calling the target. The paper measured +63k for
-secp256k1 AA with a mock EntryPoint and no policy; +15k for a real EntryPoint
+secp256k1 AA with a mock EntryPoint and no policy; +16k for a real EntryPoint
 and a policy module is the price of the containment this project is about.
 
 **Large payloads are the data's cost, not the authorization's.** At 10 kB
