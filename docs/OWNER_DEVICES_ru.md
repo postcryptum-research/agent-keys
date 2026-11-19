@@ -157,7 +157,7 @@ CTAP2-стек в CLI. Ключи с PIV/OpenPGP за те же деньги п�
 **Улучшенный TROPIC01-вариант (DIY):** RPi Zero 2 W (~$15) + **TROPIC01 RPi Shield (€20)** + кнопка на GPIO + маленький OLED (~$5). Получается «owner appliance» ≈ €45–55:
 - Pi в режиме USB-gadget (или по сети/QR) принимает userOpHash, показывает его на OLED и ждёт кнопку.
 - SH1PRIV живёт только на Pi (на SD — зашифрован; разблокировка PIN через MAC-and-Destroy).
-- Хост владельца pairing-ключа не видит вовсе. Это архитектура Madhwal'а (ATECC608A на Raspberry Pi [V: PDF доклада в `/home/user/TPM_project`, `docs/ARCHITECTURE.md`]), только с открытым SE и кнопкой.
+- Хост владельца pairing-ключа не видит вовсе. Это архитектура Madhwal'а (ATECC608A на Raspberry Pi [V: его доклад на исследовательском семинаре Сколтеха, октябрь 2026, ссылка в `docs/ARCHITECTURE.md`]), только с открытым SE и кнопкой.
 - Слабое место: Linux на Pi — большая TCB. Вариант строже — bare-metal MCU (RP2040/STM32) + TROPIC01 Mini Board (€9.50); крейт `tropic01` — `embedded-hal`, то есть no_std-ready [V описание крейта].
 
 ### 3.2 Сопоставимые SE
@@ -274,7 +274,7 @@ CTAP2-стек в CLI. Ключи с PIV/OpenPGP за те же деньги п�
 
 ## 8. Источники (основные)
 
-- Политика проекта и код: `docs/KEY_POLICY.md`, `contracts/src/P256Validator.sol`, `contracts/lib/kernel` (тег v3.3), `docs/TROPIC01.md`, `docs/ARCHITECTURE.md`, PDF доклада Madhwal (`/home/user/TPM_project/Seminar blockchain Yash Madhwal 14.10.26.pdf`).
+- Политика проекта и код: `docs/KEY_POLICY.md`, `contracts/src/P256Validator.sol`, `contracts/lib/kernel` (тег v3.3), `docs/TROPIC01.md`, `docs/ARCHITECTURE.md`, Y. Madhwal, *Integrating Secure Elements with Account Abstraction for Autonomous IoT Blockchain Agents* (исследовательский семинар Сколтеха, 14 октября 2026; слайды не опубликованы).
 - ZeroDev-адреса: https://unpkg.com/@zerodev/ecdsa-validator/_esm/constants.js, https://unpkg.com/@zerodev/passkey-validator@5.6.0/_esm/index.js, https://unpkg.com/@zerodev/weighted-validator/_esm/index.js; WebAuthnValidator: https://github.com/zerodevapp/kernel-7579-plugins
 - TROPIC01: https://github.com/tropicsquare/tropic01 (datasheet A.11, user API 1.4.0), https://www.tropicsquare.com/order-devboard-form, SDK `libtropic-rs` rev 3310775.
 - Trezor `SignIdentity`: https://github.com/trezor/trezor-firmware/blob/main/core/src/apps/misc/sign_identity.py; Safe 7: https://trezor.io/guides/trezor-devices/trezor-safe-7/dual-secure-elements-in-trezor-safe-7

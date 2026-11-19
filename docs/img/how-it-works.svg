@@ -143,9 +143,9 @@
     <rect x="70" y="988" width="235" height="44" rx="22" fill="#fef3c7"/><text x="187" y="1016" text-anchor="middle" fill="#92400e">💰 Total budget</text>
     <rect x="320" y="988" width="235" height="44" rx="22" fill="#fef3c7"/><text x="437" y="1016" text-anchor="middle" fill="#92400e">⏰ Time window</text>
     <rect x="70" y="1046" width="235" height="44" rx="22" fill="#fef3c7"/><text x="187" y="1074" text-anchor="middle" fill="#92400e">🪙 Token limits (USDC)</text>
-    <rect x="320" y="1046" width="235" height="44" rx="22" fill="#fef3c7"/><text x="437" y="1074" text-anchor="middle" fill="#92400e">🧾 No blank cheques</text>
+    <rect x="320" y="1046" width="235" height="44" rx="22" fill="#fef3c7"/><text x="437" y="1074" text-anchor="middle" fill="#92400e">🧾 No blank checks</text>
   </g>
-  <text x="70" y="1124" font-size="15" fill="#78350f">"No blank cheques": no permits or off-chain signatures for the</text>
+  <text x="70" y="1124" font-size="15" fill="#78350f">"No blank checks": no permits or off-chain signatures for the</text>
   <text x="70" y="1144" font-size="15" fill="#78350f">account — except x402 payments registered within the budget.</text>
 
   <!-- Worst case -->
