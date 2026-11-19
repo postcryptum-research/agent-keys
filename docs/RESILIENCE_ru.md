@@ -1,4 +1,4 @@
-# Resilience: поломка и потеря ключей (TPM_sign)
+# Resilience: поломка и потеря ключей (agent-keys)
 
 > **English summary (2026-10-20).** Resilience against a secure element that
 > breaks, is reset or is lost — not against an attacker. Keys here can never

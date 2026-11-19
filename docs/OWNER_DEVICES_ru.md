@@ -1,4 +1,4 @@
-# Устройства и подходы для OWNER-ключа (TPM_sign)
+# Устройства и подходы для OWNER-ключа (agent-keys)
 
 > **English summary (2026-10-20).** Which devices can hold the *owner*
 > (root) key off the agent's host — the "second factor" of

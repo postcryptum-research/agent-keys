@@ -108,7 +108,7 @@ contribution terms, store compatibility on both platforms, and one licence
 across the laptop and the phone, which keeps the shared-core refactor free
 of licence boundaries. Keep third-party code permissive or MPL (uniffi),
 with the one confirmation in §3. The name and the logo are protected by a
-trademark, not by the licence, so that a fork cannot ship as "TPM_sign" in
+trademark, not by the licence, so that a fork cannot ship as "agent-keys" in
 a store.
 
 If the owner wants a copyleft guarantee on the apps, **C (MPL-2.0 for the

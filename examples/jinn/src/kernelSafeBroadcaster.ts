@@ -1,7 +1,7 @@
 /**
  * A drop-in for Jinn's `BaseVenueSafeBroadcaster`
  * (`packages/marketplace/venue-base/src/broadcast/safe-broadcaster.ts`) where
- * the Safe's owner is a TPM_sign Kernel account instead of an agent EOA.
+ * the Safe's owner is an agent-keys Kernel account instead of an agent EOA.
  *
  * Jinn's broadcaster signs the Safe transaction hash with the agent's private
  * key (eth_sign, v + 4) and sends `execTransaction` from that EOA. Here the

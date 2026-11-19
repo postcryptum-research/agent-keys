@@ -1,4 +1,4 @@
-# Olas (Autonolas) → TPM_sign: где подключать аппаратного Kernel-владельца
+# Olas (Autonolas) → agent-keys: где подключать аппаратного Kernel-владельца
 
 Прочитаны следующие репозитории (пути ниже относительно корня каждого):
 
@@ -29,7 +29,7 @@
 > Crypto-плагин open-aea (вариант B) в одиночку **не годится**. Годится только **LedgerApi-плагин как транспорт** внутри варианта A (§2.4).
 > Демо на Base Sepolia, собранное из кода самого open-autonomy, уже частично прогнано (§6).
 
-> **Статус на стороне TPM_sign (2026-10-20), обновляет §3.1, §6 и «Фазу 0»:**
+> **Статус на стороне agent-keys (2026-10-20), обновляет §3.1, §6 и «Фазу 0»:**
 > - `agent-signer op send --nonce <uint256>` и `nonce` в JSON-выводе **сделаны** (п. 0.1, кроме
 >   `logs`/`success` — логи своего userOp режет вызывающая сторона, см. `examples/jinn`).
 >   Повтор с уже включённым nonce отклоняется до отправки («already used»).
@@ -113,7 +113,7 @@ FSM: `RandomnessTransactionSubmissionRound → SelectKeeperTransactionSubmission
 - `nonce++` стоит до проверки подписей (`:143-145`). `ExecutionSuccess(txHash, payment)` эмитится при успехе (`:49,186`).
 
 **1-of-1 (все сервисы Pearl, `threshold = len(agent_addresses) = 1`, см. §5) — валиден.**
-- `signatures = r=Kernel ‖ s=0 ‖ v=1` и `msg.sender == Kernel` — ровно то, что TPM_sign уже делает для Jinn.
+- `signatures = r=Kernel ‖ s=0 ‖ v=1` и `msg.sender == Kernel` — ровно то, что agent-keys уже делает для Jinn.
 - Проверено прогоном (§6): `get_raw_safe_transaction(sender=Kernel, signatures_by_owner={Kernel: v1})` из open-autonomy строит calldata. `eth_estimateGas` **от Kernel** проходит (63 733 gas). Та же подпись от `0x…dEaD` ревертит (оценка 0) **[V прогон]**.
 - Порядок подписей в 1-of-1 неважен.
 
@@ -178,7 +178,7 @@ Kernel (ERC-4337, P-256 в TPM/TROPIC01, AgentPolicy)
 - Ledger connection выбирает класс API по `signed_transaction.ledger_id` (`ledger_dispatcher.py:99-115`). Синхронные обработчики он гоняет в executor'е (`connections/ledger/base.py:104-111`) **[V]**. Значит, блокирующий `agent-signer op send` (до 120 с) **не блокирует** цикл агента.
 - Плагин `ethereum_userop` (entry point `aea.ledger_apis`, как у hwi) с `send_signed_transaction(body={"to","value","data","nonce"?})` → spawn `agent-signer … --json` → вернуть **хеш внешнего tx**. Тогда `get_transaction_receipt` и все последующие запросы через обычный `ethereum` работают без изменений.
 - Crypto для этого id не нужен вовсе. `FinalizeBehaviour` формирует `SignedTransaction(ledger_id="ethereum_userop", body)` сам и шлёт через `_send_transaction_request` (`behaviour_utils.py:1033-1105`) **[V сигнатуры]**.
-- Этот плагин можно держать в репо TPM_sign: Olas достаточно принять «transport strategy» в скилле (§7, PR3).
+- Этот плагин можно держать в репо agent-keys: Olas достаточно принять «transport strategy» в скилле (§7, PR3).
 
 ---
 
@@ -202,18 +202,18 @@ Kernel (ERC-4337, P-256 в TPM/TROPIC01, AgentPolicy)
 
 ### 3.2 Что видит AgentPolicy в Olas-трафике
 - Внутренние Safe-tx Olas: CALL или DELEGATECALL в MultiSend, `safe_gas_price = 0` (Finalize не передаёт gas-поля Safe, `behaviours.py:919-942`) **[V]**.
-- AgentPolicy пускает DELEGATECALL в любой allow-listed `(to, multiSend)` и требует, чтобы каждая нога была CALL (`TPM_sign/contracts/src/AgentPolicy.sol:197-201,207+`) **[V]**. Значит, можно внести и полный MultiSend 1.3.0, которым пользуются Olas-скиллы (`funds_forwarder_abci` шлёт `DELEGATE_CALL` на `params.multisend_address`, `behaviours.py:143-150`) **[V]**. Адрес задаётся конфигом сервиса **[I]**.
+- AgentPolicy пускает DELEGATECALL в любой allow-listed `(to, multiSend)` и требует, чтобы каждая нога была CALL (`agent-keys/contracts/src/AgentPolicy.sol:197-201,207+`) **[V]**. Значит, можно внести и полный MultiSend 1.3.0, которым пользуются Olas-скиллы (`funds_forwarder_abci` шлёт `DELEGATE_CALL` на `params.multisend_address`, `behaviours.py:143-150`) **[V]**. Адрес задаётся конфигом сервиса **[I]**.
 - **Отклонено политикой (и это правильно):**
   - `termination_abci`: `removeOwner`/`swapOwner` через сам Safe (`termination_abci/behaviours.py:297-430`) **[V]**. В Pearl это закрывается RecoveryModule от Master Safe (§5);
   - ERC-8004 `setAgentWallet` в Pearl: MultiSend с ногой `SignMessageLib.signMessage` = DELEGATECALL (`olas-operate-middleware/operate/services/protocol.py:2031-2077`; `open-autonomy/packages/valory/contracts/sign_message_lib/contract.py:73`) **[V]**. Это должен делать root-путь Kernel или Master Safe.
 - **`approveHash` для n-of-m (путь b)** — дыра, если разрешить его как есть: агент одобрит любой хеш, политика прообраз не видит.
   - Правильно: AgentPolicy принимает `Safe.approveHash(h)` только в батче вместе с полями SafeTx. Политика сама пересчитывает EIP-712 hash (домен `chainId + safe`, это чистое вычисление) и судит внутренний `(to, selector)` по allow-list.
-  - Это ~1–2 дня Solidity на стороне TPM_sign **[I, дизайн]**.
+  - Это ~1–2 дня Solidity на стороне agent-keys **[I, дизайн]**.
 - Узкий 1271 для safeTxHash не решает ту же задачу: по хешу политика вызов не видит.
 
 ### 3.3 Что остаётся на софт-ключе (консенсусный ключ)
 - Без денег, не owner, не instance. Компрометация позволяет голосовать в консенсусе от имени агента: в 1-of-1 — предлагать любые payload'ы.
-- **Но** исполнить их можно только через Kernel → AgentPolicy (allow-list, value cap, budget, expiry). Это ровно граница доверия TPM_sign.
+- **Но** исполнить их можно только через Kernel → AgentPolicy (allow-list, value cap, budget, expiry). Это ровно граница доверия agent-keys.
 - В n-of-m компрометация консенсусного ключа даёт не больше, чем сегодня компрометация одного агента (BFT-предположение), а то и меньше: денежных полномочий у ключа нет.
 - ACN-сертификат тоже на этом ключе. Pearl делает `add-key ethereum`, `add-key --connection` и `issue-certificates` одним и тем же ключом (`olas-operate-middleware/operate/services/deployment_runner.py:379-403`) **[V]**. Это приемлемо.
 
@@ -343,7 +343,7 @@ $ python olas_kernel_safe_demo.py --check-tx 0x451c7214…dc16
 
 ## 7. План патчей и оценка
 
-### Фаза 0 — TPM_sign (наша сторона)
+### Фаза 0 — agent-keys (наша сторона)
 0.1. `agent-signer op send`:
   - `--nonce <uint256>` (pin для идемпотентных повторов, §3.1);
   - в JSON добавить `nonce`, `success`, `logs` своего userOp;
@@ -355,7 +355,7 @@ $ python olas_kernel_safe_demo.py --check-tx 0x451c7214…dc16
 
 0.3. (для n-of-m) `approveHash` с пересчётом safeTxHash в AgentPolicy (§3.2). ~2 дня.
 
-0.4. LedgerApi-плагин `open-aea-ledger-ethereum-userop` (Python, в репо TPM_sign). `send_signed_transaction` → spawn `agent-signer` → хеш внешнего tx, классификация ошибок AA2x/AA3x в строки, которые понимает `__parse_rpc_error` Olas. ~2–3 дня.
+0.4. LedgerApi-плагин `open-aea-ledger-ethereum-userop` (Python, в репо agent-keys). `send_signed_transaction` → spawn `agent-signer` → хеш внешнего tx, классификация ошибок AA2x/AA3x в строки, которые понимает `__parse_rpc_error` Olas. ~2–3 дня.
 
 ### Фаза 1 — open-autonomy, 1-of-1 (файл за файлом)
 1. `packages/valory/contracts/gnosis_safe/contract.py`:

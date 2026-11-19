@@ -19,7 +19,7 @@ asked here — so do not try to work around a refusal.
 ## Setup (read from the environment)
 
 - `AGENT_SIGNER` — path to the `agent-signer` binary
-  (default `signer/target/debug/agent-signer` in the TPM_sign repo).
+  (default `signer/target/debug/agent-signer` in the agent-keys repo).
 - `AGENT_CONFIG` — agent account config, e.g. `signer/agent.tropic01.base-sepolia.json`.
 - `AGENT_ENV_FILE` — `.env` with `BASE_SEPOLIA_RPC_URL` and `BUNDLER_URL`.
 

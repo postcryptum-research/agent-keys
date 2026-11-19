@@ -2,7 +2,7 @@
   "name": "tpm-sign-elizaos-example",
   "private": true,
   "type": "module",
-  "description": "ElizaOS agent acting on-chain through a hardware-signed ERC-4337 account (TPM_sign)",
+  "description": "ElizaOS agent acting on-chain through a hardware-signed ERC-4337 account (agent-keys)",
   "license": "MIT",
   "scripts": {
     "smoke": "bun src/smoke.ts",

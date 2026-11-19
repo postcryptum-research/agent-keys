@@ -1,4 +1,4 @@
-# Devices and approaches for the OWNER key (TPM_sign)
+# Devices and approaches for the OWNER key (agent-keys)
 *Russian original: [OWNER_DEVICES_ru.md](OWNER_DEVICES_ru.md). Hardware beyond owner keys — agent hosts, secure elements for SBCs and IoT, HSMs — with prices: [HARDWARE_WISHLIST.md](HARDWARE_WISHLIST.md). A phone as the owner key — what was tried and where it stopped: [PHONE_OWNER.md](PHONE_OWNER.md).*
 
 > **English summary (2026-10-20).** Which devices can hold the *owner*

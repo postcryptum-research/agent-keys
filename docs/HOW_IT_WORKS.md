@@ -9,7 +9,7 @@ file — a `.env`, a keystore, a config. Whoever can read that file owns the
 wallet: malware, a leaked backup, a poisoned dependency, a tool the agent
 was tricked into running. And the key can sign anything, forever.
 
-**After.** With TPM_sign there is no key file. The agent's key is generated
+**After.** With agent-keys there is no key file. The agent's key is generated
 inside a chip — a TPM, an Apple Secure Enclave or a TROPIC01 — and never
 leaves it; the chip signs, the agent only asks. The agent acts through a
 smart account (ERC-4337), and every action is checked **on-chain** against
@@ -31,7 +31,7 @@ or whoever controls it, asks for.
 
 ## If the worst happens
 
-| What happens | A key in a file | TPM_sign |
+| What happens | A key in a file | agent-keys |
 |---|---|---|
 | Malware reads the disk | all funds gone | nothing — there is no key file |
 | Prompt injection: "send everything to 0xdead" | sent | refused on-chain |

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Olas transaction_settlement_abci code path, 1-agent service, owner = TPM_sign Kernel.
+Olas transaction_settlement_abci code path, 1-agent service, owner = agent-keys Kernel.
 
 Reproduces, with open-autonomy's own code, what a 1-agent Olas service does to
 settle one Safe transaction, and swaps only the two EOA-specific steps:

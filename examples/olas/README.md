@@ -4,7 +4,7 @@
 
 An Olas agent's key file holds one secp256k1 key with three jobs:
 
-| Role | Today | With TPM_sign |
+| Role | Today | With agent-keys |
 |---|---|---|
 | consensus identity — every ABCI payload is ecrecover-checked against its sender | agent key | stays a software key, **no funds, not an owner** |
 | on-chain agent instance, owner of the service Safe | agent key | **Kernel account** (key in TPM / TROPIC01) |
@@ -106,7 +106,7 @@ and `gnosis_safe/contract.py`, plus `ALL_PARTICIPANTS` vs Safe owner in
    (defaulting to `agent_address`); rotating the consensus key then needs no
    on-chain re-registration, for plain EOA services too.
 3. **`signature_mode = prevalidated` + `tx_submitter = ledger_api:<id>`** —
-   an extension point; the 4337 transport stays in TPM_sign as a LedgerApi
+   an extension point; the 4337 transport stays in agent-keys as a LedgerApi
    plugin, the way the HWI plugin plugs in today.
 
 n-of-m services work with caveats (only the keeper's `v = 1` counts; others

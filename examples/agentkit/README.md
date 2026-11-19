@@ -2,7 +2,7 @@
 
 [AgentKit](https://github.com/coinbase/agentkit) gives an LLM agent on-chain
 tools (transfers, ERC-20, DeFi actions, …) through one abstraction,
-`EvmWalletProvider`. This example implements that class for a TPM_sign agent
+`EvmWalletProvider`. This example implements that class for an agent-keys agent
 account, so every AgentKit action becomes a UserOperation signed inside a
 TPM, Secure Enclave or TROPIC01 and checked on-chain by `AgentPolicy`.
 

@@ -38,7 +38,7 @@ hardware-bound key anywhere in the repository (grep for `Keystore`,
 `SecureEnclave`, `SecKey`, `StrongBox`: nothing). The only platform secure
 storage used is the optional biometric password cache above.
 
-That matters for comparison with TPM_sign: here the agent's and owner's keys
+That matters for comparison with agent-keys: here the agent's and owner's keys
 are **born inside** a TPM, Secure Enclave or TROPIC01 and never exist in
 memory; the chip signs a digest. Cupcake's model is "a key file on a phone
 that cannot talk".
@@ -90,10 +90,10 @@ not recommend it — "not a hardware wallet", "poorly documented in terms of how
 it actually protects your data", and the risk that an old phone no longer gets
 security updates (V, [thread](https://discuss.privacyguides.net/t/cupcake-hardware-wallet/32674)).
 
-## What it means for TPM_sign
+## What it means for agent-keys
 
 - **Different problem.** Cupcake isolates a software key by removing the
-  network; TPM_sign keeps the key inside a secure element and limits what it
+  network; agent-keys keeps the key inside a secure element and limits what it
   may sign with an on-chain mandate. Cupcake has no P-256, no hardware-held
   key, no smart account and no EVM support: nothing of it is reusable as code.
 - **One idea worth borrowing: the transport.** A BC-UR animated-QR channel

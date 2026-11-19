@@ -1,7 +1,7 @@
 //! End-to-end tests of the `agent-signer` CLI on a local chain.
 //!
 //! Each test starts its own `anvil`, installs the account-abstraction stack
-//! and TPM_sign's modules from `fixtures/chain-code.json` (runtime bytecode
+//! and this project's modules from `fixtures/chain-code.json` (runtime bytecode
 //! taken from Base Sepolia: EntryPoint v0.7, Kernel v3.3 + factory,
 //! P256Validator, P256RecoveryValidator, P256Signer, AgentPolicy v6,
 //! SafeNonceAssert, the demo counter, Solady's P-256 verifier) and runs the

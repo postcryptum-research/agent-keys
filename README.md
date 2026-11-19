@@ -1,4 +1,4 @@
-# TPM_sign — hardware-held keys for on-chain agents
+# agent-keys — hardware-held keys for on-chain agents
 
 An AI agent (or any unattended process) signs its on-chain actions with a key
 that lives in a secure element — a TPM 2.0 on Linux or Windows, a Tropic

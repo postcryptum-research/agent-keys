@@ -90,7 +90,7 @@ nine commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
 Apply and enable:
 
 ```sh
-cd mono && git checkout 151a464aa && git am /path/to/TPM_sign/examples/jinn/patches/*.patch
+cd mono && git checkout 151a464aa && git am /path/to/agent-keys/examples/jinn/patches/*.patch
 ```
 
 ```jsonc
