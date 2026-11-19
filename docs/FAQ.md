@@ -134,6 +134,7 @@ is the target setup, and which parts are missing.
 |---|---|---|
 | agent key | the Mac's Secure Enclave | **works today** — run on an Apple M1, keys on-chain ([`SECURE_ENCLAVE.md`](SECURE_ENCLAVE.md)) |
 | owner key | a separate device with a button: a YubiKey 5 (PIV, P-256) | **works today** — PIN and a touch per signature; root of the Base Sepolia account since 2026-11-02, run on macOS too ([`YUBIKEY.md`](YUBIKEY.md)). Nitrokey 3, Ledger and Trezor: studied, not supported ([`OWNER_DEVICES.md`](OWNER_DEVICES.md)) |
+| owner key, the other way | the owner's phone: the project's own app, the key in the Android Keystore or the iPhone's Secure Enclave, a fingerprint or Face ID per signature, the operation reviewed on the phone's screen before signing | **development builds only** — the loop passed on a real Android phone and a real iPhone against a local chain, not on Base Sepolia; no store distribution, the app is installed with `adb` or from Xcode ([`MOBILE_OWNER_PLAN.md`](MOBILE_OWNER_PLAN.md), [`MOBILE_DEV_MODE.md`](MOBILE_DEV_MODE.md)) |
 | recovery key | an encrypted file on two USB drives in different places | file: works today; behind a time lock: **not built** — today the recovery key takes over at once ([`RESILIENCE.md`](RESILIENCE.md)) |
 | money | most of it **not** on the agent's account — in an owner-controlled vault; the agent's account is topped up per period | operational, works today |
 
