@@ -85,7 +85,7 @@ any other calldata (`test_policy_rejectsBatchAndMalformedCalls`); an
 attacker's address fails the allow-list. There is no code to intercept,
 because there is no approval channel other than a hardware signature. What
 the case adds to our list: the agent's own account must never be an
-allow-list target ([#11](https://github.com/77ph/TPM_sign/issues/11)), and
+allow-list target ([#11](https://github.com/postcryptum-research/agent-keys/issues/11)), and
 the owner key must not sit on the agent's host, which is the testnet
 exception of `KEY_POLICY.md` rule 6 and the reason for the phone owner
 (`../MOBILE_OWNER_DESIGN.md` §10).

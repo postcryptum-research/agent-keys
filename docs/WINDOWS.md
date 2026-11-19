@@ -78,8 +78,8 @@ manufacturer shown in `tpm.msc` instead.
 ## 3. Get the code
 
 ```powershell
-git clone --recursive https://github.com/77ph/TPM_sign.git
-cd TPM_sign\signer
+git clone --recursive https://github.com/postcryptum-research/agent-keys.git
+cd agent-keys\signer
 ```
 
 `--recursive` matters (contracts depend on git submodules). If you already

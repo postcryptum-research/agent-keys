@@ -44,8 +44,8 @@ project exists to avoid).
 sudo apt install libtss2-dev libclang-dev git build-essential
 sudo usermod -aG tss "$USER"                      # TPM access; log out and back in
 curl https://sh.rustup.rs -sSf | sh               # Rust
-git clone --recursive https://github.com/77ph/TPM_sign.git
-cd TPM_sign/signer && cargo build -p agent-signer --features tpm
+git clone --recursive https://github.com/postcryptum-research/agent-keys.git
+cd agent-keys/signer && cargo build -p agent-signer --features tpm
 B=target/debug/agent-signer
 ```
 

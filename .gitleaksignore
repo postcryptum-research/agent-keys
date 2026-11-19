@@ -1,0 +1,14 @@
+# Verified-public false positives, 2026-11-19 (USDC addr / pubkey fingerprints / doc prose).
+# Regenerate if commit history is rewritten (fingerprints embed commit hashes).
+89049043497d2dfadd5f8bcc7a44e7d0ccb2bddb:mobile/ios/README.md:generic-api-key:166
+89049043497d2dfadd5f8bcc7a44e7d0ccb2bddb:mobile/ios/README.md:generic-api-key:170
+60da4e0daac796ff37b03ff3077b161f6bf3bcca:mobile/android/README.md:generic-api-key:267
+4aab747c9348ef1b9ddb3dfed648d76dc55821c2:mobile/android/README.md:generic-api-key:153
+4aab747c9348ef1b9ddb3dfed648d76dc55821c2:mobile/android/README.md:generic-api-key:168
+dbb1c14db56f0f15e5fd4097cd9573792396b217:signer/agent.enclave.base-sepolia.json:generic-api-key:40
+662d77c07cec515dbf93c6aeb8a8c7c7790fb62d:signer/agent.x402.base-sepolia.json:generic-api-key:39
+662d77c07cec515dbf93c6aeb8a8c7c7790fb62d:docs/ERC1271.md:generic-api-key:61
+58c65ba669d6b66a578435cf3ce72d84981410a7:docs/AGENT_CONFIG.md:generic-api-key:70
+7475d1018cde281e59d99f86883ea739fcb68f86:examples/jinn/ADAPTATION.md:generic-api-key:142
+7475d1018cde281e59d99f86883ea739fcb68f86:examples/jinn/ADAPTATION_ru.md:generic-api-key:141
+791ac53b201cd381e966db1964d3448d3db52928:examples/jinn/ADAPTATION.md:generic-api-key:141
