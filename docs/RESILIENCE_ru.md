@@ -34,7 +34,9 @@
 > agent-signer owner recover  --agent … --sponsored     # recovery key becomes root
 > agent-signer owner set-root --agent … --as-recovery --sponsored \
 >     --validator <P256Validator> --retire <lost owner's validator> --public-key <x>,<y> \
->     --not-a-phone                                    # or --to-phone <label>: say what the new key is
+>     --not-a-phone --new-key '<the new key, as a config names it>'
+>     # the new key signs a challenge first; a key on another machine: leave --new-key out and
+>     # answer the challenge the command prints with `key prove` there; a phone's key: --to-phone <label>
 > ```
 >
 > `agent-signer key check --keyfile …` proves the passphrase still opens the

@@ -138,6 +138,12 @@ If any item fails, the owner key is as reachable as the agent key.
   address), and that comes from the config. Root operations run where the
   owner key is (for the root/user placement: `sudo agent-signer permission …`).
 - A TPM owner key can carry an authValue read from a root-only file.
+- The root is handed only to a key that has just shown it can sign. A
+  handover is one on-chain step with no accept step from the new key, and
+  a key nobody can sign with takes the account with it. A phone shows it
+  in a session (`--to-phone`); any other key signs a challenge
+  (`--not-a-phone` with `--new-key`, or `key prove` on the key's machine).
+  The exception has to be stated: `--no-proof-of-possession`.
 - Selecting a software key must be an explicit test-only choice: a build
   feature (`insecure-software-keys`) that release builds never enable.
   Without it a software key is refused in every role; with it — in the

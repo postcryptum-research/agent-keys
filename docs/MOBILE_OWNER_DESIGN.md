@@ -120,6 +120,16 @@ statement `--not-a-phone`. The two together are a usage error, and a
 handover after a recovery (`--as-recovery`) is under the same rule. `key
 create --phone` prints the command with `--to-phone`.
 
+A key that is not a phone's shows the same thing in its own way (issue
+#51): with `--not-a-phone` the command makes a challenge that names the
+chain, the account and the new key, with a nonce and an expiry; the new
+key signs `sha256("TPM_sign/v1/handover-possession" ‖ challenge ‖ its own
+nonce)`, and the command verifies that against the key the root is going
+to before anything is signed or sent. A key on the same machine does it
+inside the command (`--new-key`); a key elsewhere answers through `key
+prove`, the two lines carried by hand. `--no-proof-of-possession` is the
+stated exception.
+
 Who signs the `set-root` decides how safe it is (T2):
 
 - **Phone to phone** (a new phone, or a second enrolled one), and a **new
@@ -906,7 +916,8 @@ translation can follow.
 | `key create --phone <label> --agent <cfg>` | the enrollment session (§2.1); verifies attestation, prints the public key, fingerprint, security tier and config snippet; `--allow-no-attestation` for iOS without App Attest; `--allow-dev-build` for development-signed iOS builds, test chains only (with iOS); `--require-strongbox` to refuse a TEE-only key (§5.6); `--android-app-digest <sha256>` to accept one's own build of the app; `--require-revocation-check` to refuse when Google's revocation list cannot be fetched; `--allow-unverified-boot` to accept a phone whose boot state is Unverified (§5.2); `--phone-skip-fingerprint` to rely on the QR's secret without the fingerprint prompt, `--phone-fingerprint <fp>` to give the fingerprint to a script (§3.1); `--out <dir>` to keep the request, the answer and the chain |
 | `owner set-root … --expect-fingerprint <fp>` | refuses unless `--public-key` has that fingerprint; for the first handover (§2.2) |
 | `owner set-root … --to-phone <label>` | the new key is that phone key: the phone shows that it holds it, in a session of its own, before anything is signed or sent (§2.2) |
-| `owner set-root … --not-a-phone` | the new key is not a phone's: no phone session. One of the two is required; with neither the command refuses before anything is built |
+| `owner set-root … --not-a-phone` | the new key is not a phone's: no phone session. One of the two is required; with neither the command refuses before anything is built. The new key signs a fresh challenge first (issue #51): `--new-key '<key spec>'` on this machine, or `key prove` on another; `--no-proof-of-possession` skips it with a warning |
+| `key prove --key '<key spec>' --challenge <line>` | the key's half of that proof, on the machine that holds the key; prints one line to paste back. No transaction |
 | `key check --phone <label>` | the health check (§2.4): the phone signs a digest it co-randomizes with the configured key; no transaction |
 | `key show --phone <label>` | prints the configured public key and fingerprint, and what the enrollment recorded: attestation, revocation, boot state (no session) |
 | `key evict --phone <label>` | refuses: a phone's key is deleted on the phone (§5.4), and says to look at `owner status` first |

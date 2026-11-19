@@ -237,6 +237,31 @@ does. Losing the agent key costs nothing but a rotation; losing the owner key
 is what the recovery key is for; losing both freezes the account for good
 ([`RESILIENCE.md`](RESILIENCE.md)).
 
+### How do I move the owner key to a new device?
+
+One command, signed by the current owner key (or by the recovery key after
+`owner recover`, with `--as-recovery`). The new key first shows that it can
+sign: the handover is a single step with no way back except the recovery
+key, and a key nobody can sign with takes the account with it.
+
+```sh
+# the new key is on this machine: name it as the config will
+$B owner set-root --agent agent.json --validator <P256Validator> --retire <the old validator> \
+    --not-a-phone --new-key '{"yubikey": {"slot": "9c"}}'
+
+# the new key is on another machine: this prints a challenge and waits
+$B owner set-root --agent agent.json --validator <P256Validator> --retire <the old validator> \
+    --public-key <x>,<y> --not-a-phone
+# there, with the key:
+$B key prove --key '{"tpm": "0x81010010"}' --challenge <the line printed above>
+# paste the one line it prints back into the waiting command
+```
+
+Then put the new key in the config as `owner`. A phone's key goes with
+`--to-phone <label>` instead, and the phone shows the key in a session.
+`--no-proof-of-possession` hands the root over without the proof; the
+command says what that risks.
+
 ### Do I need a Ledger, YubiKey or Trezor?
 
 Only for setups that hold real value, as the **owner** key — a separate

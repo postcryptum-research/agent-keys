@@ -177,7 +177,8 @@ its module until then; `permission show` names it.
 | `permission revoke --id` | `account` | removes a permission | owner key |
 | `owner add-recovery` | `recovery`, `account` | installs the recovery key | owner key |
 | `owner recover` | `recovery`, `account` | makes the recovery key root | recovery key |
-| `owner set-root` | `account` (+ arguments; `--expect-fingerprint` refuses a `--public-key` that is not the one the owner saw; one of `--to-phone <label>`, which makes a handover to a phone key wait until the phone has shown that it holds it, and `--not-a-phone` is required) | hands root to a new key, retires the old | current root (owner, or recovery after `recover`) |
+| `owner set-root` | `account` (+ arguments; `--expect-fingerprint` refuses a `--public-key` that is not the one the owner saw; one of `--to-phone <label>`, which makes a handover to a phone key wait until the phone has shown that it holds it, and `--not-a-phone` is required. With `--not-a-phone` the new key also shows that it can sign before anything is sent: `--new-key '<its key spec>'` for a key on this machine, or else the command prints a challenge for `key prove` on the key's machine and waits for the proof. `--no-proof-of-possession` skips that and says what it risks) | hands root to a new key, retires the old | current root (owner, or recovery after `recover`) |
+| `key prove --key '<key spec>' --challenge <line>` | nothing (no config) | nothing on-chain: the key signs the challenge that `owner set-root --not-a-phone` printed on another machine, and prints the proof to paste there | the key being proven |
 | `key create --phone` | `account`, `deployments` | nothing on-chain: enrolls a new key on the phone for the account and prints the `phone` key spec | — (the phone's user confirms) |
 | `account fund`, `paymaster …` | `account`, `deployments` | ETH transfers / paymaster settings | gas wallet / paymaster owner |
 
