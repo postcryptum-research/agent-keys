@@ -44,6 +44,6 @@
   },
   "account": "0xEdB645B14e2f952C5784e34949b58F0826fBc9E9",
   "recovery": {
-    "keyfile": "/media/andrey/UNTITLED/tpm_sign-recovery.json"
+    "keyfile": "/media/user/UNTITLED/tpm_sign-recovery.json"
   }
 }
