@@ -1391,6 +1391,34 @@ contract AgentPermissionTest is Test {
         _send(_agentOpWith(AGENT, both, address(policy), 0, inner));
     }
 
+    /// The tests below install mandates on the policy directly, as an
+    /// account would: the policy asks its caller for its EntryPoint.
+    function entrypoint() external view returns (address) {
+        return address(entryPoint);
+    }
+
+    /// An account that does not name its EntryPoint gets no mandate: the
+    /// policy could not keep that EntryPoint out of the allow-list.
+    function test_install_refusedWithoutAnEntryPoint() public {
+        address[] memory targets = new address[](1);
+        bytes4[] memory selectors = new bytes4[](1);
+        (targets[0], selectors[0]) = (address(counter), Counter.increment.selector);
+        bytes memory data = abi.encodePacked(
+            bytes32(uint256(9) << 224),
+            abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, new AgentPolicy.TokenCap[](0), uint48(0))
+        );
+        // an address with no code, and a contract without `entrypoint()`
+        vm.prank(address(0x1234));
+        vm.expectRevert(AgentPolicy.UnknownEntryPoint.selector);
+        policy.onInstall(data);
+        vm.prank(address(counter));
+        vm.expectRevert(AgentPolicy.UnknownEntryPoint.selector);
+        policy.onInstall(data);
+        // the same data from a caller that answers is installed
+        policy.onInstall(data);
+        assertTrue(policy.isAllowed(address(this), bytes32(uint256(9) << 224), address(counter), Counter.increment.selector));
+    }
+
     // --- payee lists (issue #66) ---
 
     PermissionId internal constant PYE_ID = PermissionId.wrap(0x70796531); // "pye1"

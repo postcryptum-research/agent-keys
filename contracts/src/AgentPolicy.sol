@@ -152,6 +152,9 @@ contract AgentPolicy is IPolicy {
     /// An allow-list entry the agent must never have (the account, its
     /// EntryPoint, this policy outside x402).
     error ForbiddenTarget(address target, bytes4 selector);
+    /// The account did not say which EntryPoint it uses, so the policy
+    /// cannot keep that EntryPoint out of the allow-list.
+    error UnknownEntryPoint();
     error X402NotRegistered();
     error X402StillLive();
     error X402Settled();
@@ -235,8 +238,9 @@ contract AgentPolicy is IPolicy {
 
         Mandate storage m = _mandates[msg.sender][id][c.epoch];
         address entryPoint = _entryPointOf(msg.sender);
+        if (entryPoint == address(0)) revert UnknownEntryPoint();
         for (uint256 i; i < targets.length; i++) {
-            if (!_targetAllowed(targets[i], selectors[i]) || (entryPoint != address(0) && targets[i] == entryPoint)) {
+            if (!_targetAllowed(targets[i], selectors[i]) || targets[i] == entryPoint) {
                 revert ForbiddenTarget(targets[i], selectors[i]);
             }
             m.allowed[targets[i]][selectors[i]] = true;
@@ -552,7 +556,8 @@ contract AgentPolicy is IPolicy {
 
     /// @dev The account's EntryPoint, read from Kernel at install so that
     /// `withdrawTo` and friends on the account's deposit can never be
-    /// allow-listed. Zero when the account does not answer (not a Kernel).
+    /// allow-listed. Zero when the account does not answer (not a Kernel):
+    /// the install is then refused, since the check could not be made.
     function _entryPointOf(address account) internal view returns (address) {
         (bool ok, bytes memory ret) = account.staticcall(abi.encodeWithSelector(IKernelEntryPoint.entrypoint.selector));
         if (!ok || ret.length < 32) return address(0);
