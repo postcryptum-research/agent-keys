@@ -158,7 +158,7 @@ a CTAP2 stack in the CLI. Keys with PIV/OpenPGP for the same money are simpler f
 **Improved TROPIC01 variant (DIY):** RPi Zero 2 W (~$15) + **TROPIC01 RPi Shield (€20)** + a button on GPIO + a small OLED (~$5). The result is an "owner appliance" ≈ €45–55:
 - The Pi in USB-gadget mode (or over the network/QR) receives the userOpHash, shows it on the OLED and waits for the button.
 - SH1PRIV lives only on the Pi (encrypted on the SD card; PIN unlock via MAC-and-Destroy).
-- The owner's host never sees the pairing key at all. This is Madhwal's architecture (ATECC608A on a Raspberry Pi [V: talk PDF in `/home/user/TPM_project`, `docs/ARCHITECTURE.md`]), only with an open SE and a button.
+- The owner's host never sees the pairing key at all. This is Madhwal's architecture (ATECC608A on a Raspberry Pi [V: his Skoltech research seminar of October 2026, cited in `docs/ARCHITECTURE.md`]), only with an open SE and a button.
 - Weak point: Linux on the Pi is a large TCB. A stricter variant is a bare-metal MCU (RP2040/STM32) + TROPIC01 Mini Board (€9.50); the `tropic01` crate is `embedded-hal`-based, i.e. no_std-ready [V crate description].
 
 ### 3.2 Comparable SEs
@@ -275,7 +275,7 @@ Minimum implementation requirements in the CLI [I]:
 
 ## 8. Sources (main)
 
-- Project policy and code: `docs/KEY_POLICY.md`, `contracts/src/P256Validator.sol`, `contracts/lib/kernel` (tag v3.3), `docs/TROPIC01.md`, `docs/ARCHITECTURE.md`, Madhwal's talk PDF (`/home/user/TPM_project/Seminar blockchain Yash Madhwal 14.10.26.pdf`).
+- Project policy and code: `docs/KEY_POLICY.md`, `contracts/src/P256Validator.sol`, `contracts/lib/kernel` (tag v3.3), `docs/TROPIC01.md`, `docs/ARCHITECTURE.md`, Y. Madhwal, *Integrating Secure Elements with Account Abstraction for Autonomous IoT Blockchain Agents* (Skoltech research seminar, 14 October 2026; the slides are not published).
 - ZeroDev addresses: https://unpkg.com/@zerodev/ecdsa-validator/_esm/constants.js, https://unpkg.com/@zerodev/passkey-validator@5.6.0/_esm/index.js, https://unpkg.com/@zerodev/weighted-validator/_esm/index.js; WebAuthnValidator: https://github.com/zerodevapp/kernel-7579-plugins
 - TROPIC01: https://github.com/tropicsquare/tropic01 (datasheet A.11, user API 1.4.0), https://www.tropicsquare.com/order-devboard-form, SDK `libtropic-rs` rev 3310775.
 - Trezor `SignIdentity`: https://github.com/trezor/trezor-firmware/blob/main/core/src/apps/misc/sign_identity.py; Safe 7: https://trezor.io/guides/trezor-devices/trezor-safe-7/dual-secure-elements-in-trezor-safe-7
