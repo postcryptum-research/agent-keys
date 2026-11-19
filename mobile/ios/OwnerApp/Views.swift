@@ -54,7 +54,7 @@ struct ContentView: View {
                     #else
                     Button("Scan the laptop's QR") {
                         Task {
-                            if await QrScanner.allowed() { scanning = true } else { model.say("ERROR the camera is not available to this app: allow it in Settings → TPM_sign owner → Camera") }
+                            if await QrScanner.allowed() { scanning = true } else { model.say("ERROR the camera is not available to this app: allow it in Settings → agent-keys owner → Camera") }
                         }
                     }
                     #endif
@@ -82,7 +82,7 @@ struct ContentView: View {
                     }
                 }
             }
-            .navigationTitle("TPM_sign owner")
+            .navigationTitle("agent-keys owner")
             .navigationBarTitleDisplayMode(.inline)
         }
         #if !targetEnvironment(simulator)

@@ -1,5 +1,5 @@
 /**
- * plugin-tpm-sign: ElizaOS actions for an agent whose only wallet is a
+ * plugin-agent-keys: ElizaOS actions for an agent whose only wallet is a
  * hardware-signed ERC-4337 account bounded on-chain by AgentPolicy.
  *
  *   TPM_WALLET (provider)      address, balance, mandate -> into the prompt
@@ -40,7 +40,7 @@ const explorer = (tx: string) => `https://sepolia.basescan.org/tx/${tx}`;
 
 export class TpmWalletService extends Service {
   static override serviceType = "tpm_wallet";
-  capabilityDescription = "Hardware-signed ERC-4337 agent account (TPM_sign); on-chain calls only, no off-chain signatures";
+  capabilityDescription = "Hardware-signed ERC-4337 agent account (agent-keys); on-chain calls only, no off-chain signatures";
   wallet!: TpmAgentWallet;
 
   static override async start(runtime: IAgentRuntime): Promise<TpmWalletService> {
@@ -51,7 +51,7 @@ export class TpmWalletService extends Service {
     };
     const repo = get("TPM_SIGN_REPO") ?? resolve(import.meta.dir, "../../../..");
     const rpcUrl = get("BASE_SEPOLIA_RPC_URL");
-    if (!rpcUrl) throw new Error("plugin-tpm-sign: set BASE_SEPOLIA_RPC_URL");
+    if (!rpcUrl) throw new Error("plugin-agent-keys: set BASE_SEPOLIA_RPC_URL");
     s.wallet = new TpmAgentWallet({
       rpcUrl,
       bin: get("AGENT_SIGNER_BIN") ?? resolve(repo, "signer/target/debug/agent-signer"),
@@ -60,7 +60,7 @@ export class TpmWalletService extends Service {
       envFile: get("AGENT_ENV_FILE") ?? resolve(repo, "../.env"),
       sponsored: get("AGENT_SPONSORED") !== "0",
     });
-    logger.info(`[tpm-sign] agent account ${s.wallet.address} on Base Sepolia`);
+    logger.info(`[agent-keys] agent account ${s.wallet.address} on Base Sepolia`);
     return s;
   }
 
@@ -272,7 +272,7 @@ const payForUrl: Action = {
 };
 
 export const tpmSignPlugin: Plugin = {
-  name: "plugin-tpm-sign",
+  name: "plugin-agent-keys",
   description: "On-chain actions through a hardware-signed ERC-4337 account bounded by AgentPolicy",
   services: [TpmWalletService],
   providers: [walletProvider],
