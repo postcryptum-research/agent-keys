@@ -7,7 +7,7 @@ ERC-4337 UserOperations, the on-chain `AgentPolicy` bounds it, the owner's
 key is elsewhere. TEEs and confidential VMs are out of scope. Which role
 such a key may hold was the owner's decision; this page gathers the facts
 and ends with the questions put to the owner and the decisions (§10,
-2026-11-19).*
+2026-11-18).*
 
 Evidence marks: **F** first-hand, run by us (§8). **D** stated by a
 primary source: the vendor's documentation, a specification, or the
@@ -498,7 +498,7 @@ lasts in wall-clock time across restarts.
 
 ## 10. Questions for the owner, and the decisions
 
-Put to the owner with the study; decided on 2026-11-19. They change
+Put to the owner with the study; decided on 2026-11-18. They change
 documentation only: no code, and nothing on a running machine.
 
 1. **Which roles may a vTPM key hold?** **Decided: the agent key only.**
@@ -534,7 +534,7 @@ documentation only: no code, and nothing on a running machine.
    it, the FAQ's command for the storage parent sets `noda`: during a
    lockout a key can then still be made under it, a plain one and one
    behind an authValue alike, where the parent made without it refused
-   both (F, swtpm 0.7.3, 2026-11-19). An existing parent is kept as it
+   both (F, swtpm 0.7.3, 2026-11-18). An existing parent is kept as it
    is.
 
 ## 11. Sources

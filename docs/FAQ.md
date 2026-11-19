@@ -257,6 +257,11 @@ $B key prove --key '{"tpm": "0x81010010"}' --challenge <the line printed above>
 # paste the one line it prints back into the waiting command
 ```
 
+A device that asks before it signs asks here too: a YubiKey wants its PIN
+and a touch during `--new-key` or `key prove`, a key file its passphrase.
+A line pasted wrong does not end the wait: the command says so and reads
+the next one until the challenge expires.
+
 Then put the new key in the config as `owner`. A phone's key goes with
 `--to-phone <label>` instead, and the phone shows the key in a session.
 `--no-proof-of-possession` hands the root over without the proof; the

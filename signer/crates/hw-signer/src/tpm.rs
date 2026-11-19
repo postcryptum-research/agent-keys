@@ -110,21 +110,28 @@ fn connect() -> Result<Context, SignerError> {
 /// that policy; `user_with_auth` is then cleared so the (empty) password
 /// cannot bypass it.
 ///
-/// `no_da` exempts the key from the dictionary-attack lockout, and a key
-/// without an authValue gets it (#43): there is no secret to guess, and
-/// without the exemption the key stops signing whenever the TPM is in
-/// lockout. Another key's wrong authValues cause that, and so do unclean
-/// stops of the TPM after a signature; a virtual TPM allows three
-/// (docs/SERVER_KEY_STORES.md §8.2). The attribute is part of the key's
-/// public area, so it changes the key's name and not its public point: a
-/// config that references the handle is unaffected. Attributes are fixed at
-/// creation, so a key made before this keeps the old behaviour.
-fn p256_signing_template(auth_policy: Option<Digest>, no_da: bool) -> Result<Public, SignerError> {
+/// `auth_value` is the authValue the key is created with, if any, and it
+/// decides `noDA` here and nowhere else (#43, #52): **a key is exempt from
+/// the dictionary-attack lockout exactly when it has no authValue.** A plain
+/// key and a PCR-sealed key have no secret to guess, and without the
+/// exemption they stop signing whenever the TPM is in lockout: another key's
+/// wrong authValues cause that, and so do unclean stops of the TPM after a
+/// signature; a virtual TPM allows three (docs/SERVER_KEY_STORES.md §8.2).
+/// A key with an authValue stays under the lockout, which is the only limit
+/// on guesses at it: the two must never be combined, so the template takes
+/// the authValue and not a flag. The exemption is a fix for availability,
+/// not a strengthening of custody.
+///
+/// The attribute is part of the key's public area, so it changes the key's
+/// name and not its public point: a config that references the handle is
+/// unaffected. Attributes are fixed at creation, so a key made before #43
+/// keeps the old behaviour.
+fn p256_signing_template(auth_policy: Option<Digest>, auth_value: Option<&Auth>) -> Result<Public, SignerError> {
     let attributes = ObjectAttributesBuilder::new()
         .with_fixed_tpm(true)
         .with_fixed_parent(true)
         .with_sensitive_data_origin(true)
-        .with_no_da(no_da)
+        .with_no_da(auth_value.is_none())
         .with_user_with_auth(auth_policy.is_none())
         .with_sign_encrypt(true)
         .with_restricted(false)
@@ -313,7 +320,7 @@ impl TpmSigner {
             ": persist one there first (docs/FAQ.md, \"Create the keys\"), or name another parent",
         )?;
         let created = ctx
-            .create(parent, p256_signing_template(policy, auth.is_none())?, auth.clone(), None, None, None)
+            .create(parent, p256_signing_template(policy, auth.as_ref())?, auth.clone(), None, None, None)
             .map_err(tss)?;
         let key = ctx
             .load(parent, created.out_private, created.out_public)
@@ -448,7 +455,18 @@ impl HardwareSigner for TpmSigner {
         let key = self.key;
 
         let signed = match &self.sealed_to {
-            None => ctx.sign(key, digest, scheme, validation).map_err(tss),
+            None => ctx.sign(key, digest, scheme, validation).map_err(|e| match e {
+                // The TPM's words are "authValue or authPolicy is not available
+                // for selected entity": the key answers to a policy only, and
+                // it was opened without one. Every other refusal (a wrong
+                // authValue, a lockout) keeps the TPM's own words (#49).
+                tss_esapi::Error::Tss2Error(rc) if rc.kind() == Some(Tss2ResponseCodeKind::AuthUnavailable) => SignerError::Key(
+                    "this key is sealed to PCRs and was opened without them: give the selection it was created with \
+                     (--pcrs, or \"pcrs\" in the config)"
+                        .into(),
+                ),
+                other => tss(other),
+            }),
             Some(selection) => {
                 let selection = selection.clone();
                 let session = start_policy_session(&mut ctx, SessionType::Policy)?;
@@ -557,7 +575,8 @@ mod tests {
 
         // no secret at all (the empty authValue an unprotected key uses)
         signer.with_ctx(|ctx| ctx.tr_set_auth(signer.key.into(), Auth::default())).unwrap();
-        assert!(signer.sign_digest(&digest).is_err(), "signed with an empty authValue");
+        let refused = signer.sign_digest(&digest).expect_err("signed with an empty authValue");
+        assert!(!refused.to_string().contains("sealed to PCRs"), "a wrong authValue is not a missing policy (#49): {refused}");
 
         // trailing whitespace is not part of the secret
         let right = auth_from_secret(b"correct horse battery").unwrap();
