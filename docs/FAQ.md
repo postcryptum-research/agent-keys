@@ -133,8 +133,8 @@ is the target setup, and which parts are missing.
 | Role | Where | Status |
 |---|---|---|
 | agent key | the Mac's Secure Enclave | **works today** — run on an Apple M1, keys on-chain ([`SECURE_ENCLAVE.md`](SECURE_ENCLAVE.md)) |
-| owner key | a separate device with a button: YubiKey 5 / Nitrokey 3 (PIV, P-256) or a Trezor | **not yet supported** — the PIV/OpenPGP backend is planned ([`OWNER_DEVICES.md`](OWNER_DEVICES.md)) |
-| recovery key | an encrypted file on two USB drives in different places, or a seed-backed Trezor | file: works today; behind a time lock: planned ([`RESILIENCE.md`](RESILIENCE.md)) |
+| owner key | a separate device with a button: a YubiKey 5 (PIV, P-256) | **works today** — PIN and a touch per signature; root of the Base Sepolia account since 2026-11-02, run on macOS too ([`YUBIKEY.md`](YUBIKEY.md)). Nitrokey 3, Ledger and Trezor: studied, not supported ([`OWNER_DEVICES.md`](OWNER_DEVICES.md)) |
+| recovery key | an encrypted file on two USB drives in different places | file: works today; behind a time lock: **not built** — today the recovery key takes over at once ([`RESILIENCE.md`](RESILIENCE.md)) |
 | money | most of it **not** on the agent's account — in an owner-controlled vault; the agent's account is topped up per period | operational, works today |
 
 **The schedule.** Each mandate has a time window — `validAfter` (start) and
@@ -142,9 +142,16 @@ is the target setup, and which parts are missing.
 several mandates for the same agent key, each with its own window, budget,
 token limits and allowed contracts, e.g.:
 
-- "Mon–Fri of this week: up to 5,000 USDC per day to these two exchanges" —
-  one mandate per day;
-- "the 1st of the month: payroll up to 40,000 USDC to these addresses".
+- "Mon–Fri of this week: up to 5,000 USDC per day through these two
+  contracts" — one mandate per day;
+- "the 1st of the month: payroll up to 40,000 USDC".
+
+**What a mandate does not say today: who receives a token transfer.** It
+allows contracts and functions and caps token amounts per operation and in
+total; with `USDC.transfer` allowed, the agent picks the recipient, within
+those caps. To fix the destination, leave `transfer` out and allow a contract
+that can pay only where the owner decided — e.g. a forwarder with one
+immutable destination, which the owner approves for the token once.
 
 Each mandate is one agent config file with its own `permissionId` and
 `policy.validAfter` / `validUntil`; `agent-signer permission add` installs
@@ -161,18 +168,20 @@ EntryPoint (`AA22 expired or not due`), and the same operation right after
 it opened went through (tx
 `0x64b99b7b0126fd0a20967d98dcdc84bf4766787b3992dd32ecec1607139aef0e`).
 
-**Sequence, once the missing parts exist:**
+**Sequence** (step 3 waits for the mainnet deployment, the time lock in step 4 is not built):
 
 1. Run [`SECURE_ENCLAVE.md`](SECURE_ENCLAVE.md) on the Mac (build, hardware
    test, `key create --enclave agent`).
-2. Buy a YubiKey 5 or Nitrokey 3 (owner) — or two, the second as a backup
-   owner — and two USB drives (recovery file copies).
+2. Buy a YubiKey 5 (owner) and two USB drives (recovery file copies). Set
+   the YubiKey up as in [`YUBIKEY.md`](YUBIKEY.md).
 3. Once the project's modules are on Base mainnet (a one-time deployment for
    everyone), either let the account pay its own gas or run your own sponsor
    (deploy a `WhitelistPaymaster` you own, `paymaster deposit`,
    `paymaster sponsor --budget --max-per-op`).
-4. Create the account with the owner on the YubiKey, install the recovery
-   key behind a time lock, rehearse a recovery once with a small amount.
+4. Create the account with the owner on the YubiKey
+   (`"owner": {"yubikey": {"slot": "9c"}}`), install the recovery key
+   (behind a time lock, once that exists), rehearse a recovery once with a
+   small amount.
 5. Put the $100k in an owner-controlled vault (an owner Safe or a separate
    account), not on the agent's account.
 6. Install the calendar of mandates (`permission add`, one per window) and
@@ -185,8 +194,9 @@ account right now". A compromised Mac can spend at most the current period's
 budget — not the $100k.
 
 **Before $100k, also:** a professional audit of `AgentPolicy`, the
-validators and `agent-signer`; the Secure Enclave run; and the owner device
-backend. Those are the prerequisites, not options.
+validators and `agent-signer`; the modules deployed on Base mainnet; and a
+time lock on recovery. Those are the prerequisites, not options. (The Secure
+Enclave run and the owner device backend, once on this list, are done.)
 
 ---
 
@@ -271,9 +281,10 @@ command says what that risks.
 
 Only for setups that hold real value, as the **owner** key — a separate
 device with a button. For small amounts, owner and recovery keys as encrypted
-files on USB drives are enough. (Support for these devices as the owner key
-is planned: [`OWNER_DEVICES.md`](OWNER_DEVICES.md). They are not suited for
-the agent key: they want a button press per signature.)
+files on USB drives are enough. A YubiKey 5 works as the owner key today
+([`YUBIKEY.md`](YUBIKEY.md)); Ledger and Trezor are not supported
+([`OWNER_DEVICES.md`](OWNER_DEVICES.md)). None of them suits the agent key:
+they want a button press per signature.
 
 ### Which machines and which networks?
 
