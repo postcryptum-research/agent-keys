@@ -1,6 +1,13 @@
 # Mobile owner app — design specification
 
-*Revision 2, 2026-10-28. Nothing here is built. It answers decision 2 of
+*Revision 2, 2026-10-28; status as of 2026-11. Built: the LAN session and
+the wire format (§3, §4), the review in `owner-core` (§6, §7), Android key
+attestation (§5.2), the health and possession checks (§2.2, §2.4), deletion
+(§5.4), and both apps as development builds. Not built: App Attest and
+`--allow-dev-build` (§5.3), the per-enrollment options in the apps (§5.4),
+the plan-B WebAuthn envelope (§11.1), parts of the §9 test plan, and §14.
+Where the code differs from the design, a note beginning "As built
+(2026-11):" says what the code does. This spec answers decision 2 of
 [`MOBILE_OWNER_PLAN.md`](MOBILE_OWNER_PLAN.md): the spec that goes to
 review before P0 starts. This revision answers the owner's review of PR #5
 and the audit response,
@@ -77,7 +84,8 @@ only scan, fetch, sign in hardware and render a list of sections.
 4. The user confirms and sets the enrollment's options (§5.4): the gas cap,
    expert mode (off by default) and the device PIN (off by default). The
    phone creates a **new** key for this account (§5.1) and returns the
-   public key plus attestation evidence (§5).
+   public key plus attestation evidence (§5). As built (2026-11): the apps
+   offer no options; every enrollment gets the defaults (§5.4).
 5. The CLI verifies the evidence, prints the public key and its
    fingerprint, and writes the config snippet (§8.1).
 6. The phone stores the enrollment record (§5.4). Nothing is on-chain yet.
@@ -143,6 +151,9 @@ Who signs the `set-root` decides how safe it is (T2):
   "**Hand control of this account to key `<fingerprint>`**" (§6.3). A key
   substituted by the laptop shows a fingerprint that differs from the one
   the new phone displays. This is prevention, and it needs no network.
+  As built (2026-11): the apps hold one key per chain and account and
+  refuse a second enrollment while a confirmed one exists, so a new key
+  on the same phone is not possible yet.
 - **The first handover** (a TPM, Secure Enclave or key-file owner to the
   first phone). The old key signs on the laptop, blind, under T1. This is
   the one step to do from a clean machine:
@@ -237,7 +248,10 @@ A URI of about 136 bytes. In byte mode that needs a **version 7** QR
 half-block characters, which a phone camera reads well (V, P1 and P3 on a
 real phone). If it must shrink, the token can be dropped and the path
 derived from `k`, or `h` can be uppercase base32 to use the denser
-alphanumeric mode.
+alphanumeric mode. As built (2026-11): the CLI renders at
+error-correction level M, the `qrcode` crate's default (`QrCode::new`),
+not L, so the version and line count above, computed for level L, do not
+describe what the terminal shows; the rendered size was not measured.
 
 ```
 tpmsign:1?u=http://192.168.1.23:49731/s/<token>&h=<commitment>&k=<secret>
@@ -252,13 +266,15 @@ tpmsign:1?u=http://192.168.1.23:49731/s/<token>&h=<commitment>&k=<secret>
 | `k` | the session's secret: 128 random bits, base64url (22 characters). The key of the answer MAC (§3.3). The phone never sends it and never stores it |
 
 The phone registers the `tpmsign:` scheme, but in-app scanning is the main
-path, because a system camera may open the URI in another app.
+path, because a system camera may open the URI in another app. As built
+(2026-11): neither app registers the scheme; scanning inside the app is
+the only path.
 
 ### 3.3 The LAN session
 
 | Aspect | Rule |
 |---|---|
-| Bind | one IPv4 address: the default-route interface, or `--listen <ip[:port]>`. Never `0.0.0.0` unless given explicitly |
+| Bind | one IPv4 address: the default-route interface, or `--listen <ip:port>` (port 0 for an ephemeral one). Never `0.0.0.0` unless given explicitly |
 | Port | random ephemeral, unless given |
 | Lifetime | 120 s from the QR being shown (`--phone-timeout`), or until a valid response arrives |
 | `GET /s/<token>` | returns the request bytes (`application/json`). Allowed again within the lifetime, so the phone can retry |
@@ -326,7 +342,7 @@ integers that can exceed 2^53 are decimal strings.
   },
   "laptop": {
     "userOpHash": "0x…",
-    "command": "permission rotate",
+    "command": "owner operation (root)",
     "labels": { "0xD2Adc331B867435b82Ceba1D4f7f715eeF9FdbC1": "demo counter" },
     "agentVersion": "0.1.0"
   }
@@ -338,7 +354,8 @@ integers that can exceed 2^53 are decimal strings.
 - **`laptop.*` is advisory.** The phone recomputes the hash and, if it
   differs from `laptop.userOpHash`, refuses (a bug or tampering). Labels
   are shown as "the laptop calls this …", never as facts (§6.3).
-- **Unknown fields** are ignored and listed under "details". They cannot
+- **Unknown fields** at the top level and under `laptop` are ignored and
+  not shown; an unknown field inside `userOp` is refused. They cannot
   change what is signed: the hash comes only from `chainId`, `entryPoint`
   and `userOp`.
 - **A version mismatch** is refused, with a message naming both versions.
@@ -358,10 +375,13 @@ integers that can exceed 2^53 are decimal strings.
 }
 ```
 
-On refusal: `"result": "refused"` and `"reason"`, one of `user`,
-`unknown-account`, `wrong-chain`, `commitment`, `hash-mismatch`, `expired`,
-`policy` (§6.4) or `version`, with optional free text. A refusal ends the
-session like a signature does.
+On refusal: `"result": "refused"` and `"reason"`, with optional free text
+in `"detail"`. The apps send two reasons: `user` (the owner said no, or
+the biometric check failed) and `core` (`owner-core` refused; `detail`
+carries its sentence, which names the cause: an unknown account, the hash,
+the expiry, the cap of §6.4, the version). A request that does not match
+the QR's commitment gets no answer at all. A refusal ends the session like
+a signature does.
 
 The core converts the platform's DER signature to `r ‖ s`, normalizes to
 low-s (V: the CLI already requires it, `hw_signer::normalize_low_s`), and
@@ -369,9 +389,10 @@ verifies it against the enrolled key before posting.
 
 ### 4.3 Enrollment request and response
 
-The request carries `"tpmSign": "enroll-request"`, `chainId`,
-`entryPoint`, `account`, `label`, a 32-byte `challenge`, and optional
-`laptopPins`: addresses and tokens the app's build does not know (§6.7).
+The request carries `"tpmSign": "enroll-request"`, `version`, `expires`,
+`chainId`, `entryPoint`, `account`, `label`, a 32-byte `challenge`, and
+optional `laptopPins` (at most 32): addresses and tokens the app's build
+does not know (§6.7).
 
 - The phone shows each laptop pin as "from the laptop — unverified", and
   keeps that marking for the life of the enrollment.
@@ -380,10 +401,12 @@ The request carries `"tpmSign": "enroll-request"`, `chainId`,
 - A laptop-supplied token never has its decimals trusted. Its amounts show
   in raw units, with "unverified decimals".
 
-The response carries `publicKey`, the key's `securityLevel` as the phone
-sees it, `deviceCredential` (whether the PIN opt-in was chosen, §5.4), and
-`attestation`. On Android that is the certificate chain, base64 DER. On iOS
-it is the App Attest object and key id (§5.3).
+The response carries `result` (`enrolled` or `refused`), `publicKey`, the
+key's `securityLevel` as the phone sees it, `deviceCredential` (whether the
+PIN opt-in was chosen, §5.4), and `attestation`. On Android that is the
+certificate chain, base64 DER. On iOS it is the App Attest object and key
+id (§5.3). As built (2026-11): `attestation` is a list of base64 DER
+certificates only, and the iOS app sends it empty.
 
 ### 4.4 Health request and response
 
@@ -509,7 +532,9 @@ handle in the app's files, excluded from backup, and no App Attest
 
 **Signing:** `SecKeyCreateSignature(key, .ecdsaSignatureDigestX962SHA256,
 hash)` takes the 32 bytes as the digest (V: plan; the Mac backend does the
-same through CryptoKit). The output is DER.
+same through CryptoKit). The output is DER. As built (2026-11): the app
+signs through CryptoKit too, `SecureEnclave.P256.Signing.PrivateKey`'s
+`signature(for:)` over the 32 bytes taken as the digest.
 
 **Attestation (D5).** iOS has no per-key attestation, so bind our key to
 an **App Attest** attestation:
@@ -538,6 +563,10 @@ an **App Attest** attestation:
      TestFlight builds, not ad-hoc ones;
    - the app version, `apple_bundle_version_01`, is at or above the
      minimum (T14).
+
+As built (2026-11): none of this exists yet. The iOS app sends no evidence
+and the CLI verifies only Android key attestation, refusing evidence from
+any other platform, so an iPhone is enrolled with `--allow-no-attestation`.
 
 **What it proves:** a genuine instance of our app, on genuine Apple
 hardware, vouched for `K`'s public key during this enrollment. It does
@@ -568,9 +597,12 @@ Per enrollment, the phone stores:
   because the access control is fixed when the key is created. A new key
   needs a `set-root` to it, signed by the current key on the same phone.
   That is the phone-to-phone handover of §2.2: the phone decodes it and
-  shows the new key's fingerprint;
+  shows the new key's fingerprint. As built (2026-11): `owner-core` and
+  the CLI support the options, but neither app offers or stores them:
+  every enrollment uses the 0.005 ETH cap, expert mode off and biometric
+  only, and a new key for an enrolled account is refused (§2.2);
 - the enrollment time, and a local history of signed hashes with their
-  summaries.
+  summaries. As built (2026-11): the time is stored, the history is not.
 
 None of this is secret. Losing it only loses the key reference, and
 recovery covers that.
@@ -622,7 +654,10 @@ app says it plainly, in three places:
   "This phone keeps keys in its processor's trusted mode (TEE), not in a
   separate secure chip. A phone with StrongBox, or an iPhone, protects the
   owner key better. Details →", with a short explanation of the table
-  above. On a StrongBox phone the notice says so, once.
+  above. On a StrongBox phone the notice says so, once. As built
+  (2026-11): the Android app has no persistent notice at launch or on an
+  accounts screen; it shows the tier and the warning at enrollment (the
+  next item).
 - **At enrollment**, before the user confirms (§2.1): the tier is shown
   with the warning on a TEE-only phone, and the user acknowledges it.
   How the phone knows the tier: on Android 11 (API 30, the D7 floor) the
@@ -644,7 +679,8 @@ app says it plainly, in three places:
   security level, never on the phone's self-report.
 
 iPhones have no such split: every model the app supports has the Secure
-Enclave. The notice is therefore Android-only.
+Enclave. The notice is therefore Android-only. As built (2026-11): the
+iPhone app shows one line saying that the key is in the Secure Enclave.
 
 ## 6. What the phone shows, and what it refuses
 
@@ -669,6 +705,10 @@ is offered.
    (V, `kernel::root_nonce_key`). The phone signs only for the root path.
 6. The recomputed `userOpHash` equals `laptop.userOpHash`.
 
+The code runs them in the order 1, 2, 6, 3, 4, 5 (the hash comparison is
+part of parsing the request), and then checks the EntryPoint against the
+build's (§6.7).
+
 ### 6.3 Decoding the calldata
 
 **Top level** — one of:
@@ -683,17 +723,20 @@ Kernel admin call:
 
 | Call | Shown as |
 |---|---|
-| `installValidations` of a **permission** id (type `0x02`) | "Install agent permission `<id>`", with the full mandate: the signer module and the policy module, each marked as in §6.7 (including "superseded version", a build fact); the agent key fingerprint; every allow entry (target, selector, and the name where known); value cap, budget, validity window, token caps and x402 flags |
-| `installValidations` of a **validator** (type `0x01`) | always an effect, since v1 does not know which validators the account uses: "**Install a key on a validator** `<fingerprint>` — it controls this account once it is root or is granted access", whether the validator is current, superseded or unknown to the build. For a recovery validator: "Install a recovery key — **it will be able to take over this account**" |
+| `installValidations` of a **permission** id (type `0x02`) | "Install agent permission `<id>`", with the full mandate: the signer module and the policy module, each marked as in §6.7 (including "superseded version", a build fact); the agent key fingerprint; every allow entry (target, selector, and the name where known); value cap, budget, validity window, token caps and x402 flags. As built (2026-11): a permission whose policy or signer module is not the build's current one, superseded versions included, is refused; expert mode turns that into a bold "Unknown policy module" or "Unknown signer module" row |
+| `installValidations` of a **validator** (type `0x01`) | always an effect, since v1 does not know which validators the account uses: "**Install a key on a validator** `<fingerprint>` — it controls this account once it is root or is granted access", whether the validator is current, superseded or unknown to the build. For a recovery validator: "Install a recovery key — **it will be able to take over this account**". As built (2026-11): a validator the build does not know gets its own bold row, "Install a key on a validator this build cannot classify — it may be able to take over this account" |
 | `grantAccess(vId, selector, allow)` | Kernel lets a non-root validation call a top-level selector only when it is granted here, so a grant is judged by what bounds it. Plain: a **permission's** `execute` (its policy bounds it), and any grant with `allow = false`. Bold: a **validator's** `changeRootValidator` ("**may take over this account**") and a validator's `execute` ("**this key will be able to do anything with this account**"). Every other grant — an admin selector to a permission or a validator, a selector the build cannot name — is **refused**; expert mode turns the refusal into a bold row |
 | `changeRootValidator(...)` | "**Hand control of this account to** validator `<address>`". In a `set-root` batch, the summary names the key: "**Hand control of this account to key `<fingerprint>`**" (§2.2) |
-| `uninstallValidation(vId, …)` | "Remove permission `<id>`" or "Remove validator `<address>`". If that validator holds this phone's key: "**this phone will no longer control the account**" |
+| `uninstallValidation(vId, …)` | "Remove permission `<id>`" or "Remove validator `<address>`". If that validator holds this phone's key: "**this phone will no longer control the account**". As built (2026-11): the apps do not record which validator holds the phone's key, so every validator removal is bold, "this may be the validator holding this phone's key" |
 | any other self-call | **refused** (v1) |
 
 An inner call to **another** target is an external call: the target, the
 value, and the decoded function where known (ERC-20 `transfer` and
 `approve` for build-known tokens, the Safe-nonce assertion followed by Safe
-`execTransaction`). An external call the core cannot decode (D4):
+`execTransaction`). As built (2026-11): the core decodes the demo
+counter's `increment()` and ERC-20 `transfer` and `approve` on any target
+(scaled only for build-known tokens); the Safe calls are not decoded and
+fall under the rule below. An external call the core cannot decode (D4):
 
 - is **refused by default**. From the root key it is unbounded: it can move
   everything the account holds, and the gas cap does not limit it;
@@ -711,15 +754,15 @@ value, and the decoded function where known (ERC-20 `transfer` and
 - **Amounts:** ETH from wei. Token amounts are scaled only with decimals
   from the build (§6.7). Otherwise they show in raw units, with "unknown
   token" or "unverified decimals".
-- **Times:** local date and time plus UTC, with the raw value under
-  details.
+- **Times:** UTC date and time, with the raw value in brackets beside it.
+  Local time is not shown.
 - **Labels and pins:** names from the build are shown as "verified in
   this build". Laptop pins and `laptop.labels` are shown in quotes, as
   "from the laptop — unverified", in a visually subordinate style. A label
   never replaces an address.
 - **Text:** labels are restricted to printable ASCII plus spaces, at most
-  32 characters. Anything else is refused, which closes homoglyph and
-  bidirectional-text tricks.
+  32 characters (64 for the key's own label, §2.1). Anything else is
+  refused, which closes homoglyph and bidirectional-text tricks.
 
 ### 6.4 Cost, gas fields and sponsorship
 
@@ -729,7 +772,9 @@ value, and the decoded function where known (ERC-20 `transfer` and
   (correct for v0.7's maximum prefund, per the audit).
 - It **refuses** above a per-enrollment cap. The default is 0.005 ETH, and
   the user can change it on the phone (D8). This stops a compromised laptop
-  from draining the account through the gas prefund.
+  from draining the account through the gas prefund. As built (2026-11):
+  the cap is checked only when the account pays; an operation sponsored by
+  a build-known paymaster shows its maximum cost and is not refused for it.
 - **Every field the hash covers is on the screen.** Under "details", the
   phone lists `verificationGasLimit`, `callGasLimit`, `preVerificationGas`,
   both paymaster gas limits, `maxFeePerGas`, `maxPriorityFeePerGas` and the
@@ -778,7 +823,7 @@ one (T19). So the facts come from the **build**:
 - **Build-embedded deployments.** `owner-core` embeds the canonical
   `contracts/deployments/<chainId>.json` files at build time
   (`include_str!` and a parse in the build), today `84532.json` for Base
-  Sepolia. That includes the **version history**: `agentPolicyV1`–`V5`,
+  Sepolia. That includes the **version history**: `agentPolicyV1`–`V6`,
   `p256SignerV1`, `p256ValidatorV1`, `whitelistPaymasterV1` and
   `p256RecoveryValidatorV1`. "Superseded version" is therefore a build
   fact, not a laptop claim. Only canonical files are embedded. Variants
@@ -816,8 +861,10 @@ one (T19). So the facts come from the **build**:
   `mobile/owner-core`. `signer/` carries an Apache-2.0 `LICENSE` and
   `NOTICE` for the whole directory, so placing the crate there would
   suggest Apache-2.0 by location, whatever its manifest says.
-  Dependencies: `alloy-primitives`, `alloy-sol-types`, `sha2`, `p256`,
-  `serde`. No network, no async, no `alloy` providers, so it builds for
+  Dependencies: `alloy-primitives`, `alloy-sol-types`, `hw-signer` (no
+  default features; it brings `p256`), `serde`, `serde_json`, `sha2`,
+  `hmac`, `base64`, and for the apps' build `uniffi` and `getrandom`.
+  No network, no async, no `alloy` providers, so it builds for
   `aarch64-apple-ios`, `aarch64-linux-android` and
   `armv7-linux-androideabi`.
 - **Its licence is not decided.** The licence of the mobile apps and of
@@ -841,7 +888,8 @@ one (T19). So the facts come from the **build**:
   locally (V for the formula, plan); the request and response types; the
   `Review` builder; display text and fingerprints; the build-embedded
   deployments and token table (§6.7); and the plan-B envelope builder
-  (§11.1).
+  (§11.1). As built (2026-11): everything in this item but the plan-B
+  envelope builder, which is not written.
 
 ### 7.2 Exported API (proc-macro `uniffi`, sketch)
 
@@ -879,12 +927,22 @@ The native side renders `sections()` generically. Every word on the review
 screen comes from the core, in English for v1, with structured rows so
 translation can follow.
 
+As built (2026-11): the surface is `ffi.rs`, and it differs from the
+sketch: `open_enrollment` returns a record (`FfiEnrollment`), the review
+object is `ReviewHandle` with `refuse(reason, detail, app)`, the
+fingerprint function is `fingerprint_of`, there is no
+`webauthn_message()`, and the answer MAC, the laptop's confirmation, the
+deletion prompt and the health handle are exported too. The Android app
+still builds the enrollment answer and its refusal itself; the iOS app
+uses `enroll_answer` and `enroll_refusal`.
+
 ### 7.3 Builds
 
 - **iOS:** an `xcframework` (device plus simulator), and the generated
   Swift (`mobile/ios/build-core.sh`; arm64 for both).
 - **Android:** `cargo-ndk` libraries for `arm64-v8a` and `armeabi-v7a`,
-  plus the generated Kotlin (JNA).
+  plus the generated Kotlin (JNA). Today `mobile/android/build-core.sh`
+  builds `arm64-v8a` only; `armeabi-v7a` comes with P5.
 - Both are pinned to the same `owner-core` version, which the response
   reports.
 
@@ -896,6 +954,7 @@ translation can follow.
 "owner": { "phone": { "label": "owner-phone", "platform": "android",
                       "attestation": "strongbox", "revocation": "checked",
                       "bootState": "verified", "deviceCredential": false,
+                      "publicKey": { "x": "0x…", "y": "0x…" },
                       "fingerprint": "ABCDE-FGHIJ-KLMNO-PQRST" } },
 "ownerPublicKey": { "x": "0x…", "y": "0x…" }
 ```
@@ -906,14 +965,17 @@ translation can follow.
   decided on 2026-11-10: it derives the counterfactual address and is not
   rewritten after a handover). The key the phone must hold is the
   **on-chain root key**, which the CLI reads from the root validator before
-  every root operation (`check_root_key`); the config's `fingerprint` is
-  checked against that key, and a mismatch is refused before any prompt.
+  every root operation (`check_root_key`; skipped with a message when the
+  root validator is not one of this repository's P-256 validators). The
+  phone spec carries the enrolled key as `publicKey`: the config's
+  `fingerprint` is checked against it, and it against the on-chain key,
+  and a mismatch in either is refused before any prompt.
 
 ### 8.2 Commands
 
 | Command | Change |
 |---|---|
-| `key create --phone <label> --agent <cfg>` | the enrollment session (§2.1); verifies attestation, prints the public key, fingerprint, security tier and config snippet; `--allow-no-attestation` for iOS without App Attest; `--allow-dev-build` for development-signed iOS builds, test chains only (with iOS); `--require-strongbox` to refuse a TEE-only key (§5.6); `--android-app-digest <sha256>` to accept one's own build of the app; `--require-revocation-check` to refuse when Google's revocation list cannot be fetched; `--allow-unverified-boot` to accept a phone whose boot state is Unverified (§5.2); `--phone-skip-fingerprint` to rely on the QR's secret without the fingerprint prompt, `--phone-fingerprint <fp>` to give the fingerprint to a script (§3.1); `--out <dir>` to keep the request, the answer and the chain |
+| `key create --phone <label> --agent <cfg>` | the enrollment session (§2.1); verifies attestation, prints the public key, fingerprint, security tier and config snippet; `--allow-no-attestation` for iOS without App Attest; `--allow-dev-build` for development-signed iOS builds, test chains only (with iOS); `--require-strongbox` to refuse a TEE-only key (§5.6); `--android-app-digest <sha256>` to accept one's own build of the app; `--require-revocation-check` to refuse when Google's revocation list cannot be fetched; `--allow-unverified-boot` to accept a phone whose boot state is Unverified (§5.2); `--phone-skip-fingerprint` to rely on the QR's secret without the fingerprint prompt, `--phone-fingerprint <fp>` to give the fingerprint to a script (§3.1); `--out <dir>` to keep the request, the answer and the chain. As built (2026-11): `--allow-dev-build` does not exist (§5.3); the other flags do |
 | `owner set-root … --expect-fingerprint <fp>` | refuses unless `--public-key` has that fingerprint; for the first handover (§2.2) |
 | `owner set-root … --to-phone <label>` | the new key is that phone key: the phone shows that it holds it, in a session of its own, before anything is signed or sent (§2.2) |
 | `owner set-root … --not-a-phone` | the new key is not a phone's: no phone session. One of the two is required; with neither the command refuses before anything is built. The new key signs a fresh challenge first (issue #51): `--new-key '<key spec>'` on this machine, or `key prove` on another; `--no-proof-of-possession` skips it with a warning |
@@ -930,8 +992,10 @@ translation can follow.
    `HardwareSigner::sign_user_op(&self, ctx: &UserOpContext) -> Result<Signature>`,
    where the default calls `sign_digest(ctx.hash)`. Every existing backend
    keeps working unchanged. `PhoneSigner` implements `sign_user_op` and
-   returns an error from `sign_digest` ("a phone key signs operations, not
-   digests").
+   returns an error from `sign_digest` ("phone key … signs operations, not
+   bare digests: the phone must see what it signs"). The trait also has
+   `needs_request()`, false by default; a signer that returns true gets
+   the sign request attached to the context.
 2. **The hash is computed locally.** The CLI computes `userOpHash` with
    `owner-core`, compares it with `EntryPoint.getUserOpHash`, and stops on
    any difference. That check doubles as a test of the core against the
@@ -977,13 +1041,22 @@ translation can follow.
 
 ### 8.4 Terminal QR
 
-The CLI renders with the `qrcode` crate (half-block characters), and adds
-two lines: the URL in text, for a manual fallback, and the request's
-fingerprint, which the phone also shows.
+The CLI renders with the `qrcode` crate (half-block characters), under a
+headline that carries the key's fingerprint and, for an operation, the
+`userOpHash`, which the phone also shows. Below the QR it prints the
+session URI with the secret left out (§3.1): a record, not a manual
+fallback, since the secret is in the QR only.
 
 ## 9. Test plan
 
 **Anvil first, as the plan asks.**
+
+As built (2026-11): there are no golden files and no `cargo-fuzz` target;
+the tamper test (`review.rs`, `tamper_every_hash_covered_field`) builds its
+operation in code and mutates each hash-covered field and every calldata
+byte, not the bytes of the request. The phone simulator is a thread inside
+`tests/anvil_cli.rs`, not a binary, and the plan-B cross-protocol test is
+not written.
 
 1. **`owner-core` unit tests:**
    - `user_op_hash` against reference values computed with `cast`;
@@ -1108,6 +1181,8 @@ check the rpId (V for the latter two, `PHONE_OWNER.md`). Switching means
 one `set-root` to that validator with the same key. The key was created
 with `DIGEST_SHA256` too (§5.2), so no re-enrollment is needed. That the
 validator accepts a self-built envelope: I, checked in P0 on anvil.
+As built (2026-11): the Android key is created with both digests, but the
+envelope builder and the cross-protocol test are not written.
 
 The audit found no practical cross-protocol collision: a signature valid on
 one validator would need a SHA-256 preimage to verify on the other. The

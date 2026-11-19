@@ -29,20 +29,26 @@ compromise. What it does guarantee:
    automatically.
 2. **The damage bound is on-chain only.** During a compromise the attacker
    *is* the agent; `AgentPolicy` — allow-list, per-operation value cap,
-   budget, expiry — is the limit. Gaps in it are the critical class of bugs.
+   budget, per-token amount limits, time window — is the limit. It bounds
+   amounts and targets, not the recipient or spender of an allow-listed
+   token call. Gaps in it are the critical class of bugs.
 3. **The owner key is out of the agent's reach.** From 3–4, an owner key
    the agent's user can use would give an attacker root over the account,
    with no bound at all. Acceptable placements, strongest first:
    - **a separate device or machine** — a hardware wallet, another host's
-     TPM, an owner Safe;
+     TPM, an owner Safe. In `agent-signer` today: a YubiKey 5, another
+     host's TPM or Secure Enclave, a phone in development builds; an owner
+     Safe is not supported;
    - **the same chip, behind physical presence** — a Secure Enclave key
      that requires Touch ID, a Windows Hello–protected key: user-level
-     malware cannot touch the sensor;
+     malware cannot touch the sensor. Not in `agent-signer` today:
+     `key create --enclave` and `--cng` make keys without a presence check;
    - **the same chip, behind the root/user boundary** — on Linux, an owner
      TPM key with an authValue kept in a file only root can read
      (`authFile`, mode 0600), the agent running as an ordinary user without
      sudo; on Windows, a machine key whose ACL admits only Administrators /
-     SYSTEM. One chip suffices — but this placement **relaxes premise 4**
+     SYSTEM (not in `agent-signer` today: it makes per-user Windows keys;
+     the Linux placement is). One chip suffices — but this placement **relaxes premise 4**
      rather than following from it: its whole safety rests on the agent
      genuinely being unable to become root (an ordinary user, no sudo, no
      container misconfiguration, no local privilege escalation). That is a
@@ -68,25 +74,31 @@ compromise. What it does guarantee:
    against booting another OS or firmware, not against a compromise of the
    running system.
 5. **No private key at rest in plaintext, and none on the agent's host.**
-   The software backend exists for tests and test vectors only. One
+   The software backend exists for tests and test vectors only. This rule
+   is about the account's keys: the optional gas wallet is a plaintext hot
+   key outside it ([`FAQ.md`](FAQ.md)). One
    exception, for the owner side only: an **encrypted** owner or recovery
    key on removable media (a USB drive), under all of these conditions:
    - encrypted with a memory-hard KDF (scrypt N ≥ 2^18, or argon2id with
-     ≥ 256 MiB) and an AEAD cipher;
+     ≥ 256 MiB) and an AEAD cipher (`agent-signer` implements scrypt with
+     AES-256-GCM; argon2id is not implemented);
    - the passphrase is typed when the key is used and never stored;
    - it is decrypted only on a machine that is not the agent's host
      (preferably an offline one), held in locked memory and zeroized after
-     signing;
+     signing (a rule for the person: the code does not check the machine;
+     it zeroizes the key, and keeps it out of swap on a best-effort basis
+     only);
    - the medium is plugged in only for an owner operation;
    - it signs root operations only — never the agent's.
    Its weakness is the moment of use: whatever host decrypts it holds the
    key itself, not just a signing oracle. That is why it suits a cold
    recovery owner, used rarely and away from the agent, rather than a daily
    one ([`OWNER_DEVICES.md`](OWNER_DEVICES.md), section 6).
-6. **Testnet exception:** on Base Sepolia the owner and agent keys share one
-   TPM, the owner key without an authValue, for the demo. This violates
+6. **Testnet exception:** on Base Sepolia the owner and agent keys shared one
+   TPM, the owner key without an authValue, for the demo. This violated
    rule 3 knowingly and is acceptable only where nothing of value is at
-   stake.
+   stake. The owner key has since moved to a YubiKey
+   ([`YUBIKEY.md`](YUBIKEY.md)).
 
 ## Hardening (not enforced)
 
@@ -124,7 +136,10 @@ If any item fails, the owner key is as reachable as the agent key.
 
 - **An owner device with a presence check** (touch, button, biometric), so
   a host compromise during an owner operation cannot sign more than the
-  human confirms. Candidate devices: [`OWNER_DEVICES.md`](OWNER_DEVICES.md).
+  human confirms. Supported today: a YubiKey 5 ([`YUBIKEY.md`](YUBIKEY.md));
+  a phone, in development builds
+  ([`MOBILE_OWNER_PLAN.md`](MOBILE_OWNER_PLAN.md)). Others studied:
+  [`OWNER_DEVICES.md`](OWNER_DEVICES.md).
 - **A mainnet check in the deployment's own tooling** — a wrapper or CI step
   that flags an unprotected co-located owner key when the chain id is a
   mainnet. The project leaves this, and whether it warns or blocks, to the
@@ -146,8 +161,10 @@ If any item fails, the owner key is as reachable as the agent key.
   The exception has to be stated: `--no-proof-of-possession`.
 - Selecting a software key must be an explicit test-only choice: a build
   feature (`insecure-software-keys`) that release builds never enable.
-  Without it a software key is refused in every role; with it — in the
-  integration tests on a local chain only — any role may use one. Keep the
+  Without it a software key is refused in every role; with it any role may
+  use one, on any chain: the code does not check the chain, and the
+  integration tests use a local one. The `vector` command's throwaway
+  software key is in every build and is no role's key. Keep the
   flag on the command line only: never in a manifest dependency, a default,
   a cargo alias or config, or a release/deploy pipeline (Cargo unifies
   features across a build, so any of those would leak it into a shipped

@@ -3,7 +3,7 @@
 A YubiKey as the **owner key**: a P-256 key generated inside the device's PIV
 applet, used only with the PIN and a touch, never exportable. It is the cheap,
 pocketable answer to `KEY_POLICY.md`'s "a separate device with physical
-presence" for the owner role (`OWNER_DEVICES.md` §… YubiKey 5 — PIV). First
+presence" for the owner role (`OWNER_DEVICES.md` §1, row "YubiKey 5 — PIV"). First
 run on 2026-11-02 with a YubiKey 5 NFC, firmware 5.8.0.
 
 ## Hardware and host
@@ -38,8 +38,9 @@ run on 2026-11-02 with a YubiKey 5 NFC, firmware 5.8.0.
   rejected PIN is forgotten again. Through a bundler the CLI estimates gas
   with a placeholder and signs **once**, so an owner operation is one PIN
   and one touch; only a bundler that refuses the fee after the fact costs a
-  second touch, and the CLI says so (design §8.3, #15). **An agent key is refused** unless the slot's policies are PIN
-  never and touch never, because an unattended agent cannot answer either.
+  second touch, and the CLI says so (design §8.3, #15). **An agent key is refused** unless the slot's PIN
+  policy is never and its touch policy is neither always nor cached, because
+  an unattended agent cannot answer either.
 - **Before any root operation the CLI checks the key against the chain:**
   it reads the account's root validator and that validator's
   `publicKeys(account)`, and refuses with "not the account's root key" when
@@ -115,7 +116,10 @@ which a 5.7+ key does **not** verify against; check the issuer of `f9` to
 know which root applies. The policy bytes in the attestation are what a
 laptop should trust about a key, not the device's own metadata answer; this
 is the same rule the phone design applies to Android attestation
-(`MOBILE_OWNER_DESIGN.md` §5.6).
+(`MOBILE_OWNER_DESIGN.md` §5.6). The CLI itself does not verify this chain or
+read the policy extensions: `key attest` only writes the certificate, and
+the agent-key refusal above relies on the slot's metadata. The check here is
+manual.
 
 ## Usage
 

@@ -2,8 +2,8 @@
 
 Practical questions about running an AI agent on an agent-keys account. Each
 answer says what works today and what does not yet; the project runs on Base
-Sepolia (testnet), and an internal review, not a professional audit, is all
-the code has had (see the last section).
+Sepolia (testnet), and an internal review of an earlier state of the code,
+not a professional audit, is all it has had (see the last section).
 
 The words used below:
 
@@ -79,9 +79,14 @@ too (another drive, a cloud folder — the file is useless without the
 passphrase).
 
 **4. Write the agent config** (start from `signer/agent.tropic01.base-sepolia.json`;
-every field is specified in [`AGENT_CONFIG.md`](AGENT_CONFIG.md)):
+every field is specified in [`AGENT_CONFIG.md`](AGENT_CONFIG.md)).
+**Delete its `account` line first**: it pins the project's demo account, and
+with it left in, `account status` prints that account, not yours. Then set:
 
-- `"agent": {"tpm": "0x81010011"}`;
+- `"agent": {"tpm": "0x81010011"}` and `"agentPublicKey"` with the `x`, `y`
+  that `key create` printed for the agent key (replacing the template's) —
+  so the owner can revoke or rotate from a machine without this TPM, or
+  after the TPM was cleared;
 - `"owner": {"keyfile": "/media/…/owner.json"}` and `"ownerPublicKey"` with
   the `x`, `y` that `key create` printed — so the agent never needs the
   owner's drive plugged in;
@@ -105,21 +110,35 @@ $B account status --agent my-agent.json --env-file .env     # prints the account
 # send up to $100 of ETH or tokens to that address (some ETH for gas)
 $B op send --agent my-agent.json --env-file .env --target <an allowed contract> --data <calldata>
 #   ↑ the first operation also deploys the account
-$B owner add-recovery --agent my-agent.json --env-file .env  # plug in USB1; enter the owner passphrase
+# now write the address into my-agent.json:  "account": "0x…"
+$B owner add-recovery --agent my-agent.json --env-file .env  # plug in USB1 and USB2; enter the owner passphrase
 ```
+
+Pin `account` right after the first operation. Until then the CLI derives
+the address from the keys and the mandate, so a new agent key or an edited
+mandate would point it at another, empty address; and `permission add` and
+`permission rotate` refuse to run without the pin. `add-recovery` reads the
+recovery file on USB2 for its public key only (no passphrase).
+
+This walkthrough decrypts the owner file on the agent's laptop for the
+setup, which [`KEY_POLICY.md`](KEY_POLICY.md) rule 5 advises against. If you
+have another machine, do the owner steps (`owner add-recovery`, later
+`permission …`) there, with a copy of the config.
 
 Then point the agent at `agent-signer op send …` (or one of the
 [examples](../examples/README.md): AgentKit, a Claude Code skill).
 
 **What you get:** the agent key cannot be copied off the laptop; a hacked
 laptop can spend at most what the mandate allows; you can revoke the agent
-from anywhere you have the owner drive and passphrase.
+from any machine where you have the owner drive, its passphrase and the
+config (with `account` and `agentPublicKey` in it).
 
 **What to know:** today this runs on Base **Sepolia** (testnet). For real
 money on Base, the project has to deploy its modules there first — once, for
 everyone (see "Who deploys the contracts?" below); you deploy nothing
 yourself. A firmware update that clears the TPM loses the agent key —
-harmless: create a new one and `permission rotate` with the owner drive.
+harmless: create a new one, put it in the config (`agent`,
+`agentPublicKey`) and `permission rotate` with the owner drive.
 
 ---
 
@@ -134,6 +153,7 @@ is the target setup, and which parts are missing.
 |---|---|---|
 | agent key | the Mac's Secure Enclave | **works today** — run on an Apple M1, keys on-chain ([`SECURE_ENCLAVE.md`](SECURE_ENCLAVE.md)) |
 | owner key | a separate device with a button: a YubiKey 5 (PIV, P-256) | **works today** — PIN and a touch per signature; root of the Base Sepolia account since 2026-11-02, run on macOS too ([`YUBIKEY.md`](YUBIKEY.md)). Nitrokey 3, Ledger and Trezor: studied, not supported ([`OWNER_DEVICES.md`](OWNER_DEVICES.md)) |
+| owner key, the other way | the owner's phone: the project's own app, the key in the Android Keystore or the iPhone's Secure Enclave, a fingerprint or Face ID per signature, the operation reviewed on the phone's screen before signing | **development builds only** — the loop passed on a real Android phone and a real iPhone against a local chain, not on Base Sepolia; no store distribution, the app is installed with `adb` or from Xcode ([`MOBILE_OWNER_PLAN.md`](MOBILE_OWNER_PLAN.md), [`MOBILE_DEV_MODE.md`](MOBILE_DEV_MODE.md)) |
 | recovery key | an encrypted file on two USB drives in different places | file: works today; behind a time lock: **not built** — today the recovery key takes over at once ([`RESILIENCE.md`](RESILIENCE.md)) |
 | money | most of it **not** on the agent's account — in an owner-controlled vault; the agent's account is topped up per period | operational, works today |
 
@@ -142,19 +162,26 @@ is the target setup, and which parts are missing.
 several mandates for the same agent key, each with its own window, budget,
 token limits and allowed contracts, e.g.:
 
-- "Mon–Fri of this week: up to 5,000 USDC per day through these two
-  contracts" — one mandate per day;
+- "Mon–Fri of this week: up to 5,000 USDC per day" — one mandate per day;
 - "the 1st of the month: payroll up to 40,000 USDC".
 
 **What a mandate does not say today: who receives a token transfer.** It
 allows contracts and functions and caps token amounts per operation and in
 total; with `USDC.transfer` allowed, the agent picks the recipient, within
-those caps. To fix the destination, leave `transfer` out and allow a contract
+those caps, and with `approve`, `increaseAllowance` or `transferFrom`
+allowed it picks the spender or the recipient the same way
+([#66](https://github.com/postcryptum-research/agent-keys/issues/66)). So a
+cap is on the amount, not on which contract or address the tokens go to.
+To fix the destination, leave those functions out and allow a contract
 that can pay only where the owner decided — e.g. a forwarder with one
-immutable destination, which the owner approves for the token once.
+immutable destination, which the owner approves for the token once. On
+that path the mandate's token limits do not count: the bound is the
+allowance the owner gives the forwarder, or limits the forwarder enforces
+itself. The repository has no such contract yet.
 
 Each mandate is one agent config file with its own `permissionId` and
-`policy.validAfter` / `validUntil`; `agent-signer permission add` installs
+`policy.validAfter` / `validUntil`, and with `account` pinned;
+`agent-signer permission add` installs
 it next to the others (an owner operation). The agent uses the config of the
 window it is in; outside every window it can do nothing. Install the
 calendar ahead (one owner session for a month), or week by week.
@@ -267,6 +294,11 @@ $B key prove --key '{"tpm": "0x81010010"}' --challenge <the line printed above>
 # paste the one line it prints back into the waiting command
 ```
 
+If the new key goes on the validator contract the old one uses
+(`--validator` equal to `--retire`), a recovery key must already be
+installed (`owner add-recovery`): root stands on it for the length of the
+operation.
+
 A device that asks before it signs asks here too: a YubiKey wants its PIN
 and a touch during `--new-key` or `key prove`, a key file its passphrase.
 A line pasted wrong does not end the wait: the command says so and reads
@@ -283,8 +315,10 @@ Only for setups that hold real value, as the **owner** key — a separate
 device with a button. For small amounts, owner and recovery keys as encrypted
 files on USB drives are enough. A YubiKey 5 works as the owner key today
 ([`YUBIKEY.md`](YUBIKEY.md)); Ledger and Trezor are not supported
-([`OWNER_DEVICES.md`](OWNER_DEVICES.md)). None of them suits the agent key:
-they want a button press per signature.
+([`OWNER_DEVICES.md`](OWNER_DEVICES.md)). Ledger and Trezor do not suit the
+agent key: they want a button press per signature. A YubiKey slot is
+accepted as the agent key only with PIN policy never and touch policy
+never; the CLI refuses any other slot for that role.
 
 ### Which machines and which networks?
 
@@ -384,12 +418,19 @@ It is only required to submit `handleOps` yourself and for the commands that
 send ETH from it (`account fund`, `paymaster deposit / sponsor / stake`);
 those say so when it is missing.
 
+If you run your own sponsor with these commands, the gas wallet is the
+paymaster's owner: its plain key file then controls the paymaster's deposit
+and stake, so keep the deposit small or keep that key off the agent's
+machine. A paymaster of your own also needs its own deployments file (as
+`contracts/deployments/84532.enclave.json` is): the deploy script reuses a
+paymaster that the file already records.
+
 ### Can it drive a Safe (Olas, Jinn)? Which AI frameworks work?
 
 Yes: the account can own a Safe, and the mandate judges the Safe's
 transactions call by call, including MultiSend batches; replays are refused
 on-chain ([`ERC1271.md`](ERC1271.md)). Frameworks with a worked example:
-Coinbase AgentKit, a Claude Code / OpenClaw skill, Jinn and Olas
+Coinbase AgentKit, ElizaOS, a Claude Code / OpenClaw skill, Jinn and Olas
 ([`examples/`](../examples/README.md)). Anything else that can run a command
 (`agent-signer op send --json`) or call a function that sends one transaction
 works the same way.
@@ -416,10 +457,10 @@ The money depends on the network: multiply by its gas price (on rollups such
 as Base, add the L1 data fee, which grows with the operation's size). On Base,
 at ~0.01 gwei, a simple agent call is about 1.5 × 10⁻⁶ ETH of L2 gas — a
 fraction of a cent; on a network with 10 gwei it would be a thousand times
-more. Verifying
-the P-256 signature itself costs the same as an ordinary `ecrecover`
-(~7,400 gas); the overhead is the smart-account machinery, about 77k gas per
-operation over a bare call.
+more. A call
+authorized by a P-256 signature costs the same as one authorized by
+`ecrecover` (7,433 against 7,402 gas for the whole call); the overhead is
+the smart-account machinery, about 78k gas per operation over a bare call.
 
 **Time**, from "the agent decides" to "the call is on-chain": signing takes
 milliseconds in a TPM, about 2 seconds on the TROPIC01 devkit, about 1 second
@@ -429,8 +470,11 @@ to open an encrypted key file; then the operation waits for the next block
 ### Is it audited?
 
 An internal review on 2026-10-20 by a separate AI session found eight
-issues; all are fixed and re-checked
-([`AUDIT-2026-10-20.md`](AUDIT-2026-10-20.md)). It is not a professional
+issues: six fixed in code, one fixed in its code part (where the owner key
+lives stays the deployer's choice), one documented; the fixes were
+re-checked ([`AUDIT-2026-10-20.md`](AUDIT-2026-10-20.md)). Code written
+since — mandate time windows, x402, the forbidden-target guard, the YubiKey
+and phone owner backends — is outside that review. It is not a professional
 audit. The bigger the amount, the more review it deserves — an independent
 professional audit before anything substantial. But no audit makes a system
 safe on its own: keep the agent's account holding only what the current

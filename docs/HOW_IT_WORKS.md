@@ -33,15 +33,17 @@ or whoever controls it, asks for.
 
 | What happens | A key in a file | agent-keys |
 |---|---|---|
-| Malware reads the disk | all funds gone | nothing — there is no key file |
-| Prompt injection: "send everything to 0xdead" | sent | refused on-chain |
+| Malware reads the disk | all funds gone | nothing of the account's — its keys are not in files |
+| Prompt injection: "send everything to 0xdead" | sent | refused on-chain, unless the mandate allows that transfer — then at most its limits |
 | Malware takes over the agent itself | all funds gone | at most what the mandate allows, until the owner revokes the agent |
 | The laptop is stolen | the key is copied | the key cannot be extracted from the chip; the mandate still applies, and the owner revokes |
 
 ## The owner stays in charge
 
-The owner key is separate — in another chip, or an encrypted cold backup on
-a USB drive — and never on the agent's machine. It sets the mandate,
+The owner key is separate — on another device (a YubiKey, another
+machine's chip) or an encrypted cold file on a USB drive — and should stay
+out of reach of the agent's machine; the software does not enforce where
+you keep it. It sets the mandate,
 rotates the agent's key and revokes it, each in one transaction. A cold
 recovery key can take over if the owner device is lost.
 

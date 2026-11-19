@@ -8,10 +8,13 @@ lives, who enforces policy, and whether the project is open source. Marks:
 **V** verified at the source, **I** inferred.
 
 agent-keys, for reference: key **born in a secure element** (Linux/Windows
-TPM 2.0, Apple Secure Enclave, TROPIC01), P-256 verified on-chain through
-RIP-7212/EIP-7951; policy enforced **on-chain** by `AgentPolicy` (ERC-7579
-on Kernel v3.3: allow-list, value cap, budget, expiry, token budgets, x402);
-the owner is a second hardware key with a cold recovery path; all open source.
+TPM 2.0, Apple Secure Enclave, TROPIC01, a YubiKey PIV slot), P-256 verified
+on-chain through RIP-7212/EIP-7951; policy enforced **on-chain** by
+`AgentPolicy` (ERC-7579 on Kernel v3.3: allow-list, value cap, budget,
+expiry, token budgets, x402); the owner is a second key (a YubiKey, a
+phone's secure hardware, another chip or, as the one exception, a
+passphrase-encrypted key file on removable media) with a cold recovery
+path; all open source.
 
 ## 1. An old phone, or a cheap device, as the signer
 
@@ -84,8 +87,10 @@ the permission validator is granted only `execute`, and the policy refuses
 any other calldata (`test_policy_rejectsBatchAndMalformedCalls`); an
 attacker's address fails the allow-list. There is no code to intercept,
 because there is no approval channel other than a hardware signature. What
-the case adds to our list: the agent's own account must never be an
-allow-list target ([#11](https://github.com/postcryptum-research/agent-keys/issues/11)), and
+the case added to our list: the agent's own account must never be an
+allow-list target ([#11](https://github.com/postcryptum-research/agent-keys/issues/11), done:
+`AgentPolicy` refuses the account and the policy itself as targets at
+install and again at validation, and the account's EntryPoint at install), and
 the owner key must not sit on the agent's host, which is the testnet
 exception of `KEY_POLICY.md` rule 6 and the reason for the phone owner
 (`../MOBILE_OWNER_DESIGN.md` §10).
@@ -95,9 +100,9 @@ exception of `KEY_POLICY.md` rule 6 and the reason for the phone owner
 | Project | What it is | Relation to ours |
 |---|---|---|
 | ZeroDev Kernel v3 permissions (ERC-7579 signer + policies) | the framework `P256Signer` / `AgentPolicy` plug into; ZeroDev ships call, gas, rate-limit, timestamp policies (V) | we reuse the mechanism and add the parts ZeroDev lacks: a value cap + budget + expiry in one module, Safe pass-through, token budgets, registered x402 authorizations, ERC-1271 under the mandate (`ERC1271.md`) |
-| Safe + Zodiac modules / Safe Guards (roles, allowances, delays) | policy for a Safe's owners and modules (V) | our `AgentPolicy` v3 judges Safe transactions from the *outside*, through a Kernel account that owns the Safe (`ERC1271.md`) |
+| Safe + Zodiac modules / Safe Guards (roles, allowances, delays) | policy for a Safe's owners and modules (V) | our `AgentPolicy` (since v3) judges Safe transactions from the *outside*, through a Kernel account that owns the Safe (`ERC1271.md`) |
 | MetaMask Delegation Framework (ERC-7710 / ERC-7715 "request permissions") | caveat-enforced delegations from a smart account; a wallet-side standard for granting bounded, revocable permissions (V, EIP texts) | the closest *standard* to our mandate; worth tracking for interop, not needed for function |
-| "Spend mandate" proposal (token-level caps, expiry, revocation for agent wallets; thirdweb blog, 2026) | an Ethereum proposal covering exactly our `tokens` budget idea (I: draft, not final) | same shape as `AgentPolicy` v6 token budgets |
+| "Spend mandate" proposal (token-level caps, expiry, revocation for agent wallets; thirdweb blog, 2026) | an Ethereum proposal covering exactly our `tokens` budget idea (I: draft, not final) | same shape as `AgentPolicy`'s token budgets |
 | Agent Bank (bank-of-an-agent/*) | a policy engine + co-signer + x402 facilitator with Solidity escrow / time-lock contracts (V, repo descriptions) | service-side co-signing rather than a hardware key; 0 stars, 2026-10 |
 | Coinbase AgentKit + "spending limits at the TEE level" | limits enforced in the vendor's TEE, not on-chain (V, Spark research page) | enforcement point is the difference |
 
@@ -120,7 +125,7 @@ signs unattended, which is why the policy module exists.
 |---|---|---|---|---|
 | **Monolith** ([github](https://github.com/slaviquee/monolith)) | "Secure crypto wallet for AI agents": a macOS daemon signs ERC-4337 UserOps with an **Apple Secure Enclave** P-256 key for OpenClaw agents; a Coinbase-Smart-Wallet fork verifies via EIP-7951 with Daimo's verifier as fallback; on-chain spending caps, freeze, 48 h key-rotation timelock; Touch ID prompts above a threshold; Pimlico bundler | Secure Enclave (macOS only) | on-chain caps in the account + a local default-deny policy daemon | 7 stars, Solidity + Swift, created 2026-02, last push 2026-02 — the nearest sibling in intent; one platform, no owner/agent split, no x402, no Safe |
 | **Vesper** ([github](https://github.com/karimbabasf/vesper)) | a voice agent that can only execute swaps: signing key generated inside an **Intel TDX** enclave, `VoicePolicy` ERC-7579 validator, passkey confirmation above a threshold | TDX enclave memory (ephemeral) | on-chain ERC-7579 policy | 0 stars, 2026-09; "the enclave step has not started" |
-| **yubikey-evm-signer** ([github](https://github.com/storopoli/yubikey-evm-signer)) | Rust + WASM: sign EVM transactions with a YubiKey PIV P-256 key, relying on EIP-7951; passes the Ethereum tx test vectors | YubiKey | none (an EOA-style signer for a P-256 account) | 5 stars, Apache-2.0, 2026-01 → 2026-07; relevant to our planned YubiKey owner path (`OWNER_DEVICES.md`) |
+| **yubikey-evm-signer** ([github](https://github.com/storopoli/yubikey-evm-signer)) | Rust + WASM: sign EVM transactions with a YubiKey PIV P-256 key, relying on EIP-7951; passes the Ethereum tx test vectors | YubiKey | none (an EOA-style signer for a P-256 account) | 5 stars, Apache-2.0, 2026-01 → 2026-07; relevant to our YubiKey owner backend (`hw-signer` `yubikey_piv`, `../YUBIKEY.md`) |
 | **claw-cash** ([github](https://github.com/tiero/claw-cash)) | Bitcoin wallet for agents over Telegram bots; secp256k1 keys generated and used inside an **Evervault enclave** service | a hosted enclave (the project's API) | rate limits, 2FA via Telegram | 38 stars, MIT, 2026-02 → 2026-07; custodial-shaped |
 | Guardian Wallet (agentokratia) | MPC shares (one in the agent's environment) with a server policy engine | MPC | server | small |
 | **Countersign** (the I-HITL prototype, Cornell Tech / Yale, 2026-10) | a phone countersigns an agent's critical actions: the approval terminates on a consumer device the agent cannot reach, the device's key is attested and non-extractable, the service verifies the countersignature (V, [arXiv 2610.35835](https://arxiv.org/abs/2610.35835); code availability I) | the phone's secure hardware | the service that checks the countersignature | academic prototype; the closest sibling of our phone owner (`../MOBILE_OWNER_DESIGN.md`), which puts the same device key on-chain as the account's root instead of behind a service |
@@ -150,8 +155,10 @@ covers its signing path.
 - **The formal model for the owner side**: I-HITL (2a, 2d) proves that an
   approval must terminate on a device the agent cannot reach, and names
   attested, non-extractable keys as the requirement. The phone owner is that
-  device and the chain is the honest service. Our open end in their terms is
-  the first handover (`../MOBILE_OWNER_DESIGN.md` T2).
+  device and the chain is the honest service. Our open ends in their terms
+  are the first handover (`../MOBILE_OWNER_DESIGN.md` T2) and attestation on
+  iOS: an Android key's attestation is verified at enrollment, an iPhone's
+  key is not attested yet (it enrolls only with `--allow-no-attestation`).
 - **BTCPay Server**, after its hot-wallet sweep of 2026-11: `BTCPAY.md`
   analyses every integration option, including a USDC-on-Base plugin whose
   store wallet is a mandate-bounded account. The integration itself, that

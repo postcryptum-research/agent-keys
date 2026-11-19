@@ -62,14 +62,17 @@ not; the second column is what makes the page worth reading.
   mandate bounding the agent regardless, and in v2 the phone checking the
   chain itself (§14). Two practical lessons: the app should refuse to enroll
   or warn below a minimum iOS build, since D7's floor (iOS 16) is far below
-  the patched builds (I: add to the enrollment checks), and App Attest proves
-  the app and the key, not the absence of a kernel implant.
+  the patched builds (I: add to the enrollment checks), and App Attest, which
+  the iOS app does not use yet (an iPhone key enrolls only with
+  `--allow-no-attestation`), would prove the app and the key, not the
+  absence of a kernel implant.
 
 ### Circle Agent Wallets and the I-HITL paper (2026-10)
 
 Full treatment in `LANDSCAPE.md` §2a and §2d; the formal model in
 `MOBILE_OWNER_DESIGN.md` §10. The one code item it produced is #11, the
-agent's own account must never be an allow-list target.
+agent's own account must never be an allow-list target; it is done
+(`AgentPolicy` refuses such a target at install and again at validation).
 
 ### BTCPay Server hot wallets (2026-10/11)
 

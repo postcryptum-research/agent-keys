@@ -7,8 +7,8 @@
 //! ECDSA signature comes back as the raw `r ‖ s` pair, which becomes the
 //! low-s signature the smart account expects.
 //!
-//! Written on Linux and type-checked for `x86_64-pc-windows-msvc`; it has not
-//! yet run on Windows. See docs/WINDOWS.md for the build and test procedure.
+//! Written on Linux and type-checked for `x86_64-pc-windows-msvc`; first run
+//! on Windows on 2026-10-20. See docs/WINDOWS.md for the build and test procedure.
 
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Security::Cryptography::{

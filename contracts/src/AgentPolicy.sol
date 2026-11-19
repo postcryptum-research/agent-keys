@@ -46,9 +46,11 @@ interface IKernelEntryPoint {
 ///    budget and allow-list, make a schedule ("weekdays: up to X on these
 ///    contracts; the 1st: payroll up to Y");
 ///  - the account itself, its EntryPoint and this policy (except its two
-///    x402 entry points) are never valid targets, refused at install and
-///    again at validation: no mandate, however written, lets the agent widen
-///    its own permission, replace the root key or drain the deposit.
+///    x402 entry points) are never valid targets: all three are refused at
+///    install, the account and the policy again at validation (the
+///    EntryPoint is not re-checked there, see `_judge`). No mandate, however
+///    written, lets the agent widen its own permission, replace the root key
+///    or drain the deposit.
 ///
 /// Safe pass-through: an allow-list entry `(safe, execTransaction)` lets the
 /// agent drive a Safe that this account owns (Olas / Jinn service Safes),

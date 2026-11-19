@@ -31,20 +31,20 @@ The drill has three layers, and all three must pass:
 | L2 — the real artefacts | the operator's own recovery file, media and passphrase, offline | the file that exists can actually be used by the people who would need it |
 | L3 — the real account | the testnet or production account, with the owner's explicit yes | the procedure works end to end on the chain, with the devices in use |
 
-## 2. The procedure (L3; L1 runs the same steps automatically)
+## 2. The procedure (L3; L1 runs steps 2 and 4–8 automatically)
 
 Setup, once: the account has an owner key (any backend), an agent permission
 in use, and a config `recovery.json` that names the key file. All commands
 are `agent-signer …`, run where the key in question lives.
 
-| Step | Command | Expected (V, run 2026-10-21 on Base Sepolia and in the anvil test) |
+| Step | Command | Expected (V, run 2026-10-21 on Base Sepolia; steps 2 and 4–8 also in the anvil test) |
 |---|---|---|
 | 0 | `key check --keyfile <file>` | `OK: … signs (…)` after the passphrase; proves the file opens |
 | 1 | `owner status --agent recovery.json` | `recovery: … installed = false` |
 | 2 | `owner add-recovery --agent recovery.json` (owner key signs) | `recovery key installed: tx …`; `owner status` shows `installed = true, may take root = true, is root now = false` |
 | 3 | *simulate the loss*: put the owner device away, or use a config that no longer names it | — |
 | 4 | `owner recover --agent recovery.json` (recovery key signs, passphrase) | `the recovery key is root now: tx …`; `owner status`: `is root now = true` |
-| 5 | `owner set-root --agent recovery.json --as-recovery --validator <P256Validator> --retire <P256Validator> --not-a-phone --new-key '<the new owner key, as a config names it>'` (the new key signs a challenge first; for a key on another machine give `--public-key <x>,<y>` instead and answer the printed challenge with `key prove` there; or `--to-phone <label>` when the new owner key is a phone's: the phone then shows that it holds the key first; with neither the command refuses) | `new key: holds the key … (signed a fresh challenge)`, then `root handed to …: tx …`; `owner status`: root validator is `P256Validator`, `is root now = false` |
+| 5 | `owner set-root --agent recovery.json --as-recovery --validator <P256Validator> --retire <P256Validator> --not-a-phone --new-key '<the new owner key, as a config names it>'` (the new key signs a challenge first; for a key on another machine give `--public-key <x>,<y>` instead of `--new-key` and answer the printed challenge with `key prove` there; when the new owner key is a phone's, give `--public-key <x>,<y> --to-phone <label>` in place of `--not-a-phone --new-key …`: the phone then shows that it holds the key first; with neither `--to-phone` nor `--not-a-phone` the command refuses) | `new key: holds the key … (signed a fresh challenge)`, then `root handed to …: tx …`; `owner status`: root validator is `P256Validator`, `is root now = false` |
 | 6 | a root operation with the **new** owner key (`op send --root …`) | included |
 | 7 | the same root operation with the **lost** owner key | refused before anything is sent: `the key about to sign (…) is not the account's root key (… in validator …)`. The CLI reads the root validator's key from the chain; the validator's own `AA24` is what the forge tests exercise |
 | 8 | `demo --agent <new owner config>` (the agent key) | included: the permission survived |
@@ -83,7 +83,10 @@ when L1–L3 have each passed within the periods in §5.
 
 ### 3.2 Mechanism (L1, L3)
 
-- [ ] Steps 0–9 pass in order, with the outputs in §2.
+- [ ] Steps 0–9 pass in order on L3, with the outputs in §2. L1
+      (`recovery_drill`) covers steps 2 and 4–8 and the wrong-file refusal
+      of §4 (I: add steps 1 and 9 and the `is root now` lines to it; step 0
+      needs a real key file, so it stays in L2).
 - [ ] Step 7 fails with "not the account's root key", quoting the key the
       chain holds: the CLI read `publicKeys(account)` from the root validator
       and it is the new key, not the lost one. (Before 2026-11-03 this step
@@ -118,7 +121,7 @@ when L1–L3 have each passed within the periods in §5.
 | A different recovery file (another key) | refused before the passphrase: `the recovery key about to sign (…) is not the one installed on the account` (V, `check_recovery_key`) | L1 (`recovery_drill`) |
 | `set-root` without `--retire` after a recovery | refused by the CLI: "retire the lost owner's validator" (V) | L1 (I: add a `chain.fails` case; not in `recovery_drill` today) |
 | `set-root` to a validator that is already installed, without retiring it | refused: Kernel would keep the old key (V) | L1 (I: add a `chain.fails` case; not in `recovery_drill` today) |
-| The recovery key is asked to sign an ordinary root operation **before** `recover` | the validator only has `changeRootValidator`: Kernel refuses (V, `RESILIENCE.md` §3.0) | L1 (I: add a case) |
+| The recovery key is asked to sign an ordinary root operation **before** `recover` | the validator only has `changeRootValidator`: Kernel refuses (V, forge `test_recovery_canOnlyTakeOverRoot`). The CLI has no command that sends such an operation on the recovery validator's path; a config that names the recovery key as `owner` is refused earlier, before signing: `not the account's root key` (V, `chain.rs` `check_root_key`) | the forge test; L1 (I: add the CLI refusal case) |
 | Steps 4 and 5 interrupted (laptop dies between them) | the recovery key is root; rerunning step 5 completes it | L3 once, deliberately |
 | The new owner device is a phone whose key was reset | redo from step 4 with the next device: the recovery key is reusable until retired | documented; exercised when the phone work reaches P1 |
 

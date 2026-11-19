@@ -1,7 +1,8 @@
 # Mobile owner app — development plan
 
-*Hand-off document, 2026-10-27. Nothing here is built yet. Read this first
-if you are picking up the phone work.*
+*Hand-off document of 2026-10-27, kept current by the status paragraphs
+under "Phases": P0–P2 are done, P3 is done for Android, and P4 passes on an
+iPhone. Read this first if you are picking up the phone work.*
 
 ## Goal
 
@@ -40,7 +41,8 @@ sync to the cloud): [`PHONE_OWNER.md`](PHONE_OWNER.md).
    its decisions on 2026-10-28, and revision 2 answers the review and the
    audit response
    ([`audit/RESP-mobile-owner-design-2026-10-28.md`](audit/RESP-mobile-owner-design-2026-10-28.md)).
-   Next: the owner's look at revision 2, then P0.
+   Next: see the status paragraphs under "Phases" (open: the Base Sepolia
+   run of P1, iOS attestation, P5).
 
 ## What already exists and is reused unchanged
 
@@ -59,12 +61,16 @@ owner: `owner set-root --validator <P256Validator> --retire <P256Validator>
 --public-key <x>,<y> --to-phone <label>`.
 - `--retire` matters here. Re-pointing root at an already installed
   validator keeps its old key; `--retire` uninstalls it first.
-- This exact flow is exercised in `tests/anvil_cli.rs::recovery_drill`.
+- The handover to a phone is exercised in
+  `tests/anvil_cli.rs::phone_is_enrolled_then_takes_over_root`;
+  `recovery_drill` exercises the same `--retire` flow to a key that is not
+  a phone's (`--as-recovery --not-a-phone --new-key`).
 
 **Rust code to share with the phone:**
-- `signer/crates/agent-signer/src/kernel.rs`: Kernel calldata, nonce keys,
-  hashes; `decode_execute` already decodes `execute` calldata.
-- The AgentPolicy install-data encoding (`PolicyParams`).
+- `mobile/owner-core/src/kernel.rs` (moved there from `agent-signer`):
+  Kernel calldata, nonce keys, hashes; `decode_execute` decodes `execute`
+  calldata.
+- The AgentPolicy install-data encoding (`PolicyParams`, in the same file).
 - `hw-signer::verify_p256` and the low-s rule.
 
 **Swift precedent:** `signer/crates/hw-signer/swift/SecureEnclaveShim.swift`
@@ -117,6 +123,10 @@ framework.
   mandatory today, but a long-term risk.
 
 ## Proposed architecture
+
+*The proposal of 2026-10-27. As built it differs in details; see
+[`MOBILE_OWNER_DESIGN.md`](MOBILE_OWNER_DESIGN.md) §3–§4 and the status
+paragraphs under "Phases".*
 
 ```
 laptop: agent-signer CLI                         phone: owner app
@@ -196,7 +206,10 @@ enrollment; two because a host in the path can read the phone's key from
 its cleartext answer and grind a one-group match within a session;
 `--phone-fingerprint` for scripts; superseded in P3, see below) and an answer with another key is rejected
 while the session waits for the phone's. P3 retires the prompt: the
-attestation with the bound challenge then authenticates the answer. The
+attestation with the bound challenge then authenticates the answer. (That
+is not how P3 went. Today the answer is authenticated by the secret in the
+QR, and the CLI still asks for the fingerprint by default;
+`--phone-skip-fingerprint` relies on the secret alone. See P3, slice 1.) The
 config's `fingerprint` is checked against its `publicKey` before any
 session, and `owner set-root --expect-fingerprint` refuses a handover to a
 key the owner did not see. The session itself answers 400 to a bad POST
@@ -270,7 +283,8 @@ review, because with names on the screen a plain row reads as safe: a key
 installed on **any** validator is an effect, and a `grantAccess` is plain
 only for a permission's `execute` or when it takes access away; a
 validator's `execute` or `changeRootValidator` is an effect, and every
-other grant is refused.
+other grant is refused unless expert mode is on, where it is an effect
+with a warning (neither app can turn expert mode on yet).
 On the device the review is rendered from the core's sections, and Sign is
 enabled only at the end of the scroll (§6.6). A development build with
 `test-chains` knows the CLI's anvil chain, where the harness installs the
@@ -294,7 +308,8 @@ and refusals alike — so a host on the network can no longer answer an
 enrollment with its own key or stop a session with a forged refusal. The
 laptop's acceptance is authenticated too: its `200` carries a confirmation
 MAC, and the app keeps a new key only on that, since a bare `200` can come
-from any host in the path. What is left to a network attacker is denial of
+from any host in the path. (Since issue #38, below, the apps keep the key
+either way and mark it confirmed only on that.) What is left to a network attacker is denial of
 service. This, not attestation, is what answers "is it the owner's phone":
 an attestation shows that a genuine device running our app made the key
 for this request, and anyone can hold such a device. The owner's decision
@@ -333,7 +348,9 @@ the result and the config say whether it was checked, and
 the attested level; `--android-app-digest` accepts a developer's own build
 until the project pins a release certificate; the config's phone spec
 records `attestation`, `platform` and `deviceCredential`. A failure ends
-the session with its reason, and the phone discards the key. Evidence
+the session with its reason, and the phone discards the key. (Today the
+phone keeps it as unconfirmed, and the next enrollment of that account
+replaces it: issue #38, below.) Evidence
 from a platform other than Android is refused until its verifier exists.
 Signatures
 are checked by `aws-lc-rs`, already in the tree, over bytes parsed by a
@@ -359,7 +376,9 @@ simulator has no Secure Enclave and no camera, so there the key is
 software with the tier `simulator`, accepted only with
 `--allow-no-attestation`, and the QR's text arrives through a file; all
 of that is compiled for the simulator only. `owner-core` now builds the
-enrollment answer for the apps (`enroll_answer`, `enroll_refusal`).
+enrollment answer for the apps (`enroll_answer`, `enroll_refusal`). Today
+only the iPhone app calls them; the Android app still assembles the same
+JSON itself.
 
 P4 status (2026-11-13, on an iPhone): the same loop passed on a real
 iPhone, as a development build under a free personal team
@@ -463,8 +482,10 @@ and `key evict --phone` points at the screen.
 
 ## Project rules that apply
 
-- **Private repository, for now.** Publish nothing from it externally
-  (artifacts, PRs elsewhere, posts) without the owner's explicit consent.
+- **The repository is public** since 2026-11-19
+  (<https://github.com/postcryptum-research/agent-keys>). Everything
+  written to it, to its issues and to its pull requests is public at once:
+  no keys, no RPC URLs that carry a key, no personal device data.
 - **No personal device data** — the models, OS versions or patch levels of
   the owner's own phones — in the repository, commits or tests.
 - **Secrets stay out of the repository and out of output:** `../.env` and

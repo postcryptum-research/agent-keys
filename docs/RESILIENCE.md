@@ -80,6 +80,15 @@ State of the code at the time of the study (work is ongoing in parallel):
 `agent.rs: KeySpec::Recovery`, tests `AgentPermission.t.sol:798–900`
 (`test_recovery_canOnlyTakeOverRoot`, `test_recovery_replacesALostOwner`) [V].
 
+Where that code is today: the Kernel calldata builders are in
+`mobile/owner-core/src/kernel.rs` (`add_recovery_calldata` :54,
+`change_root_calldata` :95), shared by the CLI and the phone apps; in
+`agent.rs` the recovery key is the config field `recovery` and the role
+`Role::Recovery` (there is no `KeySpec::Recovery`); `P256RecoveryValidator`
+overrides the ERC-1271 check of `P256Validator`; the tests are at
+`AgentPermission.t.sol:917–992`, with `test_recovery_neverSignsMessages`
+added [V].
+
 ---
 
 ## 0. The essentials in one minute
@@ -91,11 +100,16 @@ State of the code at the time of the study (work is ongoing in parallel):
    the agent runs until `validUntil` (in the testnet config — **2026-11-19 00:00 UTC**,
    `signer/agent.base-sepolia.json`, [V]), and after that date the account and the Safe
    it solely owns are frozen forever (§2.3).
-3. **On the testnet host both keys are in one fTPM** (Intel PTT: ACPI HID
+3. **On the testnet host only the agent key is in the fTPM today**: the
+   owner key is in a YubiKey PIV slot (`"owner": {"yubikey": {"slot": "9c"}}`),
+   the agent key is `0x81010012`, sealed to PCR 0,2,4,7 [V config,
+   `signer/agent.base-sepolia.json`]. A `TPM2_Clear`, a PTT reset during a
+   BIOS update or a motherboard replacement now destroys the agent key alone,
+   which the owner rotates (§2.1). At the time of the study both keys were
+   in one fTPM (Intel PTT: ACPI HID
    `INTC6001`, Lenovo, i7-13700H, [V locally `/sys/class/tpm/tpm0/device/hid`];
-   "INTC6001 = PTT" — [I]). Owner `0x81010010` without authValue, agent
-   `0x81010012`, sealed to PCR 0,2,4,7 [V config]. A single `TPM2_Clear`,
-   a PTT reset during a BIOS update or a motherboard replacement will destroy
+   "INTC6001 = PTT" — [I]): owner `0x81010010` without authValue next to the
+   agent key, so any of those events would have destroyed
    **both** keys at once. Recovery is needed even on the testnet, if only to
    rehearse the procedure.
 4. **Recoverability without export** is achieved not by copying the key but by
@@ -104,22 +118,32 @@ State of the code at the time of the study (work is ongoing in parallel):
    `changeRootValidator` right. A backup is a second key, not a copy
    of the first.
 5. **Two code findings (important for the current implementation):**
-   - **ERC-1271 bypasses the selector grants.** `ValidationManager._verifySignature`
+   - **ERC-1271 bypasses the selector grants** (fixed in our code since the
+     study). Today `P256RecoveryValidator` overrides
+     `isValidSignatureWithSender` and answers `ERC1271_INVALID` to every
+     request [V `contracts/src/P256RecoveryValidator.sol:24–26`];
+     `owner set-root --retire` uninstalls the old owner validator in the
+     same operation [V `chain.rs` `set_root`]; the tests
+     `test_recovery_neverSignsMessages` and `test_recovery_replacesALostOwner`
+     (which now checks the ERC-1271 path of the lost and the new owner key
+     too) cover both [V `AgentPermission.t.sol:928–992`]. The finding as it
+     stood at the time of the study: `ValidationManager._verifySignature`
      for a non-root validator checks only "installed" and
      `nonce >= validNonceFrom`. `allowedSelectors` is not checked
      [V `contracts/lib/kernel/src/core/ValidationManager.sol:424–449`].
-     `P256RecoveryValidator` inherits `isValidSignatureWithSender` from
+     `P256RecoveryValidator` then inherited `isValidSignatureWithSender` from
      `P256Validator` [V `contracts/src/P256Validator.sol` `isValidSignatureWithSender`].
-     Consequently, **the recovery key can already sign an ERC-2612
+     Consequently, **the recovery key could sign an ERC-2612
      permit / Permit2 / EIP-3009 on behalf of the account**, without any
-     `changeRootValidator` and without a timelock. The same problem applies to the **old
+     `changeRootValidator` and without a timelock. The same problem applied to the **old
      owner validator**, which stays installed after
      `changeRootValidator`: `changeRootValidator` does not remove it
      [V `Kernel.sol:135–155`], and the test `test_recovery_replacesALostOwner`
-     checks only the userOp path. Fix: in `P256RecoveryValidator`
-     override `isValidSignatureWithSender` → `ERC1271_INVALID` (like
-     `AgentPolicy.checkSignaturePolicy` for the agent, [V `AgentPolicy.sol:210–218`]),
-     and in the recovery procedure — `uninstallValidation(oldOwnerVId)`. Add
+     checked only the userOp path. The fix proposed then: in `P256RecoveryValidator`
+     override `isValidSignatureWithSender` → `ERC1271_INVALID` (as
+     `AgentPolicy.checkSignaturePolicy` refuses, for the agent, every hash
+     but a registered x402 authorization's, [V `AgentPolicy.sol:289–301`]),
+     and in the recovery procedure — `uninstallValidation(oldOwnerVId)`, with
      tests for both cases.
    - **Recovery = root with no delay.** Theft of the USB drive together with the passphrase gives
      an instant takeover. A value-bearing deployment needs a timelock with cancellation
@@ -144,14 +168,14 @@ State of the code at the time of the study (work is ongoing in parallel):
   and `TPM2_ChangePPS` change the other seeds and do not touch our key, but
   `ChangeEPS` also flushes endorsement-hierarchy objects [I].
 - **Our keys** are persistent objects `0x8101xxxx` in the owner hierarchy under the SRK
-  [V `signer/crates/hw-signer/src/tpm.rs:4,51`, config]. Therefore:
+  [V `signer/crates/hw-signer/src/tpm.rs:4,55`, config]. Therefore:
 
 | Event | What happens to our key | Comment |
 |---|---|---|
 | Reboot, OS/kernel update | alive | persistent handle |
 | `TPM2_Clear` (tpm2_clear, "Clear TPM" in Windows Security / tpm.msc / UEFI, PPI request from the OS) | **destroyed** | new SPS, persistent objects removed [V] |
 | SPS change — only via Clear | **destroyed** | "regenerating the SRK" with the same template without Clear yields the same SRK [I per the specification: primary keys are deterministic from the seed and the template] |
-| Accidental `key evict` / `tpm2_evictcontrol` | **destroyed** | we do not store the blob, nothing to restore from [V: `KeyCmd::Evict` exists in the CLI, main.rs:229] |
+| Accidental `key evict` / `tpm2_evictcontrol` | **destroyed** | we do not store the blob, nothing to restore from [V: `KeyCmd::Evict` exists in the CLI, main.rs:481] |
 | BIOS update on a machine with **fTPM** | vendor-dependent; **often destroyed** | §1.2 |
 | Update of the **TPM's own firmware** (dTPM or fTPM) | often destroyed | Intel NUC: "TPM firmware update clears all data in the TPM" [V https://www.intel.com/content/dam/support/us/en/documents/mini-pcs/NUC5i3MY-TPM-Firmware-Update.pdf]; Infineon updates (ROCA) required a clear [V https://www.getac.com/uploads/2023/01/infineon_tpm_security_update_20230116.pdf, I details] |
 | CPU replacement (AMD fTPM) | **destroyed** when answering "Y" | §1.2 |
@@ -207,7 +231,7 @@ setting: it protects against a typo and against a script that runs `tpm2_clear`.
 ### 1.4 PCR-sealed keys (by design)
 
 - The agent key on the testnet is sealed to PCR 0,2,4,7 [V config].
-  `TPM2_PolicyPCR` with an **exact** digest [V `tpm.rs:240–252`]. After any
+  `TPM2_PolicyPCR` with an **exact** digest [V `tpm.rs:265–275,468–480`]. After any
   change to the measurements the key is **alive but does not sign**. Rolling back the measurements
   is usually impossible.
   - PCR0 — firmware code (BIOS update);
@@ -311,10 +335,10 @@ protects against file deletion, but not against erasing the Mac or replacing the
 ### 2.1 Agent key lost
 
 - The owner runs `permission rotate` — a single root operation that
-  replaces the permission with a new key and/or mandate [V `main.rs:130–145`].
+  replaces the permission with a new key and/or mandate [V `main.rs:223–236`].
 - **Nothing is lost:**
   - the account address (the Kernel proxy is already deployed, `account` is pinned in the
-    config [V `agent.rs:140–143`]);
+    config [V `agent.rs:205–208`]);
   - balance and tokens;
   - Safe: the owner is the account, not the key [V `docs/ERC1271.md`];
   - relationship with the paymaster: sponsorship is bound to the account [I based on
@@ -327,13 +351,14 @@ protects against file deletion, but not against erasing the Mac or replacing the
   - The owner must be available. The chain "agent key died → owner needed
     urgently" is the main practical reason to keep the owner alive and
     tested.
-  - If the agent and the owner are in one fTPM (testnet), they die **together**, and
+  - If the agent and the owner are in one fTPM (the testnet at the time of
+    the study; its owner key is on a YubiKey now, §0), they die **together**, and
     §2.1 does not help.
 
 ### 2.2 Owner key lost, agent still running
 
 - The agent keeps working within the mandate: allow-list, limits, budget,
-  `validUntil` [V `AgentPolicy.sol:183–207`].
+  `validUntil` [V `AgentPolicy.sol:261–282`].
 - **Unavailable** is everything that requires root:
   - rotation and revocation of the agent;
   - mandate change and extension of `validUntil`;
@@ -345,7 +370,7 @@ protects against file deletion, but not against erasing the Mac or replacing the
     `onlyEntryPointOrSelfOrRoot`].
 - Once `block.timestamp > validUntil`, the EntryPoint rejects any
   agent operations, because the policy returns `validUntil`
-  [V `AgentPolicy.sol:207`].
+  [V `AgentPolicy.sol:281`].
 - **A limited "rescue corridor".** If the allow-list contains in advance an
   entry `(coldAddress, 0x00000000)`, the agent can withdraw ETH (and only towards
   `coldAddress`) within `maxValuePerOp` and `budget`
@@ -377,8 +402,10 @@ protects against file deletion, but not against erasing the Mac or replacing the
     this account).
 - **Scale:** 100 % of the value of the account and the Safes under it, minus what
   the agent manages to withdraw through the "corridor" from §2.2.
-- **Likelihood:** composed of independent failures. Example on the testnet
-  (owner and agent in one PTT, no recovery): the likelihood of a "dead
+- **Likelihood:** composed of independent failures. Example: the testnet as
+  it was at the time of the study (owner and agent in one PTT, no recovery;
+  since then the owner key is on a YubiKey and a recovery key is installed,
+  see the summary above): the likelihood of a "dead
   account" per year ≈ the likelihood of a PTT Clear/reset per year. Based on experience
   with firmware updates this is single-digit to tens of percent [I, order of magnitude].
   With two independent media (owner on device A, recovery on
@@ -397,22 +424,30 @@ protects against file deletion, but not against erasing the Mac or replacing the
   (`grantAccess`) [V `Kernel.sol:229–275,392`].
 - `changeRootValidator(vId, hook, data, hookData)`: if `vId` is already
   installed, the data is ignored (`onInstall` is not called) [V
-  `Kernel.sol:135–155`]. **Therefore a new owner key cannot be put into the same
-  `P256Validator` instance**: it already holds the old key, and
+  `Kernel.sol:135–155`]. **Therefore `changeRootValidator` alone cannot put a
+  new owner key into an installed `P256Validator` instance**: it already
+  holds the old key, and
   `onInstall` cannot be called twice (`AlreadyInitialized`, [V
-  `P256Validator.sol` onInstall]). A **different contract instance** is needed
-  (as in the test `test_recovery_replacesALostOwner`) or
-  `uninstallValidation` + a fresh install.
+  `P256Validator.sol` onInstall]). Either a **different contract instance**
+  is used, or the same instance is uninstalled and installed again in one
+  batch, under a fresh install nonce: this is what the test
+  `test_recovery_replacesALostOwner` does today, and what
+  `owner set-root --retire <validator> --validator <the same>` does
+  [V `AgentPermission.t.sol:954–970`, `chain.rs` `set_root`].
 - **ERC-1271** for a non-root validator does not check selectors
   [V `ValidationManager.sol:424–449`] — see the finding in §0.
 - `invalidateNonce(n)` revokes **all** non-root validators and permissions with
   `nonce < n` at once [V `ValidationManager.sol:146–158`, `Kernel.sol:242–244`]:
   this is a "kill switch" that hits both the agent and recovery.
 - **The agent cannot address its own account.** `AgentPolicy` refuses the
-  account itself, its EntryPoint and the policy (outside x402) as allow-list
+  account itself and the policy (outside x402) as allow-list
   targets at install and again at validation [V `AgentPolicy.sol`
-  `_targetAllowed`, since 2026-11-10], and the CLI refuses the project's
-  validators and signer as well: no mandate, however written, lets the agent
+  `_targetAllowed`, since 2026-11-10], and the account's EntryPoint at
+  install (not checked again at validation, on purpose: every mandate goes
+  through the install filter) [V `AgentPolicy.sol:212,461–466`]. The CLI
+  refuses the project's validators and signer, the Kernel implementation
+  and the factory as well [V `chain.rs` `forbidden_target`]: no mandate,
+  however written, lets the agent
   reach `grantAccess`, `changeRootValidator`, `withdrawTo` or the modules'
   `onInstall`.
 - Ready-made modules next to Kernel:
@@ -476,9 +511,9 @@ protects against file deletion, but not against erasing the Mac or replacing the
 
 | Option | Medium | Validator | Pros | Cons |
 |---|---|---|---|---|
-| Encrypted P-256 file on a USB drive (current plan) | 2 USB drives + QR of the ciphertext | `P256RecoveryValidator` | cheap; copyable; our curve | key in host memory at signing time [V KEY_POLICY rule 5]; passphrase gets forgotten; no presence |
+| Encrypted P-256 file on a USB drive (implemented: `keyfile.rs`; installed on the testnet account) | 2 USB drives + QR of the ciphertext | `P256RecoveryValidator` | cheap; copyable; our curve | key in host memory at signing time [V KEY_POLICY rule 5]; passphrase gets forgotten; no presence |
 | Trezor `SignIdentity` nist256p1 | device + seed of 12–24 words | `P256RecoveryValidator` as is | key in hardware, seed restores onto **any** new Trezor; screen and PIN | $59; needs the `trezor-client` client |
-| Ledger OpenPGP app in **Seed Mode** | device + seed | `P256RecoveryValidator` | the user already has a Nano S Plus | without Seed Mode the key is wiped on an app/OS update [V]; PIN 3 attempts → wipe |
+| Ledger OpenPGP app in **Seed Mode** | device + seed | `P256RecoveryValidator` | builds for the Nano S Plus | without Seed Mode the key is wiped on an app/OS update [V]; PIN 3 attempts → wipe |
 | Ledger/Trezor Ethereum app | device + seed | ZeroDev `ECDSAValidator` `0x845A…cE57` as the recovery validator + `grantAccess(changeRootValidator)` | no code on the device; seed | secp256k1; a second branch in the CLI (alloy-signer-ledger/trezor) |
 | Paper P-256 key, imported into an SE when needed | paper in a safe | `P256RecoveryValidator` | everlasting medium | a plaintext key on paper contradicts rule 5 (which allows only an *encrypted* medium) — only as a QR of the **ciphertext** |
 
@@ -598,7 +633,15 @@ acceptable next to a no-export primary key.
 
 ## 4. Operational practices
 
-1. **Health check without sending a transaction** (`agent-signer health`) for
+1. **Health check without sending a transaction.** What exists today:
+   `agent-signer key check` (TPM, Secure Enclave, CNG, TROPIC01, YubiKey,
+   key file, phone) signs a random digest and verifies it against the key's
+   own public half [V `main.rs:485–502,691–702`]. It does not read the
+   chain: the comparison with the key the chain holds is made by the CLI
+   before every root or recovery signature [V `chain.rs` `check_root_key`,
+   `check_recovery_key`], and `owner status` prints the root key's
+   fingerprint. Proposed in the study and not built: one command
+   (`agent-signer health`) for
    owner, recovery and agent:
    - read the registered key from the chain:
      `P256Validator.publicKeys(account)`,
@@ -643,7 +686,9 @@ acceptable next to a no-export primary key.
    - make sure the owner is **not** on this TPM (or recovery is alive);
    - after the update: check the agent and rotate if needed.
 
-   On the testnet host, until recovery exists — **do not update the BIOS**.
+   On the testnet host at the time of the study (owner key on its fTPM, no
+   recovery) the rule was: **do not update the BIOS**. With the owner key on
+   a YubiKey [V config], an update there now risks only the agent key.
 6. **`tpm2_clearcontrol -C l s`** on hosts with keys (§1.1), plus
    lockoutAuth. Does not protect against Clear from UEFI, but protects against a script.
 7. **Back up wrapped blobs where they exist:** SE `dataRepresentation`,
@@ -658,8 +703,9 @@ acceptable next to a no-export primary key.
 9. **Recovery rehearsal on the testnet** — once a year and after every code
    change: the full path "owner lost → recovery → new owner → agent
    works → old owner validator removed → 1271 with the old and the recovery
-   key does not pass". Part of it is already covered by the test
-   `test_recovery_replacesALostOwner` [V].
+   key does not pass". The contract side is covered by the tests
+   `test_recovery_replacesALostOwner` and `test_recovery_neverSignsMessages`,
+   the CLI side by `recovery_drill` (`tests/anvil_cli.rs`) [V].
 10. **Safe:** if the Safe holds significant funds and its sole owner is
     Kernel, the Safe inherits all of the account's risks. Option: a second Safe owner
     (the same recovery key via a separate address) or a module with a delay
@@ -672,7 +718,20 @@ acceptable next to a no-export primary key.
 
 ### 5a. Testnet (now)
 
-The minimum that actually removes "one Clear = the end":
+The minimum that actually removes "one Clear = the end".
+
+**Status today [V]:** items 1–4 are in the code. `P256RecoveryValidator`
+exists, refuses ERC-1271 and is in `contracts/deployments/84532.json`; the
+encrypted key file is `keyfile.rs` (`key create --keyfile`). The procedure
+of item 3 is two commands: `owner recover`, then
+`owner set-root --as-recovery --retire <old validator> …`, whose batch is
+`installValidations(new key)` → `changeRootValidator` →
+`uninstallValidation(old)` for another validator instance, or
+`uninstallValidation` → `installValidations` → `changeRootValidator` for
+the same one (`chain.rs` `set_root`); the new key is installed by
+`installValidations`, not passed to `changeRootValidator`. The test of
+item 4 is the end of `test_recovery_replacesALostOwner`. Items 5 and 6 are
+operations, not code. The list as written at the time of the study:
 
 1. **`P256RecoveryValidator` + `grantAccess(changeRootValidator)`** — already in
    progress [V]. The key is an encrypted file (scrypt N ≥ 2^18 + AEAD) on **two**
@@ -698,7 +757,8 @@ The minimum that actually removes "one Clear = the end":
 5. **`validUntil`** of the testnet mandate (19.11.2026) — extend it with
    `permission rotate` and treat it as a heartbeat.
 6. **Do not update the BIOS** of this Lenovo until recovery is installed and
-   rehearsed.
+   rehearsed. (The owner key was on its fTPM then; it is on a YubiKey now
+   [V config], so an update risks only the agent key.)
 
 A timelock on the testnet is not required, but it is convenient to build option B right away with
 `D` = 10 min: to rehearse the UX of waiting and cancelling.
@@ -708,7 +768,7 @@ A timelock on the testnet is not required, but it is convenient to build option 
 | Role | Medium | Validator | Why |
 |---|---|---|---|
 | Agent | TPM/SE of the agent host (PCR sealing optional) | `P256Signer` + `AgentPolicy` | as now; loss is cheap |
-| Owner (daily) | a **separate** non-exportable device with presence: Nitrokey 3 / YubiKey PIV (touch=always) / Mac SE with `.userPresence` | `P256Validator` (root) | KEY_POLICY rule 3 (i)/(ii) |
+| Owner (daily) | a **separate** non-exportable device with presence: YubiKey PIV, PIN and touch always (backend implemented, in use on the testnet [V `yubikey_piv.rs`, config]) or the phone owner app (implemented [V `agent.rs` `KeySpec::Phone`]); Nitrokey 3 and a Mac SE key with `.userPresence` have no backend yet | `P256Validator` (root) | KEY_POLICY rule 3 (i)/(ii) |
 | Owner #2 (opt.) | a second device of a different type | `P256RecoveryValidator` #2, `changeRootValidator`, **without** a timelock or with a short one | fast recovery if the daily one breaks |
 | Recovery (cold) | **Trezor `SignIdentity` nist256p1** (seed in a safe, SLIP-39 optional) **or** encrypted file ×2 + QR | **`TimelockedP256RecoveryValidator`** (`D` = 3–7 days), 1271 closed | survives any breakage; theft is neutralized by the timelock |
 | Monitor | agent host, no keys | — | alert on `RecoveryInitiated` / root change |
@@ -722,6 +782,20 @@ Plus:
 - `disableClear` on TPM hosts.
 
 ### 5c. Code work
+
+**Status today [V]:** Solidity items 1 and 2 are done (§0). In the CLI:
+`owner add-recovery` (the key comes from the config's `recovery` entry,
+there is no `--recovery-key`; it refuses when a recovery key is already
+installed), `owner recover` (no `--new-owner`: the new owner key is given
+to the next command), `owner set-root [--as-recovery] --retire …` with the
+new key shown to sign first (`--new-key`, or `--public-key` and
+`key prove`, or `--to-phone`), `owner status`, `key check`, and the
+encrypted key file backend (`keyfile.rs`). After a handover only `owner`
+changes in the config: `ownerPublicKey` stays the account's creation key
+[V `main.rs:939`]. Not built: the timelock validator and its commands, a
+`health` that compares with the chain, `watch`, `key backup-blob`,
+`--print-qr`, the printed registry entry, `P256MultiKeyValidator`. The
+list as written at the time of the study:
 
 **Solidity:**
 1. `P256RecoveryValidator.isValidSignatureWithSender` → `ERC1271_INVALID`
@@ -743,7 +817,7 @@ Plus:
 
 **CLI (`agent-signer`):**
 - `owner add-recovery --recovery-key <spec>` — there is already
-  `add_recovery_calldata` [V `kernel.rs:48–67`]. Add a check that the
+  `add_recovery_calldata` [V `mobile/owner-core/src/kernel.rs:54–70`]. Add a check that the
   validator is not yet installed, and printing of the registry entry.
 - `owner recover --new-owner <spec>`:
   - step 1: recovery-op `changeRootValidator(recoveryVId)`; with a timelock —
@@ -756,7 +830,7 @@ Plus:
   the key **from the chain** + opt. simulation via the bundler; exit code for cron.
 - `watch` — subscription to account and validator events → stdout/webhook.
 - `key backup-blob` for SE and CNG (a copy of the wrapped blob) [I].
-- The `keyfile` (encrypted) backend is already mentioned in `agent.rs:68–73,159–162` [V].
+- The `keyfile` (encrypted) backend is in `agent.rs:120–122,405–415` and `keyfile.rs` [V].
   Add `--print-qr` for a paper copy of the ciphertext.
 
 **Documentation:**
@@ -777,10 +851,12 @@ Plus:
   - `contracts/lib/kernel/src/validator/WeightedECDSAValidator.sol`;
   - `contracts/src/P256Validator.sol`, `P256RecoveryValidator.sol`,
     `AgentPolicy.sol`, `P256Signer.sol`;
-  - `contracts/test/AgentPermission.t.sol:798–900`;
+  - `contracts/test/AgentPermission.t.sol:917–992`;
   - `signer/crates/hw-signer/src/{tpm.rs, secure_enclave.rs, windows_tpm.rs}`,
     `swift/SecureEnclaveShim.swift`;
-  - `signer/crates/agent-signer/src/{kernel.rs, agent.rs, main.rs}`;
+  - `mobile/owner-core/src/kernel.rs` (at the time of the study:
+    `signer/crates/agent-signer/src/kernel.rs`),
+    `signer/crates/agent-signer/src/{agent.rs, chain.rs, main.rs, keyfile.rs}`;
   - `signer/agent.base-sepolia.json`;
   - `docs/KEY_POLICY.md`, `docs/OWNER_DEVICES.md`, `docs/ERC1271.md`.
 - **TPM:**

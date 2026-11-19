@@ -34,10 +34,13 @@ itself costs 141 gas per operation.
 
 Execution gas is what the call consumes as seen from the caller. A
 transaction additionally pays 21,000 base plus calldata (16 gas per non-zero
-byte): about 22.8k for the 10-byte EOA calls, more for the agent path whose
-outer transaction also carries the UserOperation envelope. With that added,
-the 10-byte rows are roughly 26k / 30k / 30k / 110k — the same shape as the
-paper's 29,158 / 35,723 / 42,603 / 92,158.
+byte): about 22.8k for the 10-byte calls, as `gas.json` records it
+(`intrinsicCalldataEstimate`). That estimate counts every byte as non-zero,
+so it is an upper estimate, and it is the same for all four methods: the
+agent path's outer transaction also carries the UserOperation envelope,
+which is not measured here. With the estimate added, the 10-byte rows are
+roughly 26k / 30k / 30k / 105k — the same shape as the paper's
+29,158 / 35,723 / 42,603 / 92,158.
 
 ## What the numbers say
 
@@ -49,17 +52,20 @@ precompile. On chains with RIP-7212 (Base, OP-Stack, Polygon, zkSync, Scroll,
 Linea; mainnet via EIP-7951) the curve the secure elements speak is as cheap
 as the one Ethereum was built on.
 
-**The agent account costs about 77k gas per operation on top of a bare
+**The agent account costs about 78k gas per operation on top of a bare
 call.** That buys: EntryPoint accounting and nonce management, Kernel's
 validation routing, the policy check (allow-list, value cap, budget, expiry,
 all read from storage), the P-256 signature check, paymaster validation and
 settlement, and the account calling the target. The paper measured +63k for
-secp256k1 AA with a mock EntryPoint and no policy; +14k for a real EntryPoint
+secp256k1 AA with a mock EntryPoint and no policy; +15k for a real EntryPoint
 and a policy module is the price of the containment this project is about.
 
 **Large payloads are the data's cost, not the authorization's.** At 10 kB
-the authorization overhead is already a minority of the bill; at 100 kB the
-agent path pays 336k more than address-only because the real EntryPoint
+the authorization overhead is already a minority of the bill for the
+signature methods (about 7k of 96k execution gas); for the agent path it is
+about half of the execution gas (97k of 186k) and a minority only once the
+transaction's calldata cost is counted; at 100 kB the
+agent path pays 338k more than address-only because the real EntryPoint
 hashes and copies the operation's calldata (the paper's mock did not), while
 the signature methods pay 70–110k more for the same reason. The paper's
 conclusion stands and is sharper with a real EntryPoint: log compact
