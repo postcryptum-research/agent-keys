@@ -1,4 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">TPM_sign owner (P0 spike)</string>
+    <string name="app_name">agent-keys owner (P0 spike)</string>
 </resources>

@@ -1,5 +1,5 @@
 {
-  "name": "tpm-sign-agentkit-example",
+  "name": "agent-keys-agentkit-example",
   "private": true,
   "description": "Coinbase AgentKit on a hardware-signed ERC-4337 agent account (agent-keys)",
   "license": "MIT",

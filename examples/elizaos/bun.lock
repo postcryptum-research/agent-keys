@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "tpm-sign-elizaos-example",
+      "name": "agent-keys-elizaos-example",
       "dependencies": {
         "@elizaos/core": "1.7.2",
         "@elizaos/plugin-anthropic": "1.5.12",

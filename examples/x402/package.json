@@ -1,5 +1,5 @@
 {
-  "name": "tpm-sign-x402-demo",
+  "name": "agent-keys-x402-demo",
   "private": true,
   "type": "module",
   "description": "A paid HTTP endpoint (x402, Base Sepolia USDC) for agent-signer's x402 fetch",

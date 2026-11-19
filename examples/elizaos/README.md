@@ -7,7 +7,7 @@ signed inside a TPM, Secure Enclave or TROPIC01 and checked on-chain by
 (`../agentkit/src/agentSigner.ts`, `agent-signer op send --json`).
 
 ```
-user ─▶ ElizaOS (Claude) ─▶ plugin-tpm-sign action ─▶ agent-signer op send --json
+user ─▶ ElizaOS (Claude) ─▶ plugin-agent-keys action ─▶ agent-signer op send --json
                                                          │ hardware signs userOpHash
                                                          ▼
                                      bundler ─▶ EntryPoint ─▶ Kernel + AgentPolicy
@@ -15,7 +15,7 @@ user ─▶ ElizaOS (Claude) ─▶ plugin-tpm-sign action ─▶ agent-signer o
 
 | File | What it does |
 |---|---|
-| `src/plugin/index.ts` | `plugin-tpm-sign`: service, `TPM_WALLET` provider, actions `GET_AGENT_WALLET`, `READ_DEMO_COUNTER`, `INCREMENT_DEMO_COUNTER`, `SEND_TX_WITHIN_MANDATE`, `PAY_FOR_URL` |
+| `src/plugin/index.ts` | `plugin-agent-keys`: service, `TPM_WALLET` provider, actions `GET_AGENT_WALLET`, `READ_DEMO_COUNTER`, `INCREMENT_DEMO_COUNTER`, `SEND_TX_WITHIN_MANDATE`, `PAY_FOR_URL` |
 | `src/plugin/wallet.ts` | Account address and deployments from the agent config, viem reads, writes and x402 payments through the bridge |
 | `src/agent.ts` | Headless ElizaOS host: PGlite, migrations, plugins |
 | `src/smoke.ts` | No LLM: an allowed call lands, a transfer to an outsider is refused |
