@@ -170,8 +170,10 @@ allows contracts and functions and caps token amounts per operation and in
 total; with `USDC.transfer` allowed, the agent picks the recipient, within
 those caps, and with `approve`, `increaseAllowance` or `transferFrom`
 allowed it picks the spender or the recipient the same way
-([#66](https://github.com/postcryptum-research/agent-keys/issues/66)). So a
-cap is on the amount, not on which contract or address the tokens go to.
+([#66](https://github.com/postcryptum-research/agent-keys/issues/66): a
+per-token payee list is written and tested in the source, and not deployed
+yet). So today a cap is on the amount, not on which contract or address the
+tokens go to.
 To fix the destination, leave those functions out and allow a contract
 that can pay only where the owner decided — e.g. a forwarder with one
 immutable destination, which the owner approves for the token once. On

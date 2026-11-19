@@ -22,15 +22,18 @@ validation path and a real paymaster.
 
 | payload | address-only | k1 signature | p256 signature | p256 agent + paymaster |
 |---:|---:|---:|---:|---:|
-| 10 B | 3,443 | 7,402 | 7,433 | 81,821 |
-| 100 B | 4,258 | 8,264 | 8,269 | 82,816 |
-| 1 kB | 11,826 | 16,090 | 16,095 | 92,003 |
-| 10 kB | 88,868 | 96,074 | 96,435 | 185,768 |
-| 100 kB | 956,236 | 1,026,826 | 1,064,773 | 1,293,824 |
+| 10 B | 3,443 | 7,402 | 7,433 | 81,857 |
+| 100 B | 4,258 | 8,264 | 8,269 | 82,852 |
+| 1 kB | 11,826 | 16,090 | 16,095 | 92,039 |
+| 10 kB | 88,868 | 96,074 | 96,435 | 185,804 |
+| 100 kB | 956,236 | 1,026,826 | 1,064,773 | 1,293,860 |
 
-The agent column is the 2026-11-10 measurement (`gas.json`), with the token
-budgets of the current policy and its forbidden-target guard; the guard
-itself costs 141 gas per operation.
+The agent column is the 2026-11-19 measurement (`gas.json`) of the policy
+in the source, which is one step ahead of the deployed one: it knows payee
+lists ([#66](https://github.com/postcryptum-research/agent-keys/issues/66)),
+and that costs 36 gas per operation here (the deployed policy measured
+81,821 at 10 B on 2026-11-10). The forbidden-target guard costs 141 gas per
+operation.
 
 Execution gas is what the call consumes as seen from the caller. A
 transaction additionally pays 21,000 base plus calldata (16 gas per non-zero

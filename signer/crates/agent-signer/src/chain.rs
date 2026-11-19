@@ -200,6 +200,17 @@ impl Session {
                 .with_context(|| format!("reading DOMAIN_SEPARATOR() of x402 token {token}"))?;
             token_domains.insert(token, ds);
         }
+        // A mandate with payee lists must go to a policy that enforces them:
+        // an earlier AgentPolicy decodes the rest and ignores the lists.
+        if let Some((token, list)) = cfg.payees()?.first() {
+            let view = crate::abi::IAgentPolicyView::new(dep.agent_policy, provider.clone());
+            if view.payeeAllowed(Address::ZERO, B256::ZERO, *token, list[0]).call().await.is_err() {
+                bail!(
+                    "the config lists payees for {token}, but the AgentPolicy at {} (deployments.agentPolicy) does not know payee lists: it would install the mandate and ignore them",
+                    dep.agent_policy
+                );
+            }
+        }
         let (permission_data, init_data) = account_material(&cfg, &dep, &token_domains)?;
 
         let (account, pinned) = match cfg.account {
@@ -633,6 +644,36 @@ impl Session {
                         l.spent
                     ),
                     Err(_) => println!("DIFF token           {token}: this policy version has no token limits"),
+                }
+            }
+            // payees: each listed one must be allowed, and an address nobody listed must not be
+            let probe = Address::from_slice(&alloy::primitives::keccak256(b"agent-keys: not a payee")[12..]);
+            for (token, ..) in &params.tokens {
+                let list = params.payees.iter().find(|p| p.0 == *token).map(|p| p.1.as_slice()).unwrap_or(&[]);
+                let Ok(open) = view.payeeAllowed(self.account, id32, *token, probe).call().await else {
+                    if !list.is_empty() {
+                        println!("DIFF payees          {token}: this policy version has no payee lists — anyone can be paid");
+                    }
+                    continue;
+                };
+                if list.is_empty() {
+                    println!(
+                        "{}payees          {token} chain {} / config anyone",
+                        mark(open),
+                        if open { "anyone" } else { "a list" }
+                    );
+                }
+                for payee in list {
+                    let listed = view.payeeAllowed(self.account, id32, *token, *payee).call().await?;
+                    println!(
+                        "{}payee           {token} -> {payee}{}",
+                        mark(listed && !open),
+                        match (listed, open) {
+                            (_, true) => "  — in the config, but the chain allows anyone",
+                            (false, _) => "  — in the config, NOT a payee on chain",
+                            _ => "",
+                        }
+                    );
                 }
             }
         }

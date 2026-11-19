@@ -26,6 +26,13 @@ const TOKENS: &[(u64, Address, &str, u8, B256)] = &[(
     b256!("71f17a3b2ff373b803d70a5a07c046c1a2bc8e89c09ef722fcb047abe94c9818"),
 )];
 
+/// `AgentPolicy` instances that enforce per-token payee lists (issue #66).
+/// An earlier instance decodes such a mandate and ignores the lists, so the
+/// review refuses to show payees for any module that is not here. Empty
+/// until a version with payee lists is deployed; the anvil harness runs
+/// Base Sepolia's deployed code and follows this list too.
+const PAYEE_POLICIES: &[Address] = &[];
+
 /// The chains this build has facts for.
 pub fn chains() -> Vec<u64> {
     let mut chains = vec![84532];
@@ -71,7 +78,12 @@ fn from_deployments(json: &str, chain_id: u64, canonical: bool) -> Facts {
         f.names.insert(addr, name);
         match key.as_str() {
             // the modules whose init data this build decodes: the current versions only
-            "agentPolicy" => f.policy_modules.push(addr),
+            "agentPolicy" => {
+                f.policy_modules.push(addr);
+                if PAYEE_POLICIES.contains(&addr) {
+                    f.payee_policy_modules.push(addr);
+                }
+            }
             "p256Signer" => f.signer_modules.push(addr),
             "demoCounter" => f.demo_counter = Some(addr),
             // no `postOp`, so it cannot charge the account (§6.4); the current instance only

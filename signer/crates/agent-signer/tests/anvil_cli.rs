@@ -454,6 +454,22 @@ fn agent_lifecycle() {
     let refused = chain.fails(&["permission", "add", "--agent", &selfish]);
     assert!(refused.contains("never a valid target for the agent"), "{refused}");
 
+    // payee lists on a policy that predates them: that policy would install
+    // the mandate and ignore the lists, so the CLI refuses before signing
+    // (the harness runs the deployed code; see owner-core `PAYEE_POLICIES`)
+    let listed = chain.config(
+        "listed.json",
+        &Cfg {
+            owner: &owner, agent: &agent, permission: "0x6c697374", allow: vec![(counter.clone(), "0xa9059cbb")],
+            account: Some(account.clone()), recovery: None, valid_after: 0, valid_until: until,
+            tokens: json!([{"token": counter, "maxPerOp": "1", "budget": "2", "payees": ["0x00000000000000000000000000000000000000d1"]}]),
+        },
+    );
+    for cmd in [&["permission", "add", "--agent", listed.as_str()][..], &["permission", "show", "--agent", listed.as_str()][..]] {
+        let refused = chain.fails(cmd);
+        assert!(refused.contains("does not know payee lists"), "{refused}");
+    }
+
     // outside the mandate: a transfer to an outsider is refused, nothing moves
     let refused = chain.fails(&["op", "send", "--agent", &cfg, "--target", "0x000000000000000000000000000000000000dEaD", "--wei", "1"]);
     assert!(refused.contains("3e4983f6") || refused.to_lowercase().contains("policy"), "{refused}");

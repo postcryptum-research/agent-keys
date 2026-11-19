@@ -179,6 +179,11 @@ pub struct TokenEntry {
     /// token's EIP-712 domain separator when installing the mandate).
     #[serde(default)]
     pub x402: bool,
+    /// The only addresses this token may be transferred to, approved for, or
+    /// pay through x402. Absent or empty: anyone, the agent picks. Needs an
+    /// `AgentPolicy` that knows payee lists.
+    #[serde(default)]
+    pub payees: Vec<Address>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -302,7 +307,22 @@ impl AgentConfig {
                     ))
                 })
                 .collect::<Result<_>>()?,
+            payees: self.payees()?,
         })
+    }
+
+    /// The tokens bound to a payee list, as the policy takes them.
+    pub fn payees(&self) -> Result<Vec<(Address, Vec<Address>)>> {
+        let mut lists = Vec::new();
+        for t in self.policy.tokens.iter().filter(|t| !t.payees.is_empty()) {
+            for (i, payee) in t.payees.iter().enumerate() {
+                if payee.is_zero() || t.payees[..i].contains(payee) {
+                    anyhow::bail!("tokens: the payee list of {} has the zero address or {payee} twice", t.token);
+                }
+            }
+            lists.push((t.token, t.payees.clone()));
+        }
+        Ok(lists)
     }
 }
 

@@ -52,6 +52,14 @@ interface IKernelEntryPoint {
 ///    written, lets the agent widen its own permission, replace the root key
 ///    or drain the deposit.
 ///
+///  - optionally, per token, a list of payees: with one, `transfer` and
+///    `transferFrom` may only pay a listed address, `approve` and
+///    `increaseAllowance` may only name a listed spender, and an x402
+///    authorization may only pay a listed address. A token without a list
+///    is bound in amount only, as before: the agent picks the recipient.
+///    A listed spender can move what it was approved for wherever it likes;
+///    list a spender only if you would list everyone it pays.
+///
 /// Safe pass-through: an allow-list entry `(safe, execTransaction)` lets the
 /// agent drive a Safe that this account owns (Olas / Jinn service Safes),
 /// with a pre-validated `v = 1` signature — no ERC-1271 needed. The policy
@@ -107,11 +115,20 @@ contract AgentPolicy is IPolicy {
         bytes32 domainSeparator;
     }
 
+    /// Install-time list of the only addresses a token's transfers,
+    /// allowances and x402 payments may name. The token needs a `TokenCap`.
+    struct TokenPayees {
+        address token;
+        address[] payees;
+    }
+
     struct TokenLimit {
         uint128 maxPerOp;
         uint128 budget;
         uint128 spent;
         bool set;
+        // true: only `Mandate.payees[token]` may be paid or approved
+        bool payeesOnly;
         bytes32 domainSeparator;
     }
 
@@ -126,6 +143,7 @@ contract AgentPolicy is IPolicy {
         mapping(address target => mapping(bytes4 selector => bool)) allowed;
         mapping(address token => TokenLimit) tokens;
         mapping(bytes32 digest => Pending) x402;
+        mapping(address token => mapping(address payee => bool)) payees;
     }
 
     error InvalidConfig();
@@ -186,9 +204,16 @@ contract AgentPolicy is IPolicy {
         NONCE_ASSERT = nonceAssert;
     }
 
+    /// The install data's first word — the offset of `targets` — tells the
+    /// two encodings apart: seven head words, or eight with `payees`.
+    uint256 internal constant HEAD_WITHOUT_PAYEES = 7 * 32;
+    uint256 internal constant HEAD_WITH_PAYEES = 8 * 32;
+
     /// @param data `bytes32 id ++ abi.encode(address[] targets, bytes4[] selectors,
     ///              uint128 maxValuePerOp, uint128 budget, uint48 validUntil, TokenCap[] tokens,
-    ///              uint48 validAfter)`
+    ///              uint48 validAfter)`, optionally with one more parameter
+    ///              `TokenPayees[] payees`. A mandate without payee lists is
+    ///              encoded as before this parameter existed.
     function onInstall(bytes calldata data) external payable override {
         bytes32 id = bytes32(data[0:32]);
         Config storage c = configs[msg.sender][id];
@@ -217,8 +242,9 @@ contract AgentPolicy is IPolicy {
         for (uint256 i; i < tokens.length; i++) {
             if (tokens[i].token == address(0) || m.tokens[tokens[i].token].set) revert InvalidConfig();
             m.tokens[tokens[i].token] =
-                TokenLimit(tokens[i].maxPerOp, tokens[i].budget, 0, true, tokens[i].domainSeparator);
+                TokenLimit(tokens[i].maxPerOp, tokens[i].budget, 0, true, false, tokens[i].domainSeparator);
         }
+        _installPayees(m, data[32:]);
         c.validUntil = validUntil;
         c.validAfter = validAfter;
         c.maxValuePerOp = maxValuePerOp;
@@ -226,6 +252,31 @@ contract AgentPolicy is IPolicy {
         c.spent = 0;
         usedIds[msg.sender]++;
         emit AgentPolicySet(msg.sender, id, validUntil, maxValuePerOp, budget);
+    }
+
+    /// @dev The optional eighth parameter. Each entry needs a capped token
+    /// that has no list yet, and at least one payee; no zero address, no
+    /// payee twice.
+    function _installPayees(Mandate storage m, bytes calldata params) internal {
+        if (params.length < 32) revert InvalidConfig();
+        uint256 head = uint256(bytes32(params[0:32]));
+        if (head == HEAD_WITHOUT_PAYEES) return;
+        if (head != HEAD_WITH_PAYEES) revert InvalidConfig();
+        (,,,,,,, TokenPayees[] memory lists) =
+            abi.decode(params, (address[], bytes4[], uint128, uint128, uint48, TokenCap[], uint48, TokenPayees[]));
+        // the eight-word form exists to carry a list: without one, use the other
+        if (lists.length == 0) revert InvalidConfig();
+        for (uint256 i; i < lists.length; i++) {
+            TokenLimit storage t = m.tokens[lists[i].token];
+            address[] memory payees = lists[i].payees;
+            if (!t.set || t.payeesOnly || payees.length == 0) revert InvalidConfig();
+            t.payeesOnly = true;
+            mapping(address => bool) storage listed = m.payees[lists[i].token];
+            for (uint256 j; j < payees.length; j++) {
+                if (payees[j] == address(0) || listed[payees[j]]) revert InvalidConfig();
+                listed[payees[j]] = true;
+            }
+        }
     }
 
     function onUninstall(bytes calldata data) external payable override {
@@ -252,6 +303,13 @@ contract AgentPolicy is IPolicy {
 
     function tokenLimit(address account, bytes32 id, address token) external view returns (TokenLimit memory) {
         return _mandates[account][id][configs[account][id].epoch].tokens[token];
+    }
+
+    /// @notice Whether the mandate lets `token` reach `payee`: true for any
+    /// address when the token has no payee list.
+    function payeeAllowed(address account, bytes32 id, address token, address payee) external view returns (bool) {
+        Mandate storage m = _mandates[account][id][configs[account][id].epoch];
+        return !m.tokens[token].payeesOnly || m.payees[token][payee];
     }
 
     /// @dev Returns `packValidationData(validAfter, validUntil)` on success so
@@ -368,6 +426,7 @@ contract AgentPolicy is IPolicy {
         TokenLimit storage t = m.tokens[token];
         if (!t.set || t.domainSeparator == bytes32(0)) return false;
         if (value == 0 || value > t.maxPerOp || validBefore > type(uint48).max) return false;
+        if (t.payeesOnly && !m.payees[token][to]) return false;
         uint256 spent = t.spent + value;
         if (spent > t.budget) return false;
         bytes32 digest = _x402Digest(t.domainSeparator, from, to, value, validAfter, validBefore, nonce);
@@ -515,9 +574,10 @@ contract AgentPolicy is IPolicy {
         return ok ? (true, value + moved) : (false, 0);
     }
 
-    /// @dev ERC-20 amount accounting: `transfer` / `approve` /
-    /// `increaseAllowance` carry the amount in argument 1, `transferFrom`
-    /// in argument 2. Any other selector passes untouched.
+    /// @dev ERC-20 accounting: `transfer` / `approve` / `increaseAllowance`
+    /// carry the amount in argument 1 and who gets it (the recipient, the
+    /// spender) in argument 0; `transferFrom` carries them in arguments 2
+    /// and 1. Any other selector passes untouched.
     function _chargeToken(Mandate storage m, address token, bytes4 selector, bytes calldata data)
         internal
         returns (bool)
@@ -532,6 +592,12 @@ contract AgentPolicy is IPolicy {
         uint256 end = 4 + 32 * (arg + 1);
         if (data.length < end) return false;
         uint256 amount = uint256(bytes32(data[end - 32:end]));
+        if (t.payeesOnly) {
+            // the word before the amount; a token reads its low 160 bits, so
+            // anything above them would name one address here and pay another
+            uint256 payee = uint256(bytes32(data[end - 64:end - 32]));
+            if (payee >> 160 != 0 || !m.payees[token][address(uint160(payee))]) return false;
+        }
         if (amount > t.maxPerOp) return false;
         uint256 spent = t.spent + amount;
         if (spent > t.budget) return false;
