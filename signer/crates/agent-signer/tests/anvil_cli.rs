@@ -339,7 +339,7 @@ fn key(n: u8) -> Key {
     bytes[31] = n;
     bytes[0] = 0x11;
     let sk = SigningKey::from_bytes(&bytes.into()).unwrap();
-    let point = sk.verifying_key().to_encoded_point(false);
+    let point = sk.verifying_key().to_sec1_point(false);
     Key {
         scalar: format!("0x{}", hex::encode(bytes)),
         x: format!("0x{}", hex::encode(point.x().unwrap())),
@@ -1509,6 +1509,12 @@ fn phone_owner_real_device() {
     let run = |args: &[&str]| {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_agent-signer"));
         cmd.args(args).args(["--phone-timeout", "180"]);
+        // The session's address, when the runner names it. The CLI's default is the address of
+        // the route to the internet, which is a VPN's when one is up; the phone's core refuses
+        // that as not local (and loopback as the phone itself).
+        if let Some(listen) = std::env::var_os("TPMSIGN_PHONE_LISTEN") {
+            cmd.arg("--listen").arg(listen);
+        }
         if args[0] != "key" {
             cmd.args(["--env-file", env_file]);
         }
@@ -1541,7 +1547,13 @@ fn phone_owner_real_device() {
         let phone_qr = std::env::var_os("TPMSIGN_PHONE_QR_FILE").map(PathBuf::from);
         args.extend(["--phone-qr-file", laptop_qr.to_str().unwrap(), "--phone-timeout", "180"]);
         let attacker = path_attacker(laptop_qr.clone(), phone_qr);
-        let out = Command::new(env!("CARGO_BIN_EXE_agent-signer")).args(&args).output().expect("run agent-signer");
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_agent-signer"));
+        cmd.args(&args);
+        // as in `run`: the session's address, when the runner names it
+        if let Some(listen) = std::env::var_os("TPMSIGN_PHONE_LISTEN") {
+            cmd.arg("--listen").arg(listen);
+        }
+        let out = cmd.output().expect("run agent-signer");
         attacker.join().unwrap();
         // the laptop's words, without the QR it showed to nobody
         let said = String::from_utf8_lossy(&out.stderr);

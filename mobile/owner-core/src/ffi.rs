@@ -376,7 +376,6 @@ impl HealthHandle {
 /// tolerance, and which of the keys this phone holds the request is about.
 #[uniffi::export]
 pub fn open_health(bytes: Vec<u8>, commitment: String, now: u64, held: Vec<FfiHeldKey>) -> Result<Arc<HealthHandle>, CoreError> {
-    use rand_core::RngCore;
     if crate::request::commitment(&bytes) != commitment {
         return Err(CoreError::Failed("the served request does not match the QR's commitment".into()));
     }
@@ -390,7 +389,7 @@ pub fn open_health(bytes: Vec<u8>, commitment: String, now: u64, held: Vec<FfiHe
     }
     let cannot = request.held(mine.as_ref()).err().map(|(reason, detail)| (reason.to_string(), detail));
     let mut phone_nonce = [0u8; 32];
-    rand_core::OsRng.fill_bytes(&mut phone_nonce);
+    getrandom::fill(&mut phone_nonce).map_err(|e| CoreError::Failed(format!("the phone's random source failed: {e}")))?;
     Ok(Arc::new(HealthHandle { request, commitment, phone_nonce: phone_nonce.into(), cannot }))
 }
 
@@ -544,7 +543,7 @@ mod tests {
     fn finish_round_trips_a_real_signature() {
         use p256::ecdsa::signature::hazmat::PrehashSigner;
         let sk = p256::ecdsa::SigningKey::from_bytes(&[5u8; 32].into()).unwrap();
-        let p = sk.verifying_key().to_encoded_point(false);
+        let p = sk.verifying_key().to_sec1_point(false);
         let xy = [p.x().unwrap().as_slice(), p.y().unwrap().as_slice()].concat();
         let digest = [7u8; 32];
         let sig: p256::ecdsa::Signature = sk.sign_prehash(&digest).unwrap();
@@ -579,7 +578,7 @@ mod tests {
         let c = crate::request::commitment(&bytes);
         let app = || FfiApp { platform: "ios".into(), version: "0".into() };
         let sk = p256::ecdsa::SigningKey::from_bytes(&[5u8; 32].into()).unwrap();
-        let p = sk.verifying_key().to_encoded_point(false);
+        let p = sk.verifying_key().to_sec1_point(false);
         let xy = [p.x().unwrap().as_slice(), p.y().unwrap().as_slice()].concat();
         let answer = enroll_answer(c.clone(), xy.clone(), "secure-enclave".into(), false, vec![], app()).unwrap();
         let got = EnrollResponse::verify(&answer, &bytes, true).unwrap();
@@ -609,7 +608,7 @@ mod tests {
         let account = address!("D62Dd4afD4e77cDFA6f8eaD1D2655745cF5af628");
         let key = |n: u8| {
             let sk = p256::ecdsa::SigningKey::from_bytes(&[n; 32].into()).unwrap();
-            let p = sk.verifying_key().to_encoded_point(false);
+            let p = sk.verifying_key().to_sec1_point(false);
             (sk, [p.x().unwrap().as_slice(), p.y().unwrap().as_slice()].concat())
         };
         let (sk, xy) = key(5);
@@ -687,7 +686,7 @@ mod tests {
         let digest = review.digest_to_sign().unwrap();
         let key = |n: u8| {
             let sk = p256::ecdsa::SigningKey::from_bytes(&[n; 32].into()).unwrap();
-            let p = sk.verifying_key().to_encoded_point(false);
+            let p = sk.verifying_key().to_sec1_point(false);
             (sk, [p.x().unwrap().as_slice(), p.y().unwrap().as_slice()].concat())
         };
         let (sk, xy) = key(5);

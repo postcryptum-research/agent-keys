@@ -898,7 +898,7 @@ mod tests {
 
     fn key(n: u8) -> PublicKey {
         let sk = p256::ecdsa::SigningKey::from_bytes(&[n; 32].into()).unwrap();
-        let p = sk.verifying_key().to_encoded_point(false);
+        let p = sk.verifying_key().to_sec1_point(false);
         PublicKey { x: p.x().unwrap().as_slice().try_into().unwrap(), y: p.y().unwrap().as_slice().try_into().unwrap() }
     }
 

@@ -339,7 +339,7 @@ mod tests {
     fn the_deletion_prompt_names_the_key_and_sends_the_owner_to_the_laptop() {
         let account = address!("D62Dd4afD4e77cDFA6f8eaD1D2655745cF5af628");
         let sk = p256::ecdsa::SigningKey::from_bytes(&[5u8; 32].into()).unwrap();
-        let p = sk.verifying_key().to_encoded_point(false);
+        let p = sk.verifying_key().to_sec1_point(false);
         let pk = PublicKey { x: (*p.x().unwrap()).into(), y: (*p.y().unwrap()).into() };
         let fp = crate::fingerprint::fingerprint(&pk);
         let d = deletion_prompt("owner-phone", 84532, account, &pk);
@@ -367,7 +367,7 @@ mod tests {
     /// A P-256 generator-multiple point: on the curve, so it passes as a key.
     fn some_key() -> PublicKey {
         let sk = p256::ecdsa::SigningKey::from_bytes(&[9u8; 32].into()).unwrap();
-        let p = sk.verifying_key().to_encoded_point(false);
+        let p = sk.verifying_key().to_sec1_point(false);
         PublicKey { x: p.x().unwrap().as_slice().try_into().unwrap(), y: p.y().unwrap().as_slice().try_into().unwrap() }
     }
 
