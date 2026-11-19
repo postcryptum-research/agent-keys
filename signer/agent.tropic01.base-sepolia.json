@@ -40,7 +40,7 @@
     ],
     "maxValuePerOp": "1000000000000000",
     "budget": "3000000000000000",
-    "validUntil": 1795046400
+    "validUntil": 1802995200
   },
   "account": "0xEdB645B14e2f952C5784e34949b58F0826fBc9E9",
   "recovery": {

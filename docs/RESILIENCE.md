@@ -97,8 +97,8 @@ added [V].
    (`permission rotate`); the account address, funds, Safe and mandate stay [V
    by code, §2.1].
 2. **The owner key is the single point of failure.** Without it and without recovery
-   the agent runs until `validUntil` (in the testnet config — **2026-11-19 00:00 UTC**,
-   `signer/agent.base-sepolia.json`, [V]), and after that date the account and the Safe
+   the agent runs until `validUntil` (in the testnet config — **2027-02-19 00:00 UTC** since the rotation of 2026-11-19,
+   `signer/agent.tropic01.base-sepolia.json`, [V]), and after that date the account and the Safe
    it solely owns are frozen forever (§2.3).
 3. **On the testnet host only the agent key is in the fTPM today**: the
    owner key is in a YubiKey PIV slot (`"owner": {"yubikey": {"slot": "9c"}}`),
