@@ -478,7 +478,7 @@ protects against file deletion, but not against erasing the Mac or replacing the
 |---|---|---|---|---|
 | Encrypted P-256 file on a USB drive (current plan) | 2 USB drives + QR of the ciphertext | `P256RecoveryValidator` | cheap; copyable; our curve | key in host memory at signing time [V KEY_POLICY rule 5]; passphrase gets forgotten; no presence |
 | Trezor `SignIdentity` nist256p1 | device + seed of 12–24 words | `P256RecoveryValidator` as is | key in hardware, seed restores onto **any** new Trezor; screen and PIN | $59; needs the `trezor-client` client |
-| Ledger OpenPGP app in **Seed Mode** | device + seed | `P256RecoveryValidator` | the user already has a Nano S Plus | without Seed Mode the key is wiped on an app/OS update [V]; PIN 3 attempts → wipe |
+| Ledger OpenPGP app in **Seed Mode** | device + seed | `P256RecoveryValidator` | builds for the Nano S Plus | without Seed Mode the key is wiped on an app/OS update [V]; PIN 3 attempts → wipe |
 | Ledger/Trezor Ethereum app | device + seed | ZeroDev `ECDSAValidator` `0x845A…cE57` as the recovery validator + `grantAccess(changeRootValidator)` | no code on the device; seed | secp256k1; a second branch in the CLI (alloy-signer-ledger/trezor) |
 | Paper P-256 key, imported into an SE when needed | paper in a safe | `P256RecoveryValidator` | everlasting medium | a plaintext key on paper contradicts rule 5 (which allows only an *encrypted* medium) — only as a QR of the **ciphertext** |
 
