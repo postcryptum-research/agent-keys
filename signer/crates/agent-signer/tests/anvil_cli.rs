@@ -657,6 +657,11 @@ fn a_handover_waits_for_the_new_key_to_show_it_can_sign() {
     let proof = chain.prove(&second, &waiting.challenge);
     let (ok, said) = waiting.answer(&proof);
     assert!(!ok && said.contains("after the challenge expired") && said.contains("nothing sent"), "{said}");
+    // ... and after the expiry an empty line ends the wait as well: Enter is answered, not skipped
+    let waiting = chain.handover(&refs(&slow));
+    std::thread::sleep(Duration::from_millis(2500));
+    let (ok, said) = waiting.answer("");
+    assert!(!ok && said.contains("the challenge expired") && said.contains("Nothing sent"), "{said}");
 
     // something that is not a proof
     let (ok, said) = chain.handover(&refs(&to_second)).answer("tpmsign-handover-proof:1:0x00");

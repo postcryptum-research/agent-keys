@@ -763,10 +763,14 @@ fn ask_for_proof(challenge: &possession::Challenge, seconds: u64) -> Result<()> 
                  for a key on this one), or say --no-proof-of-possession. Nothing sent"
             );
         }
+        // the clock first: once the challenge has expired, any line ends the wait, an empty one too
+        let at = possession::now()?;
         if line.trim().is_empty() {
+            if at > challenge.expires {
+                bail!("the challenge expired {} s ago and no proof was accepted: run the command again. Nothing sent", at - challenge.expires);
+            }
             continue;
         }
-        let at = possession::now()?;
         match challenge.verify(&line, at) {
             Ok(()) => return Ok(()),
             Err(e) if at > challenge.expires => return Err(e.context("nothing sent")),
