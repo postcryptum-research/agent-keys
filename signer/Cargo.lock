@@ -66,7 +66,7 @@ dependencies = [
  "hw-signer",
  "libc",
  "owner-core",
- "p256 0.13.2",
+ "p256",
  "qrcode",
  "rand_core 0.6.4",
  "rpassword",
@@ -1948,7 +1948,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
  "const-oid 0.9.6",
- "pem-rfc7468 0.7.0",
  "zeroize",
 ]
 
@@ -1961,7 +1960,7 @@ dependencies = [
  "const-oid 0.10.2",
  "der_derive",
  "flagset",
- "pem-rfc7468 1.0.0",
+ "pem-rfc7468",
  "zeroize",
 ]
 
@@ -2187,7 +2186,6 @@ dependencies = [
  "ff 0.13.1",
  "generic-array",
  "group 0.13.0",
- "pem-rfc7468 0.7.0",
  "pkcs8 0.10.2",
  "rand_core 0.6.4",
  "sec1 0.7.3",
@@ -2209,7 +2207,7 @@ dependencies = [
  "ff 0.14.0",
  "group 0.14.0",
  "hybrid-array",
- "pem-rfc7468 1.0.0",
+ "pem-rfc7468",
  "pkcs8 0.11.0",
  "rand_core 0.10.1",
  "sec1 0.8.1",
@@ -2701,10 +2699,10 @@ dependencies = [
  "dummy-pin",
  "embedded-hal",
  "hex",
- "p256 0.13.2",
+ "p256",
  "rand_core 0.6.4",
  "serialport",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "thiserror 1.0.69",
  "tropic01",
  "tss-esapi",
@@ -3487,28 +3485,16 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "owner-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
  "base64 0.22.1",
- "hmac 0.12.1",
+ "hmac 0.13.0",
  "hw-signer",
  "serde",
  "serde_json",
- "sha2 0.10.9",
-]
-
-[[package]]
-name = "p256"
-version = "0.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9863ad85fa8f4460f9c48cb909d38a0d689dba1f6f6988a5e3e0d31071bcd4b"
-dependencies = [
- "ecdsa 0.16.9",
- "elliptic-curve 0.13.8",
- "primeorder 0.13.6",
- "sha2 0.10.9",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -3520,7 +3506,7 @@ dependencies = [
  "ecdsa 0.17.0",
  "elliptic-curve 0.14.3",
  "primefield",
- "primeorder 0.14.0",
+ "primeorder",
  "sha2 0.11.1",
 ]
 
@@ -3534,7 +3520,7 @@ dependencies = [
  "elliptic-curve 0.14.3",
  "fiat-crypto 0.3.0",
  "primefield",
- "primeorder 0.14.0",
+ "primeorder",
  "sha2 0.11.1",
 ]
 
@@ -3653,15 +3639,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e14ef017e15d2e5592a9e39a346c1dbaea5120bab7ed7106b210ef58ebd97003"
 dependencies = [
  "pkg-config",
-]
-
-[[package]]
-name = "pem-rfc7468"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88b39c9bfcfc231068454382784bb460aae594343fb030d46e9f50a645418412"
-dependencies = [
- "base64ct",
 ]
 
 [[package]]
@@ -3885,15 +3862,6 @@ dependencies = [
  "rand_core 0.10.1",
  "subtle",
  "zeroize",
-]
-
-[[package]]
-name = "primeorder"
-version = "0.13.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "353e1ca18966c16d9deb1c69278edbc5f194139612772bd9537af60ac231e1e6"
-dependencies = [
- "elliptic-curve 0.13.8",
 ]
 
 [[package]]
@@ -6025,7 +5993,7 @@ dependencies = [
  "elliptic-curve 0.14.3",
  "log",
  "nom 8.0.0",
- "p256 0.14.0",
+ "p256",
  "p384",
  "pbkdf2 0.13.0",
  "pcsc",

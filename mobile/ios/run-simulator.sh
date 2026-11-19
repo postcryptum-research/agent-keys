@@ -4,7 +4,9 @@
 # key, an agent permission reviewed and signed in the app, then the app
 # signing a change of the root key itself (README.md). Twice: as it should
 # go, and with a host on the path that replaces the laptop's confirmation of
-# the enrollment. No phone and no Apple account.
+# the enrollment. No phone and no Apple account. The sessions are on the
+# Mac's LAN address: with a VPN up the CLI's default would be the tunnel's
+# address, which the app refuses as not local.
 #   Xcode with an iOS simulator, xcodegen, anvil; rustup targets as build-core.sh.
 #   ROBOT=0     tap in the Simulator window yourself; by default a UI test taps
 #               what a person would, checks that Sign waits for the end of the
@@ -50,7 +52,8 @@ pass() {
     open -a Simulator
     xcrun simctl launch "$SIMULATOR" "$bundle"
   fi
-  (cd ../../signer && env TPMSIGN_PHONE_QR_FILE="$qr" TPMSIGN_PHONE_NO_ATTESTATION=1 TPMSIGN_PHONE_HANDOVER_BACK=1 $2 \
+  lan=$(ipconfig getifaddr "$(route -n get default 2>/dev/null | awk '/interface:/{print $2}')" 2>/dev/null || true)
+  (cd ../../signer && env TPMSIGN_PHONE_QR_FILE="$qr" ${lan:+TPMSIGN_PHONE_LISTEN="$lan:0"} TPMSIGN_PHONE_NO_ATTESTATION=1 TPMSIGN_PHONE_HANDOVER_BACK=1 $2 \
     $CARGO test $phone_test -- --ignored --nocapture)
   if [ "$ROBOT" = 1 ]; then
     # the robot ends on the last signature the laptop confirmed; its verdict is the screen's half of the run

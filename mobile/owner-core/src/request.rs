@@ -8,7 +8,7 @@
 use alloy_primitives::{Address, Bytes, B256, U256};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use base64::Engine;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use hw_signer::{normalize_low_s, verify_p256, PublicKey, Signature};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -539,8 +539,15 @@ mod tests {
     const EP: Address = address!("0000000071727De22E5E9d8BAf0edAc6f37da032");
 
     fn software_key() -> (SigningKey, PublicKey) {
-        let sk = SigningKey::random(&mut rand_core::OsRng);
-        let p = sk.verifying_key().to_encoded_point(false);
+        // 32 random bytes are a scalar of the curve but for one case in 2^32
+        let sk = loop {
+            let mut scalar = [0u8; 32];
+            getrandom::fill(&mut scalar).unwrap();
+            if let Ok(sk) = SigningKey::from_slice(&scalar) {
+                break sk;
+            }
+        };
+        let p = sk.verifying_key().to_sec1_point(false);
         let mut pk = PublicKey { x: [0; 32], y: [0; 32] };
         pk.x.copy_from_slice(p.x().unwrap());
         pk.y.copy_from_slice(p.y().unwrap());

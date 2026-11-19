@@ -7,7 +7,7 @@
 
 use p256::ecdsa::signature::hazmat::PrehashSigner;
 use p256::ecdsa::SigningKey;
-use rand_core::OsRng;
+use p256::elliptic_curve::Generate;
 
 use crate::{HardwareSigner, PublicKey, Signature, SignerError};
 
@@ -17,7 +17,7 @@ pub struct SoftwareSigner {
 
 impl SoftwareSigner {
     pub fn random() -> Self {
-        Self { key: SigningKey::random(&mut OsRng) }
+        Self { key: SigningKey::try_generate().expect("the operating system's random source") }
     }
 
     pub fn from_bytes(secret: &[u8; 32]) -> Result<Self, SignerError> {
@@ -29,7 +29,7 @@ impl SoftwareSigner {
 
 impl HardwareSigner for SoftwareSigner {
     fn public_key(&self) -> Result<PublicKey, SignerError> {
-        let point = self.key.verifying_key().to_encoded_point(false);
+        let point = self.key.verifying_key().to_sec1_point(false);
         let (Some(x), Some(y)) = (point.x(), point.y()) else {
             return Err(SignerError::Key("point at infinity".into()));
         };
@@ -44,9 +44,7 @@ impl HardwareSigner for SoftwareSigner {
             .key
             .sign_prehash(digest)
             .map_err(|e| SignerError::Sign(e.to_string()))?;
-        // `normalize_s` returns Some only when it had to flip a high s.
-        let sig = sig.normalize_s().unwrap_or(sig);
-        let (r, s) = sig.split_bytes();
+        let (r, s) = sig.normalize_s().split_bytes();
         Ok(Signature { r: r.into(), s: s.into() })
     }
 }

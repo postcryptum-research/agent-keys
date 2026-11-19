@@ -9,16 +9,15 @@ ignore = [
     # so the affected code never runs. Reviewed 2026-11-03; drop this line
     # when `yubikey` depends on a fixed `rsa`.
     "RUSTSEC-2023-0071",
-    # RUSTSEC-2026-0387: timing variability in `crypto-bigint` 0.5.5, which
-    # arrives through `elliptic-curve` 0.13 / `p256` 0.13. The hardware
-    # backends (TPM, Secure Enclave, TROPIC01, YubiKey) do the private-key
-    # arithmetic on the device; in-process `p256` verifies signatures (public
-    # data) and backs the test-only software backend. The one real-key path
-    # is the encrypted key file (`keyfile.rs`), which signs rarely, on the
-    # owner's machine. `alloy` 2.5 pins `elliptic-curve` 0.13 as well, so
-    # moving our crates alone would not clear the lockfile. Reviewed
-    # 2026-11-11 (issue #16): migrate `hw-signer`, `owner-core` and
-    # `agent-signer` to `p256` 0.14 in one PR after P1, or as soon as `alloy`
-    # releases on `elliptic-curve` 0.14; drop this line then.
+    # RUSTSEC-2026-0387: timing variability in `crypto-bigint` 0.5.5. Our own
+    # crates are on `p256` 0.14 since issue #16 (`crypto-bigint` 0.7): the
+    # signature checks, the test-only software backend and the encrypted key
+    # file no longer run the affected code. What is left comes through
+    # `alloy`, which still needs `k256` 0.13 and `elliptic-curve` 0.13 (2.6.1
+    # of 2026-11-16 included): secp256k1 for transaction types and for the
+    # gas wallet's key, a hot key that holds a few dollars. The hardware
+    # backends do the private-key arithmetic on the device. Reviewed 2026-11-19
+    # (issue #16); drop this line when `alloy` releases on `elliptic-curve`
+    # 0.14 and the lockfile no longer holds `crypto-bigint` 0.5.
     "RUSTSEC-2026-0387",
 ]

@@ -1,6 +1,6 @@
 [package]
 name = "owner-core"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 description = "Kernel v3.3 encodings and ERC-4337 hashing shared by agent-signer and the mobile owner apps"
 # Licence: not decided (docs/MOBILE_OWNER_PLAN.md, decision 3; README.md here).
@@ -13,7 +13,7 @@ crate-type = ["lib", "cdylib"]
 
 [features]
 # The uniffi surface for the phone apps (src/ffi.rs); off for the CLI's build.
-ffi = ["dep:uniffi", "dep:rand_core"]
+ffi = ["dep:uniffi", "dep:getrandom"]
 # `cargo run --features cli --bin uniffi-bindgen` generates the bindings.
 cli = ["ffi", "uniffi/cli"]
 # Development builds only: facts for the CLI's local anvil chain (31337), where
@@ -28,24 +28,27 @@ required-features = ["cli"]
 
 [dependencies]
 uniffi = { version = "0.32", optional = true }
-# The phone's half of a health digest (ffi.rs). Already in the tree through p256.
-rand_core = { version = "0.6", features = ["getrandom"], optional = true }
+# The phone's half of a health digest (ffi.rs): the operating system's random
+# source. Already in the tree through uniffi.
+getrandom = { version = "0.4", optional = true }
 alloy-primitives = { version = "1.7", default-features = false, features = ["std", "serde"] }
 alloy-sol-types = { version = "1.7", default-features = false, features = ["std"] }
 hw-signer = { path = "../../signer/crates/hw-signer", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-sha2 = "0.10"
-# The answer MAC (request.rs). Already in the tree through p256's RFC 6979.
-hmac = "0.12"
+# Both in the versions that hw-signer's p256 brings (ECDSA, RFC 6979), so
+# the phone library carries one copy of each.
+sha2 = "0.11"
+# The answer MAC (request.rs).
+hmac = "0.13"
 base64 = "0.22"
 
 [build-dependencies]
 serde_json = "1"
 
 [dev-dependencies]
-p256 = { version = "0.13", features = ["ecdsa"] }
-rand_core = { version = "0.6", features = ["getrandom"] }
+p256 = { version = "0.14", features = ["ecdsa"] }
+getrandom = "0.4"
 
 # A standalone package: the signer/ workspace depends on it by path, and its
 # own tests run from this directory.

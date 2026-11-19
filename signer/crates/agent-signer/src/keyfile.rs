@@ -21,6 +21,7 @@ use anyhow::{bail, Context, Result};
 use hw_signer::{HardwareSigner, PublicKey, Signature, SignerError};
 use p256::ecdsa::signature::hazmat::PrehashSigner;
 use p256::ecdsa::SigningKey;
+use p256::elliptic_curve::Generate;
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -87,7 +88,7 @@ fn derive(passphrase: &[u8], salt: &[u8], log_n: u8, r: u32, p: u32) -> Result<Z
 }
 
 fn public_of(key: &SigningKey) -> PublicKey {
-    let point = key.verifying_key().to_encoded_point(false);
+    let point = key.verifying_key().to_sec1_point(false);
     let mut pk = PublicKey { x: [0; 32], y: [0; 32] };
     pk.x.copy_from_slice(point.x().expect("not the identity"));
     pk.y.copy_from_slice(point.y().expect("not the identity"));
@@ -111,7 +112,7 @@ pub fn create(path: &Path, passphrase: &[u8]) -> Result<PublicKey> {
     if passphrase.is_empty() {
         bail!("empty passphrase: the file would decrypt for anyone");
     }
-    let key = SigningKey::random(&mut OsRng);
+    let key = SigningKey::try_generate().context("the operating system's random source")?;
     let pk = public_of(&key);
     let mut salt = [0u8; 32];
     let mut nonce = [0u8; 12];
@@ -224,8 +225,7 @@ impl HardwareSigner for KeyFileSigner {
     fn sign_digest(&self, digest: &[u8; 32]) -> Result<Signature, SignerError> {
         let sig: p256::ecdsa::Signature =
             self.key.sign_prehash(digest).map_err(|e| SignerError::Sign(e.to_string()))?;
-        let sig = sig.normalize_s().unwrap_or(sig);
-        let (r, s) = sig.split_bytes();
+        let (r, s) = sig.normalize_s().split_bytes();
         Ok(Signature { r: r.into(), s: s.into() })
     }
 }

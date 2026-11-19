@@ -13,7 +13,7 @@
 
 use p256::ecdsa::signature::hazmat::PrehashVerifier;
 use p256::ecdsa::VerifyingKey;
-use p256::{EncodedPoint, FieldBytes};
+use p256::{FieldBytes, Sec1Point};
 
 #[cfg(feature = "software")]
 pub mod software;
@@ -67,8 +67,7 @@ pub fn normalize_low_s(sig: Signature) -> Signature {
     raw[32..].copy_from_slice(&sig.s);
     match p256::ecdsa::Signature::from_slice(&raw) {
         Ok(parsed) => {
-            let parsed = parsed.normalize_s().unwrap_or(parsed);
-            let (r, s) = parsed.split_bytes();
+            let (r, s) = parsed.normalize_s().split_bytes();
             Signature { r: r.into(), s: s.into() }
         }
         Err(_) => sig,
@@ -110,19 +109,19 @@ pub trait HardwareSigner {
 /// Whether `(x, y)` is a point on P-256 (not the identity). A key that is
 /// not cannot have signed anything and must never become an account's root.
 pub fn valid_public_key(pk: &PublicKey) -> bool {
-    let point = EncodedPoint::from_affine_coordinates(&FieldBytes::from(pk.x), &FieldBytes::from(pk.y), false);
-    VerifyingKey::from_encoded_point(&point).is_ok()
+    let point = Sec1Point::from_affine_coordinates(&FieldBytes::from(pk.x), &FieldBytes::from(pk.y), false);
+    VerifyingKey::from_sec1_point(&point).is_ok()
 }
 
 /// Off-chain P-256 verification, mirroring what the on-chain validator checks:
 /// `(h, r, s)` against `(x, y)`. Used by tests and the CLI self-check.
 pub fn verify_p256(digest: &[u8; 32], sig: &Signature, pk: &PublicKey) -> bool {
-    let point = EncodedPoint::from_affine_coordinates(
+    let point = Sec1Point::from_affine_coordinates(
         &FieldBytes::from(pk.x),
         &FieldBytes::from(pk.y),
         false,
     );
-    let Ok(vk) = VerifyingKey::from_encoded_point(&point) else {
+    let Ok(vk) = VerifyingKey::from_sec1_point(&point) else {
         return false;
     };
     let mut raw = [0u8; 64];

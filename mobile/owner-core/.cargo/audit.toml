@@ -2,10 +2,13 @@
 # with the reasons; the same list as signer/.cargo/audit.toml where it overlaps.
 [advisories]
 ignore = [
-    # RUSTSEC-2026-0387: timing variability in `crypto-bigint` 0.5.5, through
-    # `p256` 0.13. owner-core verifies signatures (public data) and never holds
-    # a private key; the phone's key signs inside the Keystore. Migration to
-    # `p256` 0.14 together with hw-signer and agent-signer after P1 (issue #16).
+    # RUSTSEC-2026-0387: timing variability in `crypto-bigint` 0.5.5. Nothing
+    # in owner-core compiles it since issue #16 (`p256` 0.14 through hw-signer;
+    # `cargo tree -i crypto-bigint@0.5.5` prints nothing). The lockfile still
+    # lists it, as an optional dependency of `alloy-primitives` (its `k256`
+    # feature, which owner-core does not enable), and `cargo audit` reads the
+    # lockfile. Reviewed 2026-11-19; drop this line when `alloy-primitives` moves
+    # to `k256` 0.14.
     "RUSTSEC-2026-0387",
 ]
 # Also reported, not ignored here because it is a warning, not a vulnerability:
