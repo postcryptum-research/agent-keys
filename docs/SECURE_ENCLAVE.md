@@ -85,7 +85,7 @@ sysctl -n machdep.cpu.brand_string           # chip
 system_profiler SPiBridgeDataType | grep -i model   # Intel only: "Apple T2"
 xcode-select -p
 xcrun swiftc --version
-rustc --version                              # 1.85 or newer
+rustc --version                              # 1.94.1 or newer (alloy 2.5 needs it)
 cargo --version
 git --version
 ```
@@ -108,7 +108,7 @@ cargo build -p agent-signer
 cargo test
 ```
 
-Expected at the end: `test result: ok. 1 passed`. The first build compiles
+Expected: every `test result:` line says `ok` with `0 failed`. The first build compiles
 a few hundred crates (5–10 minutes).
 
 ## 5. Build with the Secure Enclave backend
@@ -160,8 +160,9 @@ it and continue with `key show`.
 ## 8. Optional: an agent account on Base Sepolia
 
 The smart account cannot tell a Secure Enclave key from a TPM key. With a
-funded gas wallet and an RPC URL in a `.env` (ask the project owner; never
-commit it) and an agent config with
+`.env` holding an RPC URL (`BASE_SEPOLIA_RPC_URL`) and the path of a funded
+gas wallet's key file (`GAS_WALLET_KEYFILE`) (ask the project owner; never
+commit either) and an agent config with
 
 ```json
 "owner": { "secure-enclave": "tpm_sign-owner" },
@@ -171,9 +172,10 @@ commit it) and an agent config with
 the flow is the one in the README: `account status` → `account fund` →
 `demo`. Steps 1–7 are the deliverable; this is a nice-to-have.
 `signer/agent.enclave.base-sepolia.json` is the config of the account that
-ran in the run record below (its keys exist in one M1's enclave only, so on
-another Mac it serves as a template: replace both public keys and drop
-`account`).
+ran in the run record below, as it stands today: the agent key is in one
+M1's enclave, the owner key has moved to a YubiKey (the update in section
+12). On another Mac it serves as a template: set `owner` and `agent` to your
+keys, replace both public keys and drop `account`.
 
 ## 9. Troubleshooting
 
@@ -184,7 +186,7 @@ another Mac it serves as a template: replace both public keys and drop
 | `swiftc failed to compile` | Swift / SDK older than the shim assumes | send the log (the Swift error is in it); `xcrun swiftc --version` is in step 2 |
 | `ld: library not found for -lswift…` / `Undefined symbols … swift` | Swift runtime libraries not found by the linker | send the log |
 | `no Secure Enclave on this Mac` | Intel without T2, or a virtual machine | run on another Mac; `uname -m` should print `arm64` |
-| `open: …` on `key show` / `vector` | the blob is not from this Mac's enclave (copied, or the Mac was reset) | `key create` a new key |
+| `open: …` on `key show` / `vector` | the blob is not from this Mac's enclave (copied, or the Mac was reset) | delete the blob file `~/Library/Application Support/tpm_sign/enclave/<label>.se` by hand (`key evict` has to open the key first, and cannot), then `key create`; or `key create` under another label |
 | `a key labelled … already exists` | an earlier run left the key | skip `key create`, or `key evict --enclave <label>` first |
 | `verify` prints `INVALID` | wrong file or a mangled copy | rerun step 7 and send the log |
 
@@ -199,7 +201,7 @@ exit        # ends `script`; the log is ~/tpm_sign-mac.log
 It must contain, in order:
 
 1. the environment block from step 2 (macOS, chip, Swift, `rustc`);
-2. step 4 — `test result: ok. 1 passed`;
+2. step 4 — the `test result:` lines;
 3. step 5 — both commands ending in `Finished` (or the full error);
 4. step 6 — `enclave_key_signs_and_verifies ... ok`;
 5. step 7 — `key create` and `key show` with the same `x`, `y`, the
@@ -545,8 +547,8 @@ recover ([tx](https://sepolia.basescan.org/tx/0x4cd09250b48adf81cff6f255153f7651
 set-root ([tx](https://sepolia.basescan.org/tx/0xa345eed28b1d55fce353e7f2156dd64c304f947cbefb3ceae58bedb590642c75)),
 the new owner's first root operation ([tx](https://sepolia.basescan.org/tx/0xe0a1748d43153ff08180bbbd2209dcdf6ef8b370c4f10aab47c52fda583d6fa2)).
 The retired owner key (`tpm_sign-owner`, still in the enclave) signs
-nothing the account accepts any more; the committed config names
-`tpm_sign-owner2`.
+nothing the account accepts any more; the config committed then named
+`tpm_sign-owner2` (since 2026-11-10 the owner is a YubiKey, section 12).
 
 ### Also run
 

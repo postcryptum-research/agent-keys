@@ -10,9 +10,9 @@
 `signer/crates/hw-signer/src/windows_tpm.rs` keeps a P-256 key inside the
 TPM through CNG's **Microsoft Platform Crypto Provider** — the key store
 every Windows 11 machine has — and signs digests with it. It was written on
-Linux and type-checked for `x86_64-pc-windows-msvc`, but has never run on
-Windows. The goal is to learn whether it builds, whether the provider
-accepts the key template, and whether its signatures verify.
+Linux and first ran on Windows on 2026-10-20 (the status above). The
+procedure below checks the same on the next machine: that it builds, that
+the provider accepts the key template, and that its signatures verify.
 
 Nothing here touches real funds. Steps 1–6 need the network only to
 download tools and crates.
@@ -67,7 +67,7 @@ Then print the environment (all text, no GUI windows):
 ```powershell
 cmd /c ver                      # Windows version
 tpmtool getdeviceinformation    # TPM version and manufacturer
-rustc --version                 # 1.85 or newer
+rustc --version                 # 1.94.1 or newer (alloy 2.5 needs it)
 cargo --version
 git --version
 ```
@@ -92,7 +92,7 @@ cargo build -p agent-signer
 cargo test
 ```
 
-Expected at the end: `test result: ok. 1 passed`. The first build compiles
+Expected: every `test result:` line says `ok` with `0 failed`. The first build compiles
 a few hundred crates (5–15 minutes).
 
 If the build stops in `aws-lc-sys`, see the troubleshooting table.
@@ -183,7 +183,7 @@ Stop-Transcript     # writes $HOME\tpm_sign-windows.log
 It must contain, in order:
 
 1. the environment block from step 2 (Windows version, TPM, `rustc`);
-2. step 4 — `test result: ok. 1 passed`;
+2. step 4 — the `test result:` lines;
 3. step 5 — both commands ending in `Finished` (or the full error);
 4. step 6 — `cng_key_signs_and_verifies ... ok`;
 5. step 7 — the `key show` JSON, the `p256_windows.json` content, and

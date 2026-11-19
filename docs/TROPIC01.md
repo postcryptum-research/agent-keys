@@ -46,7 +46,9 @@ Agent configs take `"agent": { "tropic01": { "port": "/dev/ttyACM0", "slot": 1 }
 ## On Base Sepolia (2026-10-20)
 
 Account `0xEdB645B14e2f952C5784e34949b58F0826fBc9E9`, config
-`signer/agent.tropic01.base-sepolia.json`:
+`signer/agent.tropic01.base-sepolia.json` (today that file carries a later
+permission and a YubiKey owner, so owner operations with it need
+`--features yubikey`):
 
 1. The owner key (TPM) rotated the agent permission `agn2` (PCR-sealed TPM
    key) → `trp1` (`0x74727031`, TROPIC01 slot 1, same `AgentPolicy`
