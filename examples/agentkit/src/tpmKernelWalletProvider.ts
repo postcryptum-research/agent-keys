@@ -1,5 +1,5 @@
 /**
- * Coinbase AgentKit wallet provider for a TPM_sign agent account.
+ * Coinbase AgentKit wallet provider for an agent-keys agent account.
  *
  * Every write goes through `agent-signer`: one call becomes one ERC-4337
  * UserOperation on the Kernel account, signed by the agent's P-256 key inside

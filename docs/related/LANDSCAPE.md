@@ -1,4 +1,4 @@
-# The field around TPM_sign
+# The field around agent-keys
 
 Researched 2026-10-23; §2a, §2d and §3 updated 2026-11-02 with the Circle
 Agent Wallets case and the I-HITL paper. Two questions, one page each half: *who else turns a
@@ -7,7 +7,7 @@ it cannot leak, with rules it cannot break*. For every entry: where the key
 lives, who enforces policy, and whether the project is open source. Marks:
 **V** verified at the source, **I** inferred.
 
-TPM_sign, for reference: key **born in a secure element** (Linux/Windows
+agent-keys, for reference: key **born in a secure element** (Linux/Windows
 TPM 2.0, Apple Secure Enclave, TROPIC01), P-256 verified on-chain through
 RIP-7212/EIP-7951; policy enforced **on-chain** by `AgentPolicy` (ERC-7579
 on Kernel v3.3: allow-list, value cap, budget, expiry, token budgets, x402);
@@ -56,7 +56,7 @@ where the vendor states it plainly.
 | Cubist CubeSigner | keys in secure hardware (HSM/enclave), policies per key (V, vendor) | the service | no |
 | Fireblocks, Cobo ("Pact"), OKX OnchainOS | MPC-TSS custody with policy engines; Cobo adds an intent/plan approval layer per agent task (V, Spark research page) | the custodian | no |
 
-How TPM_sign differs: the key is in hardware the **operator** owns (a €25
+How agent-keys differs: the key is in hardware the **operator** owns (a €25
 TPM or the Mac the agent runs on), not in a vendor's cloud; the policy is
 **on-chain** and verifiable by anyone, not a service's promise; there is no
 account to lose and no API key that is itself a secret worth stealing.
@@ -114,7 +114,7 @@ as the account's owner). None of them targets an *agent* with a mandate, and
 their keys are user-facing (biometric prompt per signature) — our agent key
 signs unattended, which is why the policy module exists.
 
-### 2d. Open-source projects closest to TPM_sign
+### 2d. Open-source projects closest to agent-keys
 
 | Project | What it does | Key | Policy | Size / activity (V, 2026-10-23) |
 |---|---|---|---|---|

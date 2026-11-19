@@ -1,4 +1,4 @@
-# Hardware worth adding to TPM_sign
+# Hardware worth adding to agent-keys
 
 A shopping list: devices beyond what the project already runs on that would
 take it further, with what each would add and what it costs. Prices are as

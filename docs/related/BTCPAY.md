@@ -1,4 +1,4 @@
-# BTCPay Server: the hot-wallet sweep of 2026-11, and what fits TPM_sign
+# BTCPay Server: the hot-wallet sweep of 2026-11, and what fits agent-keys
 
 *Researched 2026-11-02, from the press coverage of the incident and BTCPay's
 own documentation; §1 updated 2026-11-03 with BTCPay's incident post and the
@@ -6,7 +6,7 @@ Bitquery tally; since 2026-11-10 every BTCPay integration, including option E
 below, belongs to the owner's separate project `77ph/BTCPayTEE`, and this
 page is analysis only. The owner brought the case as "a project for integration
 lying on the surface". This page analyses every option, and marks which ones
-are in scope for TPM_sign (a commodity hardware key under an on-chain
+are in scope for agent-keys (a commodity hardware key under an on-chain
 mandate) and which belong to a different product. Marks: **V** verified at
 the linked source; **I** inferred from documentation or press, not tested.*
 
@@ -60,7 +60,7 @@ supports Bitcoin" (V, [docs](https://docs.btcpayserver.org/HardwareWalletIntegra
 
 So a merchant has two choices today: a key the admin can use, or no
 automation at all. That gap, "an unattended key that the host's admin cannot
-misuse", is exactly the problem TPM_sign is built around, for a different
+misuse", is exactly the problem agent-keys is built around, for a different
 chain.
 
 ## 3. Every option
@@ -68,8 +68,8 @@ chain.
 | | Option | What it takes | Who enforces the spending rule | In scope here? |
 |---|---|---|---|---|
 | A | **The Bitcoin (or Litecoin) hot key in a hardware element on the BTCPay host** | secp256k1 signing. TPM 2.0 and the Secure Enclave cannot (the project's original dead end, `../ARCHITECTURE.md`); a few elements can (NXP SE050, OnlyKey: I, `../OWNER_DEVICES_ru.md`) | **nobody**: an admin on the host drives the element as a signing oracle. Bitcoin has no on-chain policy for outputs or amounts (no covenants deployed as of 2026-11, I), so the element only stops key *export*, not theft | **No.** It would reproduce the incident with one extra step |
-| B | **Bitcoin signing inside a server TEE with a policy co-signer the host cannot bypass**: PSBT outputs only to the merchant's cold descriptor, per-period caps for refunds, expiry, owner approvals from a device the host cannot reach | a TEE on server hardware, attestation of the signer, a PSBT policy engine, Lightning aside | the TEE's policy, which the admin cannot change | **No, a different product:** the owner's [`77ph/BTCPayTEE`](https://github.com/77ph/BTCPayTEE) (private), which links back here for what it takes from TPM_sign. This page only records the requirements (§6) |
-| C | **Multisig with an external co-signer service** | a service that signs the second key under its own rules | the service | **No.** That is the hosted-custodian model of `LANDSCAPE.md` §2a; TPM_sign exists to avoid it |
+| B | **Bitcoin signing inside a server TEE with a policy co-signer the host cannot bypass**: PSBT outputs only to the merchant's cold descriptor, per-period caps for refunds, expiry, owner approvals from a device the host cannot reach | a TEE on server hardware, attestation of the signer, a PSBT policy engine, Lightning aside | the TEE's policy, which the admin cannot change | **No, a different product:** the owner's [`77ph/BTCPayTEE`](https://github.com/77ph/BTCPayTEE) (private), which links back here for what it takes from agent-keys. This page only records the requirements (§6) |
+| C | **Multisig with an external co-signer service** | a service that signs the second key under its own rules | the service | **No.** That is the hosted-custodian model of `LANDSCAPE.md` §2a; agent-keys exists to avoid it |
 | D | **Timelocked vault scripts** (hot key spends only after a delay the cold key can interrupt) | script design, a watcher, user education | the script, for timing only; no amount or destination rule | **No.** A real Bitcoin mitigation, but not ours, and it still needs someone watching |
 | E | **A BTCPay plugin for USDC on Base whose store wallet is a Kernel account** | a BTCPay plugin (C#), a Base RPC, `agent-signer` next to BTCPay, a mandate template | **the chain**: `AgentPolicy`, which the admin cannot change without the owner's hardware key | **Fits the architecture, but not built here.** On 2026-11-10 the owner moved the whole BTCPay integration, this option included, into [`77ph/BTCPayTEE`](https://github.com/77ph/BTCPayTEE); #13 closed. §4 and §5 stay as the design that project can take |
 | F | **Lightning** (the LND node's credentials, the other hot asset) | — | — | **No.** Out of scope for both products until the Bitcoin side exists |

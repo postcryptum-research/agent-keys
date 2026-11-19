@@ -1,4 +1,4 @@
-# Resilience: key breakage and loss (TPM_sign)
+# Resilience: key breakage and loss (agent-keys)
 
 *Russian original: [RESILIENCE_ru.md](RESILIENCE_ru.md).*
 

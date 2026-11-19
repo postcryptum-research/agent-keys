@@ -1,6 +1,6 @@
 # FAQ
 
-Practical questions about running an AI agent on a TPM_sign account. Each
+Practical questions about running an AI agent on an agent-keys account. Each
 answer says what works today and what does not yet; the project runs on Base
 Sepolia (testnet), and an internal review, not a professional audit, is all
 the code has had (see the last section).

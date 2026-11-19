@@ -1,7 +1,7 @@
 # ElizaOS on a hardware-signed agent account
 
 An [ElizaOS](https://github.com/elizaOS/eliza) agent whose only wallet is a
-TPM_sign account: every on-chain action becomes one ERC-4337 UserOperation
+agent-keys account: every on-chain action becomes one ERC-4337 UserOperation
 signed inside a TPM, Secure Enclave or TROPIC01 and checked on-chain by
 `AgentPolicy`. The plugin reuses the AgentKit example's bridge
 (`../agentkit/src/agentSigner.ts`, `agent-signer op send --json`).

@@ -1,10 +1,10 @@
-# Jinn (Jinn-Network/mono) → TPM_sign: key analysis and adaptation design
+# Jinn (Jinn-Network/mono) → agent-keys: key analysis and adaptation design
 *Russian original: [ADAPTATION_ru.md](ADAPTATION_ru.md).*
 
 Analysis of `Jinn-Network/mono`, branch `next`, commit `a981363` (2026-10-20). All paths below are relative to the root of that repository.
 Legend: **[V]** — verified by reading the code (file:line), **[I]** — inference/knowledge without direct verification in this repo.
 
-> **Status on the TPM_sign side (2026-10-20), updates §3 and §5 "Phase 0":**
+> **Status on the agent-keys side (2026-10-20), updates §3 and §5 "Phase 0":**
 > - **M1 is implemented** in `AgentPolicy` v3 (`contracts/src/AgentPolicy.sol`, Base Sepolia
 >   `0x460fD3bcfE23985Bcd5E05bbdb68Ec1789529E24`); a separate `SafeExecPolicy` module was not needed:
 >   an `(safe, execTransaction)` entry in the allow-list enables decoding of the Safe transaction; the inner
@@ -104,7 +104,7 @@ Legend: **[V]** — verified by reading the code (file:line), **[I]** — infere
 - stOLAS `_deployAndStake` creates a Safe with owner = distributor and does `swapOwner(..., agentInstance)` (`contracts/src/vendor/stolas/ExternalStakingDistributor.sol:349-381,440-462`) — an address of any type **[V]**. `RecoveryModule` changes owners via a module, without EOA checks **[V]**.
 - Staking checks `service.multisig.codehash == proxyHash` (Safe 1.3.0 proxy), threshold, number of instances (`contracts/src/vendor/registries/staking/StakingBase.sol:769-790`) — not the owner type **[V]**.
 - Mech: `isOperator(msg.sender)` == service multisig (`contracts/src/vendor/mech/OlasMech.sol:309-325`) **[V]**; Router V4: `_validateMechOperator(priorityMech, msg.sender)`, `reservation.party == msg.sender` (`contracts/src/staking/JinnRouterV4.sol:401,484,633`) **[V]** — all expect the Safe as `msg.sender`, which is preserved.
-- Kernel accepts ERC-721 (`contracts/lib/kernel/src/Kernel.sol:173` in TPM_sign) **[V]** → the ERC-8004 NFT can be owned by Kernel.
+- Kernel accepts ERC-721 (`contracts/lib/kernel/src/Kernel.sol:173` in agent-keys) **[V]** → the ERC-8004 NFT can be owned by Kernel.
 - Bonus: rotating the agent key in Kernel **does not change the address** of the agent instance / Safe owner. Currently in Jinn, rotating the EOA = re-registering the service (`bootstrap.ts:1560-1592`, error `agent_already_bound … rotate the agent EOA`).
 
 **Option B — Kernel instead of the Safe (itself as the service multisig). NOT VIABLE for the main loop.**
@@ -139,7 +139,7 @@ Injection points:
 
 ## 3. Security: allow-listing `Safe.execTransaction` blinds AgentPolicy
 
-`AgentPolicy._decodeSingleExecute` sees only the outer `(target=Safe, selector=execTransaction, value=0)` (`TPM_sign/contracts/src/AgentPolicy.sol:109-152`). What a compromised agent key can then do:
+`AgentPolicy._decodeSingleExecute` sees only the outer `(target=Safe, selector=execTransaction, value=0)` (`agent-keys/contracts/src/AgentPolicy.sol:109-152`). What a compromised agent key can then do:
 - **Take over the Safe permanently.** `execTransaction(to=Safe, addOwnerWithThreshold/swapOwner)` adds its own EOA owner. stOLAS `MultisigGuard.checkAfterExecution` checks only the guard slot, modules and the operator's bond, **but not the owners** (`contracts/src/vendor/stolas/MultisigGuard.sol:~118-200`) **[V]**. Such an owner will survive revocation of the agent key in Kernel.
 - **DELEGATECALL** (`operation=1`) into an arbitrary contract: writes to any Safe slots.
 - **Draining Safe assets.** ETH/OLAS and staking rewards arrive at the multisig. The outer `value=0`, so budget/maxValuePerOp do not trigger.
@@ -155,7 +155,7 @@ Injection points:
 - `safeTxGas == baseGas == gasPrice == 0`, `gasToken == refundReceiver == 0`;
 - `signatures` exactly 65 bytes, `r == account`, `s == 0`, `v == 1`.
 
-Pure calldata decoding + reading the module's own storage keyed by `account` fits within the ERC-7562 rules. Works in both stOLAS mode and self-bond. Cost: ~2-4 days of Solidity + tests on the TPM_sign side.
+Pure calldata decoding + reading the module's own storage keyed by `account` fits within the ERC-7562 rules. Works in both stOLAS mode and self-bond. Cost: ~2-4 days of Solidity + tests on the agent-keys side.
 
 Minimal inner allow-list for the main Jinn loop: Router V3/V4 `claimTask`, `createTask`, `claimDelivery`, `claimSolutionDelivery`, `prepareSolutionDelivery`, `claimEvaluation`, `claimVerdictDelivery`, `releaseAttempt`, `closeTask`, `refundUnusedTaskBudget`, `forfeitDeliveredReservation`; mech `deliverToMarketplace`; OLAS `approve(router, …)` (preferably with a spender restriction); ReputationRegistry `giveFeedback/appendResponse/revokeFeedback`; IdentityRegistry `setMetadata`. Source: `venue-base/src/writers/*.ts`, `verdict.ts`, `adapters/mech/contracts.ts` **[V]**.
 
@@ -188,13 +188,13 @@ A side issue, on our side. Gas on the agent path is paid from Kernel's deposit, 
 2. **A separate unfunded "attestation key" (secp256k1, software).** For task.v1/`signCanonical`/ERC-8128/legacy bridge/manifest. It holds no funds, is not a Safe owner, and is rotatable. Jinn verifiers compare the recovered address with the address **inside the same document** (`creator.agentEoa`/`signer`) and do not check it against the on-chain Safe owner **[V for integrity.ts:96; I — for all other verifiers]**. So the minimal patch is to substitute this key as the "agentEoa" in documents. It is desirable to bind it on-chain: Kernel writes `IdentityRegistry.setMetadata(agentId, "jinn.attestationKey", addr)`. Honestly: compromise of this key allows forging off-chain attestations (a reputational risk), but not money and not on-chain authority.
 3. **A narrow 1271 in Kernel is not needed.** Jinn verifiers do not call 1271 at all (ecrecover), and the ceremony forbids it. For the only on-chain consumer (setAgentWallet), option 1 is enough. A "hash-allowlist 1271" does not work for ERC-8128: there is a unique nonce per request.
 4. **P-256 as a second `algo`.** task.v1 already has `signature.algo: 'secp256k1'` (`operator/src/tasks/signing.ts:15`). One could add `algo: 'p256'` with the pubkey from ERC-8004 metadata and verification via `@noble/curves/p256` (or RIP-7212 on-chain). This is a Jinn protocol change in roughly 5 verifiers. Such signatures need a **separate** P-256 key in hardware (domain separation from the userOp key), and the CLI needs a `sign-digest` command.
-5. **Trust ceremony (native mode) — a blocker, requires an amendment to the Jinn spec.** Proposal: a "tx-ceremony" — Kernel sends an on-chain op with the digest of the SIWE message `[agent, did:key, Safe]`. Proof: inclusion in a block + `UserOperationEvent.sender == Kernel` + `Safe.isOwner(Kernel)`. The spec's objection about 1271 mutability does not apply here: transaction inclusion is immutable, and they already read `isOwner` from chain state. The alternative without a spec change — a ceremony EOA as a second Safe owner. It is **rejected**: with threshold 1 it fully controls the Safe. The Ed25519 role keys could be held in TROPIC01 (Ed25519 is supported by the chip **[I — per the datasheet, not verified in TPM_sign]**); TPM/Secure Enclave cannot do Ed25519.
+5. **Trust ceremony (native mode) — a blocker, requires an amendment to the Jinn spec.** Proposal: a "tx-ceremony" — Kernel sends an on-chain op with the digest of the SIWE message `[agent, did:key, Safe]`. Proof: inclusion in a block + `UserOperationEvent.sender == Kernel` + `Safe.isOwner(Kernel)`. The spec's objection about 1271 mutability does not apply here: transaction inclusion is immutable, and they already read `isOwner` from chain state. The alternative without a spec change — a ceremony EOA as a second Safe owner. It is **rejected**: with threshold 1 it fully controls the Safe. The Ed25519 role keys could be held in TROPIC01 (Ed25519 is supported by the chip **[I — per the datasheet, not verified in agent-keys]**); TPM/Secure Enclave cannot do Ed25519.
 
 ---
 
 ## 5. Patch plan (in order) and estimate
 
-### Phase 0 — our side (TPM_sign), before Jinn
+### Phase 0 — our side (agent-keys), before Jinn
 0.1 `agent-signer op send --json`: add `logs` (logs of only this userOp from `eth_getUserOperationReceipt` / the slice between `UserOperationEvent`s), `blockHash`, `nonce`, `success`. Print `userOpHash` in the JSON error (stderr already prints `userOpHash:` before waiting, `chain.rs:~347`). Preferably `--nonce-key`/`--nonce` for idempotent retries. ~1 day.
 0.2 `SafeExecPolicy` (M1) + forge tests: self-call, delegatecall, refund, MultiSendCallOnly, inner allow-list, inner value in budget. 2-4 days.
 0.3 Document that the root and agent paths use different Kernel v3 nonce keys **[I]**, and that parallel calls on the same path are serialized by the caller.

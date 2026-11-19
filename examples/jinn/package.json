@@ -1,7 +1,7 @@
 {
   "name": "tpm-sign-jinn-example",
   "private": true,
-  "description": "Jinn's Safe broadcaster port on a hardware-signed Kernel owner (TPM_sign)",
+  "description": "Jinn's Safe broadcaster port on a hardware-signed Kernel owner (agent-keys)",
   "license": "MIT",
   "scripts": {
     "demo": "tsx src/demo.ts",

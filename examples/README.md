@@ -2,7 +2,7 @@
 
 Each example takes an open-source agent stack and replaces its wallet layer
 — usually a private key in a file or a custodial MPC/TEE wallet — with a
-TPM_sign agent account: a P-256 key inside a TPM, Secure Enclave or
+agent-keys agent account: a P-256 key inside a TPM, Secure Enclave or
 TROPIC01, an ERC-4337 Kernel account on Base Sepolia, and an on-chain
 mandate (`AgentPolicy`) that bounds what a compromised agent host can do.
 

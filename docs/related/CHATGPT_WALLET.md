@@ -1,7 +1,7 @@
 # ChatGPT Wallet (OpenAI, 2026-11): how the card networks bound an agent that pays
 
 *Researched 2026-11-17. The question: how does this product solve the
-problem TPM_sign solves, an agent that pays within a mandate? Where is the
+problem agent-keys solves, an agent that pays within a mandate? Where is the
 mandate, where is the agent's credential, who can stop it. And the owner's
 hypothesis to test: perhaps it does not solve it at all, which would make
 it the next candidate for an adaptation like those in `examples/`.*
@@ -100,7 +100,7 @@ time of the sources (I).
 
 ## 4. Side by side
 
-| | ChatGPT Wallet at launch | TPM_sign |
+| | ChatGPT Wallet at launch | agent-keys |
 |---|---|---|
 | What is bounded | one purchase per approval | a standing mandate: targets, cap per operation, budget, expiry |
 | Who enforces | the card network and the issuer | the `AgentPolicy` contract |
@@ -140,7 +140,7 @@ Stated as open, not as faults found; none of it was tested.
 4. **Revocation by the user** was not readable (the help article). The
    issuer's and the network's revocation is documented.
 
-## 6. For TPM_sign
+## 6. For agent-keys
 
 - **In scope: nothing to build.** The product is closed, runs OpenAI's
   agents only, and holds no key that we could move into hardware from the

@@ -1,9 +1,9 @@
-# Jinn (Jinn-Network/mono) → TPM_sign: разбор ключей и дизайн адаптации
+# Jinn (Jinn-Network/mono) → agent-keys: разбор ключей и дизайн адаптации
 
 Разбор `Jinn-Network/mono`, ветка `next`, коммит `a981363` (2026-10-20). Все пути ниже относительно корня того репозитория.
 Легенда: **[V]** — проверено чтением кода (file:line), **[I]** — вывод/знание без прямой проверки в этом репо.
 
-> **Статус на стороне TPM_sign (2026-10-20), обновляет §3 и §5 «Фаза 0»:**
+> **Статус на стороне agent-keys (2026-10-20), обновляет §3 и §5 «Фаза 0»:**
 > - **M1 реализован** в `AgentPolicy` v3 (`contracts/src/AgentPolicy.sol`, Base Sepolia
 >   `0x460fD3bcfE23985Bcd5E05bbdb68Ec1789529E24`), отдельный модуль `SafeExecPolicy` не понадобился:
 >   запись `(safe, execTransaction)` в allow-list включает разбор Safe-транзакции; внутренний
@@ -103,7 +103,7 @@
 - stOLAS `_deployAndStake` создаёт Safe с owner = distributor и делает `swapOwner(..., agentInstance)` (`contracts/src/vendor/stolas/ExternalStakingDistributor.sol:349-381,440-462`) — адрес любого типа **[V]**. `RecoveryModule` меняет владельцев модулем, без EOA-проверок **[V]**.
 - Staking проверяет `service.multisig.codehash == proxyHash` (Safe 1.3.0 proxy), threshold, число инстансов (`contracts/src/vendor/registries/staking/StakingBase.sol:769-790`) — не тип владельца **[V]**.
 - Mech: `isOperator(msg.sender)` == service multisig (`contracts/src/vendor/mech/OlasMech.sol:309-325`) **[V]**; Router V4: `_validateMechOperator(priorityMech, msg.sender)`, `reservation.party == msg.sender` (`contracts/src/staking/JinnRouterV4.sol:401,484,633`) **[V]** — все ожидают Safe как `msg.sender`, что сохраняется.
-- Kernel принимает ERC-721 (`contracts/lib/kernel/src/Kernel.sol:173` в TPM_sign) **[V]** → ERC-8004 NFT может принадлежать Kernel.
+- Kernel принимает ERC-721 (`contracts/lib/kernel/src/Kernel.sol:173` в agent-keys) **[V]** → ERC-8004 NFT может принадлежать Kernel.
 - Бонус: ротация agent-ключа в Kernel **не меняет адрес** agent instance / владельца Safe. Сейчас в Jinn ротация EOA = перерегистрация сервиса (`bootstrap.ts:1560-1592`, ошибка `agent_already_bound … rotate the agent EOA`).
 
 **Вариант B — Kernel вместо Safe (сам как service multisig). НЕ ЖИЗНЕСПОСОБЕН для основного цикла.**
@@ -138,7 +138,7 @@ ScopedSigner.sendAllowedCall                               — наконец «
 
 ## 3. Безопасность: allow-list `Safe.execTransaction` ослепляет AgentPolicy
 
-`AgentPolicy._decodeSingleExecute` видит только внешний `(target=Safe, selector=execTransaction, value=0)` (`TPM_sign/contracts/src/AgentPolicy.sol:109-152`). Что тогда может скомпрометированный agent-ключ:
+`AgentPolicy._decodeSingleExecute` видит только внешний `(target=Safe, selector=execTransaction, value=0)` (`agent-keys/contracts/src/AgentPolicy.sol:109-152`). Что тогда может скомпрометированный agent-ключ:
 - **Захват Safe навсегда.** `execTransaction(to=Safe, addOwnerWithThreshold/swapOwner)` добавляет свой EOA-owner. stOLAS `MultisigGuard.checkAfterExecution` проверяет только guard-слот, модули и залог оператора, **но не владельцев** (`contracts/src/vendor/stolas/MultisigGuard.sol:~118-200`) **[V]**. Такой owner переживёт отзыв agent-ключа в Kernel.
 - **DELEGATECALL** (`operation=1`) в произвольный контракт: запись в любые слоты Safe.
 - **Вывод активов Safe.** ETH/OLAS, награды staking'а приходят на multisig. Внешний `value=0`, поэтому budget/maxValuePerOp не срабатывают.
@@ -154,7 +154,7 @@ ScopedSigner.sendAllowedCall                               — наконец «
 - `safeTxGas == baseGas == gasPrice == 0`, `gasToken == refundReceiver == 0`;
 - `signatures` ровно 65 байт, `r == account`, `s == 0`, `v == 1`.
 
-Чистое декодирование calldata + чтение собственного storage модуля по ключу `account` укладывается в правила ERC-7562. Работает и в stOLAS-режиме, и в self-bond. Стоимость: ~2-4 дня Solidity + тесты на стороне TPM_sign.
+Чистое декодирование calldata + чтение собственного storage модуля по ключу `account` укладывается в правила ERC-7562. Работает и в stOLAS-режиме, и в self-bond. Стоимость: ~2-4 дня Solidity + тесты на стороне agent-keys.
 
 Минимальный inner-allow-list для основного цикла Jinn: Router V3/V4 `claimTask`, `createTask`, `claimDelivery`, `claimSolutionDelivery`, `prepareSolutionDelivery`, `claimEvaluation`, `claimVerdictDelivery`, `releaseAttempt`, `closeTask`, `refundUnusedTaskBudget`, `forfeitDeliveredReservation`; mech `deliverToMarketplace`; OLAS `approve(router, …)` (лучше с ограничением spender); ReputationRegistry `giveFeedback/appendResponse/revokeFeedback`; IdentityRegistry `setMetadata`. Источник: `venue-base/src/writers/*.ts`, `verdict.ts`, `adapters/mech/contracts.ts` **[V]**.
 
@@ -187,13 +187,13 @@ ScopedSigner.sendAllowedCall                               — наконец «
 2. **Отдельный незафондированный «attestation key» (secp256k1, софт).** Для task.v1/`signCanonical`/ERC-8128/legacy bridge/manifest. Он не владеет средствами, не owner Safe, вращаем. Верификаторы Jinn сравнивают recover с адресом **внутри того же документа** (`creator.agentEoa`/`signer`) и не сверяют его с on-chain владельцем Safe **[V для integrity.ts:96; I — для всех остальных верификаторов]**. Значит, минимальный патч: подставить этот ключ как «agentEoa» в документах. Желательно связать его on-chain: Kernel пишет `IdentityRegistry.setMetadata(agentId, "jinn.attestationKey", addr)`. Честно: компрометация этого ключа даёт подделку off-chain аттестаций (репутационный риск), но не деньги и не on-chain полномочия.
 3. **Узкий 1271 в Kernel не нужен.** Jinn-верификаторы 1271 не вызывают вовсе (ecrecover), ceremony его запрещает. Для единственного on-chain потребителя (setAgentWallet) хватает варианта 1. «Hash-allowlist 1271» не годится для ERC-8128: там уникальный nonce на каждый запрос.
 4. **P-256 как второй `algo`.** В task.v1 уже есть `signature.algo: 'secp256k1'` (`operator/src/tasks/signing.ts:15`). Можно добавить `algo: 'p256'` с pubkey из ERC-8004 metadata и проверкой через `@noble/curves/p256` (или RIP-7212 on-chain). Это изменение протокола Jinn примерно в 5 верификаторах. Для таких подписей нужен **отдельный** P-256 ключ в железе (доменное разделение с ключом userOp), и CLI нужна команда `sign-digest`.
-5. **Trust ceremony (native mode) — блокер, нужна поправка спеки Jinn.** Предложение: «tx-ceremony» — Kernel отправляет on-chain op с digest'ом SIWE-сообщения `[agent, did:key, Safe]`. Доказательство: включение в блок + `UserOperationEvent.sender == Kernel` + `Safe.isOwner(Kernel)`. Возражение спеки про мутабельность 1271 сюда не относится: включение транзакции неизменно, а `isOwner` они уже читают из chain state. Альтернатива без изменения спеки — ceremony-EOA как второй owner Safe. Она **отвергнута**: при threshold 1 он полностью контролирует Safe. Ed25519 роль-ключи можно было бы держать в TROPIC01 (Ed25519 поддерживается чипом **[I — по даташиту, в TPM_sign не проверено]**); TPM/Secure Enclave Ed25519 не умеют.
+5. **Trust ceremony (native mode) — блокер, нужна поправка спеки Jinn.** Предложение: «tx-ceremony» — Kernel отправляет on-chain op с digest'ом SIWE-сообщения `[agent, did:key, Safe]`. Доказательство: включение в блок + `UserOperationEvent.sender == Kernel` + `Safe.isOwner(Kernel)`. Возражение спеки про мутабельность 1271 сюда не относится: включение транзакции неизменно, а `isOwner` они уже читают из chain state. Альтернатива без изменения спеки — ceremony-EOA как второй owner Safe. Она **отвергнута**: при threshold 1 он полностью контролирует Safe. Ed25519 роль-ключи можно было бы держать в TROPIC01 (Ed25519 поддерживается чипом **[I — по даташиту, в agent-keys не проверено]**); TPM/Secure Enclave Ed25519 не умеют.
 
 ---
 
 ## 5. План патчей (по порядку) и оценка
 
-### Фаза 0 — наша сторона (TPM_sign), до Jinn
+### Фаза 0 — наша сторона (agent-keys), до Jinn
 0.1 `agent-signer op send --json`: добавить `logs` (логи только этого userOp из `eth_getUserOperationReceipt` / срез между `UserOperationEvent`), `blockHash`, `nonce`, `success`. Печатать `userOpHash` в JSON-ошибке (stderr уже печатает `userOpHash:` до ожидания, `chain.rs:~347`). Желательно `--nonce-key`/`--nonce` для идемпотентных ретраев. ~1 день.
 0.2 `SafeExecPolicy` (M1) + forge-тесты: self-call, delegatecall, refund, MultiSendCallOnly, inner allow-list, inner value в budget. 2-4 дня.
 0.3 Документировать, что root и agent пути имеют разные nonce-key Kernel v3 **[I]**, а параллельные вызовы одного пути сериализуются вызывающей стороной.

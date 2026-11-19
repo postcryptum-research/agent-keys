@@ -99,7 +99,7 @@ cd agent-keys/signer
 ```
 
 If the folder already exists from an earlier attempt:
-`cd ~/TPM_sign && git pull && git submodule update --init --recursive && cd signer`.
+`cd ~/agent-keys && git pull && git submodule update --init --recursive && cd signer`.
 
 ## 4. Sanity build (no hardware)
 
