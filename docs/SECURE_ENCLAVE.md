@@ -94,8 +94,8 @@ git --version
 
 ```sh
 cd ~
-git clone --recursive https://github.com/77ph/TPM_sign.git
-cd TPM_sign/signer
+git clone --recursive https://github.com/postcryptum-research/agent-keys.git
+cd agent-keys/signer
 ```
 
 If the folder already exists from an earlier attempt:

@@ -97,7 +97,7 @@ cd mono && git checkout 151a464aa && git am /path/to/TPM_sign/examples/jinn/patc
 // ~/.jinn-operator/config.json
 "signer": {
   "kind": "agent-signer",
-  "bin": "/path/to/TPM_sign/signer/target/release/agent-signer",
+  "bin": "/path/to/agent-keys/signer/target/release/agent-signer",
   "config": "/path/to/agent.json",          // its mandate allows (safe, execTransaction) + the router / mech calls
   "account": "0x…Kernel",                     // the agent's Kernel account (agent-signer derives / deploys it)
   "envFile": "/path/to/.env",

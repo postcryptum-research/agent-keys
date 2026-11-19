@@ -205,5 +205,5 @@
   </g>
   <text x="1160" y="1385" font-size="13" text-anchor="end" fill="#64748b">Linux TPM, Secure Enclave and TROPIC01</text>
   <text x="1160" y="1403" font-size="13" text-anchor="end" fill="#64748b">keys signed live on Base Sepolia</text>
-  <text x="1160" y="1445" font-size="14" text-anchor="end" fill="#64748b">github.com/77ph/TPM_sign</text>
+  <text x="1160" y="1445" font-size="14" text-anchor="end" fill="#64748b">github.com/postcryptum-research/agent-keys</text>
 </svg>

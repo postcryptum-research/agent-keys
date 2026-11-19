@@ -1,0 +1,11 @@
+title = "agent-keys secret scan"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Public, non-secret data verified 2026-11-19"
+regexes = [
+  '''0x036CbD53842c5426634e7929541eC2318f3dCF7e''',            # Base Sepolia USDC token address (public)
+  '''\b[0-9A-Z]{5}-[0-9A-Z]{5}-[0-9A-Z]{5}-[0-9A-Z]{5}\b''',   # PUBLIC key fingerprints
+]
