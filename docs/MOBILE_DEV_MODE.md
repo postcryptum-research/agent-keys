@@ -18,7 +18,7 @@ inferred, to be confirmed in the phase named.
 | Possible without any vendor account | **yes** | **no**. The minimum is a free personal Apple Account. There is no company, payment or store, but Apple is still involved |
 | Signing | our own self-signed key | Apple's free "Personal Team" development certificate |
 | Install | `adb install` from the laptop | Xcode, from a Mac, onto a phone in Developer Mode |
-| Key attestation | **full** (Google's hardware attestation chain, our certificate digest pinned); verifiable offline, but the revocation check and some phones' certificate refresh need internet occasionally (§2.4) | **none** (no App Attest) |
+| Key attestation | **full** (Google's hardware attestation chain, our certificate digest checked; none is pinned in the CLI yet, §2.2); verifiable offline, but the revocation check and some phones' certificate refresh need internet occasionally (§2.4) | **none** (no App Attest) |
 | Lifetime of an install | unlimited | **7 days**, then rebuild and reinstall |
 | Devices | any number | 3 per Apple Account |
 | Fit | development and pilots; the trust-minimising path | development and the developer's own phone only |
@@ -41,9 +41,9 @@ own iPhone, not for distribution.
 | Item | What | Mark |
 |---|---|---|
 | Laptop | Linux, macOS or Windows; the one that runs the CLI is fine | — |
-| Phone | Android 11 (API 30) or later, which `setUserAuthenticationParameters` needs (D7); StrongBox preferred, the TEE accepted. User verification is `BIOMETRIC_STRONG` by default, or `BIOMETRIC_STRONG \| DEVICE_CREDENTIAL` with the PIN opt-in (D2); development builds should exercise both | V (design D7, D2) |
+| Phone | Android 11 (API 30) or later, which `setUserAuthenticationParameters` needs (D7); StrongBox preferred, the TEE accepted. User verification is `BIOMETRIC_STRONG` by default, or `BIOMETRIC_STRONG \| DEVICE_CREDENTIAL` with the PIN opt-in (D2); development builds should exercise both. As built (2026-11): the app creates biometric-only keys; the PIN opt-in is not in the app yet, only in the laptop's attestation check | V (design D7, D2) |
 | Connection | a USB cable, or Wi-Fi debugging (`adb pair`, Android 11+) | V |
-| Software | a JDK; the Android command-line tools (`sdkmanager`, `platform-tools` for `adb`, `build-tools` for `apksigner`); the NDK; Rust with `aarch64-linux-android` and `armv7-linux-androideabi`; `cargo-ndk`; `uniffi-bindgen`; Gradle. All free downloads, no account (the SDK licence is accepted in `sdkmanager`) | I, P0 |
+| Software | a JDK; the Android command-line tools (`sdkmanager`, `platform-tools` for `adb`, `build-tools` for `apksigner`); the NDK; Rust with `aarch64-linux-android` (`armv7-linux-androideabi` only from P5: `build-core.sh` builds arm64 alone); `cargo-ndk`; Gradle, through the wrapper in the repository. The bindings generator (`uniffi-bindgen`) is built from `owner-core` itself. All free downloads, no account (the SDK licence is accepted in `sdkmanager`) | I, P0 |
 | Signing key | a self-signed certificate made with `keytool` | V (Android signs only with self-signed certificates) |
 
 ### 2.2 Signing: our own key
@@ -52,9 +52,19 @@ own iPhone, not for distribution.
   secp256r1 -validity 10000 -keystore owner-app.jks …`.
 - **Sign:** `apksigner sign --ks owner-app.jks app.apk`. Use APK Signature
   Scheme v2/v3.
-- **Pin it.** The CLI pins the certificate's SHA-256 digest. The key
+  - Not wired up yet (2026-11): the repository builds only the debug APK,
+    signed with the local debug keystore, and Gradle refuses a release
+    build while the application id is provisional
+    (`mobile/android/app/build.gradle.kts`).
+- **Pin it.** The CLI checks the certificate's SHA-256 digest. The key
   attestation names it in `attestationApplicationId` (design §5.2), so the
   laptop knows the key belongs to **our** build, signed by **us**.
+  - No release digest is pinned yet (`PINNED_SIGNING_DIGESTS` in
+    `agent-signer/src/attestation.rs` is empty). A developer names the
+    certificate of their own build with `key create --phone
+    --android-app-digest <sha256>`; without it the enrollment is refused,
+    with the digest printed. A `distribution` build of the CLI does not
+    compile until a digest is pinned.
 - **Keep the signing key on a token. This is recommended for any real
   use.** `apksigner` can sign through a PKCS#11 provider, for example a
   YubiKey's PIV slot (sound per the audit; the setup is I, P1). The app's
@@ -169,7 +179,7 @@ Team": no company, no payment, no store. Excluded:
 |---|---|---|
 | A Mac | Xcode runs only on macOS. Apple silicon matches our Secure Enclave shim, verified on a Mac (`SECURE_ENCLAVE.md`) | V |
 | iPhone | iOS 16 or later (D7), with **Developer Mode** on (Settings → Privacy & Security; needs a restart) | V, P4 |
-| Software | Xcode (free); Rust with `aarch64-apple-ios` (and the simulator target); `uniffi-bindgen` | V, P4 |
+| Software | Xcode (free); `xcodegen` (the project is generated from `mobile/ios/project.yml`); Rust with `aarch64-apple-ios` and `aarch64-apple-ios-sim`. The bindings generator (`uniffi-bindgen`) is built from `owner-core` itself | V, P4 |
 | Account | a free personal Apple Account signed in to Xcode | V |
 
 ### 3.3 The Personal Team's limits
@@ -192,6 +202,10 @@ reliably (I). So plan B uses what the Mac backend already does (V,
   access control of `.privateKeyUsage` and `.biometryCurrentSet`, or
   `.privateKeyUsage` and `.userPresence` (biometry or passcode) with the
   PIN opt-in (D2). Development builds should exercise both.
+  - The Mac backend's key has `.privateKeyUsage` only; the biometric flag
+    is the phone's addition.
+  - As built (2026-11): the app creates the key with `.privateKeyUsage`
+    and `.biometryCurrentSet`; the PIN opt-in is not in the app yet.
 - **Store** its `dataRepresentation` in the app's own files. That is an
   encrypted handle that only this phone's Secure Enclave can use, not the
   key itself.
@@ -221,15 +235,19 @@ No App Attest. A Personal Team build would be category 3, "development",
 anyway, which PR #6 says the CLI must not trust for real accounts. So:
 - the enrollment uses `--allow-no-attestation` (design §8.2);
 - **the handover check from a third device (T2) is mandatory**;
-- the CLI marks such enrollments "no attestation — development mode".
+- the CLI marks such enrollments: it prints `attestation    none — the
+  laptop cannot place this key in hardware`, calls the security level "the
+  phone's own word", and records `"attestation": "none"` in the config.
 
 ## 4. Certificates and transport
 
 Plan B needs **one self-signed certificate**: the Android signing
 certificate (§2.2). Nothing else needs one:
-- **The LAN session** is plain HTTP. Its integrity comes from the QR
-  commitment, and every signature is checked against the owner's public
-  key (design §3). No TLS, so no certificate to install on the phone.
+- **The LAN session** is plain HTTP. Its integrity comes from the QR: a
+  commitment to the request, and a secret that authenticates every answer
+  and the laptop's confirmation. Every signature is also checked against
+  the owner's public key (design §3). No TLS, so no certificate to install
+  on the phone.
 - **iOS** uses the certificate Xcode issues to the Personal Team.
 
 ## 5. Plan A and plan B side by side

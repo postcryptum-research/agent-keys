@@ -8,8 +8,8 @@ passkeys all expose hardware-protected ECDSA keys on **NIST P-256
 secp256k1 + `ecrecover`. There is no recovery id `v` for a P-256 signature,
 so a hardware key can never own an EOA. The original prototype hit exactly
 this wall (`git log`: `f6e2874 "my laptop don't have a secp256k1 in TPM
-2.0"`; `src/sign.py: compute_eth_v` tried secp256k1 recovery over a P-256
-signature).
+2.0"`; `legacy/src/sign.py: compute_eth_v` tried secp256k1 recovery over a
+P-256 signature).
 
 So we stop trying to make the chip own an EOA. **The chip stays a P-256
 signer; the account becomes a smart account** whose `validateUserOp` verifies
@@ -31,10 +31,14 @@ general-purpose machines, and the "device" is an AI agent.
 ## Goals
 
 - The agent's signing key never exists as a file. It is generated inside the
-  hardware and never exported. The `key.priv` blobs on disk are TPM-wrapped
-  and useless outside the chip that wrapped them.
+  hardware and never exported. A TPM key is persisted at a handle inside the
+  chip; the only key blobs on disk are the Secure Enclave's per-label files,
+  wrapped by the enclave and useless outside it (the `key.priv` blobs were
+  the legacy prototype's).
 - No third party holds signing authority. The sole on-chain owner of the
-  account is the hardware public key. No MPC, no custodial gateway. The
+  account is the owner's public key — a hardware key, or, for the owner and
+  the recovery key only, an encrypted key file on removable media
+  (`docs/KEY_POLICY.md`). No MPC, no custodial gateway. The
   bundler and paymaster are untrusted infrastructure: they can delay or drop
   a request, they cannot forge one or move funds.
 - Cross-platform. One account, one trait, one backend per platform.
@@ -51,9 +55,9 @@ Therefore the **smart account's policy is the containment boundary**:
 | Control | Enforced by | Protects against |
 |---|---|---|
 | Key cannot be copied or extracted | TPM / Secure Enclave | key theft, impersonating the agent from another machine |
-| Per-operation and daily value limits | account policy module | a compromised host draining the account |
+| Per-operation value cap and a total budget per permission (time-windowed permissions make a schedule) | account policy module | a compromised host draining the account |
 | Target contract / selector allow-list | account policy module | the agent acting outside its mandate |
-| Session keys with TTL and budget | account validator | the agent holding root authority at all times |
+| Session keys with TTL and budget | Kernel permission (`P256Signer` + `AgentPolicy`) | the agent holding root authority at all times |
 | Rotation / revocation under a separate factor | account root path | losing control when a host is retired or breached |
 
 Chip and policy answer different questions. The chip guarantees nobody else
@@ -80,8 +84,11 @@ providers sell as a service, without the provider.
  └────────────────────────────────┘
 ```
 
-The device never holds the native token: a paymaster sponsors eligible
-operations, following the reference design.
+The diagram shows the first backends; the table below lists them all. The
+device need not hold the native token: a paymaster sponsors eligible
+operations, following the reference design. An account may also pay its own
+gas (`account fund`); the policy then counts each operation's maximum gas
+cost against the budget.
 
 ## The signer trait
 
@@ -91,10 +98,16 @@ operations, following the reference design.
 pub trait HardwareSigner {
     fn public_key(&self) -> Result<PublicKey, SignerError>;        // (x, y)
     fn sign_digest(&self, digest: &[u8; 32]) -> Result<Signature, SignerError>; // (r, s), low-s
+    // defaults: a chip signs the operation's hash and needs nothing more
+    fn sign_user_op(&self, ctx: &UserOpContext<'_>) -> Result<Signature, SignerError>;
+    fn needs_request(&self) -> bool;
 }
 ```
 
-A digest goes in, `(r, s)` comes out. Everything above it — UserOperation
+A digest goes in, `(r, s)` comes out. That is all a chip sees; a signer with
+a human behind it (the owner's phone) refuses bare digests and receives the
+whole operation as an `owner-core` sign request, shows it, and signs only
+what it showed. Everything above it — UserOperation
 building, signature packing, bundler I/O — is platform-neutral. Backends are
 cargo features so a machine compiles only the one it has:
 
@@ -105,6 +118,12 @@ cargo features so a machine compiles only the one it has:
 | `secure-enclave` | macOS | Secure Enclave via CryptoKit (Swift shim); the enclave-wrapped key blob is kept in a file per label — no keychain entitlements needed | done — run on an Apple M1 Mac (2026-10-21): hardware test, vector `p256_enclave.json` verified by the Solidity tests, and an account with both keys in the enclave on Base Sepolia — see `docs/SECURE_ENCLAVE.md` |
 | `windows-tpm` | Windows | TPM 2.0 via CNG's Platform Crypto Provider, keys by name | done — run on a Windows 11 PC: hardware test, key in the TPM, vector `p256_windows.json` verified by the Solidity tests — see `docs/WINDOWS.md` |
 | `tropic01` | any (USB) | Tropic Square TROPIC01 USB DevKit — an open-architecture secure element; P-256 keys generated in an ECC slot, one secure session per operation over the vendor's Rust SDK (`tropicsquare/libtropic-rs`) | done — hardware test, vector `p256_tropic01.json`, and an agent operation on Base Sepolia — see `docs/TROPIC01.md` |
+| `yubikey-piv` (`yubikey` in `agent-signer`) | any (USB) | YubiKey 5 PIV slot over PC/SC; keys are generated with ykman, the PIN is asked at use | done — vector `p256_yubikey.json` — see `docs/YUBIKEY.md` |
+
+Two key holders are not cargo features of `hw-signer`: an encrypted key file
+(`agent-signer/src/keyfile.rs`; owner and recovery keys only) and the
+owner's phone (`agent-signer/src/phone.rs` with the shared core
+`mobile/owner-core`; vector `p256_android.json`; `docs/MOBILE_OWNER_DESIGN.md`).
 
 Signatures are normalized to low-s off-chip: `(r, n − s)` is equally valid,
 RIP-7212 accepts either, and the Solady verifier rejects high-s to kill
@@ -114,16 +133,23 @@ malleability.
 
 ```
 signer/        Rust workspace: hw-signer (trait + backends), agent-signer (CLI)
-contracts/     Foundry: P256 validator, account, paymaster; tests consume
-               JSON vectors produced by the Rust CLI
+contracts/     Foundry: P256 validators (root, recovery), permission signer,
+               agent policy, Safe nonce assertion, paymaster, demo targets
+               (the account itself is ZeroDev Kernel); tests consume JSON
+               vectors produced by the Rust CLI
+mobile/        phone owner apps (android, ios) and their shared Rust core
+               (owner-core), which the CLI also uses
+examples/      agent framework integrations
+scripts/       helper scripts
 docs/          this document and design notes
-src/, tests/   legacy Python prototype — kept as reference until the Rust
-               CLI reaches parity, then removed
+legacy/        legacy Python prototype (src/, tests/) — kept as reference
+               until the Rust CLI reaches parity, then removed
 ```
 
 Secrets (RPC URLs, the testnet gas wallet) live **outside** the repository
-in `../.env` and `../gas-wallet.key`; `.gitignore` and `.git/info/exclude`
-refuse them if they are ever copied in.
+in `../.env` and `../gas-wallet.key`. `.gitignore` refuses `.env`,
+`.env.*` and `*.key` if they are ever copied in; keep them outside the
+repository all the same.
 
 ## Development
 
@@ -168,7 +194,7 @@ Lessons that cost real debugging time:
   software backend and inside a TPM 2.0 (Intel PTT) both verify on-chain
   through RIP-7212 in `forge test`; a `P256.verifySignature` call costs about
   11k gas including test overhead. The secp256k1-recovery path in
-  `src/sign.py` is obsolete.
+  `legacy/src/sign.py` is obsolete.
 - **Phase 1 — on-chain.** *1a done (2026-10-20):*
   `contracts/src/P256Validator.sol`, an ERC-7579 validator on ZeroDev Kernel
   v3.3. `forge test` runs the full ERC-4337 path — EntryPoint v0.7 →
@@ -184,17 +210,26 @@ Lessons that cost real debugging time:
   cap and budget, expiry, and that the agent key is rejected on the root
   path while the owner key is not. Permission signature format:
   `0xff ‖ r ‖ s`; nonce key: `0x00 ‖ 0x02 ‖ id(4) ‖ 0×16 ‖ nonceKey(2)`.
+  Today `AgentPolicy` also accepts a batch `execute` (default exec type),
+  holds a time window `[validAfter, validUntil]` and per-token limits,
+  passes calls through an owned Safe, refuses the account, its EntryPoint
+  and itself as targets, and makes one ERC-1271 exception: registered x402
+  authorizations (`docs/ERC1271.md`).
   *1c done:* `script/Deploy.s.sol` deploys the three modules and a demo
   target through the canonical CREATE2 deployer (salt 0) and records them in
   `deployments/<chainid>.json`; Kernel v3.3, its factory and EntryPoint v0.7
-  are ZeroDev's and eth-infinitism's canonical deployments.
+  are ZeroDev's and eth-infinitism's canonical deployments. Today the script
+  also deploys `P256RecoveryValidator`, `SafeNonceAssert` and
+  `WhitelistPaymaster`.
 - **Phase 2 — off-chain. Done (2026-10-20).** `agent-signer` derives the
   account from the two hardware public keys and the mandate (`agent.*.json`),
   builds the `PackedUserOperation` with `alloy`, fetches `userOpHash` from the
   EntryPoint, signs it through the `HardwareSigner` trait, frames the
   signature for the root or the permission path, and submits
   `EntryPoint.handleOps` itself from a gas wallet — no bundler, no paymaster,
-  no custodian. First on-chain run on Base Sepolia: account
+  no custodian. (Today the hash is computed locally by `owner-core` and
+  compared with `EntryPoint.getUserOpHash` before anything is signed.)
+  First on-chain run on Base Sepolia: account
   `0xEdB645B14e2f952C5784e34949b58F0826fBc9E9`, tx
   `0x785332105fd8085d50e542ff9f677eba964399bbc0d71333ddd71fed03e669bb`
   (deploys the account and executes the agent's call in one operation).
@@ -217,7 +252,12 @@ Lessons that cost real debugging time:
     `0xe314e95bef9b891c48429aD127D79e601240BB52`; a sponsored agent
     operation (tx `0xae73b53d17b74ad8c7b6d65f8cc98abd40c513a808b09764828dff8a3a5f2106`)
     left the account's balance untouched. `agent-signer paymaster
-    deposit|sponsor` and `--sponsored` on `op send` / `demo`.
+    deposit|sponsor` and `--sponsored` on `op send` / `demo`. Today that
+    address is recorded as `whitelistPaymasterV1`; the current paymaster
+    (`whitelistPaymaster` in `deployments/84532.json`,
+    `0x50Ab706dA586895D5775a1e51DcF1a66eAaAE001`) gives each account a gas
+    budget and a per-operation cap (`paymaster sponsor --budget
+    --max-per-op`), and `paymaster stake` exists.
   - *3.3 done (2026-10-20).* **Rotation and revocation:** root operations
     signed by the owner key — `permission revoke` uninstalls the agent
     permission; `permission rotate` replaces it in one batch (uninstall the
@@ -239,14 +279,18 @@ Lessons that cost real debugging time:
     `contracts/test/GasBenchmark.t.sol`. P-256 verification via RIP-7212
     costs the same as `ecrecover` (7,433 vs 7,402 gas), so hardware keys
     carry no gas penalty; the full agent path (real EntryPoint, Kernel,
-    policy + signer, paymaster) adds about 77k gas per operation; large
-    payloads are dominated by data cost, as the paper found.
+    policy + signer, paymaster) adds about 77k gas per operation (about 78k
+    with today's policy); large payloads are dominated by data cost, as the
+    paper found.
   - *3.5 done (2026-10-20): bundler RPC as a drop-in.* `--bundler <url>` or
     `BUNDLER_URL` routes an operation through an ERC-4337 bundler: the
     operation is serialized in the v0.7 unpacked form, the bundler's
     `eth_estimateUserOperationGas` replaces our limits (the hash covers them,
     so the hardware signs a second time), `eth_sendUserOperation`, then
-    `eth_getUserOperationReceipt` until inclusion. Pimlico's public endpoint
+    `eth_getUserOperationReceipt` until inclusion. (Today the estimate runs
+    with a placeholder signature, so the hardware signs once, over the final
+    gas fields — a second time only if the bundler raises its fee floor.)
+    Pimlico's public endpoint
     (no key, 20 requests/minute) accepted an agent operation — its ERC-7562
     simulation passed `P256Signer` and `AgentPolicy` — and included it: tx
     `0xb42e30ae72ac8d676c33198b65ae85e8ef06936d15b28cda5832ed4cc0527675`,
@@ -264,7 +308,6 @@ Lessons that cost real debugging time:
     `0x44bb4d6625e5ff3548273fc2f3009eb4e30fde333da8a78ef6fa74d8809bb133`),
     and the chip signed a sponsored agent operation under `AgentPolicy`
     (tx `0x6c1060b43c1a40e3d123fe766adad914edccac8e9596cc1dc658617cf53622b5`).
-  - *later:* Windows CNG backend's first run.
 
   Lessons from 3.3: a fixed `callGasLimit` is a trap — an execution phase
   that runs out of gas reverts with *no data*, the outer `handleOps`
@@ -287,5 +330,7 @@ Lessons that cost real debugging time:
 
 ## License
 
-MIT. Dependencies are MIT-compatible: Solady (MIT), ZeroDev Kernel (MIT),
-alloy (MIT / Apache-2.0), tss-esapi (Apache-2.0).
+`signer/` is Apache-2.0 (`signer/LICENSE`, `signer/NOTICE`); contracts,
+docs, examples, scripts and legacy are MIT (`LICENSE`); `mobile/` is
+pending. Dependencies keep their own licenses: Solady (MIT), ZeroDev Kernel
+(MIT), alloy (MIT / Apache-2.0), tss-esapi (Apache-2.0).

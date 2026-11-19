@@ -38,10 +38,13 @@ hardware-bound key anywhere in the repository (grep for `Keystore`,
 `SecureEnclave`, `SecKey`, `StrongBox`: nothing). The only platform secure
 storage used is the optional biometric password cache above.
 
-That matters for comparison with agent-keys: here the agent's and owner's keys
-are **born inside** a TPM, Secure Enclave or TROPIC01 and never exist in
-memory; the chip signs a digest. Cupcake's model is "a key file on a phone
-that cannot talk".
+That matters for comparison with agent-keys: here the agent's key is always
+**born inside** a secure element (TPM, Secure Enclave, TROPIC01, YubiKey)
+and never exists in memory; the chip signs a digest. The owner's key
+normally is too (a chip, a YubiKey, a phone's secure hardware); the one
+exception is a passphrase-encrypted owner or recovery key file, decrypted
+only for the moment of use. Cupcake's model is "a key file on a phone that
+cannot talk".
 
 ## Claims versus code
 
@@ -99,9 +102,10 @@ security updates (V, [thread](https://discuss.privacyguides.net/t/cupcake-hardwa
 - **One idea worth borrowing: the transport.** A BC-UR animated-QR channel
   between an owner's phone and the agent host would make "way 1" of
   [`../PHONE_OWNER.md`](../PHONE_OWNER.md) (a native app with the key in
-  StrongBox / the iOS Secure Enclave) a genuinely air-gapped owner device:
+  StrongBox / the iOS Secure Enclave; it now exists in `mobile/`, over a QR
+  code plus the local network) a genuinely air-gapped owner device:
   the phone needs only a camera and a screen, as Cupcake's does, but the key
-  would be hardware-bound and the signature P-256 over our digest — stronger
+  is hardware-bound and the signature P-256 over our digest — stronger
   than what Cupcake offers today. UR type registry and animated-QR encoders
   exist for Dart, Rust (`ur` crate) and TypeScript.
 - **A lesson for our own docs.** Cupcake's gap between the security write-up

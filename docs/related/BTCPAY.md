@@ -99,13 +99,15 @@ today without a policy change: the owner deploys a `Forwarder` with one
 immutable destination and approves it once for USDC (a root operation);
 the mandate allow-lists only `Forwarder.sweep()`; `USDC.transfer` is not in
 the allow-list. An admin can then only move the store's balance to the
-merchant's own cold address. A V6 per-token **payee list**
-([#11](https://github.com/postcryptum-research/agent-keys/issues/11) bundle) would remove the
+merchant's own cold address. A per-token **payee list**, not implemented
+([#66](https://github.com/postcryptum-research/agent-keys/issues/66)), would remove the
 forwarder.
 
 **Refunds.** They need arbitrary recipients. Two ways: a small refund mandate
 (USDC cap per operation, budget per period, short expiry) whose worst case is
-the budget, or refunds signed on the owner's phone. A store can use both:
+the budget, or refunds signed on the owner's phone. A budget is one total
+per permission, so "per period" means one permission per period
+(`permission add`). A store can use both:
 automatic below a threshold, the phone above it.
 
 **The owner.** Mandate changes, the forwarder approval, large refunds and
@@ -155,9 +157,9 @@ forms, the Bitcoin and Litecoin side (option B) and the USDC-on-Base store
 wallet (option E), is the owner's separate project
 [`77ph/BTCPayTEE`](https://github.com/77ph/BTCPayTEE); #13 was closed. This
 page stays as the analysis that project builds on. What remains here from
-the case is general: [#11](https://github.com/postcryptum-research/agent-keys/issues/11), the
-V6 bundle, where a per-token payee list would replace the forwarder for any
-deployment that sweeps to a fixed address.
+the case is general: [#66](https://github.com/postcryptum-research/agent-keys/issues/66), a
+per-token payee list, not implemented, which would replace the forwarder
+for any deployment that sweeps to a fixed address.
 
 ## Sources
 

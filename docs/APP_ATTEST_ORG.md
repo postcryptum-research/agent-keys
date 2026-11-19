@@ -10,11 +10,18 @@ owner's: the open questions are listed at the end.*
 Evidence marks: **V** verified at the linked Apple source on 2026-10-28;
 **I** inferred, to be confirmed in the phase named.
 
+**What the code does today (2026-11-19).** None of the App Attest work
+below is built. `agent-signer` verifies Android key attestation only
+(`signer/crates/agent-signer/src/attestation.rs`, Google's two roots); it
+refuses evidence from any other platform. The iOS app sends no attestation,
+so an iOS key is enrolled only with `--allow-no-attestation`. Where this
+page says what the CLI does with an App Attest attestation, it is the plan.
+
 ## 1. Summary
 
 App Attest itself is cheap: an entitlement, a framework call, and
-verification in our CLI against Apple's root. The organisational weight is
-elsewhere:
+verification in our CLI against Apple's root (planned, not built). The
+organisational weight is elsewhere:
 
 1. **Who the Apple developer is.**
    - The App Store accepts wallets only from developers **enrolled as an
@@ -24,7 +31,8 @@ elsewhere:
 2. **The Team ID and bundle id become part of the protocol.**
    - The attestation is valid only for `sha256("<Team ID>.<bundle id>")`,
      and it names the distribution channel (TestFlight, App Store,
-     development, ad-hoc). The CLI pins the first and filters on the second.
+     development, ad-hoc). The CLI will pin the first and filter on the
+     second; today it does neither.
    - Changing the team or the bundle id later invalidates what the CLI
      accepts.
 3. **Whoever controls the Apple account and the distribution certificate
@@ -44,8 +52,8 @@ elsewhere:
 | Environments | sandbox and production keys are tracked separately and are not interchangeable. The CLI must accept the right `aaguid` per build type | V, same source |
 | Network | `attestKey` calls an Apple server, so the phone needs internet once per enrollment | V, same source |
 | Rate limits | "fewer than 100 request per second across all installations of your apps" (the page's *Important* box), and for a rollout "no more than 10 million users per day per app". Irrelevant at our scale, but the app must handle a throttling error | V, same source |
-| Device support | `DCAppAttestService.isSupported` is false on the simulator and some contexts. The app falls back to `--allow-no-attestation`, as designed | I, P3 |
-| The CLI side | Apple's App Attestation root certificate embedded in `agent-signer`, plus the expected App ID `<App ID prefix>.<bundle id>`. The prefix is "usually" the 10-character Team ID; check it in the developer account | V ([validating](https://developer.apple.com/documentation/devicecheck/validating-apps-that-connect-to-your-server)) |
+| Device support | `DCAppAttestService.isSupported` is false on the simulator and some contexts. The app then sends no attestation and the laptop takes the key only with `--allow-no-attestation`, as designed. Today the app never calls App Attest, so this is the path of every iOS enrollment | I, P3 |
+| The CLI side | planned: Apple's App Attestation root certificate embedded in `agent-signer` (today only Google's two roots are), plus the expected App ID `<App ID prefix>.<bundle id>`. The prefix is "usually" the 10-character Team ID; check it in the developer account | V ([validating](https://developer.apple.com/documentation/devicecheck/validating-apps-that-connect-to-your-server)) |
 | Distribution channel in the attestation | the authenticator data carries `apple_validation_category_01`: Apple's table runs 0–10: 0 invalid, 1 an OS executable, 2 TestFlight, 3 development signing, 4 App Store, 5 ad-hoc or enterprise, 6 Developer ID, 7–9 system-generated ("aren't appropriate"), 10 any other signing identity. It also carries `apple_bundle_version_01`, the app version | V, same source |
 
 **The channel field is the organisational lever.**
@@ -131,7 +139,7 @@ attests just as well (T6). So:
 | **Admin / App Manager roles** in App Store Connect | at least two people, so one can always revoke the other | named people; reviewed when someone leaves |
 | **The Apple Distribution certificate's private key** | one build machine, or Xcode Cloud | not on laptops that run the agent (`KEY_POLICY.md`, rule 3 in spirit); a written list of who can sign builds |
 | **App Store Connect API keys** (for CI) | CI only, scoped to the minimum role | rotated; revoked on any doubt |
-| **The bundle id and Team ID** | fixed in the repository and in the CLI | changing either is a protocol change, with a new CLI release |
+| **The bundle id and Team ID** | fixed in the repository and in the CLI (not yet: the bundle id is the provisional `dev.tpmsign.owner.spike`, and no Team ID or iOS bundle id is in the CLI) | changing either is a protocol change, with a new CLI release |
 | **TestFlight upload rights** | the same people as App Store release, if category 2 is accepted (§2) | an uploader can otherwise ship an accepted build |
 | **Account Holder succession** | a named deputy and a written procedure | the role is one legally binding person; plan for their being unavailable before it happens |
 
@@ -145,8 +153,8 @@ custody also covers **source to build**:
   are a custody control, not a nicety.
 
 **Release discipline that follows from T6:**
-- the CLI accepts only TestFlight and App Store builds (§2, the channel
-  field), so the release roles are the gate;
+- the CLI is to accept only TestFlight and App Store builds (§2, the
+  channel field; planned), so the release roles are the gate;
 - builds come from tagged commits;
 - two people approve a release;
 - the build that App Review sees is the one users get.
@@ -225,9 +233,13 @@ provisional package (`dev.tpmsign.owner.spike`) and no signing digest
 pinned in the CLI. That is the owner's decision while development is
 informal, on the auditor's condition that such a build cannot be
 distributed (issue #35). So a release is built with the CLI's
-`distribution` feature and the Android release build type, and both refuse
-until the package and the digests are final (`MOBILE_OWNER_DESIGN.md`
-§5.2).
+`distribution` feature, the Android release build type and the iOS Release
+configuration, and each refuses in that posture (`MOBILE_OWNER_DESIGN.md`
+§5.2):
+- the CLI does not compile while no signing digest is pinned, while the
+  package is still a `.spike` one, or with `insecure-software-keys`;
+- the two app builds fail while the package or bundle id ends in `.spike`
+  or `owner-core` was built with `test-chains`. They check no digest.
 
 *Reviewed by the auditor on 2026-10-28: no blocker. The refinements above
 (channel-filter scope, TestFlight rights, source-to-build custody,

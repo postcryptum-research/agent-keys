@@ -42,7 +42,7 @@ pub struct YubiKeyPivSigner {
     touch_policy: TouchPolicy,
     /// The PIN once known: given up front or obtained from the provider at
     /// the first signature, then kept for this signer's life (a bundler path
-    /// signs twice). Cleared again when the device rejects it.
+    /// signs again when the fee floor moves). Cleared again when the device rejects it.
     pin: Mutex<Option<Zeroizing<Vec<u8>>>>,
     pin_provider: Option<PinProvider>,
     touch_notice: Option<TouchNotice>,

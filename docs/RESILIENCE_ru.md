@@ -78,6 +78,15 @@
 `agent.rs: KeySpec::Recovery`, тесты `AgentPermission.t.sol:798–900`
 (`test_recovery_canOnlyTakeOverRoot`, `test_recovery_replacesALostOwner`) [V].
 
+Где этот код сегодня: сборка calldata для Kernel лежит в
+`mobile/owner-core/src/kernel.rs` (`add_recovery_calldata` :54,
+`change_root_calldata` :95), общем для CLI и телефонных приложений; в
+`agent.rs` recovery-ключ — это поле конфига `recovery` и роль
+`Role::Recovery` (`KeySpec::Recovery` не существует); `P256RecoveryValidator`
+переопределяет проверку ERC-1271 из `P256Validator`; тесты находятся в
+`AgentPermission.t.sol:917–992`, добавлен `test_recovery_neverSignsMessages`
+[V].
+
 ---
 
 ## 0. Главное за минуту
@@ -89,11 +98,16 @@
    агент работает до `validUntil` (в тестнет-конфиге — **2026-11-19 00:00 UTC**,
    `signer/agent.base-sepolia.json`, [V]), а после этой даты аккаунт и Safe,
    которым он владеет единолично, замораживаются навсегда (§2.3).
-3. **На тестнет-хосте оба ключа в одном fTPM** (Intel PTT: ACPI HID
+3. **На тестнет-хосте сегодня в fTPM только агентский ключ**: owner-ключ
+   лежит в PIV-слоте YubiKey (`"owner": {"yubikey": {"slot": "9c"}}`),
+   агентский — `0x81010012`, запечатан на PCR 0,2,4,7 [V конфиг,
+   `signer/agent.base-sepolia.json`]. `TPM2_Clear`, сброс PTT при
+   обновлении BIOS или замена материнской платы теперь уничтожают только
+   агентский ключ, а его владелец ротирует (§2.1). На момент исследования
+   оба ключа были в одном fTPM (Intel PTT: ACPI HID
    `INTC6001`, Lenovo, i7-13700H, [V локально `/sys/class/tpm/tpm0/device/hid`];
-   «INTC6001 = PTT» — [I]). Owner `0x81010010` без authValue, агент
-   `0x81010012`, запечатан на PCR 0,2,4,7 [V конфиг]. Один `TPM2_Clear`,
-   сброс PTT при обновлении BIOS или замена материнской платы уничтожат
+   «INTC6001 = PTT» — [I]): owner `0x81010010` без authValue рядом с
+   агентским, и любое из этих событий уничтожило бы
    **оба** ключа одновременно. Recovery нужен даже на тестнете, хотя бы чтобы
    отрепетировать процедуру.
 4. **Восстанавливаемость без экспорта** достигается не копированием ключа, а
@@ -102,23 +116,33 @@
    правом `changeRootValidator`. Резервная копия — это второй ключ, а не копия
    первого.
 5. **Две находки по коду (важно для текущей реализации):**
-   - **ERC-1271 обходит выдачу селекторов.** `ValidationManager._verifySignature`
+   - **ERC-1271 обходит выдачу селекторов** (в нашем коде исправлено после
+     исследования). Сегодня `P256RecoveryValidator` переопределяет
+     `isValidSignatureWithSender` и на любой запрос отвечает
+     `ERC1271_INVALID` [V `contracts/src/P256RecoveryValidator.sol:24–26`];
+     `owner set-root --retire` удаляет старый owner-валидатор в той же
+     операции [V `chain.rs` `set_root`]; тесты
+     `test_recovery_neverSignsMessages` и `test_recovery_replacesALostOwner`
+     (теперь он проверяет и ERC-1271-путь потерянного и нового owner-ключа)
+     покрывают оба случая [V `AgentPermission.t.sol:928–992`]. Находка в том
+     виде, как она была на момент исследования: `ValidationManager._verifySignature`
      для не-root валидатора проверяет только «установлен» и
      `nonce >= validNonceFrom`. `allowedSelectors` не проверяется
      [V `contracts/lib/kernel/src/core/ValidationManager.sol:424–449`].
-     `P256RecoveryValidator` наследует `isValidSignatureWithSender` от
+     `P256RecoveryValidator` тогда наследовал `isValidSignatureWithSender` от
      `P256Validator` [V `contracts/src/P256Validator.sol` `isValidSignatureWithSender`].
-     Следовательно, **recovery-ключ уже сейчас может подписать ERC-2612
+     Следовательно, **recovery-ключ мог подписать ERC-2612
      permit / Permit2 / EIP-3009 от имени аккаунта**, без всякого
-     `changeRootValidator` и без таймлока. Та же проблема со **старым
+     `changeRootValidator` и без таймлока. Та же проблема была со **старым
      owner-валидатором**, который остаётся установленным после
      `changeRootValidator`: `changeRootValidator` его не удаляет
-     [V `Kernel.sol:135–155`], и тест `test_recovery_replacesALostOwner`
-     проверяет только userOp-путь. Исправление: в `P256RecoveryValidator`
-     переопределить `isValidSignatureWithSender` → `ERC1271_INVALID` (как
-     `AgentPolicy.checkSignaturePolicy` для агента, [V `AgentPolicy.sol:210–218`]),
-     а в процедуре recovery — `uninstallValidation(oldOwnerVId)`. Добавить
-     тесты на оба случая.
+     [V `Kernel.sol:135–155`], а тест `test_recovery_replacesALostOwner`
+     проверял только userOp-путь. Предложенное тогда исправление: в `P256RecoveryValidator`
+     переопределить `isValidSignatureWithSender` → `ERC1271_INVALID` (так
+     `AgentPolicy.checkSignaturePolicy` отклоняет для агента любой хеш,
+     кроме хеша зарегистрированной x402-авторизации, [V `AgentPolicy.sol:289–301`]),
+     а в процедуре recovery — `uninstallValidation(oldOwnerVId)`, с тестами
+     на оба случая.
    - **Recovery = root без задержки.** Кража флешки вместе с паролем даёт
      мгновенный захват. Для ценного деплоя нужен таймлок с отменой
      владельцем (§3.4).
@@ -142,14 +166,14 @@
   и `TPM2_ChangePPS` меняют другие сиды и наш ключ не трогают, но
   `ChangeEPS` тоже чистит объекты endorsement-иерархии [I].
 - **Наши ключи** — persistent-объекты `0x8101xxxx` в owner-иерархии под SRK
-  [V `signer/crates/hw-signer/src/tpm.rs:4,51`, конфиг]. Значит:
+  [V `signer/crates/hw-signer/src/tpm.rs:4,55`, конфиг]. Значит:
 
 | Событие | Что с нашим ключом | Комментарий |
 |---|---|---|
 | Перезагрузка, обновление ОС/ядра | жив | persistent handle |
 | `TPM2_Clear` (tpm2_clear, «Clear TPM» в Windows Security / tpm.msc / UEFI, PPI-запрос из ОС) | **уничтожен** | SPS новый, persistent-объекты удалены [V] |
 | Смена SPS — только через Clear | **уничтожен** | «регенерация SRK» с тем же шаблоном без Clear даёт тот же SRK [I по спецификации: первичные ключи детерминированы от сида и шаблона] |
-| Случайный `key evict` / `tpm2_evictcontrol` | **уничтожен** | blob мы не храним, восстановить нечем [V: `KeyCmd::Evict` есть в CLI, main.rs:229] |
+| Случайный `key evict` / `tpm2_evictcontrol` | **уничтожен** | blob мы не храним, восстановить нечем [V: `KeyCmd::Evict` есть в CLI, main.rs:481] |
 | Обновление BIOS на машине с **fTPM** | зависит от вендора; **часто уничтожен** | §1.2 |
 | Обновление **прошивки самого TPM** (dTPM или fTPM) | часто уничтожен | Intel NUC: «TPM firmware update clears all data in the TPM» [V https://www.intel.com/content/dam/support/us/en/documents/mini-pcs/NUC5i3MY-TPM-Firmware-Update.pdf]; Infineon-апдейты (ROCA) требовали очистки [V https://www.getac.com/uploads/2023/01/infineon_tpm_security_update_20230116.pdf, I детали] |
 | Замена CPU (AMD fTPM) | **уничтожен** при ответе «Y» | §1.2 |
@@ -205,7 +229,7 @@ https://man.archlinux.org/man/extra/tpm2-tools/tpm2_clearcontrol.1.en].
 ### 1.4 PCR-запечатанные ключи (по замыслу)
 
 - Агентский ключ на тестнете запечатан на PCR 0,2,4,7 [V конфиг].
-  `TPM2_PolicyPCR` с **точным** дайджестом [V `tpm.rs:240–252`]. После любого
+  `TPM2_PolicyPCR` с **точным** дайджестом [V `tpm.rs:265–275,468–480`]. После любого
   изменения измерений ключ **жив, но не подписывает**. Откатить измерения
   обычно нельзя.
   - PCR0 — код прошивки (обновление BIOS);
@@ -309,10 +333,10 @@ https://man.archlinux.org/man/extra/tpm2-tools/tpm2_clearcontrol.1.en].
 ### 2.1 Потерян агентский ключ
 
 - Owner выполняет `permission rotate` — одна root-операция, которая
-  заменяет permission новым ключом и/или мандатом [V `main.rs:130–145`].
+  заменяет permission новым ключом и/или мандатом [V `main.rs:223–236`].
 - **Ничего не теряется:**
   - адрес аккаунта (Kernel-прокси уже задеплоен, `account` закреплён в
-    конфиге [V `agent.rs:140–143`]);
+    конфиге [V `agent.rs:205–208`]);
   - баланс и токены;
   - Safe: владелец — аккаунт, а не ключ [V `docs/ERC1271.md`];
   - отношения с paymaster: спонсорство привязано к аккаунту [I по
@@ -325,13 +349,14 @@ https://man.archlinux.org/man/extra/tpm2-tools/tpm2_clearcontrol.1.en].
   - Owner должен быть доступен. Цепочка «агентский ключ умер → owner нужен
     срочно» — основная практическая причина держать owner живым и
     проверенным.
-  - Если агент и owner в одном fTPM (тестнет), они умирают **вместе**, и
+  - Если агент и owner в одном fTPM (тестнет на момент исследования; его
+    owner-ключ теперь на YubiKey, §0), они умирают **вместе**, и
     §2.1 не помогает.
 
 ### 2.2 Потерян owner-ключ, агент работает
 
 - Агент продолжает работать в рамках мандата: allow-list, лимиты, бюджет,
-  `validUntil` [V `AgentPolicy.sol:183–207`].
+  `validUntil` [V `AgentPolicy.sol:261–282`].
 - **Недоступно** всё, что требует root:
   - ротация и отзыв агента;
   - смена мандата и продление `validUntil`;
@@ -343,7 +368,7 @@ https://man.archlinux.org/man/extra/tpm2-tools/tpm2_clearcontrol.1.en].
     `onlyEntryPointOrSelfOrRoot`].
 - Когда `block.timestamp > validUntil`, EntryPoint отклоняет любые
   операции агента, потому что политика возвращает `validUntil`
-  [V `AgentPolicy.sol:207`].
+  [V `AgentPolicy.sol:281`].
 - **Ограниченный «спасательный коридор».** Если в allow-list заранее есть
   запись `(coldAddress, 0x00000000)`, агент (и только в сторону
   `coldAddress`) может выводить ETH в пределах `maxValuePerOp` и `budget`
@@ -375,8 +400,10 @@ https://man.archlinux.org/man/extra/tpm2-tools/tpm2_clearcontrol.1.en].
     этот аккаунт).
 - **Масштаб:** 100 % стоимости аккаунта и подчинённых Safe, минус то, что
   агент успеет вывести по «коридору» из §2.2.
-- **Вероятность:** складывается из независимых отказов. Пример на тестнете
-  (owner и агент в одном PTT, без recovery): вероятность «мёртвого
+- **Вероятность:** складывается из независимых отказов. Пример: тестнет,
+  каким он был на момент исследования (owner и агент в одном PTT, без
+  recovery; с тех пор owner-ключ на YubiKey и recovery-ключ установлен,
+  см. сводку выше): вероятность «мёртвого
   аккаунта» за год ≈ вероятность Clear/сброса PTT за год. По опыту
   обновлений прошивок это единицы–десятки процентов [I, порядок величины].
   С двумя независимыми носителями (owner на устройстве A, recovery на
@@ -395,17 +422,31 @@ https://man.archlinux.org/man/extra/tpm2-tools/tpm2_clearcontrol.1.en].
   (`grantAccess`) [V `Kernel.sol:229–275,392`].
 - `changeRootValidator(vId, hook, data, hookData)`: если `vId` уже
   установлен, данные игнорируются (`onInstall` не зовётся) [V
-  `Kernel.sol:135–155`]. **Поэтому новый owner-ключ нельзя положить в тот
-  же экземпляр `P256Validator`**: в нём уже лежит старый ключ, и
+  `Kernel.sol:135–155`]. **Поэтому одним `changeRootValidator` новый
+  owner-ключ в установленный экземпляр `P256Validator` не положить**: в нём
+  уже лежит старый ключ, и
   `onInstall` дважды не вызвать (`AlreadyInitialized`, [V
-  `P256Validator.sol` onInstall]). Нужен **другой экземпляр контракта**
-  (как в тесте `test_recovery_replacesALostOwner`) или
-  `uninstallValidation` + установка заново.
+  `P256Validator.sol` onInstall]). Либо берётся **другой экземпляр
+  контракта**, либо тот же экземпляр удаляется и устанавливается заново в
+  одном batch, с новым install-nonce: так сегодня делает тест
+  `test_recovery_replacesALostOwner`, и так делает
+  `owner set-root --retire <validator> --validator <тот же>`
+  [V `AgentPermission.t.sol:954–970`, `chain.rs` `set_root`].
 - **ERC-1271** для не-root валидатора не проверяет селекторы
   [V `ValidationManager.sol:424–449`] — см. находку в §0.
 - `invalidateNonce(n)` отзывает **все** не-root валидаторы и permissions с
   `nonce < n` разом [V `ValidationManager.sol:146–158`, `Kernel.sol:242–244`]:
   это «аварийный рубильник», задевающий и агента, и recovery.
+- **Агент не может адресовать собственный аккаунт.** `AgentPolicy` отклоняет
+  сам аккаунт и политику (кроме x402) как цели allow-list при установке и
+  повторно при валидации [V `AgentPolicy.sol` `_targetAllowed`, с
+  2026-11-10], а EntryPoint аккаунта — при установке (при валидации
+  намеренно не перепроверяется: каждый мандат проходит фильтр установки)
+  [V `AgentPolicy.sol:212,461–466`]. CLI дополнительно отклоняет валидаторы
+  проекта, signer, реализацию Kernel и фабрику [V `chain.rs`
+  `forbidden_target`]: никакой мандат, как бы он ни был написан, не даёт
+  агенту дотянуться до `grantAccess`, `changeRootValidator`, `withdrawTo`
+  или `onInstall` модулей.
 - Готовые модули рядом с Kernel:
   - `WeightedECDSAValidator` (в самом репо Kernel v3.3): веса и порог
     гвардианов, **`delay`** (proposal → approve → исполнение не раньше
@@ -467,7 +508,7 @@ https://man.archlinux.org/man/extra/tpm2-tools/tpm2_clearcontrol.1.en].
 
 | Вариант | Носитель | Валидатор | Плюсы | Минусы |
 |---|---|---|---|---|
-| Зашифрованный P-256 файл на флешке (текущий план) | 2 флешки + QR шифротекста | `P256RecoveryValidator` | дёшево; копируемо; кривая наша | ключ в памяти хоста в момент подписи [V KEY_POLICY rule 5]; пароль забывается; нет presence |
+| Зашифрованный P-256 файл на флешке (реализовано: `keyfile.rs`; установлен на тестнет-аккаунте) | 2 флешки + QR шифротекста | `P256RecoveryValidator` | дёшево; копируемо; кривая наша | ключ в памяти хоста в момент подписи [V KEY_POLICY rule 5]; пароль забывается; нет presence |
 | Trezor `SignIdentity` nist256p1 | устройство + seed 12–24 слова | `P256RecoveryValidator` как есть | ключ в железе, seed восстанавливается на **любом** новом Trezor; экран и PIN | $59; нужен клиент `trezor-client` |
 | Ledger OpenPGP-app в **Seed Mode** | устройство + seed | `P256RecoveryValidator` | собирается для Nano S Plus | без Seed Mode ключ стирается при обновлении app/OS [V]; PIN 3 попытки → wipe |
 | Ledger/Trezor Ethereum-app | устройство + seed | ZeroDev `ECDSAValidator` `0x845A…cE57` как recovery-валидатор + `grantAccess(changeRootValidator)` | никакого кода в устройстве; seed | secp256k1; вторая ветка в CLI (alloy-signer-ledger/trezor) |
@@ -589,7 +630,15 @@ seed-backed** — разумна, потому что роли разные:
 
 ## 4. Эксплуатационные практики
 
-1. **Health check без отправки транзакции** (`agent-signer health`) для
+1. **Health check без отправки транзакции.** Что есть сегодня:
+   `agent-signer key check` (TPM, Secure Enclave, CNG, TROPIC01, YubiKey,
+   key-файл, телефон) подписывает случайный дайджест и проверяет подпись
+   по публичной половине самого ключа [V `main.rs:485–502,691–702`]. Цепь
+   он не читает: сверку с ключом, который держит цепь, CLI делает перед
+   каждой root- и recovery-подписью [V `chain.rs` `check_root_key`,
+   `check_recovery_key`], а `owner status` печатает отпечаток root-ключа.
+   Предложено в исследовании и не сделано: одна команда
+   (`agent-signer health`) для
    owner, recovery и агента:
    - прочитать с цепи зарегистрированный ключ:
      `P256Validator.publicKeys(account)`,
@@ -634,7 +683,9 @@ seed-backed** — разумна, потому что роли разные:
    - убедиться, что owner **не** на этом TPM (или recovery жив);
    - после обновления: проверить агента и при необходимости ротировать.
 
-   На тестнет-хосте до появления recovery — **не обновлять BIOS**.
+   На тестнет-хосте на момент исследования (owner-ключ в его fTPM, recovery
+   нет) правило было: **не обновлять BIOS**. Теперь owner-ключ на YubiKey
+   [V конфиг], и обновление там рискует только агентским ключом.
 6. **`tpm2_clearcontrol -C l s`** на хостах с ключами (§1.1), плюс
    lockoutAuth. Не защищает от Clear из UEFI, но защищает от скрипта.
 7. **Бэкапить wrapped blobs там, где они есть:** SE `dataRepresentation`,
@@ -649,8 +700,9 @@ seed-backed** — разумна, потому что роли разные:
 9. **Репетиция recovery на тестнете** — раз в год и после каждого изменения
    кода: полный путь «owner потерян → recovery → новый owner → агент
    работает → старый owner-валидатор удалён → 1271 со старым и recovery
-   ключом не проходит». Часть уже покрыта тестом
-   `test_recovery_replacesALostOwner` [V].
+   ключом не проходит». Сторону контрактов покрывают тесты
+   `test_recovery_replacesALostOwner` и `test_recovery_neverSignsMessages`,
+   сторону CLI — `recovery_drill` (`tests/anvil_cli.rs`) [V].
 10. **Safe:** если в Safe лежат значимые средства, а единственный owner —
     Kernel, Safe наследует все риски аккаунта. Вариант: второй owner Safe
     (тот же recovery-ключ через отдельный адрес) или модуль с задержкой
@@ -663,7 +715,21 @@ seed-backed** — разумна, потому что роли разные:
 
 ### 5a. Тестнет (сейчас)
 
-Минимум, который реально убирает «один Clear = конец»:
+Минимум, который реально убирает «один Clear = конец».
+
+**Состояние сегодня [V]:** пункты 1–4 есть в коде. `P256RecoveryValidator`
+существует, отклоняет ERC-1271 и записан в
+`contracts/deployments/84532.json`; зашифрованный key-файл — это
+`keyfile.rs` (`key create --keyfile`). Процедура из пункта 3 — две команды:
+`owner recover`, затем
+`owner set-root --as-recovery --retire <старый валидатор> …`, batch которой:
+`installValidations(новый ключ)` → `changeRootValidator` →
+`uninstallValidation(old)` для другого экземпляра валидатора, либо
+`uninstallValidation` → `installValidations` → `changeRootValidator` для
+того же (`chain.rs` `set_root`); новый ключ ставит `installValidations`, в
+`changeRootValidator` он не передаётся. Тест из пункта 4 — конец
+`test_recovery_replacesALostOwner`. Пункты 5 и 6 — эксплуатация, а не код.
+Список в том виде, как он был написан на момент исследования:
 
 1. **`P256RecoveryValidator` + `grantAccess(changeRootValidator)`** — уже в
    работе [V]. Ключ — зашифрованный файл (scrypt N ≥ 2^18 + AEAD) на **двух**
@@ -689,7 +755,8 @@ seed-backed** — разумна, потому что роли разные:
 5. **`validUntil`** тестнет-мандата (19.11.2026) продлевать
    `permission rotate` и рассматривать как heartbeat.
 6. **Не обновлять BIOS** этого Lenovo, пока recovery не установлен и не
-   отрепетирован.
+   отрепетирован. (Тогда owner-ключ был в его fTPM; теперь он на YubiKey
+   [V конфиг], и обновление рискует только агентским ключом.)
 
 Таймлок на тестнете не обязателен, но удобно сразу сделать вариант B с
 `D` = 10 мин: отрепетировать UX ожидания и отмены.
@@ -699,7 +766,7 @@ seed-backed** — разумна, потому что роли разные:
 | Роль | Носитель | Валидатор | Почему |
 |---|---|---|---|
 | Агент | TPM/SE хоста агента (PCR-sealing по желанию) | `P256Signer` + `AgentPolicy` | как сейчас; потеря дешёвая |
-| Owner (daily) | **отдельное** неэкспортируемое устройство с presence: Nitrokey 3 / YubiKey PIV (touch=always) / Mac SE с `.userPresence` | `P256Validator` (root) | KEY_POLICY rule 3 (i)/(ii) |
+| Owner (daily) | **отдельное** неэкспортируемое устройство с presence: YubiKey PIV, PIN и touch always (бэкенд реализован, используется на тестнете [V `yubikey_piv.rs`, конфиг]) или owner-приложение на телефоне (реализовано [V `agent.rs` `KeySpec::Phone`]); для Nitrokey 3 и ключа Mac SE с `.userPresence` бэкенда пока нет | `P256Validator` (root) | KEY_POLICY rule 3 (i)/(ii) |
 | Owner #2 (опц.) | второе устройство другого типа | `P256RecoveryValidator` #2, `changeRootValidator`, **без** таймлока или с коротким | быстрое восстановление при поломке daily |
 | Recovery (cold) | **Trezor `SignIdentity` nist256p1** (seed в сейфе, SLIP-39 по желанию) **или** зашифрованный файл ×2 + QR | **`TimelockedP256RecoveryValidator`** (`D` = 3–7 дней), 1271 закрыт | переживает любые поломки; кража гасится таймлоком |
 | Монитор | хост агента, без ключей | — | алерт на `RecoveryInitiated` / смену root |
@@ -713,6 +780,20 @@ seed-backed** — разумна, потому что роли разные:
 - `disableClear` на TPM-хостах.
 
 ### 5c. Работа по коду
+
+**Состояние сегодня [V]:** пункты Solidity 1 и 2 сделаны (§0). В CLI:
+`owner add-recovery` (ключ берётся из записи `recovery` конфига, флага
+`--recovery-key` нет; отказ, если recovery-ключ уже установлен),
+`owner recover` (без `--new-owner`: новый owner-ключ получает следующая
+команда), `owner set-root [--as-recovery] --retire …`, где новый ключ
+сначала показывает, что подписывает (`--new-key`, либо `--public-key` и
+`key prove`, либо `--to-phone`), `owner status`, `key check` и бэкенд
+зашифрованного key-файла (`keyfile.rs`). После передачи root в конфиге
+меняется только `owner`: `ownerPublicKey` остаётся ключом создания аккаунта
+[V `main.rs:939`]. Не сделано: таймлок-валидатор и его команды, `health`
+со сверкой по цепи, `watch`, `key backup-blob`, `--print-qr`, печать
+реестровой записи, `P256MultiKeyValidator`. Список в том виде, как он был
+написан на момент исследования:
 
 **Solidity:**
 1. `P256RecoveryValidator.isValidSignatureWithSender` → `ERC1271_INVALID`
@@ -734,7 +815,7 @@ seed-backed** — разумна, потому что роли разные:
 
 **CLI (`agent-signer`):**
 - `owner add-recovery --recovery-key <spec>` — уже есть
-  `add_recovery_calldata` [V `kernel.rs:48–67`]. Добавить проверку, что
+  `add_recovery_calldata` [V `mobile/owner-core/src/kernel.rs:54–70`]. Добавить проверку, что
   валидатор ещё не установлен, и печать реестровой записи.
 - `owner recover --new-owner <spec>`:
   - шаг 1: recovery-op `changeRootValidator(recoveryVId)`; для таймлока —
@@ -747,7 +828,7 @@ seed-backed** — разумна, потому что роли разные:
   ключом **с цепи** + опц. симуляция через бандлер; код выхода для cron.
 - `watch` — подписка на события аккаунта и валидаторов → stdout/webhook.
 - `key backup-blob` для SE и CNG (копия wrapped blob) [I].
-- Бэкенд `keyfile` (encrypted) уже упомянут в `agent.rs:68–73,159–162` [V].
+- Бэкенд `keyfile` (encrypted) находится в `agent.rs:120–122,405–415` и `keyfile.rs` [V].
   Добавить `--print-qr` для бумажной копии шифротекста.
 
 **Документация:**
@@ -768,10 +849,12 @@ seed-backed** — разумна, потому что роли разные:
   - `contracts/lib/kernel/src/validator/WeightedECDSAValidator.sol`;
   - `contracts/src/P256Validator.sol`, `P256RecoveryValidator.sol`,
     `AgentPolicy.sol`, `P256Signer.sol`;
-  - `contracts/test/AgentPermission.t.sol:798–900`;
+  - `contracts/test/AgentPermission.t.sol:917–992`;
   - `signer/crates/hw-signer/src/{tpm.rs, secure_enclave.rs, windows_tpm.rs}`,
     `swift/SecureEnclaveShim.swift`;
-  - `signer/crates/agent-signer/src/{kernel.rs, agent.rs, main.rs}`;
+  - `mobile/owner-core/src/kernel.rs` (на момент исследования:
+    `signer/crates/agent-signer/src/kernel.rs`),
+    `signer/crates/agent-signer/src/{agent.rs, chain.rs, main.rs, keyfile.rs}`;
   - `signer/agent.base-sepolia.json`;
   - `docs/KEY_POLICY.md`, `docs/OWNER_DEVICES.md`, `docs/ERC1271.md`.
 - **TPM:**

@@ -286,3 +286,48 @@ Add / strengthen:
 - **OK as proposed:** Q5 cross-protocol safety and the health digest; the QR
   commitment channel; one-parse-one-Review; no laptop-chosen digest; full
   addresses + fingerprints; the default-method trait change.
+
+---
+
+## Since this review (added 2026-11-19; not part of the review)
+
+What the code does on 2026-11-19 with the points above. The review itself
+is unchanged.
+
+Implemented:
+- **Q1** — build-embedded names render as "(verified in this build)" and
+  laptop pins as "(pinned by the laptop at enrollment — unverified)"; a
+  token the build does not know shows "(raw units, unverified decimals)"
+  (`mobile/owner-core/src/review.rs`). Superseded versions are named by the
+  build, from the embedded `deployments/84532.json`
+  (`mobile/owner-core/src/facts.rs`).
+- **Q2** — refuse by default; expert mode is per enrollment and off by
+  default (`review.rs`, `expert_mode`).
+- **Q3**, gas fields — the "Details" section shows the nonce,
+  `verificationGasLimit`, `callGasLimit`, `preVerificationGas`,
+  `maxFeePerGas` and `maxPriorityFeePerGas`, and the paymaster's two limits
+  when there is one (`review.rs`).
+- **Q4** — the estimation placeholder is a 64-byte `r‖s`
+  (`PLACEHOLDER_SIGNATURE`) and the bundler's verification estimate gets a
+  20% margin (`signer/crates/agent-signer/src/chain.rs`).
+- **Addendum 2(d)** — the phone decodes a root change and shows "Hand
+  control of this account to key `<fingerprint>`" (`review.rs`).
+
+Done differently:
+- **Q3**, paymaster token charge — not surfaced and capped: the phone
+  accepts only paymasters without a `postOp` (`review.rs`, §6.4 of the
+  design).
+
+Not done:
+- **Q7** — App Attest is not built. `agent-signer` verifies Android key
+  attestation only, the iOS app sends no attestation, and an iOS key is
+  enrolled only with `--allow-no-attestation`
+  (`signer/crates/agent-signer/src/phone.rs`, `docs/APP_ATTEST_ORG.md`).
+
+Two facts of the review that have moved or need a qualifier:
+- Q1, "agentPolicy already has V1–V5 on 84532": `deployments/84532.json`
+  now lists V1–V6.
+- Addendum 1(d), "non-proxy stateless logic": the three contracts are not
+  proxies, but each holds per-account storage (`publicKeys`, `configs`),
+  which `EXTCODEHASH` does not cover; the codehash argument needs only that
+  their code cannot change.

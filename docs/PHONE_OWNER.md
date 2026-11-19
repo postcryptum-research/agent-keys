@@ -1,6 +1,6 @@
 # A phone as the owner key — what we found
 
-Status: **now the project's focus** (2026-10-27) — the development plan for the own-app way is [`MOBILE_OWNER_PLAN.md`](MOBILE_OWNER_PLAN.md). The text below (2026-10-22, when it was parked) records the exploration. The owner's second factor is a
+Status: **now the project's focus** (2026-10-27) — the development plan for the own-app way is [`MOBILE_OWNER_PLAN.md`](MOBILE_OWNER_PLAN.md). Way 1 has since been built as development builds: `mobile/owner-core` (the shared Rust, through `uniffi`), `mobile/android` and `mobile/ios`; their status is in that plan. The text below (2026-10-22, when it was parked) records the exploration. The owner's second factor is a
 YubiKey for now. This page records what was checked, so the next person can
 pick it up where we stopped instead of starting over. Device details of the
 phone we tried are deliberately left out.
@@ -92,9 +92,10 @@ laptop (Chrome) and an Android phone:
 - **Way 1 is the strongest** (per-signature fingerprint, a screen showing
   the decoded operation, the key only in the phone) and the most work. The
   decoding could reuse our Rust (`kernel.rs`, the mandate encoding) via
-  `uniffi`. On iPhone the same design runs on the Secure Enclave
-  (`SecKeyCreateSignature`, `.ecdsaSignatureDigestX962SHA256`), as our Mac
-  backend does — but needs an App Store / TestFlight route.
+  `uniffi`. On iPhone the same design runs on the Secure Enclave through
+  CryptoKit (`SecureEnclave.P256.Signing.PrivateKey.signature(for:)` over
+  the 32-byte digest), as our Mac backend does — but needs an App Store /
+  TestFlight route.
 - Whatever the way, keep the cold recovery key (`RESILIENCE.md`): a phone
   is lost, reset or replaced more often than a token, and Keystore keys are
   not in any backup.

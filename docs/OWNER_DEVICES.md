@@ -5,11 +5,12 @@
 > (root) key off the agent's host — the "second factor" of
 > [`KEY_POLICY.md`](KEY_POLICY.md) rule 3. Main finding: many cheap devices
 > sign a raw 32-byte digest with P-256 and therefore work with our
-> `P256Validator` unchanged (the CLI only converts DER/MPI to `r ‖ s` and
+> `P256Validator` unchanged (`hw-signer` only converts DER/MPI to `r ‖ s` and
 > normalizes low-s): YubiKey 5 / Nitrokey 3 PIV and OpenPGP, the Ledger
 > OpenPGP app (Nano S Plus), Trezor `SignIdentity` with `nist256p1`, a second
-> machine's TPM, a Mac's Secure Enclave with Touch ID, TROPIC01 with a private
-> pairing key. secp256k1 wallets need ZeroDev's `ECDSAValidator`
+> machine's TPM, a Mac's Secure Enclave (our backend has no presence check;
+> Touch ID would need a change to it), TROPIC01 with a private pairing key
+> (not implemented: our backend uses the factory key). secp256k1 wallets need ZeroDev's `ECDSAValidator`
 > (`0x845ADb2C711129d4f3966735eD98a9F09fC4cE57`), FIDO2 keys and passkeys its
 > `WebAuthnValidator` (`0x7ab16Ff354AcB328452F1D445b3Ddee9a91e9e69`) — both
 > deployed on Base and Base Sepolia (checked with `eth_getCode`). An encrypted
@@ -17,9 +18,12 @@
 > decrypts it; it fits a cold recovery owner on a separate machine, not a
 > daily one. Claims are marked [V] verified (source given) or [I] inferred.
 > Written by a research agent; not yet reviewed by the security audit.
+> Status on 2026-11-19: the YubiKey 5 PIV backend, the phone owner apps, the
+> encrypted key file, the recovery validator and `owner set-root` are
+> implemented; the cells that state the project's status say so.
 
 
-Date: 2026-10-20. The repository code was not changed. Markers: **[V]** — verified (URL or
+Date: 2026-10-20. The statements about the project's own status were brought up to the tree on 2026-11-19 (YubiKey PIV backend, phone owner apps, key file, recovery validator, `owner set-root`). Markers: **[V]** — verified (URL or
 file/code), **[I]** — inference / from memory, not re-checked in this session.
 
 ## 0. What the owner key must provide and what the chain accepts
@@ -40,10 +44,10 @@ without a human (presence/PIN/button); (b) can the key be stolen (non-exportabil
 | C. WebAuthn/FIDO2 assertion only | `ECDSA(sha256(authData ‖ sha256(clientDataJSON)))`, where challenge = userOpHash | ZeroDev `WebAuthnValidator` (or our own on Solady `WebAuthn.sol`) | [V] address for Kernel 0.3.0–0.3.3, version 0.0.3 (patched): **`0x7ab16Ff354AcB328452F1D445b3Ddee9a91e9e69`** ([@zerodev/passkey-validator](https://unpkg.com/@zerodev/passkey-validator@5.6.0/_esm/index.js)); deployed on Base and Base Sepolia (4739 B, [V] `eth_getCode`). [V] The source at HEAD ([WebAuthnValidator.sol](https://github.com/zerodevapp/kernel-7579-plugins/blob/HEAD/src/validators/WebAuthnValidator.sol)) calls `WebAuthn.verifySignature(..., requireUserVerification = true, ...)`, `CHALLENGE_LOCATION = 23`. Hence: the **UV** flag is required (PIN or biometrics; a single touch is not enough), and clientDataJSON must start with `{"type":"webauthn.get","challenge":"…`. rpIdHash is not checked [V from the same code]. Whether the deployed bytecode matches HEAD — [I] |
 
 **General technical notes:**
-- **low-s.** Our validator (Solady `P256`) rejects high-s, while devices return a random `s`. The CLI normalizes `s → n − s`, as already done for TROPIC01 ([V] `docs/TROPIC01.md`). This is needed for all class A devices.
-- **DER→raw.** PIV, PKCS#11 and OpenPGP return DER or MPI; we convert to `r‖s` [I].
-- **WYSIWYS.** None of the devices below shows the human *what* the userOp changes: Kernel `userOpHash` is not EIP-712, there is no clear-signing. Physical confirmation protects against *silent* signing by malware, but not against a compromised host substituting the hash at the moment the human actually wants to sign. Mitigation: sign on a separate machine; check the hash or the decoded calldata on a second screen (a phone or another PC). Devices with a screen (Trezor, Ledger) at least show the hash.
-- **Our own validators.** `P256Validator` stores one key per account (`mapping(account => key)`), and the ValidationId in Kernel is the module address. A second P-256 key (recovery) requires a second contract instance at a different address [V from the code].
+- **low-s.** Our validator (Solady `P256`) rejects high-s, while devices return a random `s`. `hw-signer` normalizes `s → n − s` in every backend (`normalize_low_s`) [V `signer/crates/hw-signer/src/lib.rs`]. This is needed for all class A devices.
+- **DER→raw.** PIV, PKCS#11 and OpenPGP return DER or MPI; we convert to `r‖s` (done for PIV: `der_ecdsa_rs` in the YubiKey backend [V]; the others [I]).
+- **WYSIWYS.** None of the USB devices below shows the human *what* the userOp changes: Kernel `userOpHash` is not EIP-712, there is no clear-signing. Physical confirmation protects against *silent* signing by malware, but not against a compromised host substituting the hash at the moment the human actually wants to sign. Mitigation: sign on a separate machine; check the hash or the decoded calldata on a second screen (a phone or another PC). Devices with a screen (Trezor, Ledger) at least show the hash. The exception is the phone owner app: it decodes the operation and shows it before signing [V `mobile/owner-core/src/review.rs`].
+- **Our own validators.** `P256Validator` stores one key per account (`mapping(account => key)`), and the ValidationId in Kernel is the module address. A second P-256 key (recovery) requires a second contract instance at a different address [V from the code]; this is now `contracts/src/P256RecoveryValidator.sol` (§5).
 
 ---
 
@@ -53,7 +57,7 @@ Fit — suitability for the owner role: H / M / L. Prices are a 2026 guideline.
 
 | Device | Price | Curve / mode | Validator | Presence / PIN | Openness | Integration from Rust | Fit |
 |---|---|---|---|---|---|---|---|
-| **YubiKey 5 — PIV** | $58 (5 NFC) [V](https://yubico.com/product/yubikey-5-nfc/) | P-256, **raw digest** (GENERAL AUTHENTICATE over the hash) [V: in the `yubikey` crate `piv::sign_data(raw_in, AlgorithmId, slot)` passes the input bytes as is] | **P256Validator as is** | PIN policy never/once/always, touch policy never/always/cached (15 s); set at generation and cannot be changed [V](https://docs.yubico.com/yesdk/users-manual/application-piv/pin-touch-policies.html) | closed firmware, not updatable | PC/SC: crate `yubikey` 0.9.0-rc (pure Rust) or `cryptoki` + ykcs11 [V crates.io]; Linux/macOS/Windows | **H** |
+| **YubiKey 5 — PIV** | $58 (5 NFC) [V](https://yubico.com/product/yubikey-5-nfc/) | P-256, **raw digest** (GENERAL AUTHENTICATE over the hash) [V: in the `yubikey` crate `piv::sign_data(raw_in, AlgorithmId, slot)` passes the input bytes as is] | **P256Validator as is** | PIN policy never/once/always, touch policy never/always/cached (15 s); set at generation and cannot be changed [V](https://docs.yubico.com/yesdk/users-manual/application-piv/pin-touch-policies.html) | closed firmware, not updatable | already in the code: `hw-signer` feature `yubikey-piv` (crate `yubikey` 0.9.0-rc.0, pure Rust over PC/SC), see `docs/YUBIKEY.md` [V]; Linux/macOS/Windows | **H** |
 | YubiKey 5 — OpenPGP | same | P-256 ECDSA over the hash (PSO:CDS) [I: per the OpenPGP card spec]; no secp256k1 [I] | P256Validator | PW1 PIN + UIF (touch) [I] | closed | `openpgp-card` + `card-backend-pcsc` [V crates.io] | M (PIV is simpler) |
 | YubiKey 5 / Security Key — FIDO2 | Security Key NFC ~$25 [V](https://www.pbtech.co.nz/product/MEMYBC9257/Yubico-Security-Key-NFC---USB-A-FIDO-Only---v57) | assertion only (ES256) | WebAuthnValidator | touch (UP) + PIN (UV, required by the validator) | closed | CTAP2: `ctap-hid-fido2` 3.6, `fido2-rs` (libfido2), `authenticator` [V crates.io]; on Windows without admin — only via `webauthn.dll` [I] | M |
 | **Nitrokey 3 (A/C NFC)** | €55 [V](https://shop.nitrokey.com/shop/nk3an-nitrokey-3a-nfc-147) | OpenPGP: NIST P-256/384/521, brainpool, Curve25519, RSA; PIV: **P-256**, RSA-2048 [V](https://docs.nitrokey.com/nitrokey3/faq); PIV since fw 1.8 (Jan 2025) [V](https://www.nitrokey.com/node/648); secp256k1 in OpenPGP is claimed but in practice does not import [V](https://support.nitrokey.com/t/cant-import-secp256k1-key-to-nitrokey-3a-nfc/6463) | **P256Validator as is** (PIV or OpenPGP over the hash) | OpenPGP UIF: off / on / permanent, separately for sign, dec and auth [V](https://docs.nitrokey.com/nitrokeys/features/openpgp-card/uif); touch policy for PIV — [I], to check | **open firmware** (Trussed, Rust), OpenPGP keys in **NXP SE050** (EAL6+) [V FAQ] | PC/SC: `openpgp-card`, PIV via `cryptoki` + OpenSC [I] | **H** |
@@ -76,10 +80,10 @@ Fit — suitability for the owner role: H / M / L. Prices are a 2026 guideline.
 | Keystone 3 Pro | $149 [V](https://walletpilot.com/hardware-wallets/keystone-3-pro) | secp256k1, air-gapped via QR (UR) | ECDSAValidator | screen, PIN, fingerprint | open FW | QR/UR — own implementation; Rust UR libraries exist [I] | M |
 | GridPlus Lattice1 | $397 [V](https://ethereum.org/ar/wallets/find-wallet/gridplus-lattice1/) | secp256k1 (+ ed25519) [I] | ECDSAValidator | large screen | partly open | JS SDK, network connection | L (price, complexity) |
 | Platform passkey (iOS/Android/Win Hello/macOS) | $0 | WebAuthn assertion only | WebAuthnValidator | UV via biometrics or PIN | closed | needs a browser/WebAuthn page or a native app; hybrid flow (QR) for a phone as the authenticator [I] | M; synced passkeys live in a cloud account → device-bound is better |
-| Phone: own app with the key in SE / StrongBox | $0 + development | **raw P-256**: Android Keystore/StrongBox supports `DIGEST_NONE` for EC P-256 [V](https://developer.android.com/training/articles/keystore); iOS — `SecKeyCreateSignature(.ecdsaSignatureDigestX962SHA256)` [I] | **P256Validator as is** | `setUserAuthenticationRequired`/`userPresence` (biometrics) — enforced in hardware [I] | closed | own mobile app; QR ↔ CLI transport | M–H (expensive to develop; strong model: separate device + biometrics + screen) |
-| **Mac with Secure Enclave + Touch ID** (own or a second Mac) | $0 | P-256, raw digest (already implemented: CryptoKit shim) [V `docs/SECURE_ENCLAVE.md`, project memory] | **P256Validator as is** | `userPresence`/biometrics — enforced by the SE | closed | already in the `hw-signer` code | **H** (if it is not the agent host, otherwise placement 2) |
+| Phone: own app with the key in SE / StrongBox | $0 + development | **raw P-256**: Android Keystore/StrongBox supports `DIGEST_NONE` for EC P-256 [V](https://developer.android.com/training/articles/keystore); iOS — CryptoKit `SecureEnclave.P256.Signing` over the digest as is [V `mobile/ios/OwnerApp/Keys.swift`] | **P256Validator as is** | `setUserAuthenticationRequired` (Android), `.biometryCurrentSet` (iOS) — enforced in hardware [I] | closed | implemented: `mobile/android` (debug build only so far), `mobile/ios`, shared `mobile/owner-core`; a QR plus a LAN session with the CLI (`docs/MOBILE_OWNER_DESIGN.md`) [V] | M–H (strong model: separate device + biometrics + screen; owner role only) |
+| **Mac with Secure Enclave + Touch ID** (own or a second Mac) | $0 | P-256, raw digest (already implemented: CryptoKit shim) [V `docs/SECURE_ENCLAVE.md`, project memory] | **P256Validator as is** | none in our backend today: the key is created with `.privateKeyUsage` only [V `SecureEnclaveShim.swift`]; `userPresence`/biometrics, enforced by the SE, needs a change to the Swift shim | closed | already in the `hw-signer` code, without presence | **H** (if it is not the agent host, otherwise placement 2) |
 | **TPM of a second machine** | $0 | P-256, raw digest (already implemented) | **P256Validator as is** | authValue/PIN; the TPM has no physical presence | — | already in the code (`tss-esapi`, CNG) | **H** (as a separate machine) |
-| **TROPIC01 USB DevKit** | €50 [V](https://www.tropicsquare.com/order-devboard-form) | P-256 ECDSA over a 32-byte hash (`ECDSA_Sign`, MSG_HASH 32 B) [V user API 1.4.0] | **P256Validator as is** | **none** on the chip (GPO is output only) [V user API, `CFG_GPO`]; access restricted by the pairing key | **open architecture** | already in the code (`tropic01` 0.1.1) | M–H (see §3) |
+| **TROPIC01 USB DevKit** | €50 [V](https://www.tropicsquare.com/order-devboard-form) | P-256 ECDSA over a 32-byte hash (`ECDSA_Sign`, MSG_HASH 32 B) [V user API 1.4.0] | **P256Validator as is** | **none** on the chip (GPO is output only) [V user API, `CFG_GPO`]; access restricted by the pairing key (our backend opens the session with the public factory key SH0; a private pairing key is not implemented) | **open architecture** | already in the code (`tropic01` 0.1.0, git rev `3310775`) | M–H (see §3) |
 | Owner = Safe / weighted multisig | gas | mix of factors | Safe (1271) or ZeroDev Weighted Validator (ECDSA + WebAuthn signers) [V](https://unpkg.com/@zerodev/weighted-validator/_esm/index.js) or our own k-of-n P-256 | sum of the factors | — | medium–high | H for mainnet (see §5) |
 | Encrypted file on a USB drive | ~$5 | any curve | any (P-256 → ours as is) | none | — | `age`/`scrypt`/`eth-keystore` + `zeroize` [V crates.io] | L–M (see §6) |
 
@@ -117,8 +121,9 @@ a CTAP2 stack in the CLI. Keys with PIV/OpenPGP for the same money are simpler f
 | What | How to use it as owner | Validator | Work |
 |---|---|---|---|
 | **Ledger Nano S Plus** | (a) Ethereum app, `personal_sign(userOpHash)`; (b) OpenPGP app, secp256r1 key, PSO:CDS over userOpHash | (a) ECDSAValidator `0x845A…cE57` (already on Base); (b) P256Validator as is | (a) `alloy-signer-ledger` → `signMessage`, root = ECDSAValidator: change of the root validator + CLI support; (b) `openpgp-card` client + DER/MPI → `r‖s` + low-s. Option (b) does not change the chain at all [V app-openpgp code; I — that the app installs from Ledger Live on the S Plus] |
+| **YubiKey 5 PIV** | slot 9c, PIN always + touch always (`docs/YUBIKEY.md`) | P256Validator as is | zero: the backend exists; it is the current owner key of the test accounts |
 | **TROPIC01 devkit** | a separate USB owner device, plugged in only for owner operations, with a private pairing key (§3) | P256Validator as is | provisioning the pairing key (SH1), UAP restrictions, invalidate SH0; storing SH1-priv (encrypted) on the owner machine |
-| **TPM of a second machine / Windows PC / Mac** | owner key on another machine, the CLI runs there | P256Validator as is | zero: the `tpm`, `windows_tpm`, Secure Enclave backends already exist; only moving root operations (`sudo agent-signer permission …`) to that machine is needed |
+| **TPM of a second machine / Windows PC / Mac** | owner key on another machine, the CLI runs there | P256Validator as is | zero for the TPM and CNG; for a Mac, zero without presence and a shim change for Touch ID: the `tpm`, `windows_tpm`, Secure Enclave backends already exist; only moving root operations (`sudo agent-signer permission …`) to that machine is needed |
 
 ---
 
@@ -182,7 +187,7 @@ a CTAP2 stack in the CLI. Keys with PIV/OpenPGP for the same money are simpler f
 
 1. **Buy ready-made: Nitrokey 3A NFC (€55).** Open firmware, SE050, button (UIF), PIN, PIV/OpenPGP P-256 → `P256Validator` as is. This is exactly the "open SE in a USB case with presence" that the TROPIC01 devkit lacks.
 2. **Buy ready-made, with a screen and backup: Trezor Safe 3 ($59).** `SignIdentity` nist256p1 → `P256Validator` as is. If you specifically want TROPIC01 inside — Safe 7 ($249).
-3. **Use the existing TROPIC01 devkit:** private SH1 + invalidate SH0 + UAP + storing SH1PRIV encrypted only on the owner machine + connecting only for the duration of the operation. Price €0 (already bought), but no presence.
+3. **Use a TROPIC01 devkit:** private SH1 + invalidate SH0 + UAP + storing SH1PRIV encrypted only on the owner machine + connecting only for the duration of the operation. No extra purchase where a devkit is already at hand, but no presence.
 4. **DIY with presence: RPi Zero 2 W + TROPIC01 RPi Shield + button + OLED ≈ €50.** The best open model, but it is a project, not a purchase.
 
 ---
@@ -191,7 +196,7 @@ a CTAP2 stack in the CLI. Keys with PIV/OpenPGP for the same money are simpler f
 
 | Device class | Validator | Work |
 |---|---|---|
-| A: raw P-256 — YubiKey/Nitrokey/Token2 PIV, OpenPGP cards (incl. Ledger OpenPGP app), Trezor `SignIdentity` nist256p1, TROPIC01, ATECC/OPTIGA/SE050, TPM, Secure Enclave, Android StrongBox `DIGEST_NONE`, SmartCard-HSM | **`P256Validator` as is** | Solidity — zero. CLI: backend (PKCS#11 / PC/SC / HID), DER/MPI → `r‖s`, low-s. Changing the owner to a new key: `changeRootValidator` or reinstalling P256Validator with a new `(x, y)` [I: the CLI currently rotates only the agent] |
+| A: raw P-256 — YubiKey/Nitrokey/Token2 PIV, OpenPGP cards (incl. Ledger OpenPGP app), Trezor `SignIdentity` nist256p1, TROPIC01, ATECC/OPTIGA/SE050, TPM, Secure Enclave, Android StrongBox `DIGEST_NONE`, SmartCard-HSM | **`P256Validator` as is** | Solidity — zero. CLI: a backend per device (PKCS#11 / PC/SC / HID), DER/MPI → `r‖s`, low-s — done for YubiKey PIV, TROPIC01, TPM, Secure Enclave and the phone apps. Changing the owner to a new key: `agent-signer owner set-root` (another P256Validator instance, or `--retire` of the same one with a reinstall); the new key first shows that it can sign (`--new-key` / `key prove`, or `--to-phone`) [V `chain.rs`, `owner set-root --help`] |
 | B: secp256k1 — Ledger/Trezor Ethereum app, Keycard, Satochip, Keystone, Lattice, SE050 (k1), SmartCard-HSM (k1) | ZeroDev **`ECDSAValidator` `0x845ADb2C711129d4f3966735eD98a9F09fC4cE57`** (present on Base and Base Sepolia) | Solidity — zero. CLI: `changeRootValidator(ECDSAValidator, owner address)`; signing via `alloy-signer-ledger` / `alloy-signer-trezor` (`signMessage(userOpHash)` — the validator accepts EIP-191); signature format 65 B `r‖s‖v` |
 | C: FIDO2 / passkeys — Security Key, Titan, Feitian, Solo 2, Ledger Security Key, platform passkeys | ZeroDev **`WebAuthnValidator` `0x7ab16Ff354AcB328452F1D445b3Ddee9a91e9e69`** or our own on Solady `WebAuthn.sol` (already in `contracts/lib/solady`) | Solidity — zero (if using ZeroDev) or a small module. CLI: CTAP2 `getAssertion` with our own `clientDataJSON` (`{"type":"webauthn.get","challenge":"<b64url(userOpHash)>",…}`), UV=required; encoding `(authData, clientDataJSON, responseTypeLocation, r, s, usePrecompiled)`. Store the credential ID in the config (non-resident) |
 | Multi-factor | ZeroDev Weighted Validator (ECDSA + WebAuthn signers) [V package], Safe owner (1271) or our own k-of-n P-256 | Our own k-of-n P-256 is ~100 lines based on `P256Validator`, needs an audit. ZeroDev's Weighted covers classes B+C, but not A |
@@ -200,8 +205,8 @@ a CTAP2 stack in the CLI. Keys with PIV/OpenPGP for the same money are simpler f
 
 ## 5. Multisig, social recovery and a cold recovery owner
 
-- **Kernel v3 allows "narrow" non-root validators.** For them `allowedSelectors[vId][selector]` is checked, and `grantAccess(vId, selector, allow)` can be called only by root [V `contracts/lib/kernel/src/Kernel.sol:261,392`; `changeRootValidator` — line 135]. Hence the **recovery owner**: a second validator (a second P256Validator instance or ECDSAValidator) with access **only** to `changeRootValidator`. The everyday owner is a cheap key; recovery is a cold key (paper, safe, a second Ledger), needed only if the main one is lost.
-  - **Important:** a recovery validator that is allowed `changeRootValidator` is effectively root too. Its protection must be no weaker than the main key's. Adding a timelock is desirable: `kernel-7579-plugins` has a `TimelockPolicy` [V repo tree], but its applicability to a validator rather than a permission — [I].
+- **Kernel v3 allows "narrow" non-root validators.** For them `allowedSelectors[vId][selector]` is checked, and `grantAccess(vId, selector, allow)` can be called only by root [V `contracts/lib/kernel/src/Kernel.sol:261,392`; `changeRootValidator` — line 135]. Hence the **recovery owner**: a second validator (a second P256Validator instance or ECDSAValidator) with access **only** to `changeRootValidator`. Implemented: `contracts/src/P256RecoveryValidator.sol` (a `P256Validator` under its own address that refuses ERC-1271), `agent-signer owner add-recovery` / `owner recover` [V]. The everyday owner is a cheap key; recovery is a cold key (paper, safe, a second Ledger), needed only if the main one is lost.
+  - **Important:** a recovery validator that is allowed `changeRootValidator` is effectively root too. Its protection must be no weaker than the main key's. Adding a timelock is desirable: `kernel-7579-plugins` has a `TimelockPolicy` [V repo tree], but its applicability to a validator rather than a permission — [I]. Our contracts have no timelock yet.
 - **2-of-3 from cheap factors**, e.g. YubiKey + Trezor + TPM of a second machine: our own k-of-n P-256 validator (all three are class A) or a Safe owner. This is best practice for mainnet amounts: one compromised machine does not give root.
 - **Paper or QR backup.** A P-256 key generated offline on a separate machine is printed as QR/hex and kept in a safe. It is then imported into YubiKey PIV (import is supported, [I]), TROPIC01 (`ECC_Key_Store` [V `lt_3.rs`]) or Ledger OpenPGP. This way the hardware key gets a backup. Downside: such a key "has been outside", and the "generated in the chip" attestation is lost. An alternative without import is seed wallets (Trezor `SignIdentity` and Ledger OpenPGP in seed mode [I]): the backup is 24 words, the key is deterministic.
 
@@ -236,7 +241,7 @@ a CTAP2 stack in the CLI. Keys with PIV/OpenPGP for the same money are simpler f
 
 **Conclusion:** the USB drive is better than a "key in a file on the agent host" and is suitable as a **cold recovery owner** (§5) on an offline machine. As an everyday owner it is worse than a $25 FIDO2 key, YubiKey PIV, Nitrokey or Trezor. Hybrid: FIDO2 **hmac-secret** (the same $25 key) derives the file encryption key — decryption requires a touch and the physical key. But the key still ends up in host memory [I: this is what `systemd-cryptenroll --fido2-device` and age plugins do].
 
-**Conflict with rule 5 and wording.** Rule 5 currently reads: "No plaintext private key, anywhere outside tests". An encrypted file is formally not plaintext, but once decrypted it is. Proposed wording:
+**Conflict with rule 5 and wording.** Rule 5 read at the time: "No plaintext private key, anywhere outside tests" (`KEY_POLICY.md` carries the exception now). An encrypted file is formally not plaintext, but once decrypted it is. The wording proposed then:
 
 > **5. No plaintext private key at rest, and no private key ever on the agent
 > host.** Outside tests, a private key exists in plaintext only inside a secure
@@ -249,13 +254,13 @@ a CTAP2 stack in the CLI. Keys with PIV/OpenPGP for the same money are simpler f
 > (e) used for root operations only — never as the agent key. The software
 > backend remains test-only for the agent role.
 
-Minimum implementation requirements in the CLI [I]:
-- a separate `encrypted-file` backend, available **only** to the owner/recovery role;
-- refuse to work if the config or the host is marked as an agent host;
-- scrypt/argon2id + AEAD (`age` 0.12 or `scrypt` + `chacha20poly1305`);
-- password via `rpassword`, not via env or arguments;
-- `Zeroizing<[u8; 32]>`, `mlock`, signing with the same `p256` with low-s;
-- check: the public key after decryption matches `ownerPublicKey` from the config.
+Minimum implementation requirements in the CLI [I], and what `signer/crates/agent-signer/src/keyfile.rs` does today [V]:
+- a separate `encrypted-file` backend, available **only** to the owner/recovery role — done, under the name `keyfile`;
+- refuse to work if the config or the host is marked as an agent host — not implemented: no such mark exists;
+- scrypt/argon2id + AEAD (`age` 0.12 or `scrypt` + `chacha20poly1305`) — done as scrypt N = 2^18 + AES-256-GCM;
+- password via `rpassword`, not via env or arguments — done;
+- `Zeroizing<[u8; 32]>`, `mlock`, signing with the same `p256` with low-s — done (`mlock` on Unix);
+- check: the public key after decryption matches `ownerPublicKey` from the config — done differently: the file's public half is bound to the ciphertext and compared with the account's root or recovery key on chain before anything is signed.
 
 ---
 
@@ -263,12 +268,12 @@ Minimum implementation requirements in the CLI [I]:
 
 | Transport | Devices | Crates [V crates.io, 2026-10] | OS |
 |---|---|---|---|
-| PC/SC (CCID) | YubiKey PIV/OpenPGP, Nitrokey 3, JavaCard, Keycard, Satochip, Ledger OpenPGP app [I], SmartCard-HSM | `pcsc` 2.9, `yubikey` 0.9-rc, `openpgp-card` 0.7 + `card-backend-pcsc` 0.5 | Linux (pcscd), macOS, Windows — built in |
+| PC/SC (CCID) | YubiKey PIV/OpenPGP, Nitrokey 3, JavaCard, Keycard, Satochip, Ledger OpenPGP app [I], SmartCard-HSM | `pcsc` 2.9, `yubikey` 0.9.0-rc.0 (already in the project), `openpgp-card` 0.7 + `card-backend-pcsc` 0.5 | Linux (pcscd), macOS, Windows — built in |
 | PKCS#11 | YubiKey (ykcs11), Nitrokey (OpenSC), SmartCard-HSM | `cryptoki` 0.12 | all; needs a .so/.dll module |
 | CTAP2 HID | all FIDO2 keys, Ledger/Trezor FIDO | `ctap-hid-fido2` 3.6, `fido2-rs` 0.6 (libfido2), `authenticator` 0.5 | Linux/macOS — directly; Windows — without admin only via `webauthn.dll` [I] |
 | Ledger APDU over HID | Ledger Ethereum app | `alloy-signer-ledger` 2.5, `coins-ledger` 0.16 | all |
 | Trezor protobuf over USB | Trezor Ethereum, `SignIdentity` | `alloy-signer-trezor` 2.5, `trezor-client` 0.1.6 (`SignIdentity` included) | all |
-| SPI/I2C (embedded) / USB-CDC | TROPIC01, ATECC608, SE050, OPTIGA | `tropic01` 0.1.1 (already in the project), `se05x` 0.4.2, `rust-cryptoauthlib` 0.4.5 (2022), OPTIGA — FFI to C | devkit — USB serial; the rest via MCU/RPi |
+| SPI/I2C (embedded) / USB-CDC | TROPIC01, ATECC608, SE050, OPTIGA | `tropic01` 0.1.0, git rev `3310775` (already in the project), `se05x` 0.4.2, `rust-cryptoauthlib` 0.4.5 (2022), OPTIGA — FFI to C | devkit — USB serial; the rest via MCU/RPi |
 | Platform | Secure Enclave, TPM, CNG | already in `hw-signer` | macOS / Linux / Windows |
 
 ---
