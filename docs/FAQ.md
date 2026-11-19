@@ -95,7 +95,8 @@ with it left in, `account status` prints that account, not yours. Then set:
   call (`allow`), `maxValuePerOp` and `budget` in wei, `validUntil` (a Unix
   time), and for tokens a `tokens` entry with per-operation and total limits
   (for $100 in USDC: e.g. `maxPerOp` 20 USDC, `budget` 100 USDC, in 6-decimal
-  units);
+  units) that also says who may be paid: today `"payees": "anyone"`, which
+  means the agent picks the recipient within those limits;
 - a new `permissionId` (any 4 bytes, e.g. `0x61676e74`).
 
 **5. Fund the account and start.**

@@ -179,11 +179,26 @@ pub struct TokenEntry {
     /// token's EIP-712 domain separator when installing the mandate).
     #[serde(default)]
     pub x402: bool,
-    /// The only addresses this token may be transferred to, approved for, or
-    /// pay through x402. Absent or empty: anyone, the agent picks. Needs an
-    /// `AgentPolicy` that knows payee lists.
+    /// Who this token may go to: a list of the only addresses it may be
+    /// transferred to, approved for, or pay through x402 (needs an
+    /// `AgentPolicy` that knows payee lists), or the word `"anyone"` — the
+    /// agent picks. Absent, the config still loads, but no mandate is
+    /// installed from it: the owner has to say which.
     #[serde(default)]
-    pub payees: Vec<Address>,
+    pub payees: Option<Payees>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum Payees {
+    Anyone(Anyone),
+    Only(Vec<Address>),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Anyone {
+    Anyone,
 }
 
 #[derive(Debug, Deserialize)]
@@ -314,15 +329,31 @@ impl AgentConfig {
     /// The tokens bound to a payee list, as the policy takes them.
     pub fn payees(&self) -> Result<Vec<(Address, Vec<Address>)>> {
         let mut lists = Vec::new();
-        for t in self.policy.tokens.iter().filter(|t| !t.payees.is_empty()) {
-            for (i, payee) in t.payees.iter().enumerate() {
-                if payee.is_zero() || t.payees[..i].contains(payee) {
+        for t in &self.policy.tokens {
+            let Some(Payees::Only(list)) = &t.payees else { continue };
+            if list.is_empty() {
+                anyhow::bail!("tokens: the payee list of {} is empty; name the payees, or write \"payees\": \"anyone\"", t.token);
+            }
+            for (i, payee) in list.iter().enumerate() {
+                if payee.is_zero() || list[..i].contains(payee) {
                     anyhow::bail!("tokens: the payee list of {} has the zero address or {payee} twice", t.token);
                 }
             }
-            lists.push((t.token, t.payees.clone()));
+            lists.push((t.token, list.clone()));
         }
         Ok(lists)
+    }
+
+    /// Before a mandate is installed: every token in it must say who may be
+    /// paid. A cap without that reads as a bound and is not one.
+    pub fn check_payees_stated(&self) -> Result<()> {
+        match self.policy.tokens.iter().find(|t| t.payees.is_none()) {
+            Some(t) => anyhow::bail!(
+                "tokens: {} has limits but does not say who may be paid; add \"payees\": [\"0x…\"] (only these addresses) or \"payees\": \"anyone\" (the agent picks) to its entry",
+                t.token
+            ),
+            None => Ok(()),
+        }
     }
 }
 

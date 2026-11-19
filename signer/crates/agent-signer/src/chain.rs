@@ -835,6 +835,7 @@ impl Session {
     /// Refuse a mandate whose allow-list names something the agent must never
     /// be able to call, before any signature (`forbidden_target`).
     fn check_mandate_targets(&self) -> Result<()> {
+        self.cfg.check_payees_stated()?;
         let params = self.cfg.policy_params(&self.token_domains)?;
         for (target, selector) in params.targets.iter().zip(&params.selectors) {
             if let Some(why) = forbidden_target(&self.dep, self.account, *target, selector.0) {

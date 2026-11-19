@@ -469,6 +469,28 @@ fn agent_lifecycle() {
         let refused = chain.fails(cmd);
         assert!(refused.contains("does not know payee lists"), "{refused}");
     }
+    // a token with limits and no word on who may be paid: the config loads
+    // (status and revoke still work from it), but no mandate is installed
+    let silent = chain.config(
+        "silent.json",
+        &Cfg {
+            owner: &owner, agent: &agent, permission: "0x73696c65", allow: vec![(counter.clone(), "0xa9059cbb")],
+            account: Some(account.clone()), recovery: None, valid_after: 0, valid_until: until,
+            tokens: json!([{"token": counter, "maxPerOp": "1", "budget": "2"}]),
+        },
+    );
+    chain.ok(&["account", "status", "--agent", &silent]);
+    let refused = chain.fails(&["permission", "add", "--agent", &silent]);
+    assert!(refused.contains("does not say who may be paid"), "{refused}");
+    let stated = chain.config(
+        "stated.json",
+        &Cfg {
+            owner: &owner, agent: &agent, permission: "0x73746174", allow: vec![(counter.clone(), "0xa9059cbb")],
+            account: Some(account.clone()), recovery: None, valid_after: 0, valid_until: until,
+            tokens: json!([{"token": counter, "maxPerOp": "1", "budget": "2", "payees": "anyone"}]),
+        },
+    );
+    chain.ok(&["permission", "add", "--agent", &stated]);
 
     // outside the mandate: a transfer to an outsider is refused, nothing moves
     let refused = chain.fails(&["op", "send", "--agent", &cfg, "--target", "0x000000000000000000000000000000000000dEaD", "--wei", "1"]);
@@ -1752,7 +1774,7 @@ fn x402_pay_and_reclaim() {
             &Cfg {
                 allow: vec![(counter.clone(), INCREMENT), (policy.clone(), X402_AUTHORIZE), (policy.clone(), X402_RECLAIM)],
                 account,
-                tokens: json!([{"token": usdc, "maxPerOp": "1000000", "budget": "2000000", "x402": true}]),
+                tokens: json!([{"token": usdc, "maxPerOp": "1000000", "budget": "2000000", "x402": true, "payees": "anyone"}]),
                 ..base_cfg(&owner, &agent, &counter, until)
             },
         )
