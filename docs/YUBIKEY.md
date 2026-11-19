@@ -159,8 +159,9 @@ key `0x81010010`; recovery installed; agent permission `trp1` in a TROPIC01.
 
 1. **Handover.** The TPM owner key signed `owner set-root --validator
    0xdA4c…50c2 --retire 0xDe1A…24D1 --public-key <x>,<y> --sponsored`
-   (today the command must also say what the new key is: `--not-a-phone`
-   here, after `key check --yubikey` has shown that the device signs): the
+   (today the command must also say what the new key is, `--not-a-phone`
+   here, and the YubiKey signs a challenge before anything is sent:
+   `--new-key '{"yubikey": {"slot": "9c"}}'`): the
    current `p256Validator` installed with the YubiKey's key, the V1 instance
    with the TPM key uninstalled in the same operation, paymaster-sponsored,
    through the public bundler — tx

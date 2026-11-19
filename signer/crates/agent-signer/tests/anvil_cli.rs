@@ -252,8 +252,8 @@ impl Chain {
         receipt
     }
 
-    /// Run the CLI with this chain's `.env`, never the developer's.
-    fn cli(&self, args: &[&str]) -> Output {
+    /// The CLI with this chain's `.env`, never the developer's.
+    fn command(&self, args: &[&str]) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_agent-signer"));
         cmd.args(args).env_remove("BASE_SEPOLIA_RPC_URL");
         if args.first() != Some(&"key") {
@@ -263,7 +263,29 @@ impl Chain {
         cmd.env_remove("BASE_SEPOLIA_RPC_URL")
             .env_remove("BUNDLER_URL")
             .env_remove("GAS_WALLET_KEYFILE");
-        cmd.output().unwrap()
+        cmd
+    }
+
+    /// Run the CLI. Its standard input is closed, as for any command nobody answers.
+    fn cli(&self, args: &[&str]) -> Output {
+        self.command(args).output().unwrap()
+    }
+
+    /// `owner set-root` to a key on another machine (issue #51): the command prints a
+    /// challenge and waits on its standard input for the proof.
+    fn handover(&self, args: &[&str]) -> Handover {
+        let mut child = self.command(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let mut out = BufReader::new(child.stdout.take().unwrap());
+        let mut challenge = String::new();
+        out.read_line(&mut challenge).unwrap();
+        assert!(challenge.starts_with("tpmsign-handover-challenge:1:"), "no challenge from {args:?}: {challenge:?}");
+        Handover { child, out, challenge: challenge.trim().to_string() }
+    }
+
+    /// `key prove` on "the machine that holds the key": the proof line for `challenge`.
+    fn prove(&self, holder: &Key, challenge: &str) -> String {
+        let said = self.ok(&["key", "prove", "--key", &spec(holder), "--challenge", challenge]);
+        said.lines().find(|l| l.starts_with("tpmsign-handover-proof:1:")).unwrap_or_else(|| panic!("no proof in: {said}")).to_string()
     }
 
     fn ok(&self, args: &[&str]) -> String {
@@ -278,6 +300,24 @@ impl Chain {
         let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
         assert!(!out.status.success(), "agent-signer {args:?} was expected to fail:\n{text}");
         text
+    }
+}
+
+/// A handover that has printed its challenge and waits for the proof.
+struct Handover {
+    child: Child,
+    out: BufReader<std::process::ChildStdout>,
+    challenge: String,
+}
+
+impl Handover {
+    /// Paste `proof` and let the command finish: whether it succeeded, and all it said.
+    fn answer(mut self, proof: &str) -> (bool, String) {
+        writeln!(self.child.stdin.take().unwrap(), "{proof}").unwrap();
+        let mut said = String::new();
+        self.out.read_to_string(&mut said).unwrap();
+        let rest = self.child.wait_with_output().unwrap();
+        (rest.status.success(), format!("{said}{}", String::from_utf8_lossy(&rest.stderr)))
     }
 }
 
@@ -300,6 +340,11 @@ fn key(n: u8) -> Key {
         x: format!("0x{}", hex::encode(point.x().unwrap())),
         y: format!("0x{}", hex::encode(point.y().unwrap())),
     }
+}
+
+/// A test key as a config names it: what `--new-key` and `key prove --key` take.
+fn spec(k: &Key) -> String {
+    json!({"software": k.scalar}).to_string()
 }
 
 struct Cfg<'a> {
@@ -511,10 +556,12 @@ fn recovery_drill() {
     chain.ok(&["owner", "recover", "--agent", &old_cfg]);
     let validator = chain.addr("p256Validator");
     let public_key = format!("{},{}", new_owner.x, new_owner.y);
-    chain.ok(&[
+    // the new owner's key is on this machine: it shows that it can sign in the same command (issue #51)
+    let said = chain.ok(&[
         "owner", "set-root", "--agent", &old_cfg, "--as-recovery", "--not-a-phone",
-        "--validator", &validator, "--retire", &validator, "--public-key", &public_key,
+        "--validator", &validator, "--retire", &validator, "--public-key", &public_key, "--new-key", &spec(&new_owner),
     ]);
+    assert!(said.contains(&format!("holds the key {} (signed a fresh challenge)", fingerprint_of(&new_owner))), "{said}");
 
     // the new owner signs root operations; the lost one is refused
     let new_cfg = with("new-owner.json", &new_owner);
@@ -527,6 +574,126 @@ fn recovery_drill() {
     assert!(refused.contains("not the account's root key"), "{refused}");
     // and the agent permission survived the change of owner
     chain.ok(&["demo", "--agent", &new_cfg]);
+}
+
+/// Issue #51: `owner set-root --not-a-phone` hands the root to a key in one step, and the
+/// new key has no accept step. A fingerprint shows which public key was pasted, not that
+/// anybody can sign with it. So the key shows that first, by signing a challenge the command
+/// prints; `key prove` answers it on the machine that holds the key. Each refusal below
+/// leaves the root where it was.
+#[test]
+fn a_handover_waits_for_the_new_key_to_show_it_can_sign() {
+    let chain = chain_or_skip!("handover-proof");
+    let (owner, agent, recovery, second, third, stranger) = (key(1), key(2), key(4), key(6), key(7), key(8));
+    let counter = chain.addr("demoCounter");
+    let until = far_future(&chain);
+    let account = chain.deploy(&chain.config("agent.json", &base_cfg(&owner, &agent, &counter, until)));
+    let with = |name: &str, o: &Key| {
+        chain.config(name, &Cfg { owner: o, recovery: Some(&recovery), account: Some(account.clone()), ..base_cfg(o, &agent, &counter, until) })
+    };
+    let cfg = with("owner.json", &owner);
+    chain.ok(&["owner", "add-recovery", "--agent", &cfg]);
+    let validator = chain.addr("p256Validator");
+    let to = |from: &str, k: &Key| -> Vec<String> {
+        ["owner", "set-root", "--agent", from, "--validator", &validator, "--retire", &validator, "--public-key", &format!("{},{}", k.x, k.y), "--not-a-phone"]
+            .map(String::from)
+            .to_vec()
+    };
+    fn refs(args: &[String]) -> Vec<&str> {
+        args.iter().map(String::as_str).collect()
+    }
+    let to_second = to(&cfg, &second);
+    let root_is = |k: &Key| chain.ok(&["owner", "status", "--agent", &cfg]).contains(&format!("root key:       fingerprint {}", fingerprint_of(k)));
+
+    // nobody answers: refused, and the refusal says what would be accepted
+    let err = chain.fails(&refs(&to_second));
+    assert!(err.contains("tpmsign-handover-challenge:1:") && err.contains("no proof of possession"), "{err}");
+    assert!(err.contains("key prove") && err.contains("--new-key") && err.contains("--no-proof-of-possession") && err.contains("Nothing sent"), "{err}");
+
+    // a proof by another key, made for that key's own challenge on the same account
+    let waiting = chain.handover(&refs(&to_second));
+    let for_stranger = chain.handover(&refs(&to(&cfg, &stranger)));
+    let (ok, said) = waiting.answer(&chain.prove(&stranger, &for_stranger.challenge));
+    assert!(!ok && said.contains("does not verify") && said.contains("nothing sent"), "{said}");
+    let _ = for_stranger.answer("");
+
+    // the key's own command refuses to sign for a challenge that names another key
+    let waiting = chain.handover(&refs(&to_second));
+    let challenge = waiting.challenge.clone();
+    let err = chain.fails(&["key", "prove", "--key", &spec(&stranger), "--challenge", &challenge]);
+    assert!(err.contains("not the key the root is going to; nothing signed"), "{err}");
+    // ... and a challenge it cannot read back as it was printed, or that is not one
+    let err = chain.fails(&["key", "prove", "--key", &spec(&second), "--challenge", &challenge.to_uppercase()]);
+    assert!(err.contains("not a handover challenge"), "{err}");
+    let err = chain.fails(&["key", "prove", "--key", &spec(&second), "--challenge", &challenge.replacen(":0x", ":0X", 1)]);
+    assert!(err.contains("not in the form"), "{err}");
+
+    // the right key, for another account and for another chain: the challenge line is what is
+    // signed, so a proof for a line that differs in either does not verify here
+    let field = |line: &str, i: usize, value: &str| {
+        let mut f: Vec<&str> = line.split(':').collect();
+        f[i] = value;
+        f.join(":")
+    };
+    let other_account = field(&challenge, 3, &format!("0x{}", "11".repeat(20)));
+    let (ok, said) = waiting.answer(&chain.prove(&second, &other_account));
+    assert!(!ok && said.contains("does not verify") && said.contains("nothing sent"), "{said}");
+    let waiting = chain.handover(&refs(&to_second));
+    let chain_id: u64 = waiting.challenge.split(':').nth(2).unwrap().parse().unwrap();
+    let other_chain = field(&waiting.challenge, 2, &(chain_id + 1).to_string());
+    let (ok, said) = waiting.answer(&chain.prove(&second, &other_chain));
+    assert!(!ok && said.contains("does not verify") && said.contains("nothing sent"), "{said}");
+
+    // the right key and the right challenge, too late
+    let mut slow = to_second.clone();
+    slow.extend(["--proof-timeout", "1"].map(String::from));
+    let waiting = chain.handover(&refs(&slow));
+    std::thread::sleep(Duration::from_millis(2500));
+    let proof = chain.prove(&second, &waiting.challenge);
+    let (ok, said) = waiting.answer(&proof);
+    assert!(!ok && said.contains("after the challenge expired") && said.contains("nothing sent"), "{said}");
+
+    // something that is not a proof
+    let (ok, said) = chain.handover(&refs(&to_second)).answer("tpmsign-handover-proof:1:0x00");
+    assert!(!ok && said.contains("not a proof of possession"), "{said}");
+
+    // a key on this machine names itself; it must be the key the command names
+    let mut two_keys = to_second.clone();
+    two_keys.extend(["--new-key".to_string(), spec(&stranger)]);
+    let err = chain.fails(&refs(&two_keys));
+    assert!(err.contains("which of the two does the root go to"), "{err}");
+    // a phone's key has its own way, and the override does not combine with a proof
+    let mut a_phone = to_second.clone();
+    a_phone.extend(["--new-key".to_string(), json!({"phone": {"label": "p", "publicKey": {"x": second.x, "y": second.y}, "fingerprint": "A"}}).to_string()]);
+    assert!(chain.fails(&refs(&a_phone)).contains("--to-phone"));
+    let mut both = to_second.clone();
+    both.extend(["--no-proof-of-possession".to_string(), "--new-key".to_string(), spec(&second)]);
+    assert!(chain.fails(&refs(&both)).contains("cannot be used with"));
+
+    // nothing was sent by any of the above
+    assert!(root_is(&owner), "the root moved without a proof");
+
+    // the override names the risk and goes through
+    let mut unproven = to_second.clone();
+    unproven.push("--no-proof-of-possession".into());
+    let said = chain.ok(&refs(&unproven));
+    assert!(said.contains("WARNING: no proof of possession") && said.contains("the account goes with it"), "{said}");
+    assert!(root_is(&second));
+
+    // and the whole path between two machines: challenge, `key prove`, the proof pasted back
+    let cfg2 = with("second.json", &second);
+    let waiting = chain.handover(&refs(&to(&cfg2, &third)));
+    let proof = chain.prove(&third, &waiting.challenge);
+    let (ok, said) = waiting.answer(&proof);
+    assert!(ok, "{said}");
+    assert!(said.contains(&format!("holds the key {} (signed a fresh challenge)", fingerprint_of(&third))) && said.contains("root handed to"), "{said}");
+    let before = chain.counter();
+    chain.ok(&["op", "send", "--agent", &with("third.json", &third), "--root", "--target", &counter, "--data", INCREMENT]);
+    assert_eq!(chain.counter(), before + U256::from(1));
+    // a proof is good for one run: the same line pasted into a second handover does not verify
+    let cfg3 = with("third.json", &third);
+    let (ok, said) = chain.handover(&refs(&to(&cfg3, &third))).answer(&proof);
+    assert!(!ok && said.contains("does not verify"), "{said}");
 }
 
 /// The owner replaces its own key on the same validator — a new device, or
@@ -551,7 +718,7 @@ fn owner_rotates_its_key_on_the_root_validator() {
     let bare = with("owner-norec.json", &owner, None);
     let refused = chain.fails(&[
         "owner", "set-root", "--agent", &bare, "--validator", &validator, "--retire", &validator, "--public-key", &public_key,
-        "--not-a-phone",
+        "--not-a-phone", "--new-key", &spec(&new_owner),
     ]);
     assert!(refused.contains("owner add-recovery"), "{refused}");
 
@@ -569,7 +736,11 @@ fn owner_rotates_its_key_on_the_root_validator() {
     // after a recovery too: the same command, the same rule
     let err = chain.fails(&[&untold[..], &["--as-recovery"]].concat());
     assert!(err.contains("say what the new key is"), "{err}");
-    chain.ok(&[&untold[..], &["--not-a-phone"]].concat());
+    // the key names itself with --new-key, so --public-key may be left out
+    chain.ok(&[
+        "owner", "set-root", "--agent", &old_cfg, "--validator", &validator, "--retire", &validator, "--not-a-phone", "--new-key",
+        &spec(&new_owner),
+    ]);
     let status = chain.ok(&["owner", "status", "--agent", &old_cfg]);
     assert!(status.contains(&validator.to_lowercase()), "root is back on the validator: {status}");
     assert!(status.contains("is root now = false"), "{status}");
@@ -1423,7 +1594,8 @@ fn phone_owner_real_device() {
         eprintln!("\nNow the phone signs a change of the root key, to {back}: scan the QR below. The review shows the new\nkey's fingerprint in bold, and Sign asks a second time.\n");
         let status = run(&[
             "owner", "set-root", "--agent", phone_cfg, "--validator", &validator, "--retire", &validator,
-            "--public-key", &format!("{},{}", owner.x, owner.y), "--expect-fingerprint", &back, "--not-a-phone",
+            "--public-key", &format!("{},{}", owner.x, owner.y), "--expect-fingerprint", &back, "--not-a-phone", "--new-key",
+            &spec(&owner),
         ]);
         assert!(status.success(), "the phone-signed handover failed");
         let before = chain.counter();

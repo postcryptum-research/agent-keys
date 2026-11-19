@@ -207,9 +207,9 @@ Losing a key: the agent's is replaced by the owner (`permission rotate`); for
 the owner's, a cold recovery key — e.g. an encrypted key file on a USB drive
 (`key create --keyfile …`) installed with `owner add-recovery` — may take
 root over and hand it to a new device (`owner recover`, `owner set-root
---retire … --not-a-phone`, or `--to-phone <label>` for a phone, which must
-first show that it holds the new key), and can do nothing else, not even
-sign a message.
+--retire … --not-a-phone`, or `--to-phone <label>` for a phone; either way
+the new key must first show that it can sign), and can do nothing else, not
+even sign a message.
 `key check` proves a key (or a key file's passphrase) still works without
 sending anything. Devices and failure modes:
 [`docs/OWNER_DEVICES.md`](docs/OWNER_DEVICES.md),

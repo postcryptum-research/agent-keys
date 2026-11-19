@@ -7,6 +7,7 @@ mod keyfile;
 mod attestation;
 mod der;
 mod phone;
+mod possession;
 mod x402;
 
 use std::path::{Path, PathBuf};
@@ -344,8 +345,9 @@ enum OwnerCmd {
         #[arg(long)]
         validator: Address,
         /// The new owner public key: `x,y` (hex), as `key show` prints it.
-        #[arg(long)]
-        public_key: String,
+        /// Not needed with `--new-key`, which reads it from the key.
+        #[arg(long, required_unless_present = "new_key")]
+        public_key: Option<String>,
         /// The validator of the lost or replaced owner key: uninstalled in the
         /// same operation, so its key signs nothing any more (required after
         /// `recover`). May equal `--validator` to reuse that contract.
@@ -365,16 +367,35 @@ enum OwnerCmd {
         /// health check, `key check --phone`). An enrollment the phone did
         /// not keep stops here, not after root has gone to a key nobody
         /// holds. One of this and `--not-a-phone` is required.
-        #[arg(long)]
+        #[arg(long, requires = "public_key")]
         to_phone: Option<String>,
         /// The new key is not a phone's key, so no phone is asked to show
         /// it. One of this and `--to-phone` is required: the command cannot
         /// tell a phone's key from any other pasted `--public-key`, and
         /// root handed to a key nobody holds takes the account with it.
-        /// For a key on another device, check first that the device signs
-        /// (`key check`).
+        /// The key shows that it can sign before anything is sent (issue
+        /// #51): with `--new-key` in this command, or else the command
+        /// prints a challenge, `key prove` answers it on the machine that
+        /// holds the key, and the proof is pasted back here.
         #[arg(long, conflicts_with = "to_phone")]
         not_a_phone: bool,
+        /// The new key is on this machine: the key as a config names it and
+        /// `key create` prints it, e.g. '{"yubikey": {"slot": "9c"}}' or
+        /// '{"tpm": "0x81010010"}'. It signs the proof of possession here,
+        /// so one command does both, and `--public-key` is read from it.
+        #[arg(long, requires = "not_a_phone", conflicts_with = "no_proof_of_possession")]
+        new_key: Option<String>,
+        /// Seconds the new key has to answer the challenge.
+        #[arg(long, default_value_t = 900)]
+        proof_timeout: u64,
+        /// Hand the root over although the new key has not shown that it
+        /// can sign. A fingerprint only tells which public key was pasted.
+        /// If nobody can sign with the key — the private key is lost, was
+        /// never made, or is on a device that no longer works — the
+        /// account goes with it, unless a recovery key is installed and
+        /// under control. Without this flag such a handover is refused.
+        #[arg(long, requires = "not_a_phone")]
+        no_proof_of_possession: bool,
         #[arg(long)]
         sponsored: bool,
     },
@@ -478,6 +499,19 @@ enum KeyCmd {
         pcrs: Vec<u8>,
         #[command(flatten)]
         session: PhoneSessionArgs,
+    },
+    /// Show that this machine holds a key, for a root handover made on
+    /// another machine (`owner set-root --not-a-phone`, which prints the
+    /// challenge): the key signs the challenge, and the proof printed here
+    /// is pasted there. Nothing is sent anywhere.
+    Prove {
+        /// The key, as a config names it and `key create` prints it, e.g.
+        /// '{"yubikey": {"slot": "9c"}}' or '{"tpm": "0x81010010"}'.
+        #[arg(long)]
+        key: String,
+        /// The challenge line `owner set-root` printed.
+        #[arg(long)]
+        challenge: String,
     },
     /// YubiKey: write the slot's attestation certificate (DER) — proof that
     /// the key was generated on this device, with its PIN and touch policies.
@@ -667,6 +701,62 @@ fn check_signer(name: String, signer: &dyn HardwareSigner) -> Result<()> {
     Ok(())
 }
 
+/// A key named as a config names it (what `key create` prints), opened as an
+/// owner key is: the key a root handover goes to (issue #51).
+fn open_key_spec(spec: &str) -> Result<Box<dyn HardwareSigner>> {
+    let spec: agent::KeySpec = serde_json::from_str(spec).context(
+        "the key, as a config names it and `key create` prints it, e.g. '{\"yubikey\": {\"slot\": \"9c\"}}' or '{\"tpm\": \"0x81010010\"}'",
+    )?;
+    if matches!(spec, agent::KeySpec::Phone { .. }) {
+        bail!("a phone shows that it holds its key in a session of its own: `owner set-root --to-phone <label>`");
+    }
+    agent::open_signer(&spec, agent::Role::Owner)
+}
+
+/// `key prove`: the key's half of the proof of possession (issue #51).
+fn prove_key(spec: &str, challenge: &str) -> Result<()> {
+    let challenge = possession::Challenge::parse(challenge)?;
+    eprintln!(
+        "asked to show that this machine holds the key {}\n  for account {} on chain {}\n  \
+         this is the step before that account's root is handed to the key; nothing is sent from here",
+        owner_core::fingerprint::fingerprint(&challenge.key),
+        challenge.account,
+        challenge.chain_id
+    );
+    let at = possession::now();
+    if at > challenge.expires {
+        eprintln!("  note: by this machine's clock the challenge expired {} s ago; the machine that asked decides", at - challenge.expires);
+    } else {
+        eprintln!("  the challenge is good for another {} s", challenge.expires - at);
+    }
+    let signer = open_key_spec(spec)?;
+    println!("{}", challenge.prove(signer.as_ref())?);
+    eprintln!("paste the line above where `owner set-root` is waiting");
+    Ok(())
+}
+
+/// The new key is on another machine (issue #51): print the challenge, and
+/// read the proof that `key prove` printed there.
+fn ask_for_proof(challenge: &possession::Challenge, seconds: u64) -> Result<String> {
+    eprintln!(
+        "\nBefore the root goes to this key, the key shows that it can sign. On the machine that holds it, run\n\n  \
+         agent-signer key prove --key '<the key, as a config names it>' --challenge <the line below>\n\n\
+         and paste the line that command prints here, within {seconds} s. For a key on this machine,\n\
+         --new-key '<the key>' does both in one command.\n\nchallenge:"
+    );
+    println!("{}", challenge.line());
+    let mut proof = String::new();
+    std::io::stdin().read_line(&mut proof).context("reading the proof of possession")?;
+    if proof.trim().is_empty() {
+        bail!(
+            "no proof of possession, and the root is not handed to a key that has not shown it can sign: a key nobody \
+             can sign with takes the account with it. Give the proof (`key prove` on the key's machine, or --new-key \
+             for a key on this one), or say --no-proof-of-possession. Nothing sent"
+        );
+    }
+    Ok(proof)
+}
+
 fn run_key(cmd: KeyCmd) -> Result<()> {
     let (key, op) = match cmd {
         KeyCmd::Create {
@@ -708,6 +798,7 @@ fn run_key(cmd: KeyCmd) -> Result<()> {
             session.configure();
             (key, KeyOp::Check { auth_file, pcrs })
         }
+        KeyCmd::Prove { key, challenge } => return prove_key(&key, &challenge),
         KeyCmd::Attest { key, out } => return yubikey_attest(key, &out),
     };
     if let (Some(label), Some(cfg)) = (&key.phone, &key.agent) {
@@ -1200,7 +1291,20 @@ async fn main() -> Result<()> {
                 let inc = s.recover(sponsored).await?;
                 println!("the recovery key is root now: tx {}; next, `owner set-root --as-recovery` to a new owner device (--to-phone <label>, or --not-a-phone)", inc.tx);
             }
-            OwnerCmd::SetRoot { agent, validator, public_key, retire, as_recovery, expect_fingerprint, to_phone, not_a_phone, sponsored } => {
+            OwnerCmd::SetRoot {
+                agent,
+                validator,
+                public_key,
+                retire,
+                as_recovery,
+                expect_fingerprint,
+                to_phone,
+                not_a_phone,
+                new_key,
+                proof_timeout,
+                no_proof_of_possession,
+                sponsored,
+            } => {
                 // before anything is read, built or asked of a key (issue #38)
                 if to_phone.is_none() && !not_a_phone {
                     bail!(
@@ -1209,12 +1313,28 @@ async fn main() -> Result<()> {
                          nobody holds takes the account with it. Nothing built, nothing sent"
                     );
                 }
-                let (x, y) = public_key.split_once(',').context("--public-key x,y")?;
-                let key = hw_signer::PublicKey { x: agent::parse32(x.trim())?, y: agent::parse32(y.trim())? };
+                let local = new_key.as_deref().map(open_key_spec).transpose()?;
+                let key = match (&public_key, &local) {
+                    (Some(pasted), _) => {
+                        let (x, y) = pasted.split_once(',').context("--public-key x,y")?;
+                        hw_signer::PublicKey { x: agent::parse32(x.trim())?, y: agent::parse32(y.trim())? }
+                    }
+                    (None, Some(signer)) => signer.public_key()?,
+                    (None, None) => bail!("--public-key x,y"),
+                };
                 if !hw_signer::valid_public_key(&key) {
                     bail!("--public-key is not a point on P-256; a handover to it would lose the account");
                 }
                 let fp = owner_core::fingerprint::fingerprint(&key);
+                if let Some(signer) = &local {
+                    let held = signer.public_key()?;
+                    if held != key {
+                        bail!(
+                            "--new-key is the key {}, and --public-key names {fp}: which of the two does the root go to? Nothing sent",
+                            owner_core::fingerprint::fingerprint(&held)
+                        );
+                    }
+                }
                 if let Some(expected) = &expect_fingerprint {
                     if !expected.eq_ignore_ascii_case(&fp) {
                         bail!("--public-key has fingerprint {fp}, not the expected {expected}: not the key the owner saw; nothing sent");
@@ -1222,12 +1342,31 @@ async fn main() -> Result<()> {
                 }
                 let s = session(&agent).await?;
                 eprintln!("new root key:   fingerprint {fp}");
-                // a handover to a phone waits for the phone to show the key (design §2.2): nothing is
-                // signed or sent before that
                 if let Some(label) = &to_phone {
+                    // a handover to a phone waits for the phone to show the key (design §2.2): nothing is
+                    // signed or sent before that
                     phone::prove_possession(label, s.dep.chain_id, s.account, &key).context("nothing sent")?;
                     eprintln!("phone:          holds the key {fp} (signed a fresh digest)");
+                } else if no_proof_of_possession {
+                    eprintln!(
+                        "WARNING: no proof of possession (--no-proof-of-possession). The root goes to the key {fp} although \
+                         that key has not signed anything. If nobody can sign with it — the private key is lost, was never \
+                         made, or is on a device that no longer works — the account goes with it, unless a recovery key \
+                         is installed and under control."
+                    );
+                } else {
+                    // any other key shows the same before anything is signed or sent (issue #51)
+                    let challenge =
+                        possession::Challenge::new(s.dep.chain_id, s.account, &key, std::time::Duration::from_secs(proof_timeout));
+                    let proof = match &local {
+                        Some(signer) => challenge.prove(signer.as_ref()).context("nothing sent")?,
+                        None => ask_for_proof(&challenge, proof_timeout)?,
+                    };
+                    challenge.verify(&proof, possession::now()).context("nothing sent")?;
+                    eprintln!("new key:        holds the key {fp} (signed a fresh challenge)");
                 }
+                // the device is free again before the current root key signs: both may be on one token
+                drop(local);
                 let inc = s.set_root(validator, &key, retire, as_recovery, sponsored).await?;
                 println!("root handed to {validator}: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
             }
