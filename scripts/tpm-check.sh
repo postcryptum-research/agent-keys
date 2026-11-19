@@ -50,7 +50,8 @@ start_swtpm() { # state directory, port
 }
 
 make_srk() { # docs/FAQ.md, question 1, step 3
-    tpm2_createprimary -Q -C o -g sha256 -G ecc -c "$tmp/srk.ctx" && tpm2_evictcontrol -Q -C o -c "$tmp/srk.ctx" $SRK
+    tpm2_createprimary -Q -C o -g sha256 -G ecc -a 'fixedtpm|fixedparent|sensitivedataorigin|userwithauth|restricted|decrypt|noda' -c "$tmp/srk.ctx" \
+        && tpm2_evictcontrol -Q -C o -c "$tmp/srk.ctx" $SRK
     # A socket has no resource manager (the kernel is one for /dev/tpmrm0): the
     # tools' objects stay loaded and fill the TPM's three slots.
     tpm2_flushcontext -t
@@ -80,8 +81,9 @@ checks() {
         if present $h; then echo "handle $h is taken: evict it, or use --again"; exit 1; fi
     done
     # The tests spend two failed authorizations. In lockout a key behind an
-    # authValue does not sign, and none can be made under a parent that is
-    # under the lockout itself.
+    # authValue does not sign, and none can be made under a storage parent
+    # that is under the lockout itself (one made without noda, before the
+    # FAQ's command set it).
     if [ $(($(prop TPM2_PT_MAX_AUTH_FAIL) - $(prop TPM2_PT_LOCKOUT_COUNTER))) -lt 3 ]; then
         echo "too close to the dictionary-attack lockout to run the tests: wait, or reset it (tpm2_dictionarylockout -c)"
         exit 1

@@ -311,6 +311,11 @@ struct Handover {
 }
 
 impl Handover {
+    /// Paste a line and leave the command waiting for the next.
+    fn say(&mut self, line: &str) {
+        writeln!(self.child.stdin.as_mut().unwrap(), "{line}").unwrap();
+    }
+
     /// Paste `proof` and let the command finish: whether it succeeded, and all it said.
     fn answer(mut self, proof: &str) -> (bool, String) {
         writeln!(self.child.stdin.take().unwrap(), "{proof}").unwrap();
@@ -662,6 +667,9 @@ fn a_handover_waits_for_the_new_key_to_show_it_can_sign() {
     two_keys.extend(["--new-key".to_string(), spec(&stranger)]);
     let err = chain.fails(&refs(&two_keys));
     assert!(err.contains("which of the two does the root go to"), "{err}");
+    // a phone's spec, complete or not, is sent to its own way by `key prove` as well
+    let err = chain.fails(&["key", "prove", "--key", r#"{"phone": {"label": "p"}}"#, "--challenge", &challenge]);
+    assert!(err.contains("--to-phone") && !err.contains("missing field"), "{err}");
     // a phone's key has its own way, and the override does not combine with a proof
     let mut a_phone = to_second.clone();
     a_phone.extend(["--new-key".to_string(), json!({"phone": {"label": "p", "publicKey": {"x": second.x, "y": second.y}, "fingerprint": "A"}}).to_string()]);
@@ -680,12 +688,18 @@ fn a_handover_waits_for_the_new_key_to_show_it_can_sign() {
     assert!(said.contains("WARNING: no proof of possession") && said.contains("the account goes with it"), "{said}");
     assert!(root_is(&second));
 
-    // and the whole path between two machines: challenge, `key prove`, the proof pasted back
+    // and the whole path between two machines: challenge, `key prove`, the proof pasted back.
+    // A line that is not the proof does not end the wait: the wrong line, an empty one and a
+    // proof for another challenge are each said to be so, and the right proof is still taken.
     let cfg2 = with("second.json", &second);
-    let waiting = chain.handover(&refs(&to(&cfg2, &third)));
+    let mut waiting = chain.handover(&refs(&to(&cfg2, &third)));
     let proof = chain.prove(&third, &waiting.challenge);
+    waiting.say("the wrong line from the other terminal");
+    waiting.say("");
+    waiting.say(&chain.prove(&third, &field(&waiting.challenge, 3, &format!("0x{}", "22".repeat(20)))));
     let (ok, said) = waiting.answer(&proof);
     assert!(ok, "{said}");
+    assert!(said.matches("not accepted:").count() == 2 && said.contains("paste the proof again"), "{said}");
     assert!(said.contains(&format!("holds the key {} (signed a fresh challenge)", fingerprint_of(&third))) && said.contains("root handed to"), "{said}");
     let before = chain.counter();
     chain.ok(&["op", "send", "--agent", &with("third.json", &third), "--root", "--target", &counter, "--data", INCREMENT]);

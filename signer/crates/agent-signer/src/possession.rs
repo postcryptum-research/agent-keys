@@ -45,9 +45,10 @@ const CHALLENGE: &str = "tpmsign-handover-challenge";
 const PROOF: &str = "tpmsign-handover-proof";
 const VERSION: &str = "1";
 
-/// Unix seconds, now.
-pub fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+/// Unix seconds, now. A clock that cannot be read is an error: taken as 0 it
+/// would make every challenge look unexpired.
+pub fn now() -> Result<u64> {
+    Ok(SystemTime::now().duration_since(UNIX_EPOCH).context("the system clock is set before 1970: no expiry can be checked")?.as_secs())
 }
 
 fn hex32(bytes: &[u8; 32]) -> String {
@@ -86,9 +87,9 @@ fn render(chain_id: u64, account: Address, key: &PublicKey, nonce: &[u8; 32], ex
 
 impl Challenge {
     /// A fresh challenge for `key` to become the root of `account` on `chain_id`.
-    pub fn new(chain_id: u64, account: Address, key: &PublicKey, lifetime: Duration) -> Self {
-        let expires = now().saturating_add(lifetime.as_secs());
-        Self { line: render(chain_id, account, key, &random32(), expires), chain_id, account, key: *key, expires }
+    pub fn new(chain_id: u64, account: Address, key: &PublicKey, lifetime: Duration) -> Result<Self> {
+        let expires = now()?.saturating_add(lifetime.as_secs());
+        Ok(Self { line: render(chain_id, account, key, &random32(), expires), chain_id, account, key: *key, expires })
     }
 
     /// The challenge as the key's machine received it. Only the canonical

@@ -704,12 +704,14 @@ fn check_signer(name: String, signer: &dyn HardwareSigner) -> Result<()> {
 /// A key named as a config names it (what `key create` prints), opened as an
 /// owner key is: the key a root handover goes to (issue #51).
 fn open_key_spec(spec: &str) -> Result<Box<dyn HardwareSigner>> {
-    let spec: agent::KeySpec = serde_json::from_str(spec).context(
-        "the key, as a config names it and `key create` prints it, e.g. '{\"yubikey\": {\"slot\": \"9c\"}}' or '{\"tpm\": \"0x81010010\"}'",
-    )?;
-    if matches!(spec, agent::KeySpec::Phone { .. }) {
+    const FORM: &str =
+        "the key, as a config names it and `key create` prints it, e.g. '{\"yubikey\": {\"slot\": \"9c\"}}' or '{\"tpm\": \"0x81010010\"}'";
+    // before the spec is read in full: a phone's spec needs fields this proof has no use for
+    let named: serde_json::Value = serde_json::from_str(spec).context(FORM)?;
+    if named.get("phone").is_some() {
         bail!("a phone shows that it holds its key in a session of its own: `owner set-root --to-phone <label>`");
     }
+    let spec: agent::KeySpec = serde_json::from_value(named).context(FORM)?;
     agent::open_signer(&spec, agent::Role::Owner)
 }
 
@@ -723,7 +725,7 @@ fn prove_key(spec: &str, challenge: &str) -> Result<()> {
         challenge.account,
         challenge.chain_id
     );
-    let at = possession::now();
+    let at = possession::now()?;
     if at > challenge.expires {
         eprintln!("  note: by this machine's clock the challenge expired {} s ago; the machine that asked decides", at - challenge.expires);
     } else {
@@ -736,8 +738,11 @@ fn prove_key(spec: &str, challenge: &str) -> Result<()> {
 }
 
 /// The new key is on another machine (issue #51): print the challenge, and
-/// read the proof that `key prove` printed there.
-fn ask_for_proof(challenge: &possession::Challenge, seconds: u64) -> Result<String> {
+/// read the proof that `key prove` printed there. A line that is not the
+/// proof (the wrong line, a paste cut short) is said to be so and the next
+/// one is read, until one verifies or the challenge expires: a bad paste
+/// does not cost a new challenge and a second trip to the other machine.
+fn ask_for_proof(challenge: &possession::Challenge, seconds: u64) -> Result<()> {
     eprintln!(
         "\nBefore the root goes to this key, the key shows that it can sign. On the machine that holds it, run\n\n  \
          agent-signer key prove --key '<the key, as a config names it>' --challenge <the line below>\n\n\
@@ -745,16 +750,32 @@ fn ask_for_proof(challenge: &possession::Challenge, seconds: u64) -> Result<Stri
          --new-key '<the key>' does both in one command.\n\nchallenge:"
     );
     println!("{}", challenge.line());
-    let mut proof = String::new();
-    std::io::stdin().read_line(&mut proof).context("reading the proof of possession")?;
-    if proof.trim().is_empty() {
-        bail!(
-            "no proof of possession, and the root is not handed to a key that has not shown it can sign: a key nobody \
-             can sign with takes the account with it. Give the proof (`key prove` on the key's machine, or --new-key \
-             for a key on this one), or say --no-proof-of-possession. Nothing sent"
-        );
+    let mut refused = false;
+    loop {
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line).context("reading the proof of possession")? == 0 {
+            if refused {
+                bail!("no proof was accepted; nothing sent");
+            }
+            bail!(
+                "no proof of possession, and the root is not handed to a key that has not shown it can sign: a key nobody \
+                 can sign with takes the account with it. Give the proof (`key prove` on the key's machine, or --new-key \
+                 for a key on this one), or say --no-proof-of-possession. Nothing sent"
+            );
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        let at = possession::now()?;
+        match challenge.verify(&line, at) {
+            Ok(()) => return Ok(()),
+            Err(e) if at > challenge.expires => return Err(e.context("nothing sent")),
+            Err(e) => {
+                refused = true;
+                eprintln!("not accepted: {e:#}\npaste the proof again ({} s left), or end the command", challenge.expires - at);
+            }
+        }
     }
-    Ok(proof)
 }
 
 fn run_key(cmd: KeyCmd) -> Result<()> {
@@ -1116,10 +1137,9 @@ fn tpm_key(handle: u32, op: KeyOp) -> Result<()> {
                 check_signer(name, &TpmSigner::open_persistent_protected(handle, &secret)?)
             }
             (None, false) => check_signer(name, &TpmSigner::open_persistent_sealed(handle, &pcrs)?),
-            // The TPM's refusal of a sealed or protected key opened plainly
-            // does not say which option is missing (#43).
-            (None, true) => check_signer(name, &TpmSigner::open_persistent(handle)?)
-                .context("a key created with --pcrs or --auth-file is checked with the same option"),
+            // a sealed key opened plainly is named by the backend (#49); every other
+            // refusal keeps the TPM's words
+            (None, true) => check_signer(name, &TpmSigner::open_persistent(handle)?),
             (Some(_), false) => bail!("--auth-file and --pcrs do not combine"),
         },
         KeyOp::Evict => {
@@ -1357,12 +1377,14 @@ async fn main() -> Result<()> {
                 } else {
                     // any other key shows the same before anything is signed or sent (issue #51)
                     let challenge =
-                        possession::Challenge::new(s.dep.chain_id, s.account, &key, std::time::Duration::from_secs(proof_timeout));
-                    let proof = match &local {
-                        Some(signer) => challenge.prove(signer.as_ref()).context("nothing sent")?,
+                        possession::Challenge::new(s.dep.chain_id, s.account, &key, std::time::Duration::from_secs(proof_timeout))?;
+                    match &local {
+                        Some(signer) => {
+                            let proof = challenge.prove(signer.as_ref()).context("nothing sent")?;
+                            challenge.verify(&proof, possession::now()?).context("nothing sent")?;
+                        }
                         None => ask_for_proof(&challenge, proof_timeout)?,
-                    };
-                    challenge.verify(&proof, possession::now()).context("nothing sent")?;
+                    }
                     eprintln!("new key:        holds the key {fp} (signed a fresh challenge)");
                 }
                 // the device is free again before the current root key signs: both may be on one token
