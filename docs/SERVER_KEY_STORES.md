@@ -72,16 +72,18 @@ Read from `signer/crates/hw-signer/src/tpm.rs`; this is the whole list.
 
 - A TPM 2.0 reached through tpm2-tss: `/dev/tpmrm0`, or the address in
   `TPM2TOOLS_TCTI`.
-- A storage parent persisted at `0x81000001` (`--parent` names another).
+- A storage parent persisted at `0x81000001` (`--parent` names another),
+  with an empty authValue.
 - `TPM2_Create` of an unrestricted ECDSA P-256 signing key (fixedTPM,
   fixedParent, sensitiveDataOrigin), `TPM2_Load`, and `TPM2_EvictControl`
   in the owner hierarchy, whose authorization is empty.
 - `TPM2_Sign` over a digest the host computed.
 - Optional: an authValue on the key, or `TPM2_PolicyPCR` over the SHA-256
-  bank.
+  bank (at most 8 PCRs), in a policy session with AES-256-CFB parameter
+  encryption.
 
 No endorsement key, no certificate, no NV index, no clock. So a TPM 2.0
-with P-256 and a SHA-256 PCR bank fits.
+with P-256 and a SHA-256 PCR bank fits; a sealed key also needs AES-256.
 
 ## 3. Azure: the vTPM of a Trusted Launch VM
 
@@ -107,7 +109,7 @@ with P-256 and a SHA-256 PCR bank fits.
 | ECDSA P-256, unrestricted | not stated; the Microsoft reference TPM the paravisor builds on enables it. Azure's own keys in the vTPM are RSA | I |
 | the SHA-256 PCR bank | not stated; Microsoft's attestation client reads that bank | D (source) |
 | PCRs 0, 2, 4, 7 for sealing | PCR 0 to 7 are reported to Azure Attestation; PCR 7 follows the Secure Boot variables, PCR 4 the boot loader and kernel. Whether Microsoft's own firmware updates change them is not documented | D |
-| free handles | Azure keeps its attestation key at `0x81000003` and a certificate at NV `0x01C101D0`; ours are `0x8101xxxx` | D |
+| free handles | Azure keeps its attestation key at `0x81000003` and a certificate at NV `0x01C101D0`; ours are whatever `--handle` names; the examples and the check script use `0x8101xxxx` | D |
 
 It works unchanged, with the storage parent created once, as the FAQ
 describes: every row of this table was seen first-hand on 2026-11-18
@@ -288,7 +290,8 @@ delegates to one of the stores above (D).
 
 **What the on-chain policy still bounds: all of it.** The allow-list,
 the cap per operation, the budget, the expiry and the refusal of
-ERC-1271 never relied on the chip. A copy of the agent's key can do what
+ERC-1271 (all but x402 authorizations registered under the same budget)
+never relied on the chip. A copy of the agent's key can do what
 the agent can, out of the same budget, until the permission is revoked.
 
 **The roles, with the consequences.** The owner's decision is in §10:
@@ -476,7 +479,8 @@ was deleted afterwards. All F.
     nothing. In lockout, through two more such stops: **the plain key
     (`noDA`) signed every time**, the key behind the authValue was
     refused, and no key could be created under the storage parent, which
-    the FAQ's command made without `noDA` until §10, question 6.
+    the script's `--make-srk` (the FAQ's command) made without `noDA` until
+    §10, question 6.
 11. **The subscription is root.** Before the run, `az vm run-command`
     read the vTPM's properties on a VM we had no login to.
 
@@ -499,7 +503,9 @@ lasts in wall-clock time across restarts.
 ## 10. Questions for the owner, and the decisions
 
 Put to the owner with the study; decided on 2026-11-18. They change
-documentation only: no code, and nothing on a running machine.
+documentation and the storage-parent command in `scripts/tpm-check.sh`
+(it sets `noda` too): nothing in the signer, and nothing on a running
+machine.
 
 1. **Which roles may a vTPM key hold?** **Decided: the agent key only.**
    Owner and recovery keys are not placed in a cloud VM's vTPM. Whoever

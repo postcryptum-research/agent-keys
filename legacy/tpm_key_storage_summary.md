@@ -1,6 +1,12 @@
 
 # 🔐 TPM Key Storage Summary (Markdown)
 
+> **A note from the Python prototype (2025), kept for the record.** The
+> `*.ctx`, `key.priv` and `key.pub` files below are tpm2-tools artefacts of
+> that prototype; the current signer writes none of them. "Secure from host"
+> here means not extractable: a key without an authValue or a PCR policy can
+> be used by any process that can open the TPM.
+
 This table summarizes where TPM-related objects live, whether they survive reboot, and whether they're secure from host access.
 
 | Object          | Location         | Survives Reboot? | Secure from Host? | Description |

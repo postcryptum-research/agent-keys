@@ -32,7 +32,11 @@ Every item is marked with one of these:
 can do — not a guarantee that B is honest.**
 
 - **Today:** A's maximum loss to a malicious B is bounded by the mandate's
-  budgets.
+  budgets for native value, self-paid gas and the four metered ERC-20
+  functions (`transfer`, `transferFrom`, `approve`, `increaseAllowance`).
+  Any other allow-listed function that moves value (a vault's `withdraw`, a
+  router's `swap` over an existing allowance) is gated by the allow-list but
+  not metered.
 - **Each control below shrinks that bound:**
   - argument checks (item 4);
   - the price check (item 5);
@@ -206,7 +210,7 @@ If the agent key could produce one, B would get the same persistent drain
 as in item 4, off the books.
 
 Today the agent's account vouches only for x402 payment authorizations the
-agent registered within the mandate (AgentPolicy v6), and for nothing else.
+agent registered within the mandate (since AgentPolicy v6), and for nothing else.
 Every extension must keep it that way: **the agent key can never produce a
 valid approval-style signature.**
 

@@ -1,5 +1,13 @@
 # 🔐 TPM PCR-Based Sealing: Concept and Use Case
 
+> **A note from the Python prototype (2025), kept for the record.** It describes
+> sealing with tpm2-tools and key blobs on disk, which the project no longer
+> does. Today the signing key itself carries a `TPM2_PolicyPCR` policy and
+> stays in the TPM: `agent-signer key create --handle <H> --pcrs 0,2,4,7`
+> (`signer/crates/hw-signer/src/tpm.rs`). Such a key signs for anyone who can
+> open the TPM while the boot state matches; it is not a defence against root
+> on the running system.
+
 This document explains what PCR-based sealing is, how it works, and why it can be critical for securing TPM-backed signing operations.
 
 ---
