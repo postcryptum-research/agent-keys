@@ -26,6 +26,13 @@ const TOKENS: &[(u64, Address, &str, u8, B256)] = &[(
     b256!("71f17a3b2ff373b803d70a5a07c046c1a2bc8e89c09ef722fcb047abe94c9818"),
 )];
 
+/// `AgentPolicy` instances that enforce per-token payee lists (issue #66).
+/// An earlier instance decodes such a mandate and ignores the lists, so the
+/// review refuses to show payees for any module that is not here. The
+/// instance deployed to Base Sepolia on 2026-11-20 is the first; the anvil
+/// harness runs Base Sepolia's deployed code and follows this list too.
+const PAYEE_POLICIES: &[Address] = &[address!("2E6F47B2F3d0F3E6071eCdBc0b445a2B26d23D95")];
+
 /// The chains this build has facts for.
 pub fn chains() -> Vec<u64> {
     let mut chains = vec![84532];
@@ -71,7 +78,12 @@ fn from_deployments(json: &str, chain_id: u64, canonical: bool) -> Facts {
         f.names.insert(addr, name);
         match key.as_str() {
             // the modules whose init data this build decodes: the current versions only
-            "agentPolicy" => f.policy_modules.push(addr),
+            "agentPolicy" => {
+                f.policy_modules.push(addr);
+                if PAYEE_POLICIES.contains(&addr) {
+                    f.payee_policy_modules.push(addr);
+                }
+            }
             "p256Signer" => f.signer_modules.push(addr),
             "demoCounter" => f.demo_counter = Some(addr),
             // no `postOp`, so it cannot charge the account (§6.4); the current instance only
@@ -185,7 +197,7 @@ mod tests {
     #[test]
     fn base_sepolia() {
         let f = for_chain(84532);
-        let policy = address!("dd544A6F0220778Fff16F51B468656e73E32ae85");
+        let policy = address!("2E6F47B2F3d0F3E6071eCdBc0b445a2B26d23D95");
         let signer = address!("a19e6061b1C193573e5fe46c39363FfDd5CCA22E");
         assert_eq!(f.names[&policy], "AgentPolicy");
         assert_eq!((&f.policy_modules, &f.signer_modules), (&vec![policy], &vec![signer]), "the current policy and signer only, each in its slot");
@@ -193,6 +205,11 @@ mod tests {
         let v6 = address!("8347dBC3d7A71DAFDeED5975ce85638494865F73");
         assert_eq!(f.names[&v6], "AgentPolicy v6 (superseded)");
         assert!(!f.policy_modules.contains(&v6));
+        // the instance before payee lists: named, superseded, and not one that enforces lists
+        let v7 = address!("dd544A6F0220778Fff16F51B468656e73E32ae85");
+        assert_eq!(f.names[&v7], "AgentPolicy v7 (superseded)");
+        assert!(!f.policy_modules.contains(&v7));
+        assert_eq!(f.payee_policy_modules, vec![policy]);
         assert_eq!(f.names[&address!("68544284bfDbbd6bDB9F6A1D80D05C387015daA9")], "P256Signer v1 (superseded)");
         // both recovery validators can take over; only the current paymaster sponsors
         assert_eq!(f.recovery_validators.len(), 2);

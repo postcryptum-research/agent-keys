@@ -71,7 +71,7 @@ phone shows before a key is deleted there
     "validAfter": 0,
     "validUntil": 1795046400,
     "tokens": [
-      { "token": "0x036CbD53842c5426634e7929541eC2318f3dCF7e", "maxPerOp": "20000000", "budget": "100000000" }
+      { "token": "0x036CbD53842c5426634e7929541eC2318f3dCF7e", "maxPerOp": "20000000", "budget": "100000000", "payees": "anyone" }
     ]
   }
 }
@@ -121,12 +121,12 @@ Exactly one of:
 
 | Field | Required | Type and syntax | Meaning |
 |---|---|---|---|
-| `allow` | yes, non-empty | list of `{"target": address, "selector": "0x" + 8 hex}` | the calls the agent may make. `selector` `0x00000000` = a plain value transfer (empty calldata; 1–3 bytes of calldata are refused). One entry admits its call directly, through an owned Safe and as a Safe batch leg alike |
+| `allow` | yes, non-empty | list of `{"target": address, "selector": "0x" + 8 hex}` | the calls the agent may make. `selector` `0x00000000` = a plain value transfer: empty calldata only (a body of 1–3 bytes is refused, and so is a longer one that starts with four zero bytes, [#76](https://github.com/postcryptum-research/agent-keys/issues/76)). One entry admits its call directly, through an owned Safe and as a Safe batch leg alike |
 | `maxValuePerOp` | yes | decimal string, wei (≤ 2¹²⁸−1) | most native value one operation may move (including value moved inside a Safe transaction) |
 | `budget` | yes | decimal string, wei | total native value over the permission's life, **plus** the maximum gas cost of each operation the account pays for itself |
 | `validUntil` | yes | integer, Unix seconds, > 0 | end of the window: after it the EntryPoint refuses the agent's operations |
 | `validAfter` | no, default 0 | integer, Unix seconds, < `validUntil` | start of the window (0 = at once); several permissions with their own windows make a schedule |
-| `tokens` | no | list of `{"token": address, "maxPerOp": decimal string, "budget": decimal string, "x402": bool}` | per-token limits in the token's base units (USDC: 6 decimals, so `"20000000"` = 20 USDC). Required for every token whose `transfer` / `transferFrom` / `approve` / `increaseAllowance` is in `allow` — without one the call is refused. One entry per token. `x402` (default `false`): the agent may also pay x402 in this token (EIP-3009, e.g. USDC) from the same budget; the CLI reads the token's `DOMAIN_SEPARATOR()` and installs it with the limit ([`ERC1271.md`](ERC1271.md)) |
+| `tokens` | no | list of `{"token": address, "maxPerOp": decimal string, "budget": decimal string, "x402": bool, "payees": "anyone" or [address, …]}` | per-token limits in the token's base units (USDC: 6 decimals, so `"20000000"` = 20 USDC). `maxPerOp` is the most one operation may move of the token, summed over its calls: transfers, approvals and x402 registrations, in a batch and inside a Safe batch alike ([#76](https://github.com/postcryptum-research/agent-keys/issues/76); an `AgentPolicy` instance from before 2026-11-20 checks each call on its own). Required for every token whose `transfer` / `transferFrom` / `approve` / `increaseAllowance` is in `allow` — without one the call is refused. A token with an entry here is callable through those four functions only: a mandate with any other `allow` entry on it (`permit`, a `mint`, a vault's `withdraw`) is refused whole, by the CLI before anything is signed and by `AgentPolicy` at install (`InvalidConfig`), because through such a function the token would move past its limits (an `AgentPolicy` instance from before 2026-11-20 lets such an entry through unmetered, [#79](https://github.com/postcryptum-research/agent-keys/issues/79): rotate a mandate that sits on one). One entry per token. `x402` (default `false`): the agent may also pay x402 in this token (EIP-3009, e.g. USDC) from the same budget; the CLI reads the token's `DOMAIN_SEPARATOR()` and installs it with the limit ([`ERC1271.md`](ERC1271.md)). `payees` says who the token may go to, and every entry must say it before a mandate is installed from the config (`permission add`, `rotate`, the account's first operation refuse otherwise; a config without it still loads for status, show and revoke). `"anyone"`: the limit bounds the amount only and the agent picks who gets it — what x402 needs, since it pays whichever server asks. A list: the only addresses the token may go to — the recipient of `transfer` and `transferFrom`, the spender of `approve` and `increaseAllowance`, the payee of an x402 payment. A listed spender can move its allowance wherever it likes, so list a spender only if you would list everyone it pays. A list binds the agent's calls to the token contract and nothing else, which leaves two things to the owner. Allowances that already exist stay valid: installing a list revokes none, and the agent cannot clear one either (`approve(spender, 0)` to an unlisted spender is refused like any other), so before moving a token to a list, read the account's allowances for it and zero the unwanted ones with a root operation. And another contract in `allow` that holds an allowance from the account (a router, a vault) is not the token, so what it moves is not checked against the list. Permit2 is the plain case (the token's allowance goes to Permit2 once, and `Permit2.approve(token, spender, …)` then names who may pull it), which is why Permit2 is never a valid `allow` target, see below; the same holds for any other such contract, and those cannot be enumerated. Lists need the `AgentPolicy` deployed to Base Sepolia on 2026-11-20 (`0x2E6F47B2F3d0F3E6071eCdBc0b445a2B26d23D95`, [#66](https://github.com/postcryptum-research/agent-keys/issues/66)) or a later one: an earlier instance would ignore them, so the CLI refuses a config with a list rather than install its mandate there, and the phone shows payees for this instance only |
 
 Never valid `allow` targets, refused by the CLI before anything is signed and
 by `AgentPolicy` at install (`ForbiddenTarget`): the **account itself**
@@ -134,9 +134,14 @@ by `AgentPolicy` at install (`ForbiddenTarget`): the **account itself**
 `execute`: the mandate would widen or replace itself), its **EntryPoint**
 (`withdrawTo` on the deposit), the project's **validators, signer, Kernel
 implementation and factory** (CLI only: they could replace the owner,
-recovery or agent key), and the **policy itself** except its two x402 entry
-points. `AgentPolicy` refuses the account and the policy again at validation
-(the EntryPoint at install only). The Circle Agent Wallets case is why
+recovery or agent key), the **policy itself** except its two x402 entry
+points, and **Permit2** (`0x000000000022D473030F116dDEE9F6B43aC78BA3`: its
+own `approve` would hand a token's allowance to any address, a call the
+policy does not read; refused by `AgentPolicy`, the CLI and the phone;
+metering it is part of
+[#80](https://github.com/postcryptum-research/agent-keys/issues/80)).
+`AgentPolicy` refuses the account, the policy and Permit2 again at
+validation (the EntryPoint at install only). The Circle Agent Wallets case is why
 (`related/INCIDENTS.md`).
 
 Special `allow` entries:
@@ -159,7 +164,7 @@ Where each field ends up, and which signed operation puts it there:
 | `permissionId` | the Kernel permission `0x02 ‖ id`, with its signer and policy (`permissionConfig(id)`) and its EntryPoint nonce space | same |
 | `policy.allow` | `AgentPolicy.isAllowed(account, id, target, selector)` | same |
 | `policy.maxValuePerOp`, `budget`, `validUntil`, `validAfter` | `AgentPolicy.configs(account, id)` (with `spent`, which the chain updates) | same |
-| `policy.tokens` | `AgentPolicy.tokenLimit(account, id, token)` (with its `spent`; for `x402` tokens also the token's EIP-712 domain) | same |
+| `policy.tokens` | `AgentPolicy.tokenLimit(account, id, token)` (with its `spent`; for `x402` tokens also the token's EIP-712 domain); a payee list: `AgentPolicy.payeeAllowed(account, id, token, payee)` | same |
 | `recovery` | `P256RecoveryValidator.publicKeys(account)` + Kernel `isAllowedSelector(recovery, changeRootValidator)` | `owner add-recovery` (owner) |
 | `account`, `salt` | the account's address (`salt` only before deployment) | — (identifies the account) |
 | `deployments` | — | — (which module addresses the CLI uses for *new* installs) |

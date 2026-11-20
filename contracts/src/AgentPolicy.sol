@@ -33,24 +33,36 @@ interface IKernelEntryPoint {
 ///  - only `execute` (single call or batch, revert-on-failure); no
 ///    delegatecall;
 ///  - every call on the (target, selector) allow-list; selector `0x00000000`
-///    stands for a plain value transfer (empty calldata — 1 to 3 bytes of
-///    calldata, which the EVM would route to the target's fallback, are
-///    refused);
+///    stands for a plain value transfer and admits empty calldata only
+///    (1 to 3 bytes, or a longer body that starts with four zero bytes,
+///    would run the target's fallback);
 ///  - `value` capped per operation and, with the gas the account pays for
 ///    itself, by a total budget;
 ///  - ERC-20 `transfer` / `transferFrom` / `approve` / `increaseAllowance`
 ///    amounts capped per operation and by a budget per token; an
-///    allow-listed token selector without a token limit is refused;
+///    allow-listed token selector without a token limit is refused, and a
+///    token with a limit is callable through these four functions only: a
+///    mandate with another entry on it (`permit`, a `mint`, a vault's
+///    `withdraw`) would move the token past its limit and is refused at
+///    install;
 ///  - a time window `[validAfter, validUntil]` that the EntryPoint enforces:
 ///    several permissions for the same agent key, each with its own window,
 ///    budget and allow-list, make a schedule ("weekdays: up to X on these
 ///    contracts; the 1st: payroll up to Y");
-///  - the account itself, its EntryPoint and this policy (except its two
-///    x402 entry points) are never valid targets: all three are refused at
-///    install, the account and the policy again at validation (the
-///    EntryPoint is not re-checked there, see `_judge`). No mandate, however
+///  - the account itself, its EntryPoint, this policy (except its two
+///    x402 entry points) and Permit2 are never valid targets: all are
+///    refused at install, and all but the EntryPoint again at validation
+///    (it is not re-checked there, see `_judge`). No mandate, however
 ///    written, lets the agent widen its own permission, replace the root key
 ///    or drain the deposit.
+///
+///  - optionally, per token, a list of payees: with one, `transfer` and
+///    `transferFrom` may only pay a listed address, `approve` and
+///    `increaseAllowance` may only name a listed spender, and an x402
+///    authorization may only pay a listed address. A token without a list
+///    is bound in amount only, as before: the agent picks the recipient.
+///    A listed spender can move what it was approved for wherever it likes;
+///    list a spender only if you would list everyone it pays.
 ///
 /// Safe pass-through: an allow-list entry `(safe, execTransaction)` lets the
 /// agent drive a Safe that this account owns (Olas / Jinn service Safes),
@@ -107,11 +119,22 @@ contract AgentPolicy is IPolicy {
         bytes32 domainSeparator;
     }
 
+    /// Install-time list of the only addresses a token's transfers,
+    /// allowances and x402 payments may name. The token needs a `TokenCap`.
+    struct TokenPayees {
+        address token;
+        address[] payees;
+    }
+
     struct TokenLimit {
         uint128 maxPerOp;
         uint128 budget;
         uint128 spent;
         bool set;
+        // true: only `Mandate.payees[token]` may be paid or approved.
+        // It sits before `domainSeparator`, so `tokenLimit()` returns the
+        // separator as its sixth word (the fifth before payee lists).
+        bool payeesOnly;
         bytes32 domainSeparator;
     }
 
@@ -126,12 +149,16 @@ contract AgentPolicy is IPolicy {
         mapping(address target => mapping(bytes4 selector => bool)) allowed;
         mapping(address token => TokenLimit) tokens;
         mapping(bytes32 digest => Pending) x402;
+        mapping(address token => mapping(address payee => bool)) payees;
     }
 
     error InvalidConfig();
     /// An allow-list entry the agent must never have (the account, its
     /// EntryPoint, this policy outside x402).
     error ForbiddenTarget(address target, bytes4 selector);
+    /// The account did not say which EntryPoint it uses, so the policy
+    /// cannot keep that EntryPoint out of the allow-list.
+    error UnknownEntryPoint();
     error X402NotRegistered();
     error X402StillLive();
     error X402Settled();
@@ -186,9 +213,21 @@ contract AgentPolicy is IPolicy {
         NONCE_ASSERT = nonceAssert;
     }
 
+    /// The install data's first word — the offset of `targets` — tells the
+    /// two encodings apart: seven head words, or eight with `payees`.
+    /// Data whose first word is neither is refused, and so is data whose
+    /// word does not match its body, so no install drops a list. That the
+    /// owner sees exactly what is installed rests on the reviewing app,
+    /// which accepts canonical encodings only; this contract decodes as
+    /// loosely as `abi.decode` does.
+    uint256 internal constant HEAD_WITHOUT_PAYEES = 7 * 32;
+    uint256 internal constant HEAD_WITH_PAYEES = 8 * 32;
+
     /// @param data `bytes32 id ++ abi.encode(address[] targets, bytes4[] selectors,
     ///              uint128 maxValuePerOp, uint128 budget, uint48 validUntil, TokenCap[] tokens,
-    ///              uint48 validAfter)`
+    ///              uint48 validAfter)`, optionally with one more parameter
+    ///              `TokenPayees[] payees`. A mandate without payee lists is
+    ///              encoded as before this parameter existed.
     function onInstall(bytes calldata data) external payable override {
         bytes32 id = bytes32(data[0:32]);
         Config storage c = configs[msg.sender][id];
@@ -208,8 +247,9 @@ contract AgentPolicy is IPolicy {
 
         Mandate storage m = _mandates[msg.sender][id][c.epoch];
         address entryPoint = _entryPointOf(msg.sender);
+        if (entryPoint == address(0)) revert UnknownEntryPoint();
         for (uint256 i; i < targets.length; i++) {
-            if (!_targetAllowed(targets[i], selectors[i]) || (entryPoint != address(0) && targets[i] == entryPoint)) {
+            if (!_targetAllowed(targets[i], selectors[i]) || targets[i] == entryPoint) {
                 revert ForbiddenTarget(targets[i], selectors[i]);
             }
             m.allowed[targets[i]][selectors[i]] = true;
@@ -217,7 +257,15 @@ contract AgentPolicy is IPolicy {
         for (uint256 i; i < tokens.length; i++) {
             if (tokens[i].token == address(0) || m.tokens[tokens[i].token].set) revert InvalidConfig();
             m.tokens[tokens[i].token] =
-                TokenLimit(tokens[i].maxPerOp, tokens[i].budget, 0, true, tokens[i].domainSeparator);
+                TokenLimit(tokens[i].maxPerOp, tokens[i].budget, 0, true, false, tokens[i].domainSeparator);
+        }
+        _installPayees(m, data[32:]);
+        // A token with a limit is callable through the four metered
+        // functions only (`_chargeToken`). Any other entry on it would pass
+        // neither its caps nor its payee list, so the limit the owner wrote
+        // down would not be one: such a mandate is refused whole.
+        for (uint256 i; i < targets.length; i++) {
+            if (m.tokens[targets[i]].set && !_isMetered(selectors[i])) revert InvalidConfig();
         }
         c.validUntil = validUntil;
         c.validAfter = validAfter;
@@ -226,6 +274,36 @@ contract AgentPolicy is IPolicy {
         c.spent = 0;
         usedIds[msg.sender]++;
         emit AgentPolicySet(msg.sender, id, validUntil, maxValuePerOp, budget);
+    }
+
+    function _isMetered(bytes4 selector) internal pure returns (bool) {
+        return selector == ERC20_TRANSFER || selector == ERC20_APPROVE || selector == ERC20_INCREASE_ALLOWANCE
+            || selector == ERC20_TRANSFER_FROM;
+    }
+
+    /// @dev The optional eighth parameter. Each entry needs a capped token
+    /// that has no list yet, and at least one payee; no zero address, no
+    /// payee twice.
+    function _installPayees(Mandate storage m, bytes calldata params) internal {
+        if (params.length < 32) revert InvalidConfig();
+        uint256 head = uint256(bytes32(params[0:32]));
+        if (head == HEAD_WITHOUT_PAYEES) return;
+        if (head != HEAD_WITH_PAYEES) revert InvalidConfig();
+        (,,,,,,, TokenPayees[] memory lists) =
+            abi.decode(params, (address[], bytes4[], uint128, uint128, uint48, TokenCap[], uint48, TokenPayees[]));
+        // the eight-word form exists to carry a list: without one, use the other
+        if (lists.length == 0) revert InvalidConfig();
+        for (uint256 i; i < lists.length; i++) {
+            TokenLimit storage t = m.tokens[lists[i].token];
+            address[] memory payees = lists[i].payees;
+            if (!t.set || t.payeesOnly || payees.length == 0) revert InvalidConfig();
+            t.payeesOnly = true;
+            mapping(address => bool) storage listed = m.payees[lists[i].token];
+            for (uint256 j; j < payees.length; j++) {
+                if (payees[j] == address(0) || listed[payees[j]]) revert InvalidConfig();
+                listed[payees[j]] = true;
+            }
+        }
     }
 
     function onUninstall(bytes calldata data) external payable override {
@@ -254,6 +332,13 @@ contract AgentPolicy is IPolicy {
         return _mandates[account][id][configs[account][id].epoch].tokens[token];
     }
 
+    /// @notice Whether the mandate lets `token` reach `payee`: true for any
+    /// address when the token has no payee list.
+    function payeeAllowed(address account, bytes32 id, address token, address payee) external view returns (bool) {
+        Mandate storage m = _mandates[account][id][configs[account][id].epoch];
+        return !m.tokens[token].payeesOnly || m.payees[token][payee];
+    }
+
     /// @dev Returns `packValidationData(validAfter, validUntil)` on success so
     /// the EntryPoint enforces the window, `SIG_VALIDATION_FAILED_UINT` otherwise
     /// (which Kernel turns into a `PolicyFailed` revert, undoing any token
@@ -267,6 +352,7 @@ contract AgentPolicy is IPolicy {
         Config storage c = configs[msg.sender][id];
         if (c.validUntil == 0) return SIG_VALIDATION_FAILED_UINT;
 
+        _beginOperation();
         (bool ok, uint256 value) = _judgeExecute(_mandates[msg.sender][id][c.epoch], userOp.callData);
         if (!ok || value > c.maxValuePerOp) return SIG_VALIDATION_FAILED_UINT;
 
@@ -367,7 +453,9 @@ contract AgentPolicy is IPolicy {
         if (from != msg.sender) return false; // the account checkUserOpPolicy runs for
         TokenLimit storage t = m.tokens[token];
         if (!t.set || t.domainSeparator == bytes32(0)) return false;
-        if (value == 0 || value > t.maxPerOp || validBefore > type(uint48).max) return false;
+        if (value == 0 || validBefore > type(uint48).max) return false;
+        if (_movedThisOperation(token, value) > t.maxPerOp) return false;
+        if (t.payeesOnly && !m.payees[token][to]) return false;
         uint256 spent = t.spent + value;
         if (spent > t.budget) return false;
         bytes32 digest = _x402Digest(t.domainSeparator, from, to, value, validAfter, validBefore, nonce);
@@ -376,6 +464,43 @@ contract AgentPolicy is IPolicy {
         t.spent = uint128(spent);
         m.x402[digest] = Pending(uint128(value), uint48(validBefore), token);
         return true;
+    }
+
+    /// @dev Transient slot of the per-account operation counter; laid out as
+    /// a mapping keyed by the account (`keccak256(account ‖ slot)`), the
+    /// form ERC-7562 lets a module touch during validation.
+    uint256 internal constant OPERATION_SEQ = uint256(keccak256("agent-keys.AgentPolicy.operationSeq"));
+
+    /// @dev Starts the per-operation token totals afresh. Transient storage
+    /// lives for the whole transaction and a bundle validates many
+    /// operations in one, so the totals are keyed by a counter that moves
+    /// on with every `checkUserOpPolicy` call for the account.
+    function _beginOperation() internal {
+        uint256 seqSlot = uint256(keccak256(abi.encode(msg.sender, OPERATION_SEQ)));
+        assembly ("memory-safe") {
+            tstore(seqSlot, add(tload(seqSlot), 1))
+        }
+    }
+
+    /// @dev Adds `amount` to what this operation has moved of `token` so far
+    /// (transfers, approvals and x402 registrations alike, in every leg) and
+    /// returns the total, for the caller to hold against `maxPerOp`: the cap
+    /// is per operation, as `maxValuePerOp` is for native value.
+    function _movedThisOperation(address token, uint256 amount) internal returns (uint256 total) {
+        uint256 seqSlot = uint256(keccak256(abi.encode(msg.sender, OPERATION_SEQ)));
+        uint256 seq;
+        assembly ("memory-safe") {
+            seq := tload(seqSlot)
+        }
+        uint256 slot = uint256(keccak256(abi.encode(msg.sender, keccak256(abi.encode(seq, token)))));
+        uint256 before;
+        assembly ("memory-safe") {
+            before := tload(slot)
+        }
+        total = before + amount;
+        assembly ("memory-safe") {
+            tstore(slot, total)
+        }
     }
 
     /// @dev `(verificationGasLimit + callGasLimit + preVerificationGas) *
@@ -454,9 +579,11 @@ contract AgentPolicy is IPolicy {
         internal
         returns (bool ok, uint256 moved)
     {
-        // 1–3 bytes run the target's fallback, not a plain transfer.
-        if (data.length > 0 && data.length < 4) return (false, 0);
         bytes4 selector = _selector(data);
+        // The zero selector stands for a plain transfer, which carries no
+        // calldata. 1–3 bytes would run the target's fallback, and so would
+        // a longer body that happens to start with four zero bytes.
+        if (selector == bytes4(0) && data.length != 0) return (false, 0);
         if (!m.allowed[target][selector]) return (false, 0);
         // Install refuses these; refused again here so that no mandate, in
         // any version's storage, can reach the account or the policy itself.
@@ -476,13 +603,25 @@ contract AgentPolicy is IPolicy {
         return (true, value);
     }
 
+    /// @dev Uniswap's Permit2 where it is deployed by the usual CREATE2
+    /// factory: Ethereum, Base and their testnets among others. Not every
+    /// chain: on zkSync-style chains it sits elsewhere. Check it before this
+    /// policy is deployed to a chain it has not been on.
+    address internal constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
+
     /// @dev Targets no agent may ever have, whatever the allow-list says: the
     /// account itself (Kernel's own `grantAccess`, `installValidations`,
     /// `changeRootValidator`, `execute`: the mandate would widen or replace
     /// itself) and this policy, except the two x402 entry points the account
     /// calls on purpose. `msg.sender` is the account in both callers.
+    /// And Permit2: it holds one allowance per token and its own `approve`
+    /// names who may pull it, a call this policy does not read, so through
+    /// it a token would leave past its cap and its payee list. Refused until
+    /// the policy meters Permit2's calls. This closes the one well-known
+    /// contract of that shape, not the shape: any allow-listed contract
+    /// that holds an allowance from the account can move it.
     function _targetAllowed(address target, bytes4 selector) internal view returns (bool) {
-        if (target == msg.sender) return false;
+        if (target == msg.sender || target == PERMIT2) return false;
         if (target == address(this)) {
             return selector == this.x402Authorize.selector || selector == this.x402Reclaim.selector;
         }
@@ -491,7 +630,8 @@ contract AgentPolicy is IPolicy {
 
     /// @dev The account's EntryPoint, read from Kernel at install so that
     /// `withdrawTo` and friends on the account's deposit can never be
-    /// allow-listed. Zero when the account does not answer (not a Kernel).
+    /// allow-listed. Zero when the account does not answer (not a Kernel):
+    /// the install is then refused, since the check could not be made.
     function _entryPointOf(address account) internal view returns (address) {
         (bool ok, bytes memory ret) = account.staticcall(abi.encodeWithSelector(IKernelEntryPoint.entrypoint.selector));
         if (!ok || ret.length < 32) return address(0);
@@ -515,9 +655,15 @@ contract AgentPolicy is IPolicy {
         return ok ? (true, value + moved) : (false, 0);
     }
 
-    /// @dev ERC-20 amount accounting: `transfer` / `approve` /
-    /// `increaseAllowance` carry the amount in argument 1, `transferFrom`
-    /// in argument 2. Any other selector passes untouched.
+    /// @dev ERC-20 accounting: `transfer` / `approve` / `increaseAllowance`
+    /// carry the amount in argument 1 and who gets it (the recipient, the
+    /// spender) in argument 0; `transferFrom` carries them in arguments 2
+    /// and 1. Any other selector passes untouched — unless the target is a
+    /// token with a limit: such a token moves only through the four
+    /// functions metered here, so that `permit`, `transferWithAuthorization`,
+    /// a vault's `withdraw` or anything else allow-listed on it cannot move
+    /// it past its caps or pay an address its payee list does not name.
+    /// Install refuses such a mandate; this is the same rule at validation.
     function _chargeToken(Mandate storage m, address token, bytes4 selector, bytes calldata data)
         internal
         returns (bool)
@@ -525,14 +671,20 @@ contract AgentPolicy is IPolicy {
         uint256 arg;
         if (selector == ERC20_TRANSFER || selector == ERC20_APPROVE || selector == ERC20_INCREASE_ALLOWANCE) arg = 1;
         else if (selector == ERC20_TRANSFER_FROM) arg = 2;
-        else return true;
 
         TokenLimit storage t = m.tokens[token];
+        if (arg == 0) return !t.set;
         if (!t.set) return false;
         uint256 end = 4 + 32 * (arg + 1);
         if (data.length < end) return false;
         uint256 amount = uint256(bytes32(data[end - 32:end]));
-        if (amount > t.maxPerOp) return false;
+        if (t.payeesOnly) {
+            // the word before the amount; a token reads its low 160 bits, so
+            // anything above them would name one address here and pay another
+            uint256 payee = uint256(bytes32(data[end - 64:end - 32]));
+            if (payee >> 160 != 0 || !m.payees[token][address(uint160(payee))]) return false;
+        }
+        if (_movedThisOperation(token, amount) > t.maxPerOp) return false;
         uint256 spent = t.spent + amount;
         if (spent > t.budget) return false;
         t.spent = uint128(spent);

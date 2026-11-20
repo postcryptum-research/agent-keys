@@ -179,6 +179,26 @@ pub struct TokenEntry {
     /// token's EIP-712 domain separator when installing the mandate).
     #[serde(default)]
     pub x402: bool,
+    /// Who this token may go to: a list of the only addresses it may be
+    /// transferred to, approved for, or pay through x402 (needs an
+    /// `AgentPolicy` that knows payee lists), or the word `"anyone"` — the
+    /// agent picks. Absent, the config still loads, but no mandate is
+    /// installed from it: the owner has to say which.
+    #[serde(default)]
+    pub payees: Option<Payees>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum Payees {
+    Anyone(Anyone),
+    Only(Vec<Address>),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Anyone {
+    Anyone,
 }
 
 #[derive(Debug, Deserialize)]
@@ -302,7 +322,54 @@ impl AgentConfig {
                     ))
                 })
                 .collect::<Result<_>>()?,
+            payees: self.payees()?,
         })
+    }
+
+    /// The tokens bound to a payee list, as the policy takes them.
+    pub fn payees(&self) -> Result<Vec<(Address, Vec<Address>)>> {
+        let mut lists = Vec::new();
+        for t in &self.policy.tokens {
+            let Some(Payees::Only(list)) = &t.payees else { continue };
+            if list.is_empty() {
+                anyhow::bail!("tokens: the payee list of {} is empty; name the payees, or write \"payees\": \"anyone\"", t.token);
+            }
+            for (i, payee) in list.iter().enumerate() {
+                if payee.is_zero() || list[..i].contains(payee) {
+                    anyhow::bail!("tokens: the payee list of {} has the zero address or {payee} twice", t.token);
+                }
+            }
+            lists.push((t.token, list.clone()));
+        }
+        Ok(lists)
+    }
+
+    /// Before a mandate is installed: every token in it must say who may be
+    /// paid. A cap without that reads as a bound and is not one.
+    pub fn check_payees_stated(&self) -> Result<()> {
+        if let Some(t) = self.policy.tokens.iter().find(|t| t.payees.is_none()) {
+            anyhow::bail!(
+                "tokens: {} has limits but does not say who may be paid; add \"payees\": [\"0x…\"] (only these addresses) or \"payees\": \"anyone\" (the agent picks) to its entry",
+                t.token
+            );
+        }
+        // transfer, approve, increaseAllowance, transferFrom: what a token's
+        // limits and payee list are checked on. Anything else on that token
+        // would pass neither, and AgentPolicy refuses the mandate at install.
+        const METERED: [&str; 4] = ["a9059cbb", "095ea7b3", "39509351", "23b872dd"];
+        for t in self.policy.tokens.iter() {
+            if let Some(a) = self.policy.allow.iter().find(|a| {
+                a.target == t.token && !METERED.contains(&a.selector.trim_start_matches("0x").to_lowercase().as_str())
+            }) {
+                anyhow::bail!(
+                    "allow: {} {} is refused: {} has limits in `tokens`, and such a token is callable only through transfer, transferFrom, approve and increaseAllowance — through any other function it would move past its limits. Remove the entry",
+                    a.target,
+                    a.selector,
+                    t.token
+                );
+            }
+        }
+        Ok(())
     }
 }
 
@@ -477,4 +544,39 @@ pub fn open_yubikey(
         });
     }
     Ok(signer)
+}
+
+#[cfg(test)]
+mod payee_tests {
+    use super::*;
+
+    /// The tracked x402 config with a transfer entry on its token, and the
+    /// token moved to a payee list or left to anyone.
+    fn config_with(listed: bool, extra_allow: Option<&str>) -> AgentConfig {
+        let text = include_str!("../../../agent.x402.base-sepolia.json");
+        let mut v: serde_json::Value = serde_json::from_str(text).unwrap();
+        let token = v["policy"]["tokens"][0]["token"].clone();
+        if listed {
+            v["policy"]["tokens"][0]["payees"] = serde_json::json!(["0x00000000000000000000000000000000000000d1"]);
+        }
+        let allow = v["policy"]["allow"].as_array_mut().unwrap();
+        allow.push(serde_json::json!({"target": token, "selector": "0xA9059CBB"}));
+        if let Some(selector) = extra_allow {
+            allow.push(serde_json::json!({"target": token, "selector": selector}));
+        }
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn a_capped_token_takes_only_the_four_functions() {
+        for listed in [true, false] {
+            config_with(listed, None).check_payees_stated().unwrap();
+            config_with(listed, Some("0x23b872dd")).check_payees_stated().unwrap();
+            // mint, permit, a plain transfer to the token
+            for other in ["0x40c10f19", "0xd505accf", "0x00000000"] {
+                let refused = config_with(listed, Some(other)).check_payees_stated().unwrap_err().to_string();
+                assert!(refused.contains("callable only through"), "{refused}");
+            }
+        }
+    }
 }

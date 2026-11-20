@@ -851,6 +851,18 @@ contract AgentPermissionTest is Test {
         _send(_agentOp(address(counter), 0.01 ether, ""));
     }
 
+    /// Audit #76 F-1: the plain-transfer entry admits empty calldata only. A
+    /// body that starts with four zero bytes has the zero selector too, and
+    /// would run the target's fallback with data the agent chose.
+    function test_zeroSelectorWithABodyIsRefused() public {
+        _expectRefused(_agentOp(address(counter), 0, hex"00000000"));
+        _expectRefused(_agentOp(address(counter), 0, hex"00000000deadbeef"));
+        _expectRefused(_agentOp(address(counter), 0.01 ether, abi.encodePacked(bytes4(0), uint256(1), uint256(2))));
+        assertEq(address(counter).balance, 0);
+        _send(_agentOp(address(counter), 0.01 ether, ""));
+        assertEq(address(counter).balance, 0.01 ether);
+    }
+
     /// F7: a public key off the curve is rejected at install.
     function test_offCurveKeyIsRejected() public {
         (uint256 x, uint256 y) = vm.publicKeyP256(AGENT2);
@@ -1086,6 +1098,16 @@ contract AgentPermissionTest is Test {
         vm.prank(acct);
         vm.expectRevert(abi.encodeWithSelector(AgentPolicy.ForbiddenTarget.selector, address(entryPoint), withdrawTo));
         policy.onInstall(abi.encodePacked(id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0))));
+
+        // Permit2: its own `approve` would hand a token's allowance to any address, unread
+        address permit2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
+        bytes4[2] memory onPermit2 = [bytes4(keccak256("approve(address,address,uint160,uint48)")), bytes4(0x12345678)];
+        for (uint256 k; k < onPermit2.length; k++) {
+            (targets[0], selectors[0]) = (permit2, onPermit2[k]);
+            vm.prank(acct);
+            vm.expectRevert(abi.encodeWithSelector(AgentPolicy.ForbiddenTarget.selector, permit2, onPermit2[k]));
+            policy.onInstall(abi.encodePacked(id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0))));
+        }
 
         // the policy itself, outside its x402 entry points
         (targets[0], selectors[0]) = (address(policy), AgentPolicy.onInstall.selector);
@@ -1389,5 +1411,360 @@ contract AgentPermissionTest is Test {
         _expectRefused(_agentBatchWith(AGENT, both, calls));
         // the same registration directly from the account works
         _send(_agentOpWith(AGENT, both, address(policy), 0, inner));
+    }
+
+    /// The tests below install mandates on the policy directly, as an
+    /// account would: the policy asks its caller for its EntryPoint.
+    function entrypoint() external view returns (address) {
+        return address(entryPoint);
+    }
+
+    /// An account that does not name its EntryPoint gets no mandate: the
+    /// policy could not keep that EntryPoint out of the allow-list.
+    function test_install_refusedWithoutAnEntryPoint() public {
+        address[] memory targets = new address[](1);
+        bytes4[] memory selectors = new bytes4[](1);
+        (targets[0], selectors[0]) = (address(counter), Counter.increment.selector);
+        bytes memory data = abi.encodePacked(
+            bytes32(uint256(9) << 224),
+            abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, new AgentPolicy.TokenCap[](0), uint48(0))
+        );
+        // an address with no code, and a contract without `entrypoint()`
+        vm.prank(address(0x1234));
+        vm.expectRevert(AgentPolicy.UnknownEntryPoint.selector);
+        policy.onInstall(data);
+        vm.prank(address(counter));
+        vm.expectRevert(AgentPolicy.UnknownEntryPoint.selector);
+        policy.onInstall(data);
+        // the same data from a caller that answers is installed
+        policy.onInstall(data);
+        assertTrue(policy.isAllowed(address(this), bytes32(uint256(9) << 224), address(counter), Counter.increment.selector));
+    }
+
+    // --- payee lists (issue #66) ---
+
+    PermissionId internal constant PYE_ID = PermissionId.wrap(0x70796531); // "pye1"
+    address internal constant PAYEE_2 = address(0xCAFE);
+    address internal constant STRANGER = address(0xDEAD);
+
+    function _payeeTargets() internal view returns (address[] memory targets, bytes4[] memory selectors) {
+        targets = new address[](5);
+        selectors = new bytes4[](5);
+        (targets[0], selectors[0]) = (address(policy), AgentPolicy.x402Authorize.selector);
+        (targets[1], selectors[1]) = (address(usdc), MockToken.transfer.selector);
+        (targets[2], selectors[2]) = (address(token), MockToken.transfer.selector);
+        (targets[3], selectors[3]) = (address(token), MockToken.approve.selector);
+        (targets[4], selectors[4]) = (address(token), MockToken.transferFrom.selector);
+    }
+
+    function _payeeCaps() internal view returns (AgentPolicy.TokenCap[] memory caps) {
+        caps = new AgentPolicy.TokenCap[](2);
+        caps[0] = AgentPolicy.TokenCap(address(usdc), 1e6, 2_500_000, usdc.DOMAIN_SEPARATOR());
+        caps[1] = AgentPolicy.TokenCap(address(token), TOKEN_MAX, TOKEN_BUDGET, bytes32(0));
+    }
+
+    function _list(address tokenAddr, address a, address b) internal pure returns (AgentPolicy.TokenPayees memory l) {
+        address[] memory payees = new address[](b == address(0) ? 1 : 2);
+        payees[0] = a;
+        if (b != address(0)) payees[1] = b;
+        l = AgentPolicy.TokenPayees(tokenAddr, payees);
+    }
+
+    /// The policy's install parameters with payee lists: the eight-word form.
+    function _payeeParams(AgentPolicy.TokenPayees[] memory lists) internal view returns (bytes memory) {
+        (address[] memory targets, bytes4[] memory selectors) = _payeeTargets();
+        return abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, _payeeCaps(), uint48(0), lists);
+    }
+
+    /// A permission that may pay mock USDC to PAYEE only, and the mock token
+    /// to PAYEE and PAYEE_2 only.
+    function _withPayees() internal {
+        usdc = new MockUSDC();
+        usdc.mint(acct, 100e6);
+        AgentPolicy.TokenPayees[] memory lists = new AgentPolicy.TokenPayees[](2);
+        lists[0] = _list(address(usdc), PAYEE, address(0));
+        lists[1] = _list(address(token), PAYEE, PAYEE_2);
+        bytes[] memory entries = new bytes[](2);
+        entries[0] = abi.encodePacked(bytes2(0), address(policy), _payeeParams(lists));
+        entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(agentX, agentY));
+        ValidationId vId = ValidatorLib.permissionToIdentifier(PYE_ID);
+        Execution[] memory batch = new Execution[](2);
+        batch[0] = Execution(acct, 0, _installCall(vId, Kernel(payable(acct)).currentNonce(), abi.encode(entries)));
+        batch[1] = Execution(acct, 0, abi.encodeCall(Kernel.grantAccess, (vId, Kernel.execute.selector, true)));
+        _send(
+            _rootOp(
+                abi.encodeWithSelector(
+                    Kernel.execute.selector, ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))), ExecLib.encodeBatch(batch)
+                )
+            )
+        );
+    }
+
+    // --- audit #76 F-2: a token's `maxPerOp` holds for the whole operation ---
+
+    function _transferLeg(uint256 amount) internal view returns (Execution memory) {
+        return Execution(address(token), 0, abi.encodeCall(MockToken.transfer, (PAYEE, amount)));
+    }
+
+    function _tokenSpent(address tokenAddr) internal view returns (uint256) {
+        return policy.tokenLimit(acct, bytes32(PermissionId.unwrap(PYE_ID)), tokenAddr).spent;
+    }
+
+    function test_tokenCapPerOperation_legsAddUp() public {
+        _withPayees();
+        Execution[] memory calls = new Execution[](2);
+        // each leg is at the cap, the operation is at twice the cap
+        (calls[0], calls[1]) = (_transferLeg(TOKEN_MAX), _transferLeg(TOKEN_MAX));
+        _expectRefused(_agentBatchWith(AGENT, PYE_ID, calls));
+        (calls[0], calls[1]) = (_transferLeg(TOKEN_MAX - 1 ether), _transferLeg(1 ether + 1));
+        _expectRefused(_agentBatchWith(AGENT, PYE_ID, calls));
+        assertEq(token.balanceOf(PAYEE), 0);
+        assertEq(_tokenSpent(address(token)), 0);
+        // exactly the cap in two legs
+        (calls[0], calls[1]) = (_transferLeg(TOKEN_MAX - 1 ether), _transferLeg(1 ether));
+        _send(_agentBatchWith(AGENT, PYE_ID, calls));
+        assertEq(token.balanceOf(PAYEE), TOKEN_MAX);
+        assertEq(_tokenSpent(address(token)), TOKEN_MAX);
+    }
+
+    /// An approval and a transfer of one token in one operation share the cap.
+    function test_tokenCapPerOperation_approveAndTransferShareIt() public {
+        _withPayees();
+        Execution[] memory calls = new Execution[](2);
+        calls[0] = Execution(address(token), 0, abi.encodeCall(MockToken.approve, (PAYEE, 6 ether)));
+        calls[1] = _transferLeg(6 ether);
+        _expectRefused(_agentBatchWith(AGENT, PYE_ID, calls));
+        calls[1] = _transferLeg(4 ether);
+        _send(_agentBatchWith(AGENT, PYE_ID, calls));
+        assertEq(_tokenSpent(address(token)), 10 ether);
+    }
+
+    /// Each token has its own total, and a new operation starts from zero —
+    /// also when two operations are validated in one bundle transaction.
+    function test_tokenCapPerOperation_perTokenAndPerOperation() public {
+        _withPayees();
+        Execution[] memory calls = new Execution[](2);
+        calls[0] = _transferLeg(TOKEN_MAX);
+        calls[1] = Execution(address(usdc), 0, abi.encodeCall(MockToken.transfer, (PAYEE, 1e6)));
+        _send(_agentBatchWith(AGENT, PYE_ID, calls));
+        assertEq(token.balanceOf(PAYEE), TOKEN_MAX);
+        assertEq(usdc.balanceOf(PAYEE), 1e6);
+
+        PackedUserOperation[] memory ops = new PackedUserOperation[](2);
+        uint256 nonce = _permissionNonce(PYE_ID);
+        for (uint256 i; i < 2; i++) {
+            ops[i] = _op(nonce + i, _singleCall(address(token), 0, abi.encodeCall(MockToken.transfer, (PAYEE_2, 7 ether))));
+            ops[i].signature = abi.encodePacked(bytes1(0xff), _sign(AGENT, entryPoint.getUserOpHash(ops[i])));
+        }
+        entryPoint.handleOps(ops, payable(makeAddr("bundler")));
+        assertEq(token.balanceOf(PAYEE_2), 14 ether);
+        assertEq(_tokenSpent(address(token)), TOKEN_MAX + 14 ether);
+    }
+
+    /// x402 registrations count toward the same per-operation total.
+    function test_tokenCapPerOperation_x402RegistrationsAddUp() public {
+        _withPayees();
+        uint256 before = block.timestamp + 1 hours;
+        Execution[] memory calls = new Execution[](2);
+        calls[0] = Execution(address(policy), 0, _authorizeCall(600_000, before, bytes32(uint256(1))));
+        calls[1] = Execution(address(policy), 0, _authorizeCall(600_000, before, bytes32(uint256(2))));
+        _expectRefused(_agentBatchWith(AGENT, PYE_ID, calls));
+        // a transfer and a registration of the same token
+        calls[1] = Execution(address(usdc), 0, abi.encodeCall(MockToken.transfer, (PAYEE, 400_001)));
+        _expectRefused(_agentBatchWith(AGENT, PYE_ID, calls));
+        assertEq(_tokenSpent(address(usdc)), 0);
+        calls[1] = Execution(address(policy), 0, _authorizeCall(400_000, before, bytes32(uint256(2))));
+        _send(_agentBatchWith(AGENT, PYE_ID, calls));
+        assertEq(_tokenSpent(address(usdc)), 1e6);
+    }
+
+    function _payeeOp(address target, bytes memory data) internal view returns (PackedUserOperation memory) {
+        return _agentOpWith(AGENT, PYE_ID, target, 0, data);
+    }
+
+    function test_payees_transferOnlyToAListedAddress() public {
+        _withPayees();
+        _send(_payeeOp(address(token), abi.encodeCall(MockToken.transfer, (PAYEE, 1 ether))));
+        _send(_payeeOp(address(token), abi.encodeCall(MockToken.transfer, (PAYEE_2, 1 ether))));
+        assertEq(token.balanceOf(PAYEE), 1 ether);
+        assertEq(token.balanceOf(PAYEE_2), 1 ether);
+        // within every cap, to an address the owner did not list
+        _expectRefused(_payeeOp(address(token), abi.encodeCall(MockToken.transfer, (STRANGER, 1))));
+        // a zero amount is no way around the list
+        _expectRefused(_payeeOp(address(token), abi.encodeCall(MockToken.transfer, (STRANGER, 0))));
+        // each token has its own list: PAYEE_2 is listed for the mock token only
+        _send(_payeeOp(address(usdc), abi.encodeCall(MockToken.transfer, (PAYEE, 1e6))));
+        _expectRefused(_payeeOp(address(usdc), abi.encodeCall(MockToken.transfer, (PAYEE_2, 1e6))));
+        assertEq(usdc.balanceOf(PAYEE), 1e6);
+        // a refused operation charges nothing
+        assertEq(policy.tokenLimit(acct, bytes32(PermissionId.unwrap(PYE_ID)), address(token)).spent, 2 ether);
+    }
+
+    function test_payees_spenderAndTransferFromAreBound() public {
+        _withPayees();
+        _send(_payeeOp(address(token), abi.encodeCall(MockToken.approve, (PAYEE, 2 ether))));
+        assertEq(token.allowance(acct, PAYEE), 2 ether);
+        _expectRefused(_payeeOp(address(token), abi.encodeCall(MockToken.approve, (STRANGER, 1))));
+        // transferFrom: the recipient is the second argument, whoever `from` is
+        _expectRefused(_payeeOp(address(token), abi.encodeCall(MockToken.transferFrom, (PAYEE, STRANGER, 1))));
+        _expectRefused(_payeeOp(address(token), abi.encodeCall(MockToken.transferFrom, (STRANGER, STRANGER, 1))));
+        // a listed recipient passes the policy (the token's own allowance rule is not the policy's business)
+        token.mint(STRANGER, 1 ether);
+        vm.prank(STRANGER);
+        token.approve(acct, 1 ether);
+        _send(_payeeOp(address(token), abi.encodeCall(MockToken.transferFrom, (STRANGER, PAYEE_2, 1 ether))));
+        assertEq(token.balanceOf(PAYEE_2), 1 ether);
+    }
+
+    /// A token reads the low 160 bits of an address word. The same word must
+    /// not name a listed payee to one reader and a stranger to another.
+    function test_payees_dirtyAddressWordIsRefused() public {
+        _withPayees();
+        bytes memory dirty =
+            abi.encodePacked(MockToken.transfer.selector, bytes32(uint256(uint160(PAYEE)) | (1 << 160)), uint256(1));
+        _expectRefused(_payeeOp(address(token), dirty));
+        // a call cut short before the amount
+        _expectRefused(_payeeOp(address(token), abi.encodePacked(MockToken.transfer.selector, bytes32(uint256(uint160(PAYEE))))));
+    }
+
+    /// A payee list is a promise about where the token goes. Any other
+    /// function allow-listed on that token would be a way around it.
+    /// Audit #79. A careless owner allow-lists a way to move a capped token
+    /// that the caps do not meter (`mint` here; `permit` or a vault's
+    /// `withdraw` elsewhere): the mandate is refused whole at install, with
+    /// a payee list on the token and without one, since through that entry
+    /// the token would pass neither its caps nor its list. The same entry on
+    /// a token the mandate sets no limit for installs.
+    function test_token_otherFunctionsOfACappedTokenAreRefusedAtInstall() public {
+        usdc = new MockUSDC();
+        bytes4[2] memory careless = [MockToken.mint.selector, bytes4(0)];
+        for (uint256 k; k < careless.length; k++) {
+            (address[] memory targets, bytes4[] memory selectors) = _payeeTargets();
+            (targets[3], selectors[3]) = (address(token), careless[k]);
+            AgentPolicy.TokenCap[] memory caps = _payeeCaps();
+            bytes32 id = bytes32((uint256(0x30) + k) << 224);
+            // capped, with a payee list on it
+            AgentPolicy.TokenPayees[] memory lists = new AgentPolicy.TokenPayees[](1);
+            lists[0] = _list(address(token), PAYEE, address(0));
+            bytes memory data =
+                abi.encodePacked(id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0), lists));
+            vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+            policy.onInstall(data);
+            // capped, the list on the other token
+            lists[0] = _list(address(usdc), PAYEE, address(0));
+            data = abi.encodePacked(id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0), lists));
+            vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+            policy.onInstall(data);
+            // capped, no lists at all
+            data = abi.encodePacked(id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0)));
+            vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+            policy.onInstall(data);
+            // no limit for that token in this mandate: the entry is an ordinary call
+            AgentPolicy.TokenCap[] memory usdcOnly = new AgentPolicy.TokenCap[](1);
+            usdcOnly[0] = caps[0];
+            policy.onInstall(
+                abi.encodePacked(id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, usdcOnly, uint48(0)))
+            );
+            assertTrue(policy.isAllowed(address(this), id, address(token), careless[k]));
+        }
+        // and on an installed mandate nothing but the four functions reaches a capped token
+        _withPayees();
+        _expectRefused(_payeeOp(address(token), abi.encodeCall(MockToken.mint, (PAYEE, 1))));
+        _expectRefused(_payeeOp(address(token), ""));
+    }
+
+    function test_payees_batchLegsAreBound() public {
+        _withPayees();
+        Execution[] memory calls = new Execution[](2);
+        calls[0] = Execution(address(token), 0, abi.encodeCall(MockToken.transfer, (PAYEE, 1 ether)));
+        calls[1] = Execution(address(token), 0, abi.encodeCall(MockToken.transfer, (STRANGER, 1 ether)));
+        _expectRefused(_agentBatchWith(AGENT, PYE_ID, calls));
+        calls[1] = Execution(address(token), 0, abi.encodeCall(MockToken.transfer, (PAYEE_2, 1 ether)));
+        _send(_agentBatchWith(AGENT, PYE_ID, calls));
+        assertEq(token.balanceOf(PAYEE_2), 1 ether);
+    }
+
+    function test_payees_x402PaysOnlyAListedAddress() public {
+        _withPayees();
+        uint256 before = block.timestamp + 1 hours;
+        _expectRefused(
+            _payeeOp(
+                address(policy),
+                abi.encodeCall(AgentPolicy.x402Authorize, (address(usdc), acct, STRANGER, 100_000, 0, before, bytes32(uint256(1))))
+            )
+        );
+        _send(_payeeOp(address(policy), _authorizeCall(100_000, before, bytes32(uint256(1)))));
+        assertEq(policy.tokenLimit(acct, bytes32(PermissionId.unwrap(PYE_ID)), address(usdc)).spent, 100_000);
+    }
+
+    function test_payees_view() public {
+        _withPayees();
+        bytes32 id = bytes32(PermissionId.unwrap(PYE_ID));
+        assertTrue(policy.payeeAllowed(acct, id, address(token), PAYEE_2));
+        assertFalse(policy.payeeAllowed(acct, id, address(usdc), PAYEE_2));
+        assertFalse(policy.payeeAllowed(acct, id, address(token), STRANGER));
+        assertTrue(policy.tokenLimit(acct, id, address(token)).payeesOnly);
+        // the first permission has no list for its token: anyone, as before
+        bytes32 agentId = bytes32(PermissionId.unwrap(AGENT_ID));
+        assertTrue(policy.payeeAllowed(acct, agentId, address(token), STRANGER));
+        assertFalse(policy.tokenLimit(acct, agentId, address(token)).payeesOnly);
+    }
+
+    /// A mandate installed without lists is encoded as before lists existed,
+    /// and a reinstall without them forgets the old ones.
+    function test_payees_reinstallWithoutListsForgetsThem() public {
+        usdc = new MockUSDC();
+        bytes32 id = bytes32(uint256(1) << 224);
+        AgentPolicy.TokenPayees[] memory lists = new AgentPolicy.TokenPayees[](1);
+        lists[0] = _list(address(token), PAYEE, address(0));
+        policy.onInstall(abi.encodePacked(id, _payeeParams(lists)));
+        assertFalse(policy.payeeAllowed(address(this), id, address(token), STRANGER));
+        policy.onUninstall(abi.encodePacked(id));
+        (address[] memory targets, bytes4[] memory selectors) = _payeeTargets();
+        policy.onInstall(
+            abi.encodePacked(id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, _payeeCaps(), uint48(0)))
+        );
+        assertTrue(policy.payeeAllowed(address(this), id, address(token), STRANGER));
+        assertTrue(policy.tokenLimit(address(this), id, address(token)).set);
+    }
+
+    function _refusedInstall(bytes32 id, AgentPolicy.TokenPayees[] memory lists) internal {
+        bytes memory data = abi.encodePacked(id, _payeeParams(lists));
+        vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+        policy.onInstall(data);
+    }
+
+    function test_payees_malformedListsAreRefusedAtInstall() public {
+        usdc = new MockUSDC();
+        bytes32 id = bytes32(uint256(2) << 224);
+        AgentPolicy.TokenPayees[] memory lists = new AgentPolicy.TokenPayees[](1);
+        // a token the mandate has no cap for
+        lists[0] = _list(address(forbidden), PAYEE, address(0));
+        _refusedInstall(id, lists);
+        // an empty list
+        lists[0] = AgentPolicy.TokenPayees(address(token), new address[](0));
+        _refusedInstall(id, lists);
+        // the zero address
+        lists[0] = _list(address(token), PAYEE, address(0));
+        lists[0].payees[0] = address(0);
+        _refusedInstall(id, lists);
+        // a payee twice
+        lists[0] = _list(address(token), PAYEE, PAYEE);
+        _refusedInstall(id, lists);
+        // a token twice
+        AgentPolicy.TokenPayees[] memory twice = new AgentPolicy.TokenPayees[](2);
+        twice[0] = _list(address(token), PAYEE, address(0));
+        twice[1] = _list(address(token), PAYEE_2, address(0));
+        _refusedInstall(id, twice);
+        // the eight-word form carrying no list at all
+        _refusedInstall(id, new AgentPolicy.TokenPayees[](0));
+        // a head that is neither form: one more parameter still
+        (address[] memory targets, bytes4[] memory selectors) = _payeeTargets();
+        lists[0] = _list(address(token), PAYEE, address(0));
+        bytes memory nine = abi.encodePacked(
+            id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, _payeeCaps(), uint48(0), lists, uint256(0))
+        );
+        vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+        policy.onInstall(nine);
     }
 }

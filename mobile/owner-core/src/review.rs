@@ -88,6 +88,8 @@ pub struct Facts {
     /// modules likewise. Kept apart: an address is readable in its own slot
     /// only, never a signer where a policy belongs.
     pub policy_modules: Vec<Address>,
+    /// The policy modules among them that enforce per-token payee lists.
+    pub payee_policy_modules: Vec<Address>,
     pub signer_modules: Vec<Address>,
     pub tokens: BTreeMap<Address, Token>,
     /// The chain's EntryPoint, when the build knows it: a request or an
@@ -651,13 +653,65 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
         b.row(s, "Policy module", b.name(module));
         module_known(b, "policy", module)?;
         type PolicyInit = (Vec<Address>, Vec<FixedBytes<4>>, U256, U256, U256, Vec<(Address, U256, U256, B256)>, U256);
-        let decoded = PolicyInit::abi_decode_params_validate(&p[22..]).map_err(|e| format!("policy parameters: {e}"))?;
-        if decoded.abi_encode_params() != p[22..] {
-            return Err("policy parameters are not canonical; refused".into());
+        type PolicyInitPayees =
+            (Vec<Address>, Vec<FixedBytes<4>>, U256, U256, U256, Vec<(Address, U256, U256, B256)>, U256, Vec<(Address, Vec<Address>)>);
+        // Two forms, told apart as the policy tells them: by the first head
+        // word, the offset of `targets` behind seven or eight head words.
+        let init = &p[22..];
+        let head = init.get(..32).map(U256::from_be_slice).ok_or("policy parameters shorter than a word; refused")?;
+        let (targets, selectors, max_value, budget, until, tokens, after, payees) = if head == U256::from(8 * 32) {
+            let d = PolicyInitPayees::abi_decode_params_validate(init).map_err(|e| format!("policy parameters: {e}"))?;
+            if d.abi_encode_params() != init {
+                return Err("policy parameters are not canonical; refused".into());
+            }
+            d
+        } else {
+            let d = PolicyInit::abi_decode_params_validate(init).map_err(|e| format!("policy parameters: {e}"))?;
+            if d.abi_encode_params() != init {
+                return Err("policy parameters are not canonical; refused".into());
+            }
+            (d.0, d.1, d.2, d.3, d.4, d.5, d.6, Vec::new())
+        };
+        if head == U256::from(8 * 32) {
+            // an older policy would decode the first seven and ignore the lists:
+            // the owner would see payees that nothing enforces
+            if !b.facts.payee_policy_modules.contains(&module) {
+                return Err("this mandate carries payee lists, and the policy module it goes to is not known to enforce them; refused".into());
+            }
+            if payees.is_empty() {
+                return Err("policy parameters in the payee form without a payee list; refused".into());
+            }
         }
-        let (targets, selectors, max_value, budget, until, tokens, after) = decoded;
+        for (i, (token, list)) in payees.iter().enumerate() {
+            if list.is_empty() || !tokens.iter().any(|t| t.0 == *token) || payees[..i].iter().any(|p| p.0 == *token) {
+                return Err("a payee list that is empty, repeated or for a token without a cap; refused".into());
+            }
+            if list.iter().any(|a| a.is_zero()) || (1..list.len()).any(|j| list[..j].contains(&list[j])) {
+                return Err("a payee list with the zero address or the same address twice; refused".into());
+            }
+        }
         if targets.len() != selectors.len() {
             return Err("policy targets and selectors differ in length; refused".into());
+        }
+        // A token with a limit is callable through the four functions the
+        // limit is checked on. Any other entry on it would move the token
+        // past its caps and its payee list: AgentPolicy refuses such a
+        // mandate at install, and an earlier AgentPolicy would let the
+        // entry through unmetered, so it is refused here for either.
+        const METERED: [[u8; 4]; 4] = [[0xa9, 0x05, 0x9c, 0xbb], [0x09, 0x5e, 0xa7, 0xb3], [0x39, 0x50, 0x93, 0x51], [0x23, 0xb8, 0x72, 0xdd]];
+        for (t, sel) in targets.iter().zip(&selectors) {
+            // Permit2 at its usual address (the constant AgentPolicy carries): its own
+            // `approve` names who may pull a token, and no policy reads that call
+            if *t == alloy_primitives::address!("000000000022D473030F116dDEE9F6B43aC78BA3") {
+                return Err("this mandate lets the agent call Permit2, through which a token's allowance can be handed to any address, past its limits and payee list; refused".into());
+            }
+            if tokens.iter().any(|token| token.0 == *t) && !METERED.contains(&sel.0) {
+                return Err(format!(
+                    "this mandate limits the token {} and also allows {} on it; a limited token may only be called through transfer, transferFrom, approve and increaseAllowance, anything else would move it past its limits; refused",
+                    b.name(*t),
+                    selector_name(sel.0)
+                ));
+            }
         }
         let secs = |v: U256, what: &str| u64::try_from(v).map_err(|_| format!("{what} does not fit a timestamp; refused"));
         let (until, after) = (secs(until, "validUntil")?, secs(after, "validAfter")?);
@@ -690,6 +744,14 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
                 (false, None) => format!(", x402 payments allowed (domain {domain})"),
             };
             b.row(s, "Token cap", format!("{}: {caps}{x402}", b.name(*token)));
+            match payees.iter().find(|p| p.0 == *token) {
+                Some((_, list)) => {
+                    for payee in list {
+                        b.row(s, "Token payee", format!("{}: only to {}", b.name(*token), b.name(*payee)));
+                    }
+                }
+                None => b.row(s, "Token payee", format!("{}: anyone — the agent picks the recipient and the spender", b.name(*token))),
+            }
         }
     }
     if signer.len() < 22 {
@@ -916,6 +978,7 @@ mod tests {
             recovery_validators: vec![RECOVERY],
             demo_counter: Some(COUNTER),
             policy_modules: vec![POLICY],
+            payee_policy_modules: vec![POLICY],
             signer_modules: vec![SIGNER],
             tokens: BTreeMap::new(),
             entry_point: None,
@@ -952,6 +1015,19 @@ mod tests {
     fn open(op: &PackedUserOp) -> Review {
         let (bytes, c) = request(op);
         open_request(&bytes, &c, NOW, &enrolled(), &facts())
+    }
+
+    fn clone_params(p: &kernel::PolicyParams) -> kernel::PolicyParams {
+        kernel::PolicyParams {
+            targets: p.targets.clone(),
+            selectors: p.selectors.clone(),
+            max_value_per_op: p.max_value_per_op,
+            budget: p.budget,
+            valid_until: p.valid_until,
+            tokens: p.tokens.clone(),
+            valid_after: p.valid_after,
+            payees: p.payees.clone(),
+        }
     }
 
     fn increment() -> PackedUserOp {
@@ -1066,7 +1142,7 @@ mod tests {
             budget: 10u128.pow(18),
             valid_until: NOW + 86_400,
             tokens: vec![(SIGNER, 5, 50, B256::repeat_byte(1))],
-            valid_after: 0,
+            valid_after: 0, payees: vec![],
         };
         let perm = FixedBytes::from([0x74, 0x65, 0x73, 0x31]);
         let pdata = kernel::permission_data(POLICY, &params, SIGNER, &key(2));
@@ -1085,6 +1161,67 @@ mod tests {
         assert!(t.contains("x402 payments allowed"), "{t}");
         assert!(t.contains("Allow permission 0x74657331 to call: execute"), "{t}");
         assert!(!r.needs_second_confirmation(), "{t}");
+        // no payee list: the screen says who may be paid
+        assert!(t.contains("anyone — the agent picks the recipient and the spender"), "{t}");
+
+        // the same mandate with a payee list for its token
+        let listed = kernel::PolicyParams { payees: vec![(SIGNER, vec![COUNTER, RECOVERY])], ..params };
+        let install = |p: &kernel::PolicyParams, module_facts: &Facts| {
+            let pdata = kernel::permission_data(POLICY, p, SIGNER, &key(2));
+            let mut o = op(kernel::execute_batch_calldata(vec![
+                (me, U256::ZERO, kernel::install_permission_calldata(perm, pdata, 1)),
+                (me, U256::ZERO, kernel::grant_execute_calldata(perm)),
+            ]));
+            o.gas_fees = kernel::pack_gas(1, 1);
+            let (bytes, c) = request(&o);
+            open_request(&bytes, &c, NOW, &enrolled(), module_facts)
+        };
+        let r = install(&listed, &facts());
+        let t = r.text();
+        assert_eq!(r.verdict, Verdict::Sign, "{t}");
+        assert_eq!(t.matches("Token payee: ").count(), 2, "{t}");
+        assert!(t.contains(&format!("only to {}", COUNTER.to_checksum(None))), "{t}");
+        assert!(!t.contains("anyone — the agent picks"), "{t}");
+        // a policy module that would ignore the lists: nothing is shown as if enforced
+        let mut older = facts();
+        older.payee_policy_modules.clear();
+        assert!(matches!(install(&listed, &older).verdict, Verdict::Refuse(ref m) if m.contains("not known to enforce")));
+        // lists the policy itself would refuse
+        for bad in [
+            vec![(SIGNER, vec![])],
+            vec![(SIGNER, vec![COUNTER, COUNTER])],
+            vec![(SIGNER, vec![Address::ZERO])],
+            vec![(COUNTER, vec![RECOVERY])],
+            vec![(SIGNER, vec![COUNTER]), (SIGNER, vec![RECOVERY])],
+        ] {
+            let p = kernel::PolicyParams { payees: bad, ..kernel::PolicyParams { payees: vec![], ..clone_params(&listed) } };
+            assert!(matches!(install(&p, &facts()).verdict, Verdict::Refuse(_)));
+        }
+        // a limited token with an entry its limits are not checked on (permit, a plain
+        // transfer to it): refused, with a payee list and without; `transfer` is fine
+        for payees in [vec![], vec![(SIGNER, vec![COUNTER])]] {
+            let with = |selector: [u8; 4]| kernel::PolicyParams {
+                targets: vec![COUNTER, SIGNER],
+                selectors: vec![FixedBytes::from(SELECTOR_INCREMENT), FixedBytes::from(selector)],
+                payees: payees.clone(),
+                ..clone_params(&listed)
+            };
+            for other in [[0xd5, 0x05, 0xac, 0xcf], [0, 0, 0, 0]] {
+                let r = install(&with(other), &facts());
+                assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("past its limits")), "{}", r.text());
+            }
+            let r = install(&with([0xa9, 0x05, 0x9c, 0xbb]), &facts());
+            assert_eq!(r.verdict, Verdict::Sign, "{}", r.text());
+        }
+        // Permit2 as a target, whatever the function
+        let permit2 = kernel::PolicyParams {
+            targets: vec![COUNTER, alloy_primitives::address!("000000000022D473030F116dDEE9F6B43aC78BA3")],
+            selectors: vec![FixedBytes::from(SELECTOR_INCREMENT), FixedBytes::from([0x87, 0x51, 0x7c, 0x45])],
+            payees: vec![],
+            ..clone_params(&listed)
+        };
+        let r = install(&permit2, &facts());
+        assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("Permit2")), "{}", r.text());
         let mut o = op(kernel::uninstall_permission_calldata(perm));
         o.gas_fees = kernel::pack_gas(1, 1);
         let r = open(&o);
@@ -1143,7 +1280,7 @@ mod tests {
             let perm = FixedBytes::from([0x74, 0x65, 0x73, 0x31]);
             let params = kernel::PolicyParams {
                 targets: vec![COUNTER], selectors: vec![FixedBytes::from(SELECTOR_INCREMENT)], max_value_per_op: 1000,
-                budget: 10u128.pow(18), valid_until: NOW + 86_400, tokens: vec![(SIGNER, 5, 50, B256::repeat_byte(1))], valid_after: 0,
+                budget: 10u128.pow(18), valid_until: NOW + 86_400, tokens: vec![(SIGNER, 5, 50, B256::repeat_byte(1))], valid_after: 0, payees: vec![],
             };
             let mut transfer = SELECTOR_ERC20_TRANSFER.to_vec();
             transfer.extend_from_slice(&[0u8; 12]);
@@ -1225,7 +1362,7 @@ mod tests {
         let perm = FixedBytes::from([0x74, 0x65, 0x73, 0x31]);
         let params = kernel::PolicyParams {
             targets: vec![COUNTER], selectors: vec![FixedBytes::from(SELECTOR_INCREMENT)], max_value_per_op: 1, budget: 2,
-            valid_until: NOW + 10, tokens: vec![], valid_after: 0,
+            valid_until: NOW + 10, tokens: vec![], valid_after: 0, payees: vec![],
         };
         let pdata = kernel::permission_data(POLICY, &params, SIGNER, &key(2));
         let install = |pdata: Bytes| quiet(kernel::execute_calldata(me, U256::ZERO, &kernel::install_permission_calldata(perm, pdata, 1)));
@@ -1338,7 +1475,7 @@ mod tests {
         let r = open_bare(&quiet(kernel::add_recovery_calldata(me, RECOVERY, &key(4), 2)));
         assert!(r.text().contains("! Install a key on a validator this build cannot classify") && r.text().contains("may take over this account"), "{}", r.text());
         // a permission install is unsignable without known modules (expert mode off)
-        let params = kernel::PolicyParams { targets: vec![], selectors: vec![], max_value_per_op: 0, budget: 0, valid_until: NOW + 1, tokens: vec![], valid_after: 0 };
+        let params = kernel::PolicyParams { targets: vec![], selectors: vec![], max_value_per_op: 0, budget: 0, valid_until: NOW + 1, tokens: vec![], valid_after: 0, payees: vec![] };
         let pdata = kernel::permission_data(POLICY, &params, SIGNER, &key(2));
         let r = open_bare(&quiet(kernel::execute_calldata(me, U256::ZERO, &kernel::install_permission_calldata(FixedBytes::from([1, 2, 3, 4]), pdata, 1))));
         assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("not known to this build")), "{:?}", r.verdict);
@@ -1385,7 +1522,7 @@ mod tests {
                 budget: 0,
                 valid_until: NOW + 10,
                 tokens: vec![(token, 20_000_000, 100_000_000, token_domain)],
-                valid_after: 0,
+                valid_after: 0, payees: vec![],
             };
             let pdata = kernel::permission_data(POLICY, &params, SIGNER, &key(2));
             open_f(kernel::execute_calldata(me, U256::ZERO, &kernel::install_permission_calldata(FixedBytes::from([1, 2, 3, 4]), pdata, 1)))
@@ -1449,7 +1586,7 @@ mod tests {
             budget: 0,
             valid_until: NOW + 10,
             tokens: vec![(usdc, 20_000_000, 100_000_000, f.tokens[&usdc].domain)],
-            valid_after: 0,
+            valid_after: 0, payees: vec![],
         };
         let pdata = kernel::permission_data(policy, &params, signer, &key(2));
         let mut o = op(kernel::execute_calldata(me, U256::ZERO, &kernel::install_permission_calldata(FixedBytes::from([1, 2, 3, 4]), pdata, 1)));
@@ -1549,7 +1686,7 @@ mod tests {
         assert!(matches!(r.verdict, Verdict::SignWithWarnings(_)) && r.needs_second_confirmation(), "{:?}", r.verdict);
         assert!(r.text().contains("nothing bounds what this grant"), "{}", r.text());
         // a signer module is readable as a signer only: in the policy's slot it is unknown
-        let params = kernel::PolicyParams { targets: vec![], selectors: vec![], max_value_per_op: 0, budget: 0, valid_until: NOW + 1, tokens: vec![], valid_after: 0 };
+        let params = kernel::PolicyParams { targets: vec![], selectors: vec![], max_value_per_op: 0, budget: 0, valid_until: NOW + 1, tokens: vec![], valid_after: 0, payees: vec![] };
         let swapped = kernel::permission_data(SIGNER, &params, SIGNER, &key(2));
         let r = open_calls(vec![kernel::install_permission_calldata(perm, swapped, 1)]);
         assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("policy module") && m.contains("not known to this build")), "{:?}", r.verdict);

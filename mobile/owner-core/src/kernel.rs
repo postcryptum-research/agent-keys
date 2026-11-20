@@ -122,6 +122,10 @@ pub struct PolicyParams {
     /// `(token, maxPerOp, budget, EIP-712 domain separator or 0)`
     pub tokens: Vec<(Address, u128, u128, B256)>,
     pub valid_after: u64,
+    /// `(token, payees)`: the only addresses that token's transfers,
+    /// allowances and x402 payments may name. Empty: no token is bound, and
+    /// the mandate is encoded as it was before payee lists existed.
+    pub payees: Vec<(Address, Vec<Address>)>,
 }
 
 /// Kernel's `PermissionEnableDataFormat`: `abi.encode(bytes[] entries)` where
@@ -137,7 +141,7 @@ pub fn permission_data(
     // `abi.encode(targets, selectors, max, budget, until, tokens, after)`: a parameter
     // sequence, not one tuple value — `abi_encode()` on a dynamic tuple would
     // prepend an offset word and the policy's `abi.decode` would reject it.
-    let policy_init = (
+    let seven = (
         params.targets.clone(),
         params.selectors.clone(),
         U256::from(params.max_value_per_op),
@@ -149,8 +153,17 @@ pub fn permission_data(
             .map(|&(token, max, budget, domain)| (token, U256::from(max), U256::from(budget), domain))
             .collect::<Vec<_>>(),
         U256::from(params.valid_after),
-    )
-        .abi_encode_params();
+    );
+    // Payee lists travel as an eighth parameter, and only when there is one:
+    // without them the bytes, and so a counterfactual account's address, are
+    // what they were before lists existed. The policy tells the two forms
+    // apart by the first head word.
+    let policy_init = if params.payees.is_empty() {
+        seven.abi_encode_params()
+    } else {
+        let (a, b, c, d, e, f, g) = seven;
+        (a, b, c, d, e, f, g, params.payees.clone()).abi_encode_params()
+    };
     let flag = FixedBytes::<2>::ZERO;
     let entries: Vec<Bytes> = vec![
         (flag, policy, Bytes::from(policy_init)).abi_encode_packed().into(),
@@ -333,6 +346,35 @@ mod tests {
     const A: Address = address!("1111111111111111111111111111111111111111");
     const B: Address = address!("2222222222222222222222222222222222222222");
     const N: B256 = b256!("3333333333333333333333333333333333333333333333333333333333333333");
+
+    /// The policy's install parameters in both forms, against `cast abi-encode`
+    /// of the Solidity types `AgentPolicy.onInstall` decodes.
+    #[test]
+    fn policy_parameters_with_and_without_payees() {
+        let token = address!("00000000000000000000000000000000000000c1");
+        let init = |payees| {
+            let params = PolicyParams {
+                targets: vec![token],
+                selectors: vec![FixedBytes::from([0xa9, 0x05, 0x9c, 0xbb])],
+                max_value_per_op: 7,
+                budget: 9,
+                valid_until: 1000,
+                tokens: vec![(token, 5, 50, B256::ZERO)],
+                valid_after: 3,
+                payees,
+            };
+            let data = permission_data(A, &params, B, &PublicKey { x: [1; 32], y: [2; 32] });
+            let entries = Vec::<Bytes>::abi_decode(&data).unwrap();
+            alloy_primitives::keccak256(&entries[0][22..])
+        };
+        // seven parameters, as before payee lists existed
+        assert_eq!(init(vec![]), b256!("6af2f27ba0bcd1851dc4161b2e4a9ff02f3b02f4d5bb1b48c9a5691d77ad0d6a"));
+        let payees = vec![(
+            token,
+            vec![address!("00000000000000000000000000000000000000d1"), address!("00000000000000000000000000000000000000d2")],
+        )];
+        assert_eq!(init(payees), b256!("00f7275b78b049a3af82e32d41654173b4e2da115082c3e049c8e7f629da723f"));
+    }
 
     #[test]
     fn usdc_authorization_digest() {

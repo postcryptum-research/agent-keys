@@ -103,6 +103,8 @@ sol! {
             external
             view
             returns (uint128 maxPerOp, uint128 budget, uint128 spent, bool set);
+        /// Since payee lists (issue #66); an earlier AgentPolicy reverts.
+        function payeeAllowed(address account, bytes32 id, address token, address payee) external view returns (bool);
     }
 
     /// The EIP-3009 side of a token (USDC FiatToken v2.2).

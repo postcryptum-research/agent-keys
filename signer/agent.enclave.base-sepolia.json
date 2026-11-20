@@ -26,11 +26,11 @@
         "selector": "0xd09de08a"
       },
       {
-        "target": "0xdd544A6F0220778Fff16F51B468656e73E32ae85",
+        "target": "0x2E6F47B2F3d0F3E6071eCdBc0b445a2B26d23D95",
         "selector": "0x4993d616"
       },
       {
-        "target": "0xdd544A6F0220778Fff16F51B468656e73E32ae85",
+        "target": "0x2E6F47B2F3d0F3E6071eCdBc0b445a2B26d23D95",
         "selector": "0xf3ea183e"
       }
     ],
@@ -42,7 +42,8 @@
         "token": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
         "maxPerOp": "100000",
         "budget": "1000000",
-        "x402": true
+        "x402": true,
+        "payees": "anyone"
       }
     ]
   }

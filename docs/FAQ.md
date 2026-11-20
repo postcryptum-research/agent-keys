@@ -95,7 +95,9 @@ with it left in, `account status` prints that account, not yours. Then set:
   call (`allow`), `maxValuePerOp` and `budget` in wei, `validUntil` (a Unix
   time), and for tokens a `tokens` entry with per-operation and total limits
   (for $100 in USDC: e.g. `maxPerOp` 20 USDC, `budget` 100 USDC, in 6-decimal
-  units);
+  units) that also says who may be paid: `"payees": "anyone"`, which
+  means the agent picks the recipient within those limits, or a list of
+  the only addresses the token may go to;
 - a new `permissionId` (any 4 bytes, e.g. `0x61676e74`).
 
 **5. Fund the account and start.**
@@ -165,19 +167,17 @@ token limits and allowed contracts, e.g.:
 - "Mon–Fri of this week: up to 5,000 USDC per day" — one mandate per day;
 - "the 1st of the month: payroll up to 40,000 USDC".
 
-**What a mandate does not say today: who receives a token transfer.** It
-allows contracts and functions and caps token amounts per operation and in
-total; with `USDC.transfer` allowed, the agent picks the recipient, within
-those caps, and with `approve`, `increaseAllowance` or `transferFrom`
-allowed it picks the spender or the recipient the same way
-([#66](https://github.com/postcryptum-research/agent-keys/issues/66)). So a
-cap is on the amount, not on which contract or address the tokens go to.
-To fix the destination, leave those functions out and allow a contract
-that can pay only where the owner decided — e.g. a forwarder with one
-immutable destination, which the owner approves for the token once. On
-that path the mandate's token limits do not count: the bound is the
-allowance the owner gives the forwarder, or limits the forwarder enforces
-itself. The repository has no such contract yet.
+**Who receives a token transfer.** A mandate allows contracts and
+functions and caps token amounts per operation and in total, and each token
+entry also says who may be paid (`payees`,
+[#66](https://github.com/postcryptum-research/agent-keys/issues/66), on Base
+Sepolia since 2026-11-20). With `"anyone"` the cap is on the amount only:
+the agent picks the recipient of a `transfer` or `transferFrom` and the
+spender of an `approve` or `increaseAllowance`, within the caps. With a
+list, the token may go to the listed addresses only. What a list does not
+bind (allowances that already exist, and other allowed contracts that hold
+an allowance from the account) is in
+[`AGENT_CONFIG.md`](AGENT_CONFIG.md).
 
 Each mandate is one agent config file with its own `permissionId` and
 `policy.validAfter` / `validUntil`, and with `account` pinned;

@@ -22,15 +22,21 @@ validation path and a real paymaster.
 
 | payload | address-only | k1 signature | p256 signature | p256 agent + paymaster |
 |---:|---:|---:|---:|---:|
-| 10 B | 3,443 | 7,402 | 7,433 | 81,821 |
-| 100 B | 4,258 | 8,264 | 8,269 | 82,816 |
-| 1 kB | 11,826 | 16,090 | 16,095 | 92,003 |
-| 10 kB | 88,868 | 96,074 | 96,435 | 185,768 |
-| 100 kB | 956,236 | 1,026,826 | 1,064,773 | 1,293,824 |
+| 10 B | 3,443 | 7,402 | 7,433 | 82,560 |
+| 100 B | 4,258 | 8,264 | 8,269 | 83,555 |
+| 1 kB | 11,826 | 16,090 | 16,095 | 92,742 |
+| 10 kB | 88,868 | 96,074 | 96,435 | 186,507 |
+| 100 kB | 956,236 | 1,026,826 | 1,064,773 | 1,294,563 |
 
-The agent column is the 2026-11-10 measurement (`gas.json`), with the token
-budgets of the current policy and its forbidden-target guard; the guard
-itself costs 141 gas per operation.
+The agent column is the 2026-11-20 measurement (`gas.json`) of the policy
+deployed that day. Over the instance before it, it knows payee
+lists ([#66](https://github.com/postcryptum-research/agent-keys/issues/66)),
+288 gas per operation here, holds a token's per-operation cap for the
+whole operation and not per call
+([#76](https://github.com/postcryptum-research/agent-keys/issues/76)), 402
+gas, and refuses Permit2 as a target, 49 gas (the earlier instance measured
+81,821 at 10 B on 2026-11-10). The forbidden-target guard costs 141 gas per
+operation.
 
 Execution gas is what the call consumes as seen from the caller. A
 transaction additionally pays 21,000 base plus calldata (16 gas per non-zero
@@ -52,12 +58,12 @@ precompile. On chains with RIP-7212 (Base, OP-Stack, Polygon, zkSync, Scroll,
 Linea; mainnet via EIP-7951) the curve the secure elements speak is as cheap
 as the one Ethereum was built on.
 
-**The agent account costs about 78k gas per operation on top of a bare
+**The agent account costs about 79k gas per operation on top of a bare
 call.** That buys: EntryPoint accounting and nonce management, Kernel's
 validation routing, the policy check (allow-list, value cap, budget, expiry,
 all read from storage), the P-256 signature check, paymaster validation and
 settlement, and the account calling the target. The paper measured +63k for
-secp256k1 AA with a mock EntryPoint and no policy; +15k for a real EntryPoint
+secp256k1 AA with a mock EntryPoint and no policy; +16k for a real EntryPoint
 and a policy module is the price of the containment this project is about.
 
 **Large payloads are the data's cost, not the authorization's.** At 10 kB

@@ -23,9 +23,14 @@ use crate::kernel::{self, PermissionId};
 
 /// Why an allow-list entry can never be installed: the agent would reach the
 /// account's own administration, its EntryPoint deposit, the project's
-/// modules or the policy itself. `AgentPolicy` refuses the first three
-/// classes on chain as well (`ForbiddenTarget`); the CLI refuses them all
+/// modules, the policy itself or Permit2. `AgentPolicy` refuses the account,
+/// the EntryPoint, the policy and Permit2 on chain as well (`ForbiddenTarget`); the CLI refuses them all
 /// before anything is signed, with the reason.
+/// Uniswap's Permit2 at its usual CREATE2 address (Ethereum, Base and their
+/// testnets among others; not zkSync-style chains). The same constant as in
+/// `AgentPolicy`: check it before supporting a new chain.
+pub const PERMIT2: Address = alloy::primitives::address!("000000000022D473030F116dDEE9F6B43aC78BA3");
+
 pub fn forbidden_target(dep: &Deployments, account: Address, target: Address, selector: [u8; 4]) -> Option<String> {
     use crate::abi::IAgentPolicyX402::{x402AuthorizeCall, x402ReclaimCall};
     let modules: [(Option<Address>, &str); 7] = [
@@ -42,6 +47,9 @@ pub fn forbidden_target(dep: &Deployments, account: Address, target: Address, se
     }
     if target == dep.entry_point {
         return Some("the EntryPoint: the agent could withdraw the account's deposit".into());
+    }
+    if target == PERMIT2 {
+        return Some("Permit2: through its own `approve` the agent could hand a token's allowance to any address, past the token's limits and payee list; the policy does not meter Permit2 yet".into());
     }
     if target == dep.agent_policy {
         let x402 = selector == x402AuthorizeCall::SELECTOR || selector == x402ReclaimCall::SELECTOR;
@@ -199,6 +207,17 @@ impl Session {
                 .await
                 .with_context(|| format!("reading DOMAIN_SEPARATOR() of x402 token {token}"))?;
             token_domains.insert(token, ds);
+        }
+        // A mandate with payee lists must go to a policy that enforces them:
+        // an earlier AgentPolicy decodes the rest and ignores the lists.
+        if let Some((token, list)) = cfg.payees()?.first() {
+            let view = crate::abi::IAgentPolicyView::new(dep.agent_policy, provider.clone());
+            if let Err(e) = view.payeeAllowed(Address::ZERO, B256::ZERO, *token, list[0]).call().await {
+                bail!(
+                    "the config lists payees for {token}, and the AgentPolicy at {} (deployments.agentPolicy) did not answer `payeeAllowed`: either it predates payee lists, and would install the mandate and ignore them, or the call itself failed ({e})",
+                    dep.agent_policy
+                );
+            }
         }
         let (permission_data, init_data) = account_material(&cfg, &dep, &token_domains)?;
 
@@ -635,6 +654,36 @@ impl Session {
                     Err(_) => println!("DIFF token           {token}: this policy version has no token limits"),
                 }
             }
+            // payees: each listed one must be allowed, and an address nobody listed must not be
+            let probe = Address::from_slice(&alloy::primitives::keccak256(b"agent-keys: not a payee")[12..]);
+            for (token, ..) in &params.tokens {
+                let list = params.payees.iter().find(|p| p.0 == *token).map(|p| p.1.as_slice()).unwrap_or(&[]);
+                let Ok(open) = view.payeeAllowed(self.account, id32, *token, probe).call().await else {
+                    if !list.is_empty() {
+                        println!("DIFF payees          {token}: this policy version has no payee lists — anyone can be paid");
+                    }
+                    continue;
+                };
+                if list.is_empty() {
+                    println!(
+                        "{}payees          {token} chain {} / config anyone",
+                        mark(open),
+                        if open { "anyone" } else { "a list" }
+                    );
+                }
+                for payee in list {
+                    let listed = view.payeeAllowed(self.account, id32, *token, *payee).call().await?;
+                    println!(
+                        "{}payee           {token} -> {payee}{}",
+                        mark(listed && !open),
+                        match (listed, open) {
+                            (_, true) => "  — in the config, but the chain allows anyone",
+                            (false, _) => "  — in the config, NOT a payee on chain",
+                            _ => "",
+                        }
+                    );
+                }
+            }
         }
         println!("(entries allowed on chain but absent from the config are not listed: the chain keeps no list of them)");
         Ok(())
@@ -794,6 +843,7 @@ impl Session {
     /// Refuse a mandate whose allow-list names something the agent must never
     /// be able to call, before any signature (`forbidden_target`).
     fn check_mandate_targets(&self) -> Result<()> {
+        self.cfg.check_payees_stated()?;
         let params = self.cfg.policy_params(&self.token_domains)?;
         for (target, selector) in params.targets.iter().zip(&params.selectors) {
             if let Some(why) = forbidden_target(&self.dep, self.account, *target, selector.0) {
