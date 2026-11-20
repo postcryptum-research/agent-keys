@@ -308,6 +308,19 @@ token operation under a limit (tx
 `0x92f057bed01083b051cbd779aebbb09dd82448332722a12803c0ec6840f51c3a`). That is
 one bundler; others were not tried.
 
+The main account (`0xEdB645B14e2f952C5784e34949b58F0826fBc9E9`) followed the
+same day, one YubiKey signature each, sponsored and delivered by the
+bundler: its everyday permission `0x74727334` (tx
+`0x51b4a84f734b46f6995a534d71ab022f943ab8f45cc7bcb03ad5967c20581959`, block
+61371991, 432,803 gas) and its x402 permission `0x78347031` (tx
+`0x5a1684804722fd7e15258b7e3007f3fa8dc1c55392466880595e6b4a06c3d9ec`, block
+61372068, 430,059 gas). `permission show` for both: policy module
+`0x2E6F…3D95`, every field `ok`, and for the x402 one `payees` anyone on
+chain and in the config. The TROPIC01 agent then ran on the new policy
+through the bundler, sponsored (counter 71 → 72, tx
+`0x0ceb42d75ff204e55ea7eb22e9b512e1c85d2707915e3e0cf78796d2f04c1ea5`). No
+live permission of the test accounts is left on an earlier policy.
+
 ## Security notes
 
 - **What the device protects:** the private key never leaves the applet;
