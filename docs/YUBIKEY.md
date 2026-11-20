@@ -276,6 +276,38 @@ installs a fresh mandate). The account's window-demo permission
 `0x77696e31` was left alone: its window closed on 2026-10-20, so it
 authorises nothing on either policy.
 
+### Onto the AgentPolicy with payee lists (2026-11-20, issue #81)
+
+After #71 deployed the AgentPolicy with per-token payee lists
+(`0x2E6F47B2F3d0F3E6071eCdBc0b445a2B26d23D95`; the previous instance stays
+as `agentPolicyV7`), the enclave test account's permission `0x73653032` moved
+onto it with one signature by the root key:
+`permission rotate --old-id 0x73653032 --sponsored` — tx
+`0x2b786fb475ecb5902c2d1509a92b576d78e5d5c93b346e37539711e500371b84`
+(block 61355254, 449,578 gas, paymaster-sponsored, own `handleOps`).
+`permission show` afterwards: policy module `0x2E6F…3D95`, every field `ok`,
+`payees` anyone on chain and in the config. The two config changes that go
+with a rotation (the deployments file and the mandate's x402 entries) were on
+master already.
+
+The enclave agent ran on it twice: `demo --sponsored` by our own delivery
+(counter 43 → 44, tx
+`0x163e2c25bbaba0177a02e3774edc3670821e249cee83f7f76e6e9382efe82f7c`), and
+`demo --bundler` through a public bundler with the account paying (counter
+44 → 45, tx
+`0xc3a532c3d798fb9123477a5b19139401ed2d47685b348d5cd3224dd1661ef606`).
+
+This policy keeps a per-operation token sum in transient storage during
+validation, and a bundler's validation rules had not met that before. A
+throwaway copy of the same runtime code
+(`0xfae8704B823A56dE211268B40aE24af69693f7c2`) under a throwaway account
+answered it before the rotation: the public bundler accepted and included an
+agent operation without a token call (tx
+`0xf51bcb9421aa39300f3065f7106d84cf94e4f116f993581b23edd9fca705515b`) and a
+token operation under a limit (tx
+`0x92f057bed01083b051cbd779aebbb09dd82448332722a12803c0ec6840f51c3a`). That is
+one bundler; others were not tried.
+
 ## Security notes
 
 - **What the device protects:** the private key never leaves the applet;
