@@ -15,6 +15,8 @@ use p256::ecdsa::signature::hazmat::PrehashVerifier;
 use p256::ecdsa::VerifyingKey;
 use p256::{FieldBytes, Sec1Point};
 
+/// The shape of a Secure Enclave key file (plain Rust; used by `secure_enclave`).
+pub mod enclave_blob;
 #[cfg(feature = "software")]
 pub mod software;
 #[cfg(feature = "tpm")]
