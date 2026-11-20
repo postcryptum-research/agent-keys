@@ -18,7 +18,7 @@ budget, one past it), with a share of damaged ones.
 | `testFuzz_model_decisionsAndCounters` | a second, plain statement of the rules (the model in the test) and the policy decide every operation alike, 40 in a row per seed, and count alike; no counter passes its limit |
 | `testFuzz_model_arbitraryCallDataIsRefused` | bytes that are no `execute` call are never let through |
 | `testFuzz_model_arbitraryExecuteBodyStaysWithinLimits` | an `execute` with arbitrary bytes behind it moves no counter past one operation's limits |
-| `testFuzz_differential_sourceAgainstTheDeployedInstance` | the policy in the source and the runtime code deployed to Base Sepolia on 2026-11-20 agree on every decision, every returned validation word and every view, 40 operations per seed, across uninstall and reinstall; here the operations also go through a Safe, MultiSend batches and x402 registrations |
+| `testFuzz_differential_sourceAgainstTheDeployedInstance` | the policy in the source and the runtime code deployed to Base Sepolia on 2026-11-20 agree on every decision, every returned validation word and every view, 40 operations per seed, across uninstall and reinstall; here the operations also go through a Safe, MultiSend batches and x402 registrations. Between operations the account asks for a registered authorization back (`x402Reclaim`), as registered or with one field changed, after time has moved or the token has come to say the nonce was used: both answer alike, and as the rule says on its own (only what is registered, past its `validBefore` and not settled comes back, once, and the token's counter falls by exactly its value) |
 | `testFuzz_differential_mandatesFromTheSeed` | both install or both refuse a mandate built from the seed (it draws from everything install must refuse), and what is then readable of it is the same |
 | `testFuzz_differential_arbitraryCallData`, `…arbitraryInstallData` | the same answer from both for arbitrary bytes |
 
@@ -32,16 +32,18 @@ and the differential tests then guard the next change.
 ```sh
 cd contracts
 forge test --evm-version osaka --match-contract PolicyFuzz                      # 256 runs each, seconds
-FOUNDRY_FUZZ_RUNS=10000 forge test --evm-version osaka --match-contract PolicyFuzz   # about five minutes
+FOUNDRY_FUZZ_RUNS=10000 forge test --evm-version osaka --match-contract PolicyFuzz   # about six minutes
 ```
 
-**That they bite.** Thirteen rules were broken in the source one at a time
+**That they bite.** Seventeen rules were broken in the source one at a time
 (the payee's upper bits not checked; the per-operation sum replaced by a
 per-call check; a token budget and the value cap each off by one; the zero
 selector allowed with a body; gas not charged to the budget; the payee list
 not held for x402; the epoch not moved at uninstall; a Safe gas refund
 allowed; and at install: a function outside the four on a limited token,
-a payee twice, Permit2, a token twice). Every one is found at 256 runs.
+a payee twice, Permit2, a token twice; and in `x402Reclaim`: before
+`validBefore`, of a settled authorization, returning nothing, leaving the
+record). Every one is found at 256 runs.
 Two were missed by the first form of the generator (a budget off by one,
 the payee list for x402), which is why it now aims at a budget's last unit
 and gives the listed token an x402 domain.
@@ -51,7 +53,8 @@ and gives the listed token an x402 domain.
 - The model covers the account's own calls and batches; Safe, MultiSend and
   x402 are held by the differential tests only, that is, against the
   deployed instance and not against an independent statement of the rules.
-- `x402Reclaim` is not exercised (it asks the token for the nonce's state).
+- `x402Reclaim` runs against a stand-in for the token that answers the one
+  question it asks (was the nonce used); no real token is involved.
 - **Contracts that are not ours are taken to be correct:** Kernel, the
   EntryPoint, Safe, MultiSend and Solady's P-256 verifier. The fuzzing
   holds this project's own code to its rules and does not look for errors

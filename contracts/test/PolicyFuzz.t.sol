@@ -36,8 +36,30 @@ contract FuzzAccount {
         if (r == 1) revert Refused();
     }
 
+    function reclaim(
+        AgentPolicy policy,
+        bytes32 id,
+        address token,
+        address to,
+        uint256 value,
+        uint256 validBefore,
+        bytes32 nonce
+    ) external {
+        policy.x402Reclaim(id, token, to, value, 0, validBefore, nonce);
+    }
+
     function vouches(AgentPolicy policy, bytes32 id, bytes32 digest) external view returns (uint256) {
         return policy.checkSignaturePolicy(id, address(0), digest, "");
+    }
+}
+
+/// What `x402Reclaim` asks of a token: whether an authorization's nonce was
+/// used. The test says which were.
+contract SettledNonces {
+    mapping(address => mapping(bytes32 => bool)) public authorizationState;
+
+    function settle(address authorizer, bytes32 nonce) external {
+        authorizationState[authorizer][nonce] = true;
     }
 }
 
@@ -402,8 +424,25 @@ contract PolicyFuzzDifferential is PolicyFuzzBase {
 
     bytes32[] internal digests;
 
+    /// Every authorization an operation tried to register, as the source's
+    /// policy would know it.
+    struct Authorization {
+        address token;
+        address from;
+        address to;
+        uint256 value;
+        uint256 validBefore;
+        bytes32 nonce;
+        bytes32 digest;
+    }
+
+    Authorization[] internal tried;
+
     function setUp() public {
         account = new FuzzAccount();
+        bytes memory nonces = address(new SettledNonces()).code;
+        vm.etch(TOKEN_A, nonces);
+        vm.etch(TOKEN_B, nonces);
         fresh = new AgentPolicy(NONCE_ASSERT);
         deployed = AgentPolicy(address(0xDE9107ED));
         vm.etch(address(deployed), vm.parseBytes(vm.readFile("test/vectors/agent-policy-84532-0x2E6F47B2.hex")));
@@ -422,7 +461,7 @@ contract PolicyFuzzDifferential is PolicyFuzzBase {
         address from = _below(8) == 0 ? P3 : address(account);
         address to = address(uint160(_payee()));
         uint256 value = _amount(B_MAX, token);
-        uint256 validBefore = _below(6) == 0 ? type(uint256).max : 1_900_000_000 + _below(1000);
+        uint256 validBefore = _below(12) == 0 ? type(uint256).max : 1_000_000 + 1000 * _below(4);
         bytes32 nonce = bytes32(_below(6));
         rng = saved;
         leg.target = address(policy);
@@ -431,6 +470,65 @@ contract PolicyFuzzDifferential is PolicyFuzzBase {
             abi.encode(policy.TRANSFER_WITH_AUTHORIZATION_TYPEHASH(), from, to, value, uint256(0), validBefore, nonce)
         );
         digest = keccak256(abi.encodePacked(hex"1901", token == TOKEN_A ? A_DOMAIN : B_DOMAIN, structHash));
+        if (policy == fresh) tried.push(Authorization(token, from, to, value, validBefore, nonce, digest));
+    }
+
+    function _reclaims(AgentPolicy policy, Authorization memory a) internal returns (bool) {
+        try account.reclaim(policy, ID, a.token, a.to, a.value, a.validBefore, a.nonce) {
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    /// The account asks for one of the authorizations back, as it was
+    /// registered or with one field changed; before that, time may move on
+    /// and the token may come to say the nonce was used. Both policies must
+    /// answer alike, and as the rule says on its own: only what is
+    /// registered, past its `validBefore` and not settled comes back, once,
+    /// and the token's spent counter falls by exactly its value.
+    function _reclaimStep(uint256 stepSeed) internal {
+        if (tried.length == 0) return;
+        rng = stepSeed;
+        Authorization memory a = tried[_below(tried.length)];
+        if (_below(3) == 0) vm.warp(block.timestamp + 1000 * _below(1200));
+        if (_below(6) == 0) SettledNonces(a.token).settle(address(account), a.nonce);
+        uint256 change = _below(12);
+        unchecked {
+            if (change == 0) a.value += 1;
+        }
+        if (change == 1) a.to = P3;
+        if (change == 2) a.token = a.token == TOKEN_A ? TOKEN_B : TOKEN_A;
+        if (change == 3) a.nonce = bytes32(uint256(a.nonce) + 100);
+
+        // the rule on its own; the digest is of what is asked for, from the account
+        uint256 registered = fresh.x402Pending(address(account), ID, _digestOf(a)).value;
+        bool expected = registered != 0 && block.timestamp >= a.validBefore
+            && !SettledNonces(a.token).authorizationState(address(account), a.nonce);
+        uint256 before = fresh.tokenLimit(address(account), ID, a.token).spent;
+
+        bool ok1 = _reclaims(fresh, a);
+        bool ok2 = _reclaims(deployed, a);
+        assertEq(ok1, ok2, "one gives back what the other keeps");
+        assertEq(ok1, expected, "reclaim against the rule");
+        if (ok1) {
+            assertEq(registered, a.value, "registered with another value");
+            assertEq(fresh.tokenLimit(address(account), ID, a.token).spent, before - a.value, "the budget got back another amount");
+            assertFalse(_reclaims(fresh, a), "the same authorization came back twice");
+            assertFalse(_reclaims(deployed, a));
+            reclaimed++;
+        }
+        _sameViews();
+        _sameAuthorizations();
+    }
+
+    uint256 internal reclaimed;
+
+    function _digestOf(Authorization memory a) internal view returns (bytes32) {
+        bytes32 structHash = keccak256(
+            abi.encode(fresh.TRANSFER_WITH_AUTHORIZATION_TYPEHASH(), address(account), a.to, a.value, uint256(0), a.validBefore, a.nonce)
+        );
+        return keccak256(abi.encodePacked(hex"1901", a.token == TOKEN_A ? A_DOMAIN : B_DOMAIN, structHash));
     }
 
     function _safeExec(address to, uint256 value, bytes memory inner, uint256 operation, uint256 gasPrice)
@@ -568,6 +666,7 @@ contract PolicyFuzzDifferential is PolicyFuzzBase {
                 account.install(fresh, _installData(fresh));
                 account.install(deployed, _installData(deployed));
             }
+            if (opSeed % 5 == 1) _reclaimStep(opSeed);
             _whatIsLeft();
             PackedUserOperation memory forFresh = _operation(fresh, opSeed);
             PackedUserOperation memory forDeployed = _operation(deployed, opSeed);
@@ -580,6 +679,7 @@ contract PolicyFuzzDifferential is PolicyFuzzBase {
         }
         _sameAuthorizations();
         emit log_named_uint("accepted of 40", accepted);
+        emit log_named_uint("reclaimed", reclaimed);
     }
 
     /// Arbitrary bytes as the whole call: the same answer from both.
