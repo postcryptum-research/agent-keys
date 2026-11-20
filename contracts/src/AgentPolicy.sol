@@ -258,6 +258,12 @@ contract AgentPolicy is IPolicy {
                 TokenLimit(tokens[i].maxPerOp, tokens[i].budget, 0, true, false, tokens[i].domainSeparator);
         }
         _installPayees(m, data[32:]);
+        // A token with a payee list is callable through the four metered
+        // functions only (`_chargeToken`): another entry on it could never
+        // run, so a mandate that carries one does not say what it does.
+        for (uint256 i; i < targets.length; i++) {
+            if (m.tokens[targets[i]].payeesOnly && !_isMetered(selectors[i])) revert InvalidConfig();
+        }
         c.validUntil = validUntil;
         c.validAfter = validAfter;
         c.maxValuePerOp = maxValuePerOp;
@@ -265,6 +271,11 @@ contract AgentPolicy is IPolicy {
         c.spent = 0;
         usedIds[msg.sender]++;
         emit AgentPolicySet(msg.sender, id, validUntil, maxValuePerOp, budget);
+    }
+
+    function _isMetered(bytes4 selector) internal pure returns (bool) {
+        return selector == ERC20_TRANSFER || selector == ERC20_APPROVE || selector == ERC20_INCREASE_ALLOWANCE
+            || selector == ERC20_TRANSFER_FROM;
     }
 
     /// @dev The optional eighth parameter. Each entry needs a capped token

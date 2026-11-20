@@ -1426,11 +1426,8 @@ contract AgentPermissionTest is Test {
     address internal constant STRANGER = address(0xDEAD);
 
     function _payeeTargets() internal view returns (address[] memory targets, bytes4[] memory selectors) {
-        targets = new address[](7);
-        selectors = new bytes4[](7);
-        // allow-listed by a careless owner: ways to move the token that no list understands
-        (targets[5], selectors[5]) = (address(token), MockToken.mint.selector);
-        (targets[6], selectors[6]) = (address(token), bytes4(0));
+        targets = new address[](5);
+        selectors = new bytes4[](5);
         (targets[0], selectors[0]) = (address(policy), AgentPolicy.x402Authorize.selector);
         (targets[1], selectors[1]) = (address(usdc), MockToken.transfer.selector);
         (targets[2], selectors[2]) = (address(token), MockToken.transfer.selector);
@@ -1532,14 +1529,34 @@ contract AgentPermissionTest is Test {
 
     /// A payee list is a promise about where the token goes. Any other
     /// function allow-listed on that token would be a way around it.
-    function test_payees_otherFunctionsOfABoundTokenAreRefused() public {
+    /// A careless owner allow-lists a way to move a bound token that no
+    /// list understands: such a mandate is refused whole at install, since
+    /// the entry could never run. Without a list on that token it installs.
+    function test_payees_otherFunctionsOfABoundTokenAreRefusedAtInstall() public {
+        usdc = new MockUSDC();
+        bytes4[2] memory careless = [MockToken.mint.selector, bytes4(0)];
+        for (uint256 k; k < careless.length; k++) {
+            (address[] memory targets, bytes4[] memory selectors) = _payeeTargets();
+            (targets[3], selectors[3]) = (address(token), careless[k]);
+            AgentPolicy.TokenCap[] memory caps = _payeeCaps();
+            AgentPolicy.TokenPayees[] memory lists = new AgentPolicy.TokenPayees[](1);
+            lists[0] = _list(address(token), PAYEE, address(0));
+            bytes32 id = bytes32((uint256(0x30) + k) << 224);
+            bytes memory bound =
+                abi.encodePacked(id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0), lists));
+            vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+            policy.onInstall(bound);
+            // the same entry next to a list on the other token only
+            lists[0] = _list(address(usdc), PAYEE, address(0));
+            policy.onInstall(
+                abi.encodePacked(id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0), lists))
+            );
+            assertTrue(policy.isAllowed(address(this), id, address(token), careless[k]));
+        }
+        // and on an installed mandate nothing but the four functions reaches a bound token
         _withPayees();
-        _expectRefused(_payeeOp(address(token), abi.encodeCall(MockToken.mint, (STRANGER, 1))));
         _expectRefused(_payeeOp(address(token), abi.encodeCall(MockToken.mint, (PAYEE, 1))));
         _expectRefused(_payeeOp(address(token), ""));
-        // usdc is bound too; the first permission's token is not, and its other entries work as before
-        _send(_agentOp(address(counter), 0, abi.encodeWithSelector(Counter.increment.selector)));
-        assertEq(counter.count(), 1);
     }
 
     function test_payees_batchLegsAreBound() public {

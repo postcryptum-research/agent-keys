@@ -347,13 +347,27 @@ impl AgentConfig {
     /// Before a mandate is installed: every token in it must say who may be
     /// paid. A cap without that reads as a bound and is not one.
     pub fn check_payees_stated(&self) -> Result<()> {
-        match self.policy.tokens.iter().find(|t| t.payees.is_none()) {
-            Some(t) => anyhow::bail!(
+        if let Some(t) = self.policy.tokens.iter().find(|t| t.payees.is_none()) {
+            anyhow::bail!(
                 "tokens: {} has limits but does not say who may be paid; add \"payees\": [\"0x…\"] (only these addresses) or \"payees\": \"anyone\" (the agent picks) to its entry",
                 t.token
-            ),
-            None => Ok(()),
+            );
         }
+        // transfer, approve, increaseAllowance, transferFrom: what a payee list understands
+        const METERED: [&str; 4] = ["a9059cbb", "095ea7b3", "39509351", "23b872dd"];
+        for t in self.policy.tokens.iter().filter(|t| matches!(t.payees, Some(Payees::Only(_)))) {
+            if let Some(a) = self.policy.allow.iter().find(|a| {
+                a.target == t.token && !METERED.contains(&a.selector.trim_start_matches("0x").to_lowercase().as_str())
+            }) {
+                anyhow::bail!(
+                    "allow: {} {} can never run: {} has a payee list, and such a token is callable only through transfer, transferFrom, approve and increaseAllowance. Remove the entry, or state \"payees\": \"anyone\"",
+                    a.target,
+                    a.selector,
+                    t.token
+                );
+            }
+        }
+        Ok(())
     }
 }
 
@@ -528,4 +542,33 @@ pub fn open_yubikey(
         });
     }
     Ok(signer)
+}
+
+#[cfg(test)]
+mod payee_tests {
+    use super::*;
+
+    /// The tracked x402 config with its token moved to a payee list.
+    fn config(extra_allow: Option<&str>) -> AgentConfig {
+        let text = include_str!("../../../agent.x402.base-sepolia.json");
+        let mut v: serde_json::Value = serde_json::from_str(text).unwrap();
+        let token = v["policy"]["tokens"][0]["token"].clone();
+        v["policy"]["tokens"][0]["payees"] = serde_json::json!(["0x00000000000000000000000000000000000000d1"]);
+        let allow = v["policy"]["allow"].as_array_mut().unwrap();
+        allow.push(serde_json::json!({"target": token, "selector": "0xA9059CBB"}));
+        if let Some(selector) = extra_allow {
+            allow.push(serde_json::json!({"target": token, "selector": selector}));
+        }
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn a_bound_token_takes_only_the_four_functions() {
+        config(None).check_payees_stated().unwrap();
+        config(Some("0x23b872dd")).check_payees_stated().unwrap();
+        for dead in ["0x40c10f19", "0x00000000"] {
+            let refused = config(Some(dead)).check_payees_stated().unwrap_err().to_string();
+            assert!(refused.contains("can never run"), "{refused}");
+        }
+    }
 }
