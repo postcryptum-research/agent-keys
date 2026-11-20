@@ -294,8 +294,10 @@ Lessons that cost real debugging time:
     (no key, 20 requests/minute) accepted an agent operation and included
     it. That shows delivery, not conformance to ERC-7562: this endpoint was
     later found to enforce none of the validation rules on Base Sepolia, and
-    a rule-enforcing bundler refuses `AgentPolicy`'s storage layout
-    ([#83](https://github.com/postcryptum-research/agent-keys/issues/83)). The operation: tx
+    a rule-enforcing bundler refuses the storage layout of the `AgentPolicy`
+    deployed today ([#83](https://github.com/postcryptum-research/agent-keys/issues/83); the source has the layout that passes, with the
+    account as the innermost key of every mapping, not yet deployed). The
+    operation: tx
     `0xb42e30ae72ac8d676c33198b65ae85e8ef06936d15b28cda5832ed4cc0527675`,
     paid from the account's EntryPoint deposit; the gas wallet took no part.
     A *sponsored* operation went through the same way (tx
