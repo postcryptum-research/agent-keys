@@ -700,6 +700,11 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
         // entry through unmetered, so it is refused here for either.
         const METERED: [[u8; 4]; 4] = [[0xa9, 0x05, 0x9c, 0xbb], [0x09, 0x5e, 0xa7, 0xb3], [0x39, 0x50, 0x93, 0x51], [0x23, 0xb8, 0x72, 0xdd]];
         for (t, sel) in targets.iter().zip(&selectors) {
+            // Permit2 at its usual address (the constant AgentPolicy carries): its own
+            // `approve` names who may pull a token, and no policy reads that call
+            if *t == alloy_primitives::address!("000000000022D473030F116dDEE9F6B43aC78BA3") {
+                return Err("this mandate lets the agent call Permit2, through which a token's allowance can be handed to any address, past its limits and payee list; refused".into());
+            }
             if tokens.iter().any(|token| token.0 == *t) && !METERED.contains(&sel.0) {
                 return Err(format!(
                     "this mandate limits the token {} and also allows {} on it; a limited token may only be called through transfer, transferFrom, approve and increaseAllowance, anything else would move it past its limits; refused",
@@ -1208,6 +1213,15 @@ mod tests {
             let r = install(&with([0xa9, 0x05, 0x9c, 0xbb]), &facts());
             assert_eq!(r.verdict, Verdict::Sign, "{}", r.text());
         }
+        // Permit2 as a target, whatever the function
+        let permit2 = kernel::PolicyParams {
+            targets: vec![COUNTER, alloy_primitives::address!("000000000022D473030F116dDEE9F6B43aC78BA3")],
+            selectors: vec![FixedBytes::from(SELECTOR_INCREMENT), FixedBytes::from([0x87, 0x51, 0x7c, 0x45])],
+            payees: vec![],
+            ..clone_params(&listed)
+        };
+        let r = install(&permit2, &facts());
+        assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("Permit2")), "{}", r.text());
         let mut o = op(kernel::uninstall_permission_calldata(perm));
         o.gas_fees = kernel::pack_gas(1, 1);
         let r = open(&o);

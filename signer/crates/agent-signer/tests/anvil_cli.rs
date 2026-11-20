@@ -454,6 +454,19 @@ fn agent_lifecycle() {
     let refused = chain.fails(&["permission", "add", "--agent", &selfish]);
     assert!(refused.contains("never a valid target for the agent"), "{refused}");
 
+    // Permit2 is never a valid target either: its own `approve` would hand a
+    // token's allowance to any address, a call no policy reads
+    let permit2 = chain.config(
+        "permit2.json",
+        &Cfg {
+            owner: &owner, agent: &agent, permission: "0x70726d32",
+            allow: vec![("0x000000000022d473030f116ddee9f6b43ac78ba3".to_string(), "0x87517c45")],
+            account: Some(account.clone()), recovery: None, valid_after: 0, valid_until: until, tokens: Value::Null,
+        },
+    );
+    let refused = chain.fails(&["permission", "add", "--agent", &permit2]);
+    assert!(refused.contains("never a valid target for the agent") && refused.contains("Permit2"), "{refused}");
+
     // payee lists on a policy that predates them: that policy would install
     // the mandate and ignore the lists, so the CLI refuses before signing
     // (the harness runs the deployed code; see owner-core `PAYEE_POLICIES`)

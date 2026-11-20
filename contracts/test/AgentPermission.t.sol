@@ -1099,6 +1099,16 @@ contract AgentPermissionTest is Test {
         vm.expectRevert(abi.encodeWithSelector(AgentPolicy.ForbiddenTarget.selector, address(entryPoint), withdrawTo));
         policy.onInstall(abi.encodePacked(id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0))));
 
+        // Permit2: its own `approve` would hand a token's allowance to any address, unread
+        address permit2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
+        bytes4[2] memory onPermit2 = [bytes4(keccak256("approve(address,address,uint160,uint48)")), bytes4(0x12345678)];
+        for (uint256 k; k < onPermit2.length; k++) {
+            (targets[0], selectors[0]) = (permit2, onPermit2[k]);
+            vm.prank(acct);
+            vm.expectRevert(abi.encodeWithSelector(AgentPolicy.ForbiddenTarget.selector, permit2, onPermit2[k]));
+            policy.onInstall(abi.encodePacked(id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0))));
+        }
+
         // the policy itself, outside its x402 entry points
         (targets[0], selectors[0]) = (address(policy), AgentPolicy.onInstall.selector);
         vm.prank(acct);

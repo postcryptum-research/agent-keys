@@ -49,10 +49,10 @@ interface IKernelEntryPoint {
 ///    several permissions for the same agent key, each with its own window,
 ///    budget and allow-list, make a schedule ("weekdays: up to X on these
 ///    contracts; the 1st: payroll up to Y");
-///  - the account itself, its EntryPoint and this policy (except its two
-///    x402 entry points) are never valid targets: all three are refused at
-///    install, the account and the policy again at validation (the
-///    EntryPoint is not re-checked there, see `_judge`). No mandate, however
+///  - the account itself, its EntryPoint, this policy (except its two
+///    x402 entry points) and Permit2 are never valid targets: all are
+///    refused at install, and all but the EntryPoint again at validation
+///    (it is not re-checked there, see `_judge`). No mandate, however
 ///    written, lets the agent widen its own permission, replace the root key
 ///    or drain the deposit.
 ///
@@ -603,13 +603,25 @@ contract AgentPolicy is IPolicy {
         return (true, value);
     }
 
+    /// @dev Uniswap's Permit2 where it is deployed by the usual CREATE2
+    /// factory: Ethereum, Base and their testnets among others. Not every
+    /// chain: on zkSync-style chains it sits elsewhere. Check it before this
+    /// policy is deployed to a chain it has not been on.
+    address internal constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
+
     /// @dev Targets no agent may ever have, whatever the allow-list says: the
     /// account itself (Kernel's own `grantAccess`, `installValidations`,
     /// `changeRootValidator`, `execute`: the mandate would widen or replace
     /// itself) and this policy, except the two x402 entry points the account
     /// calls on purpose. `msg.sender` is the account in both callers.
+    /// And Permit2: it holds one allowance per token and its own `approve`
+    /// names who may pull it, a call this policy does not read, so through
+    /// it a token would leave past its cap and its payee list. Refused until
+    /// the policy meters Permit2's calls. This closes the one well-known
+    /// contract of that shape, not the shape: any allow-listed contract
+    /// that holds an allowance from the account can move it.
     function _targetAllowed(address target, bytes4 selector) internal view returns (bool) {
-        if (target == msg.sender) return false;
+        if (target == msg.sender || target == PERMIT2) return false;
         if (target == address(this)) {
             return selector == this.x402Authorize.selector || selector == this.x402Reclaim.selector;
         }

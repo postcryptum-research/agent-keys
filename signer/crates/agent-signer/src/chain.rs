@@ -23,9 +23,14 @@ use crate::kernel::{self, PermissionId};
 
 /// Why an allow-list entry can never be installed: the agent would reach the
 /// account's own administration, its EntryPoint deposit, the project's
-/// modules or the policy itself. `AgentPolicy` refuses the first three
-/// classes on chain as well (`ForbiddenTarget`); the CLI refuses them all
+/// modules, the policy itself or Permit2. `AgentPolicy` refuses the account,
+/// the EntryPoint, the policy and Permit2 on chain as well (`ForbiddenTarget`); the CLI refuses them all
 /// before anything is signed, with the reason.
+/// Uniswap's Permit2 at its usual CREATE2 address (Ethereum, Base and their
+/// testnets among others; not zkSync-style chains). The same constant as in
+/// `AgentPolicy`: check it before supporting a new chain.
+pub const PERMIT2: Address = alloy::primitives::address!("000000000022D473030F116dDEE9F6B43aC78BA3");
+
 pub fn forbidden_target(dep: &Deployments, account: Address, target: Address, selector: [u8; 4]) -> Option<String> {
     use crate::abi::IAgentPolicyX402::{x402AuthorizeCall, x402ReclaimCall};
     let modules: [(Option<Address>, &str); 7] = [
@@ -42,6 +47,9 @@ pub fn forbidden_target(dep: &Deployments, account: Address, target: Address, se
     }
     if target == dep.entry_point {
         return Some("the EntryPoint: the agent could withdraw the account's deposit".into());
+    }
+    if target == PERMIT2 {
+        return Some("Permit2: through its own `approve` the agent could hand a token's allowance to any address, past the token's limits and payee list; the policy does not meter Permit2 yet".into());
     }
     if target == dep.agent_policy {
         let x402 = selector == x402AuthorizeCall::SELECTOR || selector == x402ReclaimCall::SELECTOR;
