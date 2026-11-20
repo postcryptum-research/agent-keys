@@ -53,7 +53,7 @@ review recomputes the userOpHash on the phone and binds it to the request
 commitment, so what the owner sees is what is signed. No unreviewed code path
 remains.
 
-## 4. PR #71 — per-token payee lists — 2026-11-19 — **NOT MERGED, NOT DEPLOYED**
+## 4. PR #71 — per-token payee lists — 2026-11-19 — merged and deployed 2026-11-20
 
 **Scope:** branch `token-payees` (commits `a1bbbed`, `987e2c8`, `f22a5a7`,
 `feb9d87`) — per-token payee lists in AgentPolicy and their owner-core and signer
@@ -70,8 +70,9 @@ plumbing.
 - One **low hardening**: refuse an install for an account that does not name its
   EntryPoint. Implemented (`feb9d87`) and re-checked.
 
-**Verdict:** pass, pending merge and the author's own colleague review. Nothing in
-this PR is merged or deployed.
+**Verdict:** pass. Merged after the colleague's review and deployed to Base Sepolia
+on 2026-11-20 as `0x2E6F47B2F3d0F3E6071eCdBc0b445a2B26d23D95`, together with the later
+commits named below.
 
 Later commits on that branch, and a full review of `AgentPolicy.sol` at `6fe93a7`
 with its two low-severity findings and their fixes, are recorded in issue #76.

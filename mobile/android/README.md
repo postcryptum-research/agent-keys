@@ -476,7 +476,7 @@ Chain: 31337
 The laptop says: "owner operation (root)" (from the laptop — unverified)
 ## Call 1 of 2
 Install agent permission: 0x74657332
-Policy module: 0xdd544A6F0220778Fff16F51B468656e73E32ae85 — AgentPolicy (verified in this build)
+Policy module: 0x2E6F47B2F3d0F3E6071eCdBc0b445a2B26d23D95 — AgentPolicy (verified in this build)
 Allow: 0xD2Adc331B867435b82Ceba1D4f7f715eeF9FdbC1 — demo counter (verified in this build) · increment (0xd09de08a)
 Max value per operation: 0.000000000000001 ETH
 Budget: 1 ETH

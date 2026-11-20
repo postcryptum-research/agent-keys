@@ -29,9 +29,10 @@ compromise. What it does guarantee:
    automatically.
 2. **The damage bound is on-chain only.** During a compromise the attacker
    *is* the agent; `AgentPolicy` — allow-list, per-operation value cap,
-   budget, per-token amount limits, time window — is the limit. It bounds
-   amounts and targets, not the recipient or spender of an allow-listed
-   token call. Gaps in it are the critical class of bugs.
+   budget, per-token amount limits and payee lists, time window — is the
+   limit. It bounds amounts and targets, and the recipient or spender of a
+   token call only where the mandate gives that token a payee list. Gaps in
+   it are the critical class of bugs.
 3. **The owner key is out of the agent's reach.** From 3–4, an owner key
    the agent's user can use would give an attacker root over the account,
    with no bound at all. Acceptable placements, strongest first:

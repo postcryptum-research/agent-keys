@@ -29,12 +29,13 @@ validation path and a real paymaster.
 | 100 kB | 956,236 | 1,026,826 | 1,064,773 | 1,294,563 |
 
 The agent column is the 2026-11-20 measurement (`gas.json`) of the policy
-in the source, which is one step ahead of the deployed one: it knows payee
+deployed that day. Over the instance before it, it knows payee
 lists ([#66](https://github.com/postcryptum-research/agent-keys/issues/66)),
-288 gas per operation here, and holds a token's per-operation cap for the
+288 gas per operation here, holds a token's per-operation cap for the
 whole operation and not per call
 ([#76](https://github.com/postcryptum-research/agent-keys/issues/76)), 402
-gas, and refuses Permit2 as a target, 49 gas (the deployed policy measured 81,821 at 10 B on 2026-11-10). The forbidden-target guard costs 141 gas per
+gas, and refuses Permit2 as a target, 49 gas (the earlier instance measured
+81,821 at 10 B on 2026-11-10). The forbidden-target guard costs 141 gas per
 operation.
 
 Execution gas is what the call consumes as seen from the caller. A

@@ -467,9 +467,10 @@ fn agent_lifecycle() {
     let refused = chain.fails(&["permission", "add", "--agent", &permit2]);
     assert!(refused.contains("never a valid target for the agent") && refused.contains("Permit2"), "{refused}");
 
-    // payee lists on a policy that predates them: that policy would install
-    // the mandate and ignore the lists, so the CLI refuses before signing
-    // (the harness runs the deployed code; see owner-core `PAYEE_POLICIES`)
+    // a payee list: the mandate installs on the deployed policy (the harness runs Base
+    // Sepolia's code) and the chain reports the list as the config states it. That a
+    // transfer outside the list is refused is the contract tests' part: the "token"
+    // here is the demo counter, which has no transfer to run
     let listed = chain.config(
         "listed.json",
         &Cfg {
@@ -478,10 +479,10 @@ fn agent_lifecycle() {
             tokens: json!([{"token": counter, "maxPerOp": "1", "budget": "2", "payees": ["0x00000000000000000000000000000000000000d1"]}]),
         },
     );
-    for cmd in [&["permission", "add", "--agent", listed.as_str()][..], &["permission", "show", "--agent", listed.as_str()][..]] {
-        let refused = chain.fails(cmd);
-        assert!(refused.contains("did not answer `payeeAllowed`"), "{refused}");
-    }
+    chain.ok(&["permission", "add", "--agent", &listed]);
+    let shown = chain.ok(&["permission", "show", "--agent", &listed]);
+    assert!(shown.contains("ok payee") && shown.to_lowercase().contains("00000000000000000000000000000000000000d1"), "{shown}");
+    assert!(!shown.contains("DIFF"), "{shown}");
     // a token with limits and no word on who may be paid: the config loads
     // (status and revoke still work from it), but no mandate is installed
     let silent = chain.config(
