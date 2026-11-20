@@ -1,0 +1,8 @@
+{
+  "name": "erc7562-check",
+  "private": true,
+  "description": "Feeds validation traces to a rule-enforcing bundler's ERC-7562 checker (issue #83)",
+  "type": "module",
+  "scripts": { "check": "node check-traces.mjs" },
+  "dependencies": { "@pimlico/alto": "0.0.21" }
+}
