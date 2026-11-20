@@ -33,9 +33,9 @@ interface IKernelEntryPoint {
 ///  - only `execute` (single call or batch, revert-on-failure); no
 ///    delegatecall;
 ///  - every call on the (target, selector) allow-list; selector `0x00000000`
-///    stands for a plain value transfer (empty calldata — 1 to 3 bytes of
-///    calldata, which the EVM would route to the target's fallback, are
-///    refused);
+///    stands for a plain value transfer and admits empty calldata only
+///    (1 to 3 bytes, or a longer body that starts with four zero bytes,
+///    would run the target's fallback);
 ///  - `value` capped per operation and, with the gas the account pays for
 ///    itself, by a total budget;
 ///  - ERC-20 `transfer` / `transferFrom` / `approve` / `increaseAllowance`
@@ -349,6 +349,7 @@ contract AgentPolicy is IPolicy {
         Config storage c = configs[msg.sender][id];
         if (c.validUntil == 0) return SIG_VALIDATION_FAILED_UINT;
 
+        _beginOperation();
         (bool ok, uint256 value) = _judgeExecute(_mandates[msg.sender][id][c.epoch], userOp.callData);
         if (!ok || value > c.maxValuePerOp) return SIG_VALIDATION_FAILED_UINT;
 
@@ -449,7 +450,8 @@ contract AgentPolicy is IPolicy {
         if (from != msg.sender) return false; // the account checkUserOpPolicy runs for
         TokenLimit storage t = m.tokens[token];
         if (!t.set || t.domainSeparator == bytes32(0)) return false;
-        if (value == 0 || value > t.maxPerOp || validBefore > type(uint48).max) return false;
+        if (value == 0 || validBefore > type(uint48).max) return false;
+        if (_movedThisOperation(token, value) > t.maxPerOp) return false;
         if (t.payeesOnly && !m.payees[token][to]) return false;
         uint256 spent = t.spent + value;
         if (spent > t.budget) return false;
@@ -459,6 +461,43 @@ contract AgentPolicy is IPolicy {
         t.spent = uint128(spent);
         m.x402[digest] = Pending(uint128(value), uint48(validBefore), token);
         return true;
+    }
+
+    /// @dev Transient slot of the per-account operation counter; laid out as
+    /// a mapping keyed by the account (`keccak256(account ‖ slot)`), the
+    /// form ERC-7562 lets a module touch during validation.
+    uint256 internal constant OPERATION_SEQ = uint256(keccak256("agent-keys.AgentPolicy.operationSeq"));
+
+    /// @dev Starts the per-operation token totals afresh. Transient storage
+    /// lives for the whole transaction and a bundle validates many
+    /// operations in one, so the totals are keyed by a counter that moves
+    /// on with every `checkUserOpPolicy` call for the account.
+    function _beginOperation() internal {
+        uint256 seqSlot = uint256(keccak256(abi.encode(msg.sender, OPERATION_SEQ)));
+        assembly ("memory-safe") {
+            tstore(seqSlot, add(tload(seqSlot), 1))
+        }
+    }
+
+    /// @dev Adds `amount` to what this operation has moved of `token` so far
+    /// (transfers, approvals and x402 registrations alike, in every leg) and
+    /// returns the total, for the caller to hold against `maxPerOp`: the cap
+    /// is per operation, as `maxValuePerOp` is for native value.
+    function _movedThisOperation(address token, uint256 amount) internal returns (uint256 total) {
+        uint256 seqSlot = uint256(keccak256(abi.encode(msg.sender, OPERATION_SEQ)));
+        uint256 seq;
+        assembly ("memory-safe") {
+            seq := tload(seqSlot)
+        }
+        uint256 slot = uint256(keccak256(abi.encode(msg.sender, keccak256(abi.encode(seq, token)))));
+        uint256 before;
+        assembly ("memory-safe") {
+            before := tload(slot)
+        }
+        total = before + amount;
+        assembly ("memory-safe") {
+            tstore(slot, total)
+        }
     }
 
     /// @dev `(verificationGasLimit + callGasLimit + preVerificationGas) *
@@ -537,9 +576,11 @@ contract AgentPolicy is IPolicy {
         internal
         returns (bool ok, uint256 moved)
     {
-        // 1–3 bytes run the target's fallback, not a plain transfer.
-        if (data.length > 0 && data.length < 4) return (false, 0);
         bytes4 selector = _selector(data);
+        // The zero selector stands for a plain transfer, which carries no
+        // calldata. 1–3 bytes would run the target's fallback, and so would
+        // a longer body that happens to start with four zero bytes.
+        if (selector == bytes4(0) && data.length != 0) return (false, 0);
         if (!m.allowed[target][selector]) return (false, 0);
         // Install refuses these; refused again here so that no mandate, in
         // any version's storage, can reach the account or the policy itself.
@@ -627,7 +668,7 @@ contract AgentPolicy is IPolicy {
             uint256 payee = uint256(bytes32(data[end - 64:end - 32]));
             if (payee >> 160 != 0 || !m.payees[token][address(uint160(payee))]) return false;
         }
-        if (amount > t.maxPerOp) return false;
+        if (_movedThisOperation(token, amount) > t.maxPerOp) return false;
         uint256 spent = t.spent + amount;
         if (spent > t.budget) return false;
         t.spent = uint128(spent);

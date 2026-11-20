@@ -78,6 +78,20 @@ contract PayeeProbes is AgentPermissionTest {
         assertEq(token.balanceOf(PAYEE), 3 ether);
     }
 
+    /// Audit #76 F-2 through a Safe: the legs of a MultiSend batch add up
+    /// against the token's per-operation cap.
+    function test_probe_safeBatchLegsShareTheTokenCap() public {
+        Safe safe = _probeSafe();
+        bytes memory atCap = _legOf(0, address(token), 0, abi.encodeCall(MockToken.transfer, (PAYEE, TOKEN_MAX)));
+        bytes memory one = _legOf(0, address(token), 0, abi.encodeCall(MockToken.transfer, (PAYEE, 1)));
+        _expectRefused(
+            _viaSafe(safe, _batch(safe, address(multiSend), bytes.concat(atCap, one), Enum.Operation.DelegateCall))
+        );
+        assertEq(token.balanceOf(PAYEE), 0);
+        _send(_viaSafe(safe, _batch(safe, address(multiSend), atCap, Enum.Operation.DelegateCall)));
+        assertEq(token.balanceOf(PAYEE), TOKEN_MAX);
+    }
+
     function _params(bool withLists) internal view returns (bytes memory) {
         address[] memory targets = new address[](2);
         bytes4[] memory selectors = new bytes4[](2);

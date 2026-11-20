@@ -851,6 +851,18 @@ contract AgentPermissionTest is Test {
         _send(_agentOp(address(counter), 0.01 ether, ""));
     }
 
+    /// Audit #76 F-1: the plain-transfer entry admits empty calldata only. A
+    /// body that starts with four zero bytes has the zero selector too, and
+    /// would run the target's fallback with data the agent chose.
+    function test_zeroSelectorWithABodyIsRefused() public {
+        _expectRefused(_agentOp(address(counter), 0, hex"00000000"));
+        _expectRefused(_agentOp(address(counter), 0, hex"00000000deadbeef"));
+        _expectRefused(_agentOp(address(counter), 0.01 ether, abi.encodePacked(bytes4(0), uint256(1), uint256(2))));
+        assertEq(address(counter).balance, 0);
+        _send(_agentOp(address(counter), 0.01 ether, ""));
+        assertEq(address(counter).balance, 0.01 ether);
+    }
+
     /// F7: a public key off the curve is rejected at install.
     function test_offCurveKeyIsRejected() public {
         (uint256 x, uint256 y) = vm.publicKeyP256(AGENT2);
@@ -1476,6 +1488,84 @@ contract AgentPermissionTest is Test {
                 )
             )
         );
+    }
+
+    // --- audit #76 F-2: a token's `maxPerOp` holds for the whole operation ---
+
+    function _transferLeg(uint256 amount) internal view returns (Execution memory) {
+        return Execution(address(token), 0, abi.encodeCall(MockToken.transfer, (PAYEE, amount)));
+    }
+
+    function _tokenSpent(address tokenAddr) internal view returns (uint256) {
+        return policy.tokenLimit(acct, bytes32(PermissionId.unwrap(PYE_ID)), tokenAddr).spent;
+    }
+
+    function test_tokenCapPerOperation_legsAddUp() public {
+        _withPayees();
+        Execution[] memory calls = new Execution[](2);
+        // each leg is at the cap, the operation is at twice the cap
+        (calls[0], calls[1]) = (_transferLeg(TOKEN_MAX), _transferLeg(TOKEN_MAX));
+        _expectRefused(_agentBatchWith(AGENT, PYE_ID, calls));
+        (calls[0], calls[1]) = (_transferLeg(TOKEN_MAX - 1 ether), _transferLeg(1 ether + 1));
+        _expectRefused(_agentBatchWith(AGENT, PYE_ID, calls));
+        assertEq(token.balanceOf(PAYEE), 0);
+        assertEq(_tokenSpent(address(token)), 0);
+        // exactly the cap in two legs
+        (calls[0], calls[1]) = (_transferLeg(TOKEN_MAX - 1 ether), _transferLeg(1 ether));
+        _send(_agentBatchWith(AGENT, PYE_ID, calls));
+        assertEq(token.balanceOf(PAYEE), TOKEN_MAX);
+        assertEq(_tokenSpent(address(token)), TOKEN_MAX);
+    }
+
+    /// An approval and a transfer of one token in one operation share the cap.
+    function test_tokenCapPerOperation_approveAndTransferShareIt() public {
+        _withPayees();
+        Execution[] memory calls = new Execution[](2);
+        calls[0] = Execution(address(token), 0, abi.encodeCall(MockToken.approve, (PAYEE, 6 ether)));
+        calls[1] = _transferLeg(6 ether);
+        _expectRefused(_agentBatchWith(AGENT, PYE_ID, calls));
+        calls[1] = _transferLeg(4 ether);
+        _send(_agentBatchWith(AGENT, PYE_ID, calls));
+        assertEq(_tokenSpent(address(token)), 10 ether);
+    }
+
+    /// Each token has its own total, and a new operation starts from zero —
+    /// also when two operations are validated in one bundle transaction.
+    function test_tokenCapPerOperation_perTokenAndPerOperation() public {
+        _withPayees();
+        Execution[] memory calls = new Execution[](2);
+        calls[0] = _transferLeg(TOKEN_MAX);
+        calls[1] = Execution(address(usdc), 0, abi.encodeCall(MockToken.transfer, (PAYEE, 1e6)));
+        _send(_agentBatchWith(AGENT, PYE_ID, calls));
+        assertEq(token.balanceOf(PAYEE), TOKEN_MAX);
+        assertEq(usdc.balanceOf(PAYEE), 1e6);
+
+        PackedUserOperation[] memory ops = new PackedUserOperation[](2);
+        uint256 nonce = _permissionNonce(PYE_ID);
+        for (uint256 i; i < 2; i++) {
+            ops[i] = _op(nonce + i, _singleCall(address(token), 0, abi.encodeCall(MockToken.transfer, (PAYEE_2, 7 ether))));
+            ops[i].signature = abi.encodePacked(bytes1(0xff), _sign(AGENT, entryPoint.getUserOpHash(ops[i])));
+        }
+        entryPoint.handleOps(ops, payable(makeAddr("bundler")));
+        assertEq(token.balanceOf(PAYEE_2), 14 ether);
+        assertEq(_tokenSpent(address(token)), TOKEN_MAX + 14 ether);
+    }
+
+    /// x402 registrations count toward the same per-operation total.
+    function test_tokenCapPerOperation_x402RegistrationsAddUp() public {
+        _withPayees();
+        uint256 before = block.timestamp + 1 hours;
+        Execution[] memory calls = new Execution[](2);
+        calls[0] = Execution(address(policy), 0, _authorizeCall(600_000, before, bytes32(uint256(1))));
+        calls[1] = Execution(address(policy), 0, _authorizeCall(600_000, before, bytes32(uint256(2))));
+        _expectRefused(_agentBatchWith(AGENT, PYE_ID, calls));
+        // a transfer and a registration of the same token
+        calls[1] = Execution(address(usdc), 0, abi.encodeCall(MockToken.transfer, (PAYEE, 400_001)));
+        _expectRefused(_agentBatchWith(AGENT, PYE_ID, calls));
+        assertEq(_tokenSpent(address(usdc)), 0);
+        calls[1] = Execution(address(policy), 0, _authorizeCall(400_000, before, bytes32(uint256(2))));
+        _send(_agentBatchWith(AGENT, PYE_ID, calls));
+        assertEq(_tokenSpent(address(usdc)), 1e6);
     }
 
     function _payeeOp(address target, bytes memory data) internal view returns (PackedUserOperation memory) {
