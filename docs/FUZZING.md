@@ -52,8 +52,11 @@ and gives the listed token an x402 domain.
   x402 are held by the differential tests only, that is, against the
   deployed instance and not against an independent statement of the rules.
 - `x402Reclaim` is not exercised (it asks the token for the nonce's state).
-- Kernel, the EntryPoint, signatures and the other modules are outside:
-  the existing tests run those end to end.
+- **Contracts that are not ours are taken to be correct:** Kernel, the
+  EntryPoint, Safe, MultiSend and Solady's P-256 verifier. The fuzzing
+  holds this project's own code to its rules and does not look for errors
+  in theirs; the policy is driven without them. The existing tests run
+  the whole path through them end to end, on examples.
 - A generator finds what it can reach. These reach the limits by aiming at
   them; a rule nobody aimed at may go unvisited.
 
