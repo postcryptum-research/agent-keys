@@ -2,8 +2,8 @@
 
 Practical questions about running an AI agent on an agent-keys account. Each
 answer says what works today and what does not yet; the project runs on Base
-Sepolia (testnet), and an internal review of an earlier state of the code,
-not a professional audit, is all it has had (see the last section).
+Sepolia (testnet), and internal reviews, not a professional audit, are all
+the code has had (see the last section).
 
 The words used below:
 
@@ -472,13 +472,34 @@ to open an encrypted key file; then the operation waits for the next block
 
 ### Is it audited?
 
+Not by a third party. The reviews are internal — an AI auditor working with
+the author — at testnet depth on Base Sepolia with no real funds, and are
+not a professional third-party audit.
+
 An internal review on 2026-10-20 by a separate AI session found eight
 issues: six fixed in code, one fixed in its code part (where the owner key
 lives stays the deployer's choice), one documented; the fixes were
-re-checked ([`AUDIT-2026-10-20.md`](AUDIT-2026-10-20.md)). Code written
-since — mandate time windows, x402, the forbidden-target guard, the YubiKey
-and phone owner backends — is outside that review. It is not a professional
-audit. The bigger the amount, the more review it deserves — an independent
+re-checked ([`AUDIT-2026-10-20.md`](AUDIT-2026-10-20.md)).
+
+As of 2026-11-19 the internal review covers the whole codebase as code
+([`audit/REVIEW-SCOPE-2026-11-19.md`](audit/REVIEW-SCOPE-2026-11-19.md)):
+the on-chain policy and its P256 validator and signer, the recovery
+validator and the whitelist paymaster; every hardware signer backend
+(software, YubiKey PIV, TPM, TROPIC01, Apple Secure Enclave, Windows TPM);
+the host CLI (bundler relay, x402, phone transport, DER and attestation);
+and the mobile owner-core (the userOpHash, the request commitment and MAC,
+the review screen, enrollment and the proof of possession).
+
+Two hardware backends carry documented testnet limitations. The TROPIC01
+devkit uses a public factory pairing key (SH0, slot 0) for its secure
+session. The Apple Secure Enclave backend was built and run on an Apple M1
+against Base Sepolia (run record 2026-10-21), but it gates key use by
+device unlock only, with no presence check (`.privateKeyUsage`): the key
+cannot be extracted, yet it can be used without a touch. It does not build
+on the Linux audit machine, so it was read rather than re-run there. Both
+are owed a custody-depth pass on real hardware before real-value custody.
+
+A third-party audit is intended before any real-value custody. The bigger the amount, the more review it deserves — an independent
 professional audit before anything substantial. But no audit makes a system
 safe on its own: keep the agent's account holding only what the current
 period needs, keep mandates tight and short-lived, and keep the owner key on
