@@ -353,14 +353,16 @@ impl AgentConfig {
                 t.token
             );
         }
-        // transfer, approve, increaseAllowance, transferFrom: what a payee list understands
+        // transfer, approve, increaseAllowance, transferFrom: what a token's
+        // limits and payee list are checked on. Anything else on that token
+        // would pass neither, and AgentPolicy refuses the mandate at install.
         const METERED: [&str; 4] = ["a9059cbb", "095ea7b3", "39509351", "23b872dd"];
-        for t in self.policy.tokens.iter().filter(|t| matches!(t.payees, Some(Payees::Only(_)))) {
+        for t in self.policy.tokens.iter() {
             if let Some(a) = self.policy.allow.iter().find(|a| {
                 a.target == t.token && !METERED.contains(&a.selector.trim_start_matches("0x").to_lowercase().as_str())
             }) {
                 anyhow::bail!(
-                    "allow: {} {} can never run: {} has a payee list, and such a token is callable only through transfer, transferFrom, approve and increaseAllowance. Remove the entry, or state \"payees\": \"anyone\"",
+                    "allow: {} {} is refused: {} has limits in `tokens`, and such a token is callable only through transfer, transferFrom, approve and increaseAllowance — through any other function it would move past its limits. Remove the entry",
                     a.target,
                     a.selector,
                     t.token
@@ -548,12 +550,15 @@ pub fn open_yubikey(
 mod payee_tests {
     use super::*;
 
-    /// The tracked x402 config with its token moved to a payee list.
-    fn config(extra_allow: Option<&str>) -> AgentConfig {
+    /// The tracked x402 config with a transfer entry on its token, and the
+    /// token moved to a payee list or left to anyone.
+    fn config_with(listed: bool, extra_allow: Option<&str>) -> AgentConfig {
         let text = include_str!("../../../agent.x402.base-sepolia.json");
         let mut v: serde_json::Value = serde_json::from_str(text).unwrap();
         let token = v["policy"]["tokens"][0]["token"].clone();
-        v["policy"]["tokens"][0]["payees"] = serde_json::json!(["0x00000000000000000000000000000000000000d1"]);
+        if listed {
+            v["policy"]["tokens"][0]["payees"] = serde_json::json!(["0x00000000000000000000000000000000000000d1"]);
+        }
         let allow = v["policy"]["allow"].as_array_mut().unwrap();
         allow.push(serde_json::json!({"target": token, "selector": "0xA9059CBB"}));
         if let Some(selector) = extra_allow {
@@ -563,12 +568,15 @@ mod payee_tests {
     }
 
     #[test]
-    fn a_bound_token_takes_only_the_four_functions() {
-        config(None).check_payees_stated().unwrap();
-        config(Some("0x23b872dd")).check_payees_stated().unwrap();
-        for dead in ["0x40c10f19", "0x00000000"] {
-            let refused = config(Some(dead)).check_payees_stated().unwrap_err().to_string();
-            assert!(refused.contains("can never run"), "{refused}");
+    fn a_capped_token_takes_only_the_four_functions() {
+        for listed in [true, false] {
+            config_with(listed, None).check_payees_stated().unwrap();
+            config_with(listed, Some("0x23b872dd")).check_payees_stated().unwrap();
+            // mint, permit, a plain transfer to the token
+            for other in ["0x40c10f19", "0xd505accf", "0x00000000"] {
+                let refused = config_with(listed, Some(other)).check_payees_stated().unwrap_err().to_string();
+                assert!(refused.contains("callable only through"), "{refused}");
+            }
         }
     }
 }

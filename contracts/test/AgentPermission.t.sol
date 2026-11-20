@@ -1619,31 +1619,45 @@ contract AgentPermissionTest is Test {
 
     /// A payee list is a promise about where the token goes. Any other
     /// function allow-listed on that token would be a way around it.
-    /// A careless owner allow-lists a way to move a bound token that no
-    /// list understands: such a mandate is refused whole at install, since
-    /// the entry could never run. Without a list on that token it installs.
-    function test_payees_otherFunctionsOfABoundTokenAreRefusedAtInstall() public {
+    /// Audit #79. A careless owner allow-lists a way to move a capped token
+    /// that the caps do not meter (`mint` here; `permit` or a vault's
+    /// `withdraw` elsewhere): the mandate is refused whole at install, with
+    /// a payee list on the token and without one, since through that entry
+    /// the token would pass neither its caps nor its list. The same entry on
+    /// a token the mandate sets no limit for installs.
+    function test_token_otherFunctionsOfACappedTokenAreRefusedAtInstall() public {
         usdc = new MockUSDC();
         bytes4[2] memory careless = [MockToken.mint.selector, bytes4(0)];
         for (uint256 k; k < careless.length; k++) {
             (address[] memory targets, bytes4[] memory selectors) = _payeeTargets();
             (targets[3], selectors[3]) = (address(token), careless[k]);
             AgentPolicy.TokenCap[] memory caps = _payeeCaps();
+            bytes32 id = bytes32((uint256(0x30) + k) << 224);
+            // capped, with a payee list on it
             AgentPolicy.TokenPayees[] memory lists = new AgentPolicy.TokenPayees[](1);
             lists[0] = _list(address(token), PAYEE, address(0));
-            bytes32 id = bytes32((uint256(0x30) + k) << 224);
-            bytes memory bound =
+            bytes memory data =
                 abi.encodePacked(id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0), lists));
             vm.expectRevert(AgentPolicy.InvalidConfig.selector);
-            policy.onInstall(bound);
-            // the same entry next to a list on the other token only
+            policy.onInstall(data);
+            // capped, the list on the other token
             lists[0] = _list(address(usdc), PAYEE, address(0));
+            data = abi.encodePacked(id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0), lists));
+            vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+            policy.onInstall(data);
+            // capped, no lists at all
+            data = abi.encodePacked(id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0)));
+            vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+            policy.onInstall(data);
+            // no limit for that token in this mandate: the entry is an ordinary call
+            AgentPolicy.TokenCap[] memory usdcOnly = new AgentPolicy.TokenCap[](1);
+            usdcOnly[0] = caps[0];
             policy.onInstall(
-                abi.encodePacked(id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0), lists))
+                abi.encodePacked(id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, usdcOnly, uint48(0)))
             );
             assertTrue(policy.isAllowed(address(this), id, address(token), careless[k]));
         }
-        // and on an installed mandate nothing but the four functions reaches a bound token
+        // and on an installed mandate nothing but the four functions reaches a capped token
         _withPayees();
         _expectRefused(_payeeOp(address(token), abi.encodeCall(MockToken.mint, (PAYEE, 1))));
         _expectRefused(_payeeOp(address(token), ""));

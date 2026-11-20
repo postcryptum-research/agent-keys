@@ -40,7 +40,11 @@ interface IKernelEntryPoint {
 ///    itself, by a total budget;
 ///  - ERC-20 `transfer` / `transferFrom` / `approve` / `increaseAllowance`
 ///    amounts capped per operation and by a budget per token; an
-///    allow-listed token selector without a token limit is refused;
+///    allow-listed token selector without a token limit is refused, and a
+///    token with a limit is callable through these four functions only: a
+///    mandate with another entry on it (`permit`, a `mint`, a vault's
+///    `withdraw`) would move the token past its limit and is refused at
+///    install;
 ///  - a time window `[validAfter, validUntil]` that the EntryPoint enforces:
 ///    several permissions for the same agent key, each with its own window,
 ///    budget and allow-list, make a schedule ("weekdays: up to X on these
@@ -57,8 +61,6 @@ interface IKernelEntryPoint {
 ///    `increaseAllowance` may only name a listed spender, and an x402
 ///    authorization may only pay a listed address. A token without a list
 ///    is bound in amount only, as before: the agent picks the recipient.
-///    A token with a list can be called through those four functions only,
-///    whatever else the allow-list names on it.
 ///    A listed spender can move what it was approved for wherever it likes;
 ///    list a spender only if you would list everyone it pays.
 ///
@@ -258,11 +260,12 @@ contract AgentPolicy is IPolicy {
                 TokenLimit(tokens[i].maxPerOp, tokens[i].budget, 0, true, false, tokens[i].domainSeparator);
         }
         _installPayees(m, data[32:]);
-        // A token with a payee list is callable through the four metered
-        // functions only (`_chargeToken`): another entry on it could never
-        // run, so a mandate that carries one does not say what it does.
+        // A token with a limit is callable through the four metered
+        // functions only (`_chargeToken`). Any other entry on it would pass
+        // neither its caps nor its payee list, so the limit the owner wrote
+        // down would not be one: such a mandate is refused whole.
         for (uint256 i; i < targets.length; i++) {
-            if (m.tokens[targets[i]].payeesOnly && !_isMetered(selectors[i])) revert InvalidConfig();
+            if (m.tokens[targets[i]].set && !_isMetered(selectors[i])) revert InvalidConfig();
         }
         c.validUntil = validUntil;
         c.validAfter = validAfter;
@@ -644,10 +647,11 @@ contract AgentPolicy is IPolicy {
     /// carry the amount in argument 1 and who gets it (the recipient, the
     /// spender) in argument 0; `transferFrom` carries them in arguments 2
     /// and 1. Any other selector passes untouched — unless the target is a
-    /// token with a payee list: such a token moves only through the four
-    /// functions the list understands, so that `transferWithAuthorization`,
-    /// a vault's `withdraw` or anything else allow-listed on it cannot pay
-    /// an address the list does not name.
+    /// token with a limit: such a token moves only through the four
+    /// functions metered here, so that `permit`, `transferWithAuthorization`,
+    /// a vault's `withdraw` or anything else allow-listed on it cannot move
+    /// it past its caps or pay an address its payee list does not name.
+    /// Install refuses such a mandate; this is the same rule at validation.
     function _chargeToken(Mandate storage m, address token, bytes4 selector, bytes calldata data)
         internal
         returns (bool)
@@ -657,7 +661,7 @@ contract AgentPolicy is IPolicy {
         else if (selector == ERC20_TRANSFER_FROM) arg = 2;
 
         TokenLimit storage t = m.tokens[token];
-        if (arg == 0) return !t.payeesOnly;
+        if (arg == 0) return !t.set;
         if (!t.set) return false;
         uint256 end = 4 + 32 * (arg + 1);
         if (data.length < end) return false;
