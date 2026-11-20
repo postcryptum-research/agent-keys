@@ -693,6 +693,21 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
         if targets.len() != selectors.len() {
             return Err("policy targets and selectors differ in length; refused".into());
         }
+        // A token with a limit is callable through the four functions the
+        // limit is checked on. Any other entry on it would move the token
+        // past its caps and its payee list: AgentPolicy refuses such a
+        // mandate at install, and an earlier AgentPolicy would let the
+        // entry through unmetered, so it is refused here for either.
+        const METERED: [[u8; 4]; 4] = [[0xa9, 0x05, 0x9c, 0xbb], [0x09, 0x5e, 0xa7, 0xb3], [0x39, 0x50, 0x93, 0x51], [0x23, 0xb8, 0x72, 0xdd]];
+        for (t, sel) in targets.iter().zip(&selectors) {
+            if tokens.iter().any(|token| token.0 == *t) && !METERED.contains(&sel.0) {
+                return Err(format!(
+                    "this mandate limits the token {} and also allows {} on it; a limited token may only be called through transfer, transferFrom, approve and increaseAllowance, anything else would move it past its limits; refused",
+                    b.name(*t),
+                    selector_name(sel.0)
+                ));
+            }
+        }
         let secs = |v: U256, what: &str| u64::try_from(v).map_err(|_| format!("{what} does not fit a timestamp; refused"));
         let (until, after) = (secs(until, "validUntil")?, secs(after, "validAfter")?);
         for (t, sel) in targets.iter().zip(&selectors) {
@@ -1176,6 +1191,22 @@ mod tests {
         ] {
             let p = kernel::PolicyParams { payees: bad, ..kernel::PolicyParams { payees: vec![], ..clone_params(&listed) } };
             assert!(matches!(install(&p, &facts()).verdict, Verdict::Refuse(_)));
+        }
+        // a limited token with an entry its limits are not checked on (permit, a plain
+        // transfer to it): refused, with a payee list and without; `transfer` is fine
+        for payees in [vec![], vec![(SIGNER, vec![COUNTER])]] {
+            let with = |selector: [u8; 4]| kernel::PolicyParams {
+                targets: vec![COUNTER, SIGNER],
+                selectors: vec![FixedBytes::from(SELECTOR_INCREMENT), FixedBytes::from(selector)],
+                payees: payees.clone(),
+                ..clone_params(&listed)
+            };
+            for other in [[0xd5, 0x05, 0xac, 0xcf], [0, 0, 0, 0]] {
+                let r = install(&with(other), &facts());
+                assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("past its limits")), "{}", r.text());
+            }
+            let r = install(&with([0xa9, 0x05, 0x9c, 0xbb]), &facts());
+            assert_eq!(r.verdict, Verdict::Sign, "{}", r.text());
         }
         let mut o = op(kernel::uninstall_permission_calldata(perm));
         o.gas_fees = kernel::pack_gas(1, 1);
