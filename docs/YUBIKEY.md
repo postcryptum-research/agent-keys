@@ -306,7 +306,9 @@ agent operation without a token call (tx
 `0xf51bcb9421aa39300f3065f7106d84cf94e4f116f993581b23edd9fca705515b`) and a
 token operation under a limit (tx
 `0x92f057bed01083b051cbd779aebbb09dd82448332722a12803c0ec6840f51c3a`). That is
-one bundler; others were not tried.
+one bundler, and it turned out to enforce none of the ERC-7562 validation
+rules on this network, so its acceptance says nothing about them: see
+[#83](https://github.com/postcryptum-research/agent-keys/issues/83) for what a rule-enforcing bundler makes of the policy.
 
 The main account (`0xEdB645B14e2f952C5784e34949b58F0826fBc9E9`) followed the
 same day, one YubiKey signature each, sponsored and delivered by the
