@@ -43,9 +43,10 @@ traces in `traces/`:
 | 5 test policy: transient write at slot 0 | refused: forbidden access to slot 0 |
 | 6 test policy: transient write at `keccak(sender ‖ 1)` | storage passes; stops at the P-256 precompile, see below |
 
-The exact messages are in `expected.json`. The checker's message says "read
-from" also where the slot is written; the branch it comes from is the one for
-written slots.
+The exact messages are in `expected.json`, each trace twice: the checker as it
+is, and with the P-256 precompile allowed (below). The checker's message says
+"read from" also where the slot is written; the branch it comes from is the
+one for written slots.
 
 - **Traces 5 and 6:** the checker treats transient storage as storage, and
   accepts the form `keccak(sender ‖ x)`. The per-operation sum of #76 has that
@@ -59,9 +60,12 @@ written slots.
 - **Trace 6 and the precompile:** this build of the checker calls the P-256
   precompile at `0x…0100` an un-deployed contract. ERC-7562 allows the
   RIP-7212 precompile on networks that have it, so that is the bundler's
-  configuration for the network and not the policy. Until it is settled, the
-  mark of a fixed layout is that traces of `AgentPolicy` get the verdict of
-  trace 6 and no longer a storage one.
+  configuration for the network and not the policy. `check-traces.mjs`
+  therefore gives a second verdict with that one address left out of the
+  trace's list of code sizes, which is what a bundler set up for such a
+  network sees: trace 6 then passes, traces 1 to 5 are refused as before.
+  **The mark of a fixed layout:** a trace of `AgentPolicy` gets the two
+  verdicts of trace 6.
 
 ## Asking again
 
@@ -69,7 +73,7 @@ written slots.
 cd scripts/erc7562
 npm install          # the checker comes with the bundler's package, pinned in package.json
 npm run check        # the six recorded traces against expected.json; exit 1 on a difference
-node check-traces.mjs my-trace.json     # the verdict for a trace of your own
+node check-traces.mjs my-trace.json     # both verdicts for a trace of your own
 ```
 
 A trace of your own, with nothing spent:
