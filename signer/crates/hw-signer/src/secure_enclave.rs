@@ -23,6 +23,7 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 
+use crate::enclave_blob::{self, MAX_BLOB};
 use crate::{normalize_low_s, HardwareSigner, PublicKey, Signature, SignerError};
 
 // Status codes of the Swift shim.
@@ -30,7 +31,6 @@ const OK: i32 = 0;
 const NOT_AVAILABLE: i32 = 1;
 const BAD_KEY: i32 = 2;
 
-const MAX_BLOB: usize = 4096;
 const MSG_CAP: usize = 512;
 
 extern "C" {
@@ -114,6 +114,11 @@ impl SecureEnclaveSigner {
         };
         check(code, &msg)?;
         blob.truncate(len);
+        // A system that writes another form of key file is noticed now, and
+        // not when the key, by then enrolled somewhere, is needed (#78).
+        enclave_blob::check(&blob).map_err(|why| {
+            SignerError::Backend(format!("the enclave returned a key in a form this build does not know ({why}); nothing was stored: update agent-signer"))
+        })?;
 
         let dir = path.parent().expect("key path has a directory");
         fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
@@ -134,6 +139,14 @@ impl SecureEnclaveSigner {
         let blob = fs::read(&path).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => SignerError::Key(format!("no Secure Enclave key labelled {label} ({})", path.display())),
             _ => io(&path, e),
+        })?;
+        // A damaged file never reaches CryptoKit: damage in the stored public
+        // key ends the process there with a fatal error and no message (#78).
+        enclave_blob::check(&blob).map_err(|why| {
+            SignerError::Key(format!(
+                "{}: not a Secure Enclave key file ({why}): it is damaged or was altered. See docs/SECURE_ENCLAVE.md, troubleshooting",
+                path.display()
+            ))
         })?;
         let mut public = [0u8; 64];
         let mut msg = [0u8; MSG_CAP];
