@@ -1,0 +1,26 @@
+{
+  "1-agent-policy-plain": {
+    "asItIs": "REFUSED: account has forbidden read from 0xfae8704b823a56de211268b40ae24af69693f7c2 slot 0x854e0b187d93efd5af455f72df5ca9f3da2e32b4209332a93f91da866b2070d8",
+    "precompileAllowed": "REFUSED: account has forbidden read from 0xfae8704b823a56de211268b40ae24af69693f7c2 slot 0x854e0b187d93efd5af455f72df5ca9f3da2e32b4209332a93f91da866b2070d8"
+  },
+  "2-agent-policy-token": {
+    "asItIs": "REFUSED: account has forbidden read from 0xfae8704b823a56de211268b40ae24af69693f7c2 slot 0xf4615f3a519cfc240186a2f064738f1fa15e222574a8d19a7af80be8201fcd1b",
+    "precompileAllowed": "REFUSED: account has forbidden read from 0xfae8704b823a56de211268b40ae24af69693f7c2 slot 0xf4615f3a519cfc240186a2f064738f1fa15e222574a8d19a7af80be8201fcd1b"
+  },
+  "3-rule-breaker-timestamp": {
+    "asItIs": "REFUSED: account uses banned opcode: TIMESTAMP",
+    "precompileAllowed": "REFUSED: account uses banned opcode: TIMESTAMP"
+  },
+  "4-rule-breaker-persistent-foreign": {
+    "asItIs": "REFUSED: account has forbidden read from 0xb7218114526a45f510f7082e21d77c53f8c85035 slot 0x0000000000000000000000000000000000000000000000000000000000000000",
+    "precompileAllowed": "REFUSED: account has forbidden read from 0xb7218114526a45f510f7082e21d77c53f8c85035 slot 0x0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "5-rule-breaker-transient-foreign": {
+    "asItIs": "REFUSED: account has forbidden read from 0xd4b521a65e3fd43f112a3a75ab97a417c152df07 slot 0x0000000000000000000000000000000000000000000000000000000000000000",
+    "precompileAllowed": "REFUSED: account has forbidden read from 0xd4b521a65e3fd43f112a3a75ab97a417c152df07 slot 0x0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "6-rule-breaker-transient-own": {
+    "asItIs": "REFUSED: account accesses un-deployed contract address 0x0000000000000000000000000000000000000100 with opcode STATICCALL",
+    "precompileAllowed": "PASSES"
+  }
+}
