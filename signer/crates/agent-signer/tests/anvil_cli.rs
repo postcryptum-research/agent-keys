@@ -467,7 +467,7 @@ fn agent_lifecycle() {
     );
     for cmd in [&["permission", "add", "--agent", listed.as_str()][..], &["permission", "show", "--agent", listed.as_str()][..]] {
         let refused = chain.fails(cmd);
-        assert!(refused.contains("does not know payee lists"), "{refused}");
+        assert!(refused.contains("did not answer `payeeAllowed`"), "{refused}");
     }
     // a token with limits and no word on who may be paid: the config loads
     // (status and revoke still work from it), but no mandate is installed

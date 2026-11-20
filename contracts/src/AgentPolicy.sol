@@ -129,7 +129,9 @@ contract AgentPolicy is IPolicy {
         uint128 budget;
         uint128 spent;
         bool set;
-        // true: only `Mandate.payees[token]` may be paid or approved
+        // true: only `Mandate.payees[token]` may be paid or approved.
+        // It sits before `domainSeparator`, so `tokenLimit()` returns the
+        // separator as its sixth word (the fifth before payee lists).
         bool payeesOnly;
         bytes32 domainSeparator;
     }
@@ -211,6 +213,11 @@ contract AgentPolicy is IPolicy {
 
     /// The install data's first word — the offset of `targets` — tells the
     /// two encodings apart: seven head words, or eight with `payees`.
+    /// Data whose first word is neither is refused, and so is data whose
+    /// word does not match its body, so no install drops a list. That the
+    /// owner sees exactly what is installed rests on the reviewing app,
+    /// which accepts canonical encodings only; this contract decodes as
+    /// loosely as `abi.decode` does.
     uint256 internal constant HEAD_WITHOUT_PAYEES = 7 * 32;
     uint256 internal constant HEAD_WITH_PAYEES = 8 * 32;
 

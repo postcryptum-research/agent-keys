@@ -204,9 +204,9 @@ impl Session {
         // an earlier AgentPolicy decodes the rest and ignores the lists.
         if let Some((token, list)) = cfg.payees()?.first() {
             let view = crate::abi::IAgentPolicyView::new(dep.agent_policy, provider.clone());
-            if view.payeeAllowed(Address::ZERO, B256::ZERO, *token, list[0]).call().await.is_err() {
+            if let Err(e) = view.payeeAllowed(Address::ZERO, B256::ZERO, *token, list[0]).call().await {
                 bail!(
-                    "the config lists payees for {token}, but the AgentPolicy at {} (deployments.agentPolicy) does not know payee lists: it would install the mandate and ignore them",
+                    "the config lists payees for {token}, and the AgentPolicy at {} (deployments.agentPolicy) did not answer `payeeAllowed`: either it predates payee lists, and would install the mandate and ignore them, or the call itself failed ({e})",
                     dep.agent_policy
                 );
             }
