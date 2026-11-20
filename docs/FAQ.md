@@ -490,14 +490,24 @@ the host CLI (bundler relay, x402, phone transport, DER and attestation);
 and the mobile owner-core (the userOpHash, the request commitment and MAC,
 the review screen, enrollment and the proof of possession).
 
-Two hardware backends carry documented testnet limitations. The TROPIC01
-devkit uses a public factory pairing key (SH0, slot 0) for its secure
-session. The Apple Secure Enclave backend was built and run on an Apple M1
-against Base Sepolia (run record 2026-10-21), but it gates key use by
-device unlock only, with no presence check (`.privateKeyUsage`): the key
-cannot be extracted, yet it can be used without a touch. It does not build
-on the Linux audit machine, so it was read rather than re-run there. Both
-are owed a custody-depth pass on real hardware before real-value custody.
+Two hardware backends were exercised on real hardware in November 2026
+(issue [#73](https://github.com/postcryptum-research/agent-keys/issues/73)
+for the second). The TROPIC01 secure element had a hardware sign and verify
+pass on 2026-11-19; the devkit still bootstraps its secure session from the
+public factory pairing key (SH0, slot 0), so devkit custody depth is bounded
+by that shared pairing secret until a provisioned pairing key replaces it.
+The Apple Secure Enclave backend had a hardware pass on an Apple M1 on
+2026-11-20: a 32-byte digest signed inside the enclave, the signature
+verified, a fresh operation by the enclave key accepted on Base Sepolia, and
+the key on chain shown to be the key in the enclave. The enclave gates key
+use by device unlock only, with no presence or touch check
+(`.privateKeyUsage`): the private key cannot be extracted, yet a signature
+can be produced without a touch. One check has not been run: a key file
+copied to a second Mac being refused when it tries to sign. By design it is
+refused, since CryptoKit hands out only an enclave-wrapped blob that only
+the originating device's Secure Enclave can unwrap; but this has not been
+tried, for want of a second Apple-silicon Mac. Both backends are owed a full
+custody-depth pass on real hardware before real-value custody.
 
 A third-party audit is intended before any real-value custody. The bigger the amount, the more review it deserves — an independent
 professional audit before anything substantial. But no audit makes a system

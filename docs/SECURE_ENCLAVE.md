@@ -186,7 +186,7 @@ keys, replace both public keys and drop `account`.
 | `swiftc failed to compile` | Swift / SDK older than the shim assumes | send the log (the Swift error is in it); `xcrun swiftc --version` is in step 2 |
 | `ld: library not found for -lswift…` / `Undefined symbols … swift` | Swift runtime libraries not found by the linker | send the log |
 | `no Secure Enclave on this Mac` | Intel without T2, or a virtual machine | run on another Mac; `uname -m` should print `arm64` |
-| `open: …` on `key show` / `vector` | the blob is not from this Mac's enclave (copied, or the Mac was reset) | delete the blob file `~/Library/Application Support/tpm_sign/enclave/<label>.se` by hand (`key evict` has to open the key first, and cannot), then `key create`; or `key create` under another label |
+| `open: …` on `key show` / `vector`, or `unable to sign digest` on `vector` and on any operation while `key show` still prints the key | the blob is not from this Mac's enclave (copied, or the Mac was reset), or the file is damaged. `key show` is not the test: the public key sits in the clear part of the file and can be printed from a blob the enclave will refuse to sign with, so check a key with `vector`. A file damaged inside the stored public key ends the process with a Swift fatal error in place of a message | delete the blob file `~/Library/Application Support/tpm_sign/enclave/<label>.se` by hand (`key evict` has to open the key first, and cannot), then `key create`; or `key create` under another label |
 | `a key labelled … already exists` | an earlier run left the key | skip `key create`, or `key evict --enclave <label>` first |
 | `verify` prints `INVALID` | wrong file or a mangled copy | rerun step 7 and send the log |
 
