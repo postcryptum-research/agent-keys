@@ -323,6 +323,33 @@ through the bundler, sponsored (counter 71 → 72, tx
 `0x0ceb42d75ff204e55ea7eb22e9b512e1c85d2707915e3e0cf78796d2f04c1ea5`). No
 live permission of the test accounts is left on an earlier policy.
 
+### Onto the AgentPolicy with account-owned storage (2026-11-21, issue #83)
+
+After #87 deployed the AgentPolicy whose storage belongs to the account under
+ERC-7562 (`0x12b7E79974CC4F4181a40Aa11f9d3170018ae0E2`, tx
+`0x2d2f6bc4f0e38caefad52ddfc04124982789aaacaa7f9b7230e4bd278e317ede`, block
+61712997; the previous instance stays as `agentPolicyV8`), the main account
+(`0xEdB645B14e2f952C5784e34949b58F0826fBc9E9`) moved both its permissions
+onto it the same day, one YubiKey signature each (PIN and touch), sponsored
+and delivered by the bundler:
+
+- the everyday permission `0x74727334`:
+  `permission rotate --old-id 0x74727334 --sponsored` — tx
+  `0xa1bc0c3aa73e79fe1f57f674a3ef267b80e435dcb2adebbc10d64307cc85a4d7`
+  (block 61716750, 434,426 gas);
+- the x402 permission `0x78347031`: tx
+  `0x5c16825a8ef8d92ce74ab2870e24d74711eba65f06a47e920251c804075d3030`
+  (block 61716821, 431,363 gas).
+
+`permission show` for both: policy module `0x12b7…e0E2`, every field `ok`,
+spend counters at zero. The TROPIC01 agent then ran on the new policy through
+the bundler, sponsored (counter 72 → 73, tx
+`0xfa8c67a7cde085b710cc9cc020ccbb56e7ae4f2b188b3b5fa1d1a8610d41b3e9`, block
+61717431). As before, that bundler's acceptance shows delivery and not
+conformance to ERC-7562; the rule-enforcing check of the instance on chain is
+asked for in [#99](https://github.com/postcryptum-research/agent-keys/issues/99), together with the rotation of the enclave test
+account's permission, the last one still on the earlier policy.
+
 ## Security notes
 
 - **What the device protects:** the private key never leaves the applet;
