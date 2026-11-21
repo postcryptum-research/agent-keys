@@ -22,14 +22,18 @@ validation path and a real paymaster.
 
 | payload | address-only | k1 signature | p256 signature | p256 agent + paymaster |
 |---:|---:|---:|---:|---:|
-| 10 B | 3,443 | 7,402 | 7,433 | 82,560 |
-| 100 B | 4,258 | 8,264 | 8,269 | 83,555 |
-| 1 kB | 11,826 | 16,090 | 16,095 | 92,742 |
-| 10 kB | 88,868 | 96,074 | 96,435 | 186,507 |
-| 100 kB | 956,236 | 1,026,826 | 1,064,773 | 1,294,563 |
+| 10 B | 3,443 | 7,402 | 7,433 | 83,223 |
+| 100 B | 4,258 | 8,264 | 8,269 | 84,218 |
+| 1 kB | 11,826 | 16,090 | 16,095 | 93,405 |
+| 10 kB | 88,868 | 96,074 | 96,435 | 187,170 |
+| 100 kB | 956,236 | 1,026,826 | 1,064,773 | 1,295,226 |
 
 The agent column is the 2026-11-20 measurement (`gas.json`) of the policy
-deployed that day. Over the instance before it, it knows payee
+deployed on 2026-11-21, one step after the instance of 2026-11-20: its
+storage is laid out so that every slot validation touches belongs to the
+account under ERC-7562 ([#83](https://github.com/postcryptum-research/agent-keys/issues/83)),
+663 gas per operation for the extra hashing. Over the instance of
+2026-11-10, it knows payee
 lists ([#66](https://github.com/postcryptum-research/agent-keys/issues/66)),
 288 gas per operation here, holds a token's per-operation cap for the
 whole operation and not per call

@@ -131,7 +131,7 @@ contract AgentPolicy is IPolicy {
         uint128 budget;
         uint128 spent;
         bool set;
-        // true: only `Mandate.payees[token]` may be paid or approved.
+        // true: only the payees listed for the token may be paid or approved.
         // It sits before `domainSeparator`, so `tokenLimit()` returns the
         // separator as its sixth word (the fifth before payee lists).
         bool payeesOnly;
@@ -143,13 +143,6 @@ contract AgentPolicy is IPolicy {
         uint128 value;
         uint48 validBefore;
         address token;
-    }
-
-    struct Mandate {
-        mapping(address target => mapping(bytes4 selector => bool)) allowed;
-        mapping(address token => TokenLimit) tokens;
-        mapping(bytes32 digest => Pending) x402;
-        mapping(address token => mapping(address payee => bool)) payees;
     }
 
     error InvalidConfig();
@@ -205,12 +198,61 @@ contract AgentPolicy is IPolicy {
     /// The SafeNonceAssert every Safe transaction must be paired with.
     address public immutable NONCE_ASSERT;
 
-    mapping(address account => mapping(bytes32 id => Config)) public configs;
+    /// Storage layout. Validation reads and writes this contract's storage
+    /// on the account's behalf, and ERC-7562 lets a bundler admit that only
+    /// for slots that belong to the account: `keccak256(account ‖ x) + n`
+    /// with a small `n`. So the account is the innermost key of every
+    /// mapping, and everything else that names an entry (the permission id,
+    /// its epoch, a target and selector, a token, a payee, a digest) is
+    /// hashed into the outer key first. A nested mapping with the account
+    /// outermost holds the same data in slots a rule-enforcing bundler
+    /// refuses (issue #83).
+    mapping(bytes32 id => mapping(address account => Config)) internal _configs;
     mapping(address account => uint256) public usedIds;
-    mapping(address account => mapping(bytes32 id => mapping(uint32 epoch => Mandate))) internal _mandates;
+    /// key: `keccak256(mandate, target, selector)`
+    mapping(bytes32 key => mapping(address account => bool)) internal _allowed;
+    /// key: `keccak256(mandate, token)`
+    mapping(bytes32 key => mapping(address account => TokenLimit)) internal _tokens;
+    /// key: `keccak256(mandate, digest)`
+    mapping(bytes32 key => mapping(address account => Pending)) internal _x402;
+    /// key: `keccak256(mandate, token, payee)`
+    mapping(bytes32 key => mapping(address account => bool)) internal _payees;
 
     constructor(address nonceAssert) {
         NONCE_ASSERT = nonceAssert;
+    }
+
+    /// @dev One installation of a permission: the id and its epoch, which
+    /// moves on at uninstall so that nothing of an earlier installation is
+    /// found again. Part of every outer key below.
+    function _mandate(bytes32 id, uint32 epoch) internal pure returns (bytes32) {
+        return keccak256(abi.encode(id, epoch));
+    }
+
+    function _allowedKey(bytes32 m, address target, bytes4 selector) internal pure returns (bytes32) {
+        return keccak256(abi.encode(m, target, selector));
+    }
+
+    function _payeeKey(bytes32 m, address token, address payee) internal pure returns (bytes32) {
+        return keccak256(abi.encode(m, token, payee));
+    }
+
+    function _token(address account, bytes32 m, address token) internal view returns (TokenLimit storage) {
+        return _tokens[keccak256(abi.encode(m, token))][account];
+    }
+
+    function _pending(address account, bytes32 m, bytes32 digest) internal view returns (Pending storage) {
+        return _x402[keccak256(abi.encode(m, digest))][account];
+    }
+
+    /// @notice The permission's limits and counters, in the order of `Config`.
+    function configs(address account, bytes32 id)
+        external
+        view
+        returns (uint48 validUntil, uint32 epoch, uint128 maxValuePerOp, uint128 budget, uint128 spent, uint48 validAfter)
+    {
+        Config storage c = _configs[id][account];
+        return (c.validUntil, c.epoch, c.maxValuePerOp, c.budget, c.spent, c.validAfter);
     }
 
     /// The install data's first word — the offset of `targets` — tells the
@@ -230,7 +272,7 @@ contract AgentPolicy is IPolicy {
     ///              encoded as before this parameter existed.
     function onInstall(bytes calldata data) external payable override {
         bytes32 id = bytes32(data[0:32]);
-        Config storage c = configs[msg.sender][id];
+        Config storage c = _configs[id][msg.sender];
         if (c.validUntil != 0) revert AlreadyInitialized(msg.sender);
         (
             address[] memory targets,
@@ -245,18 +287,18 @@ contract AgentPolicy is IPolicy {
             revert InvalidConfig();
         }
 
-        Mandate storage m = _mandates[msg.sender][id][c.epoch];
+        bytes32 m = _mandate(id, c.epoch);
         address entryPoint = _entryPointOf(msg.sender);
         if (entryPoint == address(0)) revert UnknownEntryPoint();
         for (uint256 i; i < targets.length; i++) {
             if (!_targetAllowed(targets[i], selectors[i]) || targets[i] == entryPoint) {
                 revert ForbiddenTarget(targets[i], selectors[i]);
             }
-            m.allowed[targets[i]][selectors[i]] = true;
+            _allowed[_allowedKey(m, targets[i], selectors[i])][msg.sender] = true;
         }
         for (uint256 i; i < tokens.length; i++) {
-            if (tokens[i].token == address(0) || m.tokens[tokens[i].token].set) revert InvalidConfig();
-            m.tokens[tokens[i].token] =
+            if (tokens[i].token == address(0) || _token(msg.sender, m, tokens[i].token).set) revert InvalidConfig();
+            _tokens[keccak256(abi.encode(m, tokens[i].token))][msg.sender] =
                 TokenLimit(tokens[i].maxPerOp, tokens[i].budget, 0, true, false, tokens[i].domainSeparator);
         }
         _installPayees(m, data[32:]);
@@ -265,7 +307,7 @@ contract AgentPolicy is IPolicy {
         // neither its caps nor its payee list, so the limit the owner wrote
         // down would not be one: such a mandate is refused whole.
         for (uint256 i; i < targets.length; i++) {
-            if (m.tokens[targets[i]].set && !_isMetered(selectors[i])) revert InvalidConfig();
+            if (_token(msg.sender, m, targets[i]).set && !_isMetered(selectors[i])) revert InvalidConfig();
         }
         c.validUntil = validUntil;
         c.validAfter = validAfter;
@@ -284,7 +326,7 @@ contract AgentPolicy is IPolicy {
     /// @dev The optional eighth parameter. Each entry needs a capped token
     /// that has no list yet, and at least one payee; no zero address, no
     /// payee twice.
-    function _installPayees(Mandate storage m, bytes calldata params) internal {
+    function _installPayees(bytes32 m, bytes calldata params) internal {
         if (params.length < 32) revert InvalidConfig();
         uint256 head = uint256(bytes32(params[0:32]));
         if (head == HEAD_WITHOUT_PAYEES) return;
@@ -294,21 +336,21 @@ contract AgentPolicy is IPolicy {
         // the eight-word form exists to carry a list: without one, use the other
         if (lists.length == 0) revert InvalidConfig();
         for (uint256 i; i < lists.length; i++) {
-            TokenLimit storage t = m.tokens[lists[i].token];
+            TokenLimit storage t = _token(msg.sender, m, lists[i].token);
             address[] memory payees = lists[i].payees;
             if (!t.set || t.payeesOnly || payees.length == 0) revert InvalidConfig();
             t.payeesOnly = true;
-            mapping(address => bool) storage listed = m.payees[lists[i].token];
             for (uint256 j; j < payees.length; j++) {
-                if (payees[j] == address(0) || listed[payees[j]]) revert InvalidConfig();
-                listed[payees[j]] = true;
+                bytes32 key = _payeeKey(m, lists[i].token, payees[j]);
+                if (payees[j] == address(0) || _payees[key][msg.sender]) revert InvalidConfig();
+                _payees[key][msg.sender] = true;
             }
         }
     }
 
     function onUninstall(bytes calldata data) external payable override {
         bytes32 id = bytes32(data[0:32]);
-        Config storage c = configs[msg.sender][id];
+        Config storage c = _configs[id][msg.sender];
         if (c.validUntil == 0) revert NotInitialized(msg.sender);
         c.validUntil = 0;
         c.validAfter = 0;
@@ -325,18 +367,18 @@ contract AgentPolicy is IPolicy {
     }
 
     function isAllowed(address account, bytes32 id, address target, bytes4 selector) external view returns (bool) {
-        return _mandates[account][id][configs[account][id].epoch].allowed[target][selector];
+        return _allowed[_allowedKey(_mandate(id, _configs[id][account].epoch), target, selector)][account];
     }
 
     function tokenLimit(address account, bytes32 id, address token) external view returns (TokenLimit memory) {
-        return _mandates[account][id][configs[account][id].epoch].tokens[token];
+        return _token(account, _mandate(id, _configs[id][account].epoch), token);
     }
 
     /// @notice Whether the mandate lets `token` reach `payee`: true for any
     /// address when the token has no payee list.
     function payeeAllowed(address account, bytes32 id, address token, address payee) external view returns (bool) {
-        Mandate storage m = _mandates[account][id][configs[account][id].epoch];
-        return !m.tokens[token].payeesOnly || m.payees[token][payee];
+        bytes32 m = _mandate(id, _configs[id][account].epoch);
+        return !_token(account, m, token).payeesOnly || _payees[_payeeKey(m, token, payee)][account];
     }
 
     /// @dev Returns `packValidationData(validAfter, validUntil)` on success so
@@ -349,11 +391,11 @@ contract AgentPolicy is IPolicy {
         override
         returns (uint256)
     {
-        Config storage c = configs[msg.sender][id];
+        Config storage c = _configs[id][msg.sender];
         if (c.validUntil == 0) return SIG_VALIDATION_FAILED_UINT;
 
         _beginOperation();
-        (bool ok, uint256 value) = _judgeExecute(_mandates[msg.sender][id][c.epoch], userOp.callData);
+        (bool ok, uint256 value) = _judgeExecute(_mandate(id, c.epoch), userOp.callData);
         if (!ok || value > c.maxValuePerOp) return SIG_VALIDATION_FAILED_UINT;
 
         // Without a paymaster the account pays for gas out of its own
@@ -378,9 +420,9 @@ contract AgentPolicy is IPolicy {
         override
         returns (uint256)
     {
-        Config storage c = configs[msg.sender][id];
+        Config storage c = _configs[id][msg.sender];
         if (c.validUntil == 0) return SIG_VALIDATION_FAILED_UINT;
-        Pending storage p = _mandates[msg.sender][id][c.epoch].x402[hash];
+        Pending storage p = _pending(msg.sender, _mandate(id, c.epoch), hash);
         if (p.value == 0) return SIG_VALIDATION_FAILED_UINT;
         uint48 until = p.validBefore < c.validUntil ? p.validBefore : c.validUntil;
         return packValidationData(ValidAfter.wrap(c.validAfter), ValidUntil.wrap(until));
@@ -412,21 +454,21 @@ contract AgentPolicy is IPolicy {
         uint256 validBefore,
         bytes32 nonce
     ) external {
-        Config storage c = configs[msg.sender][id];
-        Mandate storage m = _mandates[msg.sender][id][c.epoch];
-        TokenLimit storage t = m.tokens[token];
+        Config storage c = _configs[id][msg.sender];
+        bytes32 m = _mandate(id, c.epoch);
+        TokenLimit storage t = _token(msg.sender, m, token);
         bytes32 digest = _x402Digest(t.domainSeparator, msg.sender, to, value, validAfter, validBefore, nonce);
-        Pending storage p = m.x402[digest];
+        Pending storage p = _pending(msg.sender, m, digest);
         if (p.value == 0) revert X402NotRegistered();
         if (block.timestamp < validBefore) revert X402StillLive();
         if (IERC3009State(token).authorizationState(msg.sender, nonce)) revert X402Settled();
         t.spent -= p.value;
         emit X402Reclaimed(msg.sender, id, digest, p.value);
-        delete m.x402[digest];
+        delete _x402[keccak256(abi.encode(m, digest))][msg.sender];
     }
 
     function x402Pending(address account, bytes32 id, bytes32 digest) external view returns (Pending memory) {
-        return _mandates[account][id][configs[account][id].epoch].x402[digest];
+        return _pending(account, _mandate(id, _configs[id][account].epoch), digest);
     }
 
     function _x402Digest(
@@ -446,23 +488,33 @@ contract AgentPolicy is IPolicy {
 
     /// @dev Validation of `x402Authorize(...)`: judged like a transfer of the
     /// token (per-op cap, shared budget), then the digest is recorded.
-    function _registerX402(Mandate storage m, bytes calldata d) internal returns (bool) {
+    function _registerX402(bytes32 m, bytes calldata d) internal returns (bool) {
         if (d.length != 4 + 7 * 32) return false;
         (address token, address from, address to, uint256 value, uint256 validAfter, uint256 validBefore, bytes32 nonce) =
             abi.decode(d[4:], (address, address, address, uint256, uint256, uint256, bytes32));
         if (from != msg.sender) return false; // the account checkUserOpPolicy runs for
-        TokenLimit storage t = m.tokens[token];
+        TokenLimit storage t = _token(msg.sender, m, token);
         if (!t.set || t.domainSeparator == bytes32(0)) return false;
         if (value == 0 || validBefore > type(uint48).max) return false;
         if (_movedThisOperation(token, value) > t.maxPerOp) return false;
-        if (t.payeesOnly && !m.payees[token][to]) return false;
+        if (t.payeesOnly && !_payees[_payeeKey(m, token, to)][msg.sender]) return false;
         uint256 spent = t.spent + value;
         if (spent > t.budget) return false;
         bytes32 digest = _x402Digest(t.domainSeparator, from, to, value, validAfter, validBefore, nonce);
-        Pending storage p = m.x402[digest];
-        if (p.value != 0) return false;
+        if (!_recordX402(m, digest, value, validBefore, token)) return false;
         t.spent = uint128(spent);
-        m.x402[digest] = Pending(uint128(value), uint48(validBefore), token);
+        return true;
+    }
+
+    /// @dev Records a registered authorization; false when its digest is
+    /// already there.
+    function _recordX402(bytes32 m, bytes32 digest, uint256 value, uint256 validBefore, address token)
+        internal
+        returns (bool)
+    {
+        Pending storage p = _pending(msg.sender, m, digest);
+        if (p.value != 0) return false;
+        (p.value, p.validBefore, p.token) = (uint128(value), uint48(validBefore), token);
         return true;
     }
 
@@ -514,7 +566,7 @@ contract AgentPolicy is IPolicy {
     /// @dev Accepts `execute(mode, executionCalldata)` with a single call or a
     /// batch, default exec type, and judges every call; returns the native
     /// value the operation moves.
-    function _judgeExecute(Mandate storage m, bytes calldata callData) internal returns (bool, uint256) {
+    function _judgeExecute(bytes32 m, bytes calldata callData) internal returns (bool, uint256) {
         // selector + mode + offset + length is the smallest well-formed call
         if (callData.length < 100 || bytes4(callData[0:4]) != IERC7579Account.execute.selector) return (false, 0);
         (CallType callType, ExecType execType,,) = ExecLib.decode(ExecMode.wrap(bytes32(callData[4:36])));
@@ -537,7 +589,7 @@ contract AgentPolicy is IPolicy {
 
     /// @dev The account's own batch. A Safe transaction is admitted only as
     /// the leg right after `SafeNonceAssert.check(thatSafe, n)`.
-    function _judgeAccountBatch(Mandate storage m, bytes32[] calldata pointers) internal returns (bool, uint256 moved) {
+    function _judgeAccountBatch(bytes32 m, bytes32[] calldata pointers) internal returns (bool, uint256 moved) {
         if (pointers.length == 0) return (false, 0);
         uint256 i;
         while (i < pointers.length) {
@@ -559,7 +611,7 @@ contract AgentPolicy is IPolicy {
 
     /// @dev Leg `i` is a nonce assertion; leg `i + 1` must be the Safe
     /// transaction it guards.
-    function _judgeGuarded(Mandate storage m, bytes32[] calldata pointers, uint256 i, uint256 value, bytes calldata data)
+    function _judgeGuarded(bytes32 m, bytes32[] calldata pointers, uint256 i, uint256 value, bytes calldata data)
         internal
         returns (bool, uint256)
     {
@@ -575,7 +627,7 @@ contract AgentPolicy is IPolicy {
     /// @dev Decides one call and returns the total value it moves, including
     /// what moves inside it (a Safe transaction, a batch's legs). Token
     /// amounts are charged to their budgets on the way.
-    function _judge(Mandate storage m, address target, uint256 value, bytes calldata data, uint8 from)
+    function _judge(bytes32 m, address target, uint256 value, bytes calldata data, uint8 from)
         internal
         returns (bool ok, uint256 moved)
     {
@@ -584,7 +636,7 @@ contract AgentPolicy is IPolicy {
         // calldata. 1–3 bytes would run the target's fallback, and so would
         // a longer body that happens to start with four zero bytes.
         if (selector == bytes4(0) && data.length != 0) return (false, 0);
-        if (!m.allowed[target][selector]) return (false, 0);
+        if (!_allowed[_allowedKey(m, target, selector)][msg.sender]) return (false, 0);
         // Install refuses these; refused again here so that no mandate, in
         // any version's storage, can reach the account or the policy itself.
         // The EntryPoint is refused at install only, on purpose: checking it
@@ -639,7 +691,7 @@ contract AgentPolicy is IPolicy {
     }
 
     /// @dev An allow-listed Safe: the call that matters is the inner one.
-    function _judgeSafe(Mandate storage m, uint256 value, bytes calldata data, uint8 from)
+    function _judgeSafe(bytes32 m, uint256 value, bytes calldata data, uint8 from)
         internal
         returns (bool ok, uint256 moved)
     {
@@ -649,7 +701,7 @@ contract AgentPolicy is IPolicy {
         if (!decoded) return (false, 0);
         if (operation == 0) {
             (ok, moved) = _judge(m, to, innerValue, inner, FROM_SAFE);
-        } else if (operation == 1 && innerValue == 0 && _selector(inner) == MULTI_SEND && m.allowed[to][MULTI_SEND]) {
+        } else if (operation == 1 && innerValue == 0 && _selector(inner) == MULTI_SEND && _allowed[_allowedKey(m, to, MULTI_SEND)][msg.sender]) {
             (ok, moved) = _judgeBatch(m, inner);
         }
         return ok ? (true, value + moved) : (false, 0);
@@ -664,7 +716,7 @@ contract AgentPolicy is IPolicy {
     /// a vault's `withdraw` or anything else allow-listed on it cannot move
     /// it past its caps or pay an address its payee list does not name.
     /// Install refuses such a mandate; this is the same rule at validation.
-    function _chargeToken(Mandate storage m, address token, bytes4 selector, bytes calldata data)
+    function _chargeToken(bytes32 m, address token, bytes4 selector, bytes calldata data)
         internal
         returns (bool)
     {
@@ -672,7 +724,7 @@ contract AgentPolicy is IPolicy {
         if (selector == ERC20_TRANSFER || selector == ERC20_APPROVE || selector == ERC20_INCREASE_ALLOWANCE) arg = 1;
         else if (selector == ERC20_TRANSFER_FROM) arg = 2;
 
-        TokenLimit storage t = m.tokens[token];
+        TokenLimit storage t = _token(msg.sender, m, token);
         if (arg == 0) return !t.set;
         if (!t.set) return false;
         uint256 end = 4 + 32 * (arg + 1);
@@ -682,7 +734,7 @@ contract AgentPolicy is IPolicy {
             // the word before the amount; a token reads its low 160 bits, so
             // anything above them would name one address here and pay another
             uint256 payee = uint256(bytes32(data[end - 64:end - 32]));
-            if (payee >> 160 != 0 || !m.payees[token][address(uint160(payee))]) return false;
+            if (payee >> 160 != 0 || !_payees[_payeeKey(m, token, address(uint160(payee)))][msg.sender]) return false;
         }
         if (_movedThisOperation(token, amount) > t.maxPerOp) return false;
         uint256 spent = t.spent + amount;
@@ -694,7 +746,7 @@ contract AgentPolicy is IPolicy {
     /// @dev `multiSend(bytes transactions)`, each transaction packed as
     /// `operation (1) ‖ to (20) ‖ value (32) ‖ dataLength (32) ‖ data`.
     /// Every leg must be a CALL the mandate accepts.
-    function _judgeBatch(Mandate storage m, bytes calldata d) internal returns (bool, uint256 moved) {
+    function _judgeBatch(bytes32 m, bytes calldata d) internal returns (bool, uint256 moved) {
         (bool ok, bytes calldata txs) = _batchTransactions(d);
         if (!ok || txs.length == 0) return (false, 0);
         uint256 i;
@@ -708,7 +760,7 @@ contract AgentPolicy is IPolicy {
     }
 
     /// @dev Judges the batch leg at `i` and returns where the next one starts.
-    function _judgeLeg(Mandate storage m, bytes calldata txs, uint256 i)
+    function _judgeLeg(bytes32 m, bytes calldata txs, uint256 i)
         internal
         returns (bool ok, uint256 moved, uint256 next)
     {
