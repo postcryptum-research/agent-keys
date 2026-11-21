@@ -2,7 +2,8 @@
 
 What a bundler that enforces the ERC-7562 validation rules makes of an agent
 operation, and a way to ask again after a change. Everything here is from runs
-on Base Sepolia and on a local fork of it on 2026-11-20 (UTC).
+on Base Sepolia and on a local fork of it on 2026-11-20 (UTC); traces 7 and 8
+are from 2026-11-21, after the policy's storage was changed (#87).
 
 ## The result in two tables
 
@@ -42,12 +43,20 @@ traces in `traces/`:
 | 4 test policy: persistent write at slot 0 | refused: forbidden access to slot 0 |
 | 5 test policy: transient write at slot 0 | refused: forbidden access to slot 0 |
 | 6 test policy: transient write at `keccak(sender ‖ 1)` | storage passes; stops at the P-256 precompile, see below |
+| 7 `AgentPolicy` as deployed on 2026-11-21 (`0x12b7…e0E2`), an operation without a token call | storage passes: 6 slots of the policy, all the sender's; stops at the P-256 precompile |
+| 8 the same instance, an `x402Authorize` under a token limit | storage passes: 11 slots of the policy, all the sender's; stops at the P-256 precompile |
 
 The exact messages are in `expected.json`, each trace twice: the checker as it
 is, and with the P-256 precompile allowed (below). The checker's message says
 "read from" also where the slot is written; the branch it comes from is the
 one for written slots.
 
+- **Traces 7 and 8** are the policy after #87, whose every slot is
+  `keccak(account ‖ x) + n`: operations of an account whose permission was
+  rotated onto the instance on chain, traced on a fork at block 61724385
+  where the policy's code was first compared with the code on chain. They
+  are the answer to traces 1 and 2, which stay as the record of the layout
+  before.
 - **Traces 5 and 6:** the checker treats transient storage as storage, and
   accepts the form `keccak(sender ‖ x)`. The per-operation sum of #76 has that
   form.
