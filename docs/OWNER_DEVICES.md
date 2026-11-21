@@ -70,7 +70,7 @@ Fit — suitability for the owner role: H / M / L. Prices are a 2026 guideline.
 | Keycard (+ Shell) | card ~$25–30 [I]; Shell €109 discounted (usually €149) [V](https://get.keycard.tech/pages/keycard-shell) | **secp256k1**, "hash in — signature out", APDU with secure channel [V](https://docs.keycard.tech/en/developers) | ECDSAValidator | PIN + pairing; Shell has a screen and keypad | open applet and Shell | PC/SC + its own secure channel; no Rust crate [V: no `keycard` on crates.io] | M |
 | Satochip | ~€25 + reader ~€15 [V](https://sitegeek.fr/article-technologie/satochip-test-du-hardware-wallet-pour-vos-cryptomonnaies-open-source-et-abordable) | **secp256k1**, hash signing [I] | ECDSAValidator | PIN | open applet [V](https://github.com/Toporin/SatoChipApplet) | PC/SC, its own protocol, no Rust crate | L–M |
 | **Ledger Nano S Plus** | ~$59–79 [V](https://financer.com/crypto/crypto-wallet-hardware/) | (1) Ethereum app: secp256k1, `personal_sign` | (1) **ECDSAValidator** (address above) | screen + 2 buttons, PIN on the device; seed backup | Secure Element closed; OS partly open, apps open | `alloy-signer-ledger` 2.5 [V crates.io], `coins-ledger` | **H** |
-|  |  | (2) **OpenPGP app**: secp256r1, `cx_ecdsa_sign_no_throw(..., CX_NONE, digest)`, i.e. a **raw digest** without hashing; builds for Nano S Plus (`TARGET_NANOS2`) [V](https://github.com/LedgerHQ/app-openpgp/blob/HEAD/src/gpg_pso.c) | (2) **P256Validator as is** | UIF confirmation on the device + PW1 PIN [V same file] | open app | `openpgp-card` (PC/SC CCID) [I: the Ledger OpenPGP app appears as a CCID card] | H/M |
+|  |  | (2) **OpenPGP app**: secp256r1, `cx_ecdsa_sign_no_throw(..., CX_NONE, digest)`, i.e. a **raw digest** without hashing; builds for Nano S Plus (`TARGET_NANOS2`) [V](https://github.com/LedgerHQ/app-openpgp/blob/HEAD/src/gpg_pso.c) | (2) **P256Validator as is** | UIF confirmation on the device + PW1 PIN [V same file] | open app | `openpgp-card` (PC/SC CCID) [V: it does; run on 2026-11-21, see the end of section 2] | H/M |
 |  |  | (3) Security Key app: FIDO2/U2F; resident keys disabled [V](https://developers.ledger.com/docs/ai-tools/hardware-security/security-key) | (3) WebAuthnValidator (non-resident will do) | button | | CTAP2 | M |
 |  |  | (4) SSH/PGP Agent app — **DEPRECATED** [V](https://github.com/LedgerHQ/app-ssh-agent) | — | | | | — |
 | **Trezor Safe 3 / Safe 5** | $59 / ~$129 [V](https://financer.com/crypto/crypto-wallet-hardware/) | (1) Ethereum: secp256k1, `personal_sign` | (1) ECDSAValidator | screen + button or touch, PIN on the device; seed | **fully open FW** | `alloy-signer-trezor` 2.5, `trezor-client` 0.1.6 [V crates.io] | **H** |
@@ -120,10 +120,46 @@ a CTAP2 stack in the CLI. Keys with PIV/OpenPGP for the same money are simpler f
 ### "Already in hand"
 | What | How to use it as owner | Validator | Work |
 |---|---|---|---|
-| **Ledger Nano S Plus** | (a) Ethereum app, `personal_sign(userOpHash)`; (b) OpenPGP app, secp256r1 key, PSO:CDS over userOpHash | (a) ECDSAValidator `0x845A…cE57` (already on Base); (b) P256Validator as is | (a) `alloy-signer-ledger` → `signMessage`, root = ECDSAValidator: change of the root validator + CLI support; (b) `openpgp-card` client + DER/MPI → `r‖s` + low-s. Option (b) does not change the chain at all [V app-openpgp code; I — that the app installs from Ledger Live on the S Plus] |
+| **Ledger Nano S Plus** | (a) Ethereum app, `personal_sign(userOpHash)`; (b) OpenPGP app, secp256r1 key, PSO:CDS over userOpHash | (a) ECDSAValidator `0x845A…cE57` (already on Base); (b) P256Validator as is | (a) `alloy-signer-ledger` → `signMessage`, root = ECDSAValidator: change of the root validator + CLI support; (b) `openpgp-card` client + DER/MPI → `r‖s` + low-s. Option (b) does not change the chain at all [V app-openpgp code; V — the app installs on the S Plus, run on 2026-11-21] |
 | **YubiKey 5 PIV** | slot 9c, PIN always + touch always (`docs/YUBIKEY.md`) | P256Validator as is | zero: the backend exists; it is the current owner key of the test accounts |
 | **TROPIC01 devkit** | a separate USB owner device, plugged in only for owner operations, with a private pairing key (§3) | P256Validator as is | provisioning the pairing key (SH1), UAP restrictions, invalidate SH0; storing SH1-priv (encrypted) on the owner machine |
 | **TPM of a second machine / Windows PC / Mac** | owner key on another machine, the CLI runs there | P256Validator as is | zero for the TPM and CNG; for a Mac, zero without presence and a shim change for Touch ID: the `tpm`, `windows_tpm`, Secure Enclave backends already exist; only moving root operations (`sudo agent-signer permission …`) to that machine is needed |
+
+### Ledger, the OpenPGP app: the first experiment (2026-11-21)
+
+Run before any backend code, with `gpg-connect-agent` commands only: a Ledger
+Nano S Plus with the OpenPGP app (card specification 3.3), from macOS with
+GnuPG 2.5.18 over PC/SC.
+
+- **The P-256 path works.** A key generated on the device in the signature
+  slot (template `nistp256`) signed a 32-byte digest of our choosing as is.
+  The answer is `r` and `s` in two 33-byte fields, each with a leading zero;
+  cut to 32 bytes it verifies with `agent-signer verify` and with the P-256
+  precompile on Base Sepolia. The vector is
+  `contracts/test/vectors/p256_ledger_openpgp.json`. `s` happened to be low;
+  a backend still has to normalise.
+- **The confirmation is blind.** With the app's UIF setting on for
+  signatures the device shows a confirmation screen that names a signature
+  and nothing of the digest; two button actions approve it.
+- **The PIN was asked on the computer.** GnuPG prompted for the app's PINs
+  itself. The host does offer PIN verification on the reader for this device
+  (the PC/SC feature `VERIFY_PIN_DIRECT`), so a backend of our own could keep
+  the PIN off the computer; not tried.
+- **Five seconds on macOS's built-in CCID driver.** That driver gave up 5.0 s
+  after the signing request, while the device waited for the confirmation. A
+  confirmation given later still signed on the device (its signature counter
+  rose), the answer was lost, and the device had to be plugged in again.
+  Ledger's guide recommends macOS's other driver (`useIFDCCID`); not tried.
+- **The app's data does not survive updates**
+  [V](https://openpgp.apps.ledger.com/app-openpgp.html): keys, PINs and
+  settings are erased when the app or the device's OS is updated. In the
+  app's seed mode the keys can be regenerated from the device's seed;
+  otherwise they are gone. An owner key held this way needs a recovery key
+  in place before any update.
+- The app's PINs have public default values; change them before real use.
+
+Not done: a backend, an account with such a key as its root, the secp256k1
+route, a Trezor.
 
 ---
 
