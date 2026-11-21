@@ -106,9 +106,11 @@ impl Chain {
     /// For the ERC-7562 check (`scripts/erc7562`, issue #83). With
     /// `ERC7562_TRACER` naming a file with the bundler's validation tracer and
     /// `ERC7562_TRACE_DIR` a directory, every `handleOps` this test got
-    /// included is run again on the state before its block, under that
-    /// tracer, and the trace is written there with the operation's
-    /// transaction. Without them this does nothing. Needs an anvil that runs
+    /// included and that did not revert is run again on the state before its
+    /// block, under that tracer, and the trace is written there with the
+    /// operation's transaction. (anvil mines a block per transaction here, so
+    /// the state before the block is the state the operation met.) Without
+    /// the two variables this does nothing. Needs an anvil that runs
     /// JavaScript tracers.
     fn write_validation_traces(&self) {
         let (Ok(tracer), Ok(out)) = (std::env::var("ERC7562_TRACER"), std::env::var("ERC7562_TRACE_DIR")) else { return };
@@ -118,17 +120,23 @@ impl Chain {
         let latest = u64::from_str_radix(self.rpc("eth_blockNumber", json!([])).as_str().unwrap().trim_start_matches("0x"), 16).unwrap();
         for n in 1..=latest {
             let block = self.rpc("eth_getBlockByNumber", json!([format!("0x{n:x}"), true]));
-            for tx in block["transactions"].as_array().unwrap() {
+            let txs = block["transactions"].as_array().unwrap();
+            for (i, tx) in txs.iter().enumerate() {
                 let input = tx["input"].as_str().unwrap();
                 // handleOps(PackedUserOperation[],address)
                 if tx["to"].as_str().map(str::to_lowercase).as_deref() != Some(&entry_point) || !input.starts_with("0x765e827f") {
                     continue;
                 }
+                // a `handleOps` that reverted on chain (a test of a refusal) included no operation
+                if self.rpc("eth_getTransactionReceipt", json!([tx["hash"]]))["status"] != "0x1" {
+                    continue;
+                }
+                assert_eq!(txs.len(), 1, "block {n} has more than one transaction: the state before it is not the state the operation met");
                 let trace = self.rpc(
                     "debug_traceCall",
                     json!([{"from": tx["from"], "to": TRACE_VIA[0], "data": input, "gas": "0x1c9c380"}, format!("0x{:x}", n - 1), {"tracer": tracer}]),
                 );
-                let file = Path::new(&out).join(format!("{}-{n:04}.json", self.test));
+                let file = Path::new(&out).join(format!("{}-{n:04}-{i}.json", self.test));
                 std::fs::write(file, json!({"test": self.test, "block": n, "from": tx["from"], "input": input, "trace": trace}).to_string()).unwrap();
             }
         }

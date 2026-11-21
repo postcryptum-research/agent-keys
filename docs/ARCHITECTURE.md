@@ -157,7 +157,10 @@ Any platform — software backend, no hardware needed:
 
 ```sh
 cd signer && cargo test
-cd contracts && forge test        # RIP-7212 enabled locally via `odyssey = true`
+cd contracts && forge test --evm-version osaka
+# The P-256 precompile (RIP-7212): an older forge takes it from `odyssey = true`
+# in foundry.toml, a newer one ignores that key and has it with Osaka only, so
+# without the flag every P-256 check fails there (AA24). CI runs forge 1.10.0.
 ```
 
 Linux — TPM backend:
