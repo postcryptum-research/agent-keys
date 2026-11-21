@@ -16,9 +16,13 @@ interface IGPv2Settlement {
 ///           pair's lowest price, which every pair has;
 ///         - it is a sell order, filled whole or not at all, with both
 ///           balances plain ERC-20 (not Balancer's vault);
-///         - its `appData` is the one the owner pinned.
-///         The most it can take is `sellAmount + feeAmount`: the settlement
-///         adds up what an order filled and caps it.
+///         - its `appData` is the one the owner pinned;
+///         - its `feeAmount` is zero, so that the lowest price is the price
+///           of everything that leaves the account. (CoW takes its fee from
+///           the surplus today and wants this field zero; the rule here does
+///           not rest on that.)
+///         The most it can take is then `sellAmount`: the settlement adds up
+///         what an order filled and caps it.
 ///
 /// No storage, no upgrade path, no `delegatecall`, no `selfdestruct`: the
 /// settlement's EIP-712 domain separator and its relayer are read once, in
@@ -78,6 +82,8 @@ contract CowSwapDecoder is IVenueDecoder {
     error NotPlainErc20();
     error OtherAppData(bytes32 appData);
     error NothingToSell();
+    error FeeNotZero();
+    error PairListedTwice();
     error InvalidConfig();
 
     bytes32 public constant ORDER_TYPE_HASH = keccak256(
@@ -86,6 +92,9 @@ contract CowSwapDecoder is IVenueDecoder {
     bytes32 public constant KIND_SELL = keccak256("sell");
     bytes32 public constant BALANCE_ERC20 = keccak256("erc20");
     uint256 internal constant ORDER_LENGTH = 12 * 32;
+    /// The most pairs a config may list: `judge` reads them all, inside a
+    /// gas bound.
+    uint256 public constant MAX_PAIRS = 16;
 
     address public immutable settlement;
     bytes32 public immutable domainSeparator;
@@ -113,10 +122,11 @@ contract CowSwapDecoder is IVenueDecoder {
         if (o.sellTokenBalance != BALANCE_ERC20 || o.buyTokenBalance != BALANCE_ERC20) revert NotPlainErc20();
         if (o.appData != c.appData) revert OtherAppData(o.appData);
         if (o.sellAmount == 0) revert NothingToSell();
+        if (o.feeAmount != 0) revert FeeNotZero();
         _checkPair(c.pairs, o);
 
         sellToken = o.sellToken;
-        mostSold = o.sellAmount + o.feeAmount; // checked: an overflow is a refusal
+        mostSold = o.sellAmount;
         validTo = o.validTo;
         notBefore = o.validTo > c.maxLife ? uint48(o.validTo - c.maxLife) : 0;
         digest = _digest(order);
@@ -134,7 +144,7 @@ contract CowSwapDecoder is IVenueDecoder {
     /// a lowest price for every pair.
     function checkConfig(bytes calldata config) external pure returns (bool) {
         Config memory c = abi.decode(config, (Config));
-        if (c.pairs.length == 0 || c.maxLife == 0) revert InvalidConfig();
+        if (c.pairs.length == 0 || c.pairs.length > MAX_PAIRS || c.maxLife == 0) revert InvalidConfig();
         for (uint256 i; i < c.pairs.length; i++) {
             Pair memory p = c.pairs[i];
             if (p.sellToken == address(0) || p.buyToken == address(0) || p.sellToken == p.buyToken) {
@@ -154,20 +164,26 @@ contract CowSwapDecoder is IVenueDecoder {
         return abi.decode(order, (Order));
     }
 
+    /// @dev `judge` does not rest on `checkConfig` having been asked: a
+    /// config with too many pairs, a pair without a price or a pair listed
+    /// twice (which of its two prices would hold?) allows nothing.
     function _checkPair(Pair[] memory pairs, Order memory o) internal pure {
+        if (pairs.length > MAX_PAIRS) revert InvalidConfig();
+        bool found;
         for (uint256 i; i < pairs.length; i++) {
             Pair memory p = pairs[i];
             if (p.sellToken != o.sellToken || p.buyToken != o.buyToken) continue;
-            if (p.sellToken == p.buyToken) break;
-            // a pair without a price is not a pair: refused here too, whatever checkConfig said
-            if (p.minBuy == 0 || p.perSell == 0) break;
+            if (found) revert PairListedTwice();
+            found = true;
+            if (p.sellToken == p.buyToken || p.minBuy == 0 || p.perSell == 0) {
+                revert PairNotListed(o.sellToken, o.buyToken);
+            }
             // buyAmount / sellAmount >= minBuy / perSell, in 512 bits
             (uint256 hi1, uint256 lo1) = _mul(o.buyAmount, p.perSell);
             (uint256 hi2, uint256 lo2) = _mul(o.sellAmount, p.minBuy);
             if (hi1 < hi2 || (hi1 == hi2 && lo1 < lo2)) revert BelowTheLowestPrice();
-            return;
         }
-        revert PairNotListed(o.sellToken, o.buyToken);
+        if (!found) revert PairNotListed(o.sellToken, o.buyToken);
     }
 
     /// @dev The full 512-bit product.

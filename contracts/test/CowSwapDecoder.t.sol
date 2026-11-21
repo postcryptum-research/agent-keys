@@ -68,7 +68,7 @@ contract CowSwapDecoderTest is Test {
             buyAmount: 0.05 ether,
             validTo: 1_800_000_000,
             appData: APP_DATA,
-            feeAmount: 1e6,
+            feeAmount: 0,
             kind: decoder.KIND_SELL(),
             partiallyFillable: false,
             sellTokenBalance: decoder.BALANCE_ERC20(),
@@ -98,7 +98,7 @@ contract CowSwapDecoderTest is Test {
     function test_judge_anAllowedOrder() public view {
         (address sellToken, uint256 mostSold, uint48 notBefore, uint48 validTo,) = _judge(_order());
         assertEq(sellToken, USDC);
-        assertEq(mostSold, 201e6, "the fee is part of what the order can take");
+        assertEq(mostSold, 200e6);
         assertEq(validTo, 1_800_000_000);
         assertEq(notBefore, 1_800_000_000 - LIFE, "registered no earlier than its lifetime before its end");
     }
@@ -191,11 +191,35 @@ contract CowSwapDecoderTest is Test {
         o.sellAmount = 0;
         _refused(o, abi.encodeWithSelector(CowSwapDecoder.NothingToSell.selector));
 
-        // a fee that overflows the sum is a refusal (a panic), not a small charge
+        // any fee: it would leave the account outside the lowest price
         o = _order();
-        o.feeAmount = type(uint256).max;
-        vm.expectRevert();
-        decoder.judge(account, abi.encode(_config()), abi.encode(o));
+        o.feeAmount = 1;
+        _refused(o, abi.encodeWithSelector(CowSwapDecoder.FeeNotZero.selector));
+    }
+
+    /// `judge` on a config `checkConfig` would have refused: a pair twice
+    /// (the first with a lax price) allows nothing, and neither do too many pairs.
+    function test_judge_doesNotRestOnCheckConfig() public {
+        bytes memory order = abi.encode(_order());
+        CowSwapDecoder.Config memory c = _config();
+        c.pairs[1] = CowSwapDecoder.Pair(USDC, WETH, 1, type(uint256).max);
+        vm.expectRevert(abi.encodeWithSelector(CowSwapDecoder.PairListedTwice.selector));
+        decoder.judge(account, abi.encode(c), order);
+        (c.pairs[0], c.pairs[1]) = (c.pairs[1], c.pairs[0]);
+        vm.expectRevert(abi.encodeWithSelector(CowSwapDecoder.PairListedTwice.selector));
+        decoder.judge(account, abi.encode(c), order);
+
+        c = _config();
+        CowSwapDecoder.Pair[] memory many = new CowSwapDecoder.Pair[](17);
+        many[0] = c.pairs[0];
+        for (uint160 i = 1; i < 17; i++) {
+            many[i] = CowSwapDecoder.Pair(address(i), address(i + 100), 1, 1);
+        }
+        c.pairs = many;
+        vm.expectRevert(abi.encodeWithSelector(CowSwapDecoder.InvalidConfig.selector));
+        decoder.judge(account, abi.encode(c), order);
+        vm.expectRevert(abi.encodeWithSelector(CowSwapDecoder.InvalidConfig.selector));
+        decoder.checkConfig(abi.encode(c));
     }
 
     /// Exactly twelve words, each in its canonical form: nothing rides along
@@ -363,7 +387,7 @@ contract CowSwapDecoderTest is Test {
         if (broken != 8) o.buyTokenBalance = good.buyTokenBalance;
         o.sellAmount = bound(o.sellAmount, 0, 1e30);
         o.buyAmount = bound(o.buyAmount, 0, 1e30);
-        o.feeAmount = bound(o.feeAmount, 0, 1e30);
+        if (broken != 9) o.feeAmount = 0;
 
         try decoder.judge(account, abi.encode(_config()), abi.encode(o)) returns (
             address sellToken, uint256 mostSold, uint48 notBefore, uint48 validTo, bytes32
@@ -380,7 +404,8 @@ contract CowSwapDecoderTest is Test {
             assertEq(o.appData, APP_DATA);
             assertGt(o.sellAmount, 0);
             assertEq(sellToken, o.sellToken);
-            assertEq(mostSold, o.sellAmount + o.feeAmount);
+            assertEq(o.feeAmount, 0, "no fee outside the price");
+            assertEq(mostSold, o.sellAmount);
             assertEq(validTo, o.validTo);
             assertEq(uint256(notBefore) + LIFE >= o.validTo, true);
             assertLe(notBefore, o.validTo);
