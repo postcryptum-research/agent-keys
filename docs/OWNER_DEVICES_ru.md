@@ -20,6 +20,8 @@
 > Status on 2026-11-19: the YubiKey 5 PIV backend, the phone owner apps, the
 > encrypted key file, the recovery validator and `owner set-root` are
 > implemented; the cells that state the project's status say so.
+> On 2026-11-21 the Ledger OpenPGP route was run once: the record of that
+> run, and what a device app of our own would change, close section 2.
 
 
 Дата: 2026-10-20. Утверждения о состоянии самого проекта приведены к дереву 2026-11-19 (бэкенд YubiKey PIV, приложения владельца на телефоне, ключ-файл, recovery-валидатор, `owner set-root`). Метки: **[V]** — проверено (URL или
@@ -69,7 +71,7 @@ Fit — пригодность для owner-роли: H / M / L. Цены — о
 | Keycard (+ Shell) | карта ~$25–30 [I]; Shell €109 со скидкой (обычно €149) [V](https://get.keycard.tech/pages/keycard-shell) | **secp256k1**, «хэш входит — подпись выходит», APDU с secure channel [V](https://docs.keycard.tech/en/developers) | ECDSAValidator | PIN + pairing; у Shell экран и клавиатура | открытые апплет и Shell | PC/SC + свой secure channel; Rust-крейта нет [V: на crates.io нет `keycard`] | M |
 | Satochip | ~€25 + ридер ~€15 [V](https://sitegeek.fr/article-technologie/satochip-test-du-hardware-wallet-pour-vos-cryptomonnaies-open-source-et-abordable) | **secp256k1**, подпись хэша [I] | ECDSAValidator | PIN | открытый апплет [V](https://github.com/Toporin/SatoChipApplet) | PC/SC, протокол свой, Rust-крейта нет | L–M |
 | **Ledger Nano S Plus** | ~$59–79 [V](https://financer.com/crypto/crypto-wallet-hardware/) | (1) Ethereum app: secp256k1, `personal_sign` | (1) **ECDSAValidator** (адрес выше) | экран + 2 кнопки, PIN на устройстве; seed-backup | Secure Element закрыт; OS частично открыта, приложения открыты | `alloy-signer-ledger` 2.5 [V crates.io], `coins-ledger` | **H** |
-|  |  | (2) **OpenPGP app**: secp256r1, `cx_ecdsa_sign_no_throw(..., CX_NONE, digest)`, то есть **сырой дайджест** без хэширования; собирается для Nano S Plus (`TARGET_NANOS2`) [V](https://github.com/LedgerHQ/app-openpgp/blob/HEAD/src/gpg_pso.c) | (2) **P256Validator как есть** | UIF-подтверждение на устройстве + PW1 PIN [V тот же файл] | открытое приложение | `openpgp-card` (PC/SC CCID) [V: виден; прогон 2026-11-21, см. конец раздела 2] | H/M |
+|  |  | (2) **OpenPGP app**: secp256r1, `cx_ecdsa_sign_no_throw(..., CX_NONE, digest)`, то есть **сырой дайджест** без хэширования; собирается для Nano S Plus (`TARGET_NANOS2`) [V](https://github.com/LedgerHQ/app-openpgp/blob/HEAD/src/gpg_pso.c) | (2) **P256Validator как есть** | UIF-подтверждение на устройстве + PW1 PIN [V тот же файл]; в прогоне 2026-11-21 подтверждение ничего не показало о дайджесте, а PIN GnuPG запросил на компьютере | открытое приложение | `openpgp-card` (PC/SC CCID) [V: виден; прогон 2026-11-21, см. конец раздела 2] | H/M |
 |  |  | (3) Security Key app: FIDO2/U2F; resident keys выключены [V](https://developers.ledger.com/docs/ai-tools/hardware-security/security-key) | (3) WebAuthnValidator (non-resident подойдёт) | кнопка | | CTAP2 | M |
 |  |  | (4) SSH/PGP Agent app — **DEPRECATED** [V](https://github.com/LedgerHQ/app-ssh-agent) | — | | | | — |
 | **Trezor Safe 3 / Safe 5** | $59 / ~$129 [V](https://financer.com/crypto/crypto-wallet-hardware/) | (1) Ethereum: secp256k1, `personal_sign` | (1) ECDSAValidator | экран + кнопка или тач, PIN на устройстве; seed | **полностью открытая FW** | `alloy-signer-trezor` 2.5, `trezor-client` 0.1.6 [V crates.io] | **H** |
@@ -110,7 +112,12 @@ CTAP2-стек в CLI. Ключи с PIV/OpenPGP за те же деньги п�
 - **Отдельное устройство с экраном и seed-backup + recovery-фактор на цепи.**
   Основной вариант: Trezor (Safe 3/5/7, `SignIdentity` nist256p1 →
   `P256Validator`) или Ledger (OpenPGP app secp256r1 → `P256Validator`; либо
-  Ethereum app → `ECDSAValidator`). Recovery: второй валидатор с доступом
+  Ethereum app → `ECDSAValidator`). По прогону 2026-11-21 приложение
+  OpenPGP на Ledger ничего не показывает о дайджесте на экране и теряет
+  ключи при обновлении: в нынешнем виде оно этой планке не соответствует
+  (запись прогона и то, что изменило бы собственное приложение, — в конце
+  этого раздела).
+  Recovery: второй валидатор с доступом
   **только** к `changeRootValidator` (см. §5) — холодный ключ в сейфе или
   второе устройство.
 - Подписывать с машины, которая **не** хост агента. userOpHash сверять на

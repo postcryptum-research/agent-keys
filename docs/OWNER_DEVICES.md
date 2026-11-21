@@ -21,6 +21,8 @@
 > Status on 2026-11-19: the YubiKey 5 PIV backend, the phone owner apps, the
 > encrypted key file, the recovery validator and `owner set-root` are
 > implemented; the cells that state the project's status say so.
+> On 2026-11-21 the Ledger OpenPGP route was run once: the record of that
+> run, and what a device app of our own would change, close section 2.
 
 
 Date: 2026-10-20. The statements about the project's own status were brought up to the tree on 2026-11-19 (YubiKey PIV backend, phone owner apps, key file, recovery validator, `owner set-root`). Markers: **[V]** — verified (URL or
@@ -70,7 +72,7 @@ Fit — suitability for the owner role: H / M / L. Prices are a 2026 guideline.
 | Keycard (+ Shell) | card ~$25–30 [I]; Shell €109 discounted (usually €149) [V](https://get.keycard.tech/pages/keycard-shell) | **secp256k1**, "hash in — signature out", APDU with secure channel [V](https://docs.keycard.tech/en/developers) | ECDSAValidator | PIN + pairing; Shell has a screen and keypad | open applet and Shell | PC/SC + its own secure channel; no Rust crate [V: no `keycard` on crates.io] | M |
 | Satochip | ~€25 + reader ~€15 [V](https://sitegeek.fr/article-technologie/satochip-test-du-hardware-wallet-pour-vos-cryptomonnaies-open-source-et-abordable) | **secp256k1**, hash signing [I] | ECDSAValidator | PIN | open applet [V](https://github.com/Toporin/SatoChipApplet) | PC/SC, its own protocol, no Rust crate | L–M |
 | **Ledger Nano S Plus** | ~$59–79 [V](https://financer.com/crypto/crypto-wallet-hardware/) | (1) Ethereum app: secp256k1, `personal_sign` | (1) **ECDSAValidator** (address above) | screen + 2 buttons, PIN on the device; seed backup | Secure Element closed; OS partly open, apps open | `alloy-signer-ledger` 2.5 [V crates.io], `coins-ledger` | **H** |
-|  |  | (2) **OpenPGP app**: secp256r1, `cx_ecdsa_sign_no_throw(..., CX_NONE, digest)`, i.e. a **raw digest** without hashing; builds for Nano S Plus (`TARGET_NANOS2`) [V](https://github.com/LedgerHQ/app-openpgp/blob/HEAD/src/gpg_pso.c) | (2) **P256Validator as is** | UIF confirmation on the device + PW1 PIN [V same file] | open app | `openpgp-card` (PC/SC CCID) [V: it does; run on 2026-11-21, see the end of section 2] | H/M |
+|  |  | (2) **OpenPGP app**: secp256r1, `cx_ecdsa_sign_no_throw(..., CX_NONE, digest)`, i.e. a **raw digest** without hashing; builds for Nano S Plus (`TARGET_NANOS2`) [V](https://github.com/LedgerHQ/app-openpgp/blob/HEAD/src/gpg_pso.c) | (2) **P256Validator as is** | UIF confirmation on the device + PW1 PIN [V same file]; in the run of 2026-11-21 the confirmation showed nothing of the digest and GnuPG asked for the PIN on the computer | open app | `openpgp-card` (PC/SC CCID) [V: it does; run on 2026-11-21, see the end of section 2] | H/M |
 |  |  | (3) Security Key app: FIDO2/U2F; resident keys disabled [V](https://developers.ledger.com/docs/ai-tools/hardware-security/security-key) | (3) WebAuthnValidator (non-resident will do) | button | | CTAP2 | M |
 |  |  | (4) SSH/PGP Agent app — **DEPRECATED** [V](https://github.com/LedgerHQ/app-ssh-agent) | — | | | | — |
 | **Trezor Safe 3 / Safe 5** | $59 / ~$129 [V](https://financer.com/crypto/crypto-wallet-hardware/) | (1) Ethereum: secp256k1, `personal_sign` | (1) ECDSAValidator | screen + button or touch, PIN on the device; seed | **fully open FW** | `alloy-signer-trezor` 2.5, `trezor-client` 0.1.6 [V crates.io] | **H** |
@@ -111,7 +113,11 @@ a CTAP2 stack in the CLI. Keys with PIV/OpenPGP for the same money are simpler f
 - **A separate device with a screen and seed backup + an on-chain recovery factor.**
   Main option: Trezor (Safe 3/5/7, `SignIdentity` nist256p1 →
   `P256Validator`) or Ledger (OpenPGP app secp256r1 → `P256Validator`; or
-  Ethereum app → `ECDSAValidator`). Recovery: a second validator with access
+  Ethereum app → `ECDSAValidator`). As run on 2026-11-21, the Ledger's
+  OpenPGP app shows nothing of the digest on its screen and loses its keys
+  on an update: as it stands it does not meet this bar (the record, and what
+  a device app of our own would change, are at the end of this section).
+  Recovery: a second validator with access
   **only** to `changeRootValidator` (see §5) — a cold key in a safe or
   a second device.
 - Sign from a machine that is **not** the agent host. Check the userOpHash on

@@ -557,7 +557,7 @@ the short form is the table in `HOW_IT_WORKS.md`.)
 |---|---|---|---|---|
 | Encrypted P-256 file on a USB drive (implemented: `keyfile.rs`; installed on the testnet account) | 2 USB drives + QR of the ciphertext | `P256RecoveryValidator` | cheap; copyable; our curve | key in host memory at signing time [V KEY_POLICY rule 5]; passphrase gets forgotten; no presence |
 | Trezor `SignIdentity` nist256p1 | device + seed of 12–24 words | `P256RecoveryValidator` as is | key in hardware, seed restores onto **any** new Trezor; screen and PIN | $59; needs the `trezor-client` client |
-| Ledger OpenPGP app in **Seed Mode** | device + seed | `P256RecoveryValidator` | builds for the Nano S Plus | without Seed Mode the key is wiped on an app/OS update [V]; PIN 3 attempts → wipe |
+| Ledger OpenPGP app in **Seed Mode** | device + seed | `P256RecoveryValidator` | runs on the Nano S Plus: one signature for `P256Validator`, 2026-11-21, without Seed Mode ([`OWNER_DEVICES.md`](OWNER_DEVICES.md), the end of section 2) | without Seed Mode the key is wiped on an app/OS update [V]; PIN 3 attempts → wipe; the confirmation on the device shows nothing of what is signed |
 | Ledger/Trezor Ethereum app | device + seed | ZeroDev `ECDSAValidator` `0x845A…cE57` as the recovery validator + `grantAccess(changeRootValidator)` | no code on the device; seed | secp256k1; a second branch in the CLI (alloy-signer-ledger/trezor) |
 | Paper P-256 key, imported into an SE when needed | paper in a safe | `P256RecoveryValidator` | everlasting medium | a plaintext key on paper contradicts rule 5 (which allows only an *encrypted* medium) — only as a QR of the **ciphertext** |
 

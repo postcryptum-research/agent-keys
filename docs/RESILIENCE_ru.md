@@ -552,7 +552,7 @@ https://man.archlinux.org/man/extra/tpm2-tools/tpm2_clearcontrol.1.en].
 |---|---|---|---|---|
 | Зашифрованный P-256 файл на флешке (реализовано: `keyfile.rs`; установлен на тестнет-аккаунте) | 2 флешки + QR шифротекста | `P256RecoveryValidator` | дёшево; копируемо; кривая наша | ключ в памяти хоста в момент подписи [V KEY_POLICY rule 5]; пароль забывается; нет presence |
 | Trezor `SignIdentity` nist256p1 | устройство + seed 12–24 слова | `P256RecoveryValidator` как есть | ключ в железе, seed восстанавливается на **любом** новом Trezor; экран и PIN | $59; нужен клиент `trezor-client` |
-| Ledger OpenPGP-app в **Seed Mode** | устройство + seed | `P256RecoveryValidator` | собирается для Nano S Plus | без Seed Mode ключ стирается при обновлении app/OS [V]; PIN 3 попытки → wipe |
+| Ledger OpenPGP-app в **Seed Mode** | устройство + seed | `P256RecoveryValidator` | работает на Nano S Plus: одна подпись для `P256Validator`, 2026-11-21, без Seed Mode ([`OWNER_DEVICES_ru.md`](OWNER_DEVICES_ru.md), конец раздела 2) | без Seed Mode ключ стирается при обновлении app/OS [V]; PIN 3 попытки → wipe; подтверждение на устройстве ничего не показывает о том, что подписывается |
 | Ledger/Trezor Ethereum-app | устройство + seed | ZeroDev `ECDSAValidator` `0x845A…cE57` как recovery-валидатор + `grantAccess(changeRootValidator)` | никакого кода в устройстве; seed | secp256k1; вторая ветка в CLI (alloy-signer-ledger/trezor) |
 | Бумажный P-256 ключ, импорт в SE при нужде | бумага в сейфе | `P256RecoveryValidator` | вечный носитель | plaintext-ключ на бумаге противоречит правилу 5 (там разрешён только *зашифрованный* носитель) — только как QR **шифротекста** |
 
