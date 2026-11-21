@@ -427,7 +427,7 @@ the short form is the table in `HOW_IT_WORKS.md`.)
   - The chip signs for whoever gets the machine running: the agent key has no
     PIN and no touch, since the agent works unattended. A Secure Enclave key is
     usable "only on this device and while it is unlocked"
-    [V `hw-signer/swift/SecureEnclaveShim.swift:43–54`]. A TPM key sealed to
+    [V `signer/crates/hw-signer/swift/SecureEnclaveShim.swift:43–54`]. A TPM key sealed to
     PCRs refuses to sign under another OS and a plain one does not (§1.4;
     [V `docs/FAQ.md`, "Realistic failures"]); one behind an authValue
     (`key create --auth-file`) asks for it [V `main.rs`, `key create`].
