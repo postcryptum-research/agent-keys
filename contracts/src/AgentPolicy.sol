@@ -524,9 +524,13 @@ contract AgentPolicy is IPolicy {
         if (spent > c.budget) return SIG_VALIDATION_FAILED_UINT;
         c.spent = uint128(spent);
 
-        // an order registered in this operation may say "not before"
+        // an order registered in this operation says "not before" and ends
+        // at its `validTo`: an order that can no longer be filled is not
+        // registered
         uint48 notBefore = uint48(_perOperation(NOT_BEFORE));
         if (notBefore > from) from = notBefore;
+        uint256 notAfter = _perOperation(NOT_AFTER);
+        if (notAfter != 0 && notAfter - 1 < until) until = uint48(notAfter - 1);
         if (from >= until) return SIG_VALIDATION_FAILED_UINT;
         return packValidationData(ValidAfter.wrap(from), ValidUntil.wrap(until));
     }
@@ -569,6 +573,7 @@ contract AgentPolicy is IPolicy {
         }
         _setPerOperation(PERIOD_NOW, seen);
         _setPerOperation(NOT_BEFORE, 0);
+        _setPerOperation(NOT_AFTER, 0);
         ok = true;
     }
 
@@ -722,6 +727,8 @@ contract AgentPolicy is IPolicy {
         if (!_recordX402(m, j.digest, j.mostSold, j.validTo, j.token)) return false;
         t.spent = uint128(spent);
         if (j.notBefore > _perOperation(NOT_BEFORE)) _setPerOperation(NOT_BEFORE, j.notBefore);
+        uint256 notAfter = _perOperation(NOT_AFTER);
+        if (notAfter == 0 || uint256(j.validTo) + 1 < notAfter) _setPerOperation(NOT_AFTER, uint256(j.validTo) + 1);
         return true;
     }
 
@@ -824,6 +831,8 @@ contract AgentPolicy is IPolicy {
     /// before" of the orders it registers.
     bytes32 internal constant PERIOD_NOW = keccak256("agent-keys.AgentPolicy.periodNow");
     bytes32 internal constant NOT_BEFORE = keccak256("agent-keys.AgentPolicy.notBefore");
+    /// The earliest `validTo` of the orders it registers, plus one; 0 = none.
+    bytes32 internal constant NOT_AFTER = keccak256("agent-keys.AgentPolicy.notAfter");
 
     function _perOperation(bytes32 what) internal view returns (uint256 value) {
         uint256 slot = uint256(keccak256(abi.encode(msg.sender, what)));

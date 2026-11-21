@@ -361,9 +361,17 @@ contract TradingTest is AgentPermissionTest {
         o.receiver = makeAddr("the agent's own address");
         _expectRefused(_tradeOp(_today(), address(policy), 0, _registerCall(o)));
 
-        // over the cap per operation; the fee counts
-        o = _order(USD_MAX, _soon());
+        // over the cap per operation
+        o = _order(USD_MAX + 1, _soon());
+        _expectRefused(_tradeOp(_today(), address(policy), 0, _registerCall(o)));
+
+        // with a fee: outside the lowest price, the decoder's refusal
+        o = _order(150e6, _soon());
         o.feeAmount = 1;
+        _expectRefused(_tradeOp(_today(), address(policy), 0, _registerCall(o)));
+
+        // already past its end
+        o = _order(150e6, uint32(block.timestamp - 1));
         _expectRefused(_tradeOp(_today(), address(policy), 0, _registerCall(o)));
 
         // a config of the agent's choosing
@@ -430,11 +438,10 @@ contract TradingTest is AgentPermissionTest {
         _with(DAY);
         CowSwapDecoder.Order memory o = _order(150e6, _soon());
         bytes memory honest = address(decoder).code;
-        // a decoder that says the order sells one unit
-        CrookedDecoder crooked = new CrookedDecoder(
-            abi.encode(address(usd), uint256(1), uint256(0), uint256(o.validTo), settlement.digestOf(o))
-        );
-        vm.etch(address(decoder), address(crooked).code);
+        // the same decoder built for another settlement: other immutables, other code
+        CowSwapDecoder other = new CowSwapDecoder(address(new Settlement()));
+        assertTrue(address(other).codehash != address(decoder).codehash);
+        vm.etch(address(decoder), address(other).code);
         _expectRefused(_tradeOp(_today(), address(policy), 0, _registerCall(o)));
         vm.etch(address(decoder), honest);
         _register(o);
@@ -483,6 +490,47 @@ contract TradingTest is AgentPermissionTest {
         good.signature = abi.encodePacked(bytes1(0xff), _sign(AGENT, entryPoint.getUserOpHash(good)));
         _send(good);
         assertEq(policy.tokenLimit(acct, bytes32(PermissionId.unwrap(ok)), address(usd)).spent, 150e6);
+    }
+
+    /// Only a token the mandate limits can be sold at a venue, and not one
+    /// with a payee list: what is sold goes to whoever fills the order.
+    function test_order_onlyALimitedTokenWithoutAPayeeList() public {
+        _with(DAY);
+        // a config that also lists selling WETH, which the mandate does not limit
+        CowSwapDecoder.Config memory c = abi.decode(_cowConfig(), (CowSwapDecoder.Config));
+        c.pairs[0] = CowSwapDecoder.Pair(address(weth), address(usd), 1, 1);
+        bytes memory config = abi.encode(c);
+        PermissionId id = PermissionId.wrap(0x74726434);
+        _install(id, _params(0, _venues(address(decoder), address(decoder).codehash, keccak256(config))));
+        CowSwapDecoder.Order memory o = _order(1 ether, _soon());
+        (o.sellToken, o.buyToken, o.buyAmount) = (address(weth), address(usd), 1 ether);
+        decoder.judge(acct, config, abi.encode(o)); // the decoder allows it
+        _expectRefused(
+            _plainOp(id, abi.encodeCall(AgentPolicy.orderRegister, (address(decoder), config, abi.encode(o))))
+        );
+
+        // the dollar token with a payee list
+        PermissionId listed = PermissionId.wrap(0x74726435);
+        _install(listed, _paramsWithAPayeeList());
+        _expectRefused(_plainOp(listed, _registerCall(_order(150e6, _soon()))));
+    }
+
+    function _paramsWithAPayeeList() internal view returns (bytes memory) {
+        AgentPolicy.TokenCap[] memory caps = new AgentPolicy.TokenCap[](1);
+        caps[0] = AgentPolicy.TokenCap(address(usd), USD_MAX, USD_BUDGET, bytes32(0));
+        AgentPolicy.TokenPayees[] memory lists = new AgentPolicy.TokenPayees[](1);
+        lists[0] = _list(address(usd), PAYEE, address(0));
+        (address[] memory targets, bytes4[] memory selectors) = _targets();
+        AgentPolicy.Venue[] memory venues =
+            _venues(address(decoder), address(decoder).codehash, keccak256(_cowConfig()));
+        return
+            abi.encode(targets, selectors, MAX_VALUE, BUDGET, tradingExpiry, caps, uint48(0), lists, uint32(0), venues);
+    }
+
+    /// An agent operation on the policy under a permission without a period.
+    function _plainOp(PermissionId id, bytes memory data) internal view returns (PackedUserOperation memory op) {
+        op = _op(_permissionNonce(id), _singleCall(address(policy), 0, data));
+        op.signature = abi.encodePacked(bytes1(0xff), _sign(AGENT, entryPoint.getUserOpHash(op)));
     }
 
     function test_order_revokingEndsEveryVouch() public {
@@ -565,6 +613,29 @@ contract TradingTest is AgentPermissionTest {
         assertEq(counter.count(), 1);
         (, uint48 seen) = policy.period(acct, TRD);
         assertEq(seen, _today() + 1);
+    }
+
+    /// The policy's own answers, asked as the account asks: a period before
+    /// one already seen is refused whatever the clock, and so is anything
+    /// but six bytes.
+    function test_period_thePolicyRefusesAnEarlierPeriodAndOtherLengths() public {
+        _with(DAY);
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+        _send(_tradeOp(_today(), address(counter), 0, inc));
+        PackedUserOperation memory op = _op(_permissionNonce(TRD_ID), _singleCall(address(counter), 0, inc));
+        uint48 today = _today();
+        vm.startPrank(acct);
+        op.signature = abi.encodePacked(bytes6(today));
+        assertTrue(policy.checkUserOpPolicy(TRD, op) != 1, "the control: this period");
+        op.signature = abi.encodePacked(bytes6(today - 1));
+        assertEq(policy.checkUserOpPolicy(TRD, op), 1, "an earlier period");
+        op.signature = abi.encodePacked(bytes6(today), bytes1(0));
+        assertEq(policy.checkUserOpPolicy(TRD, op), 1, "seven bytes");
+        op.signature = abi.encodePacked(bytes5(0));
+        assertEq(policy.checkUserOpPolicy(TRD, op), 1, "five bytes");
+        op.signature = "";
+        assertEq(policy.checkUserOpPolicy(TRD, op), 1, "none");
+        vm.stopPrank();
     }
 
     function test_period_budgetsStartAfreshEachPeriod() public {
