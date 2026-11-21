@@ -425,7 +425,7 @@ https://man.archlinux.org/man/extra/tpm2-tools/tpm2_clearcontrol.1.en].
   - Чип подписывает для любого, кто запустил машину: у агентского ключа нет ни
     PIN, ни касания, потому что агент работает без человека. Ключ Secure Enclave
     доступен «только на этом устройстве и пока оно разблокировано»
-    [V `hw-signer/swift/SecureEnclaveShim.swift:43–54`]. Ключ TPM, запечатанный
+    [V `signer/crates/hw-signer/swift/SecureEnclaveShim.swift:43–54`]. Ключ TPM, запечатанный
     на PCR, не подпишет под другой ОС, обычный — подпишет (§1.4;
     [V `docs/FAQ.md`, «Realistic failures»]); ключ с authValue
     (`key create --auth-file`) его потребует [V `main.rs`, `key create`].
