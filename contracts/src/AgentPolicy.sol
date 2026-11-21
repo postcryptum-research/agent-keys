@@ -549,7 +549,8 @@ contract AgentPolicy is IPolicy {
     /// it and the next one's just after: up to twice the budget in a short
     /// time. That is the number an owner is to be shown.
     ///
-    /// `from` is exclusive, as the EntryPoint reads `validAfter`.
+    /// Both ends are inclusive, as EntryPoint v0.7 reads them: an operation
+    /// is in time from `validAfter` up to and at `validUntil`.
     function _enterPeriod(Config storage c, bytes calldata mine)
         internal
         returns (bool ok, uint48 from, uint48 until)
@@ -568,7 +569,7 @@ contract AgentPolicy is IPolicy {
                 c.periodSeen = uint48(seen);
                 c.spent = 0;
             }
-            if (start != 0 && start - 1 > from) from = uint48(start - 1);
+            if (start > from) from = uint48(start);
             if (end < until) until = uint48(end);
         }
         _setPerOperation(PERIOD_NOW, seen);
