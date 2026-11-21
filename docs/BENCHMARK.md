@@ -22,14 +22,19 @@ validation path and a real paymaster.
 
 | payload | address-only | k1 signature | p256 signature | p256 agent + paymaster |
 |---:|---:|---:|---:|---:|
-| 10 B | 3,443 | 7,402 | 7,433 | 83,223 |
-| 100 B | 4,258 | 8,264 | 8,269 | 84,218 |
-| 1 kB | 11,826 | 16,090 | 16,095 | 93,405 |
-| 10 kB | 88,868 | 96,074 | 96,435 | 187,170 |
-| 100 kB | 956,236 | 1,026,826 | 1,064,773 | 1,295,226 |
+| 10 B | 3,443 | 7,402 | 7,433 | 85,450 |
+| 100 B | 4,258 | 8,264 | 8,269 | 86,445 |
+| 1 kB | 11,826 | 16,090 | 16,095 | 95,632 |
+| 10 kB | 88,868 | 96,074 | 96,435 | 189,397 |
+| 100 kB | 956,236 | 1,026,826 | 1,064,773 | 1,297,453 |
 
-The agent column is the 2026-11-20 measurement (`gas.json`) of the policy
-deployed on 2026-11-21, one step after the instance of 2026-11-20: its
+The agent column is the 2026-11-21 measurement (`gas.json`) of the policy
+in the source, which is not deployed: it holds a budget per period and
+orders through a venue's decoder
+([#80](https://github.com/postcryptum-research/agent-keys/issues/80)), and
+a mandate that uses neither pays 2,227 gas per operation for the notes
+they keep for each operation. The instance deployed on 2026-11-21 measured
+83,223 at 10 B. That instance is one step after the one of 2026-11-20: its
 storage is laid out so that every slot validation touches belongs to the
 account under ERC-7562 ([#83](https://github.com/postcryptum-research/agent-keys/issues/83)),
 663 gas per operation for the extra hashing. Over the instance of
