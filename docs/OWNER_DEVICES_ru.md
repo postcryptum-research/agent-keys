@@ -20,6 +20,8 @@
 > Status on 2026-11-19: the YubiKey 5 PIV backend, the phone owner apps, the
 > encrypted key file, the recovery validator and `owner set-root` are
 > implemented; the cells that state the project's status say so.
+> On 2026-11-21 the Ledger OpenPGP route was run once: the record of that
+> run, and what a device app of our own would change, close section 2.
 
 
 Дата: 2026-10-20. Утверждения о состоянии самого проекта приведены к дереву 2026-11-19 (бэкенд YubiKey PIV, приложения владельца на телефоне, ключ-файл, recovery-валидатор, `owner set-root`). Метки: **[V]** — проверено (URL или
@@ -69,7 +71,7 @@ Fit — пригодность для owner-роли: H / M / L. Цены — о
 | Keycard (+ Shell) | карта ~$25–30 [I]; Shell €109 со скидкой (обычно €149) [V](https://get.keycard.tech/pages/keycard-shell) | **secp256k1**, «хэш входит — подпись выходит», APDU с secure channel [V](https://docs.keycard.tech/en/developers) | ECDSAValidator | PIN + pairing; у Shell экран и клавиатура | открытые апплет и Shell | PC/SC + свой secure channel; Rust-крейта нет [V: на crates.io нет `keycard`] | M |
 | Satochip | ~€25 + ридер ~€15 [V](https://sitegeek.fr/article-technologie/satochip-test-du-hardware-wallet-pour-vos-cryptomonnaies-open-source-et-abordable) | **secp256k1**, подпись хэша [I] | ECDSAValidator | PIN | открытый апплет [V](https://github.com/Toporin/SatoChipApplet) | PC/SC, протокол свой, Rust-крейта нет | L–M |
 | **Ledger Nano S Plus** | ~$59–79 [V](https://financer.com/crypto/crypto-wallet-hardware/) | (1) Ethereum app: secp256k1, `personal_sign` | (1) **ECDSAValidator** (адрес выше) | экран + 2 кнопки, PIN на устройстве; seed-backup | Secure Element закрыт; OS частично открыта, приложения открыты | `alloy-signer-ledger` 2.5 [V crates.io], `coins-ledger` | **H** |
-|  |  | (2) **OpenPGP app**: secp256r1, `cx_ecdsa_sign_no_throw(..., CX_NONE, digest)`, то есть **сырой дайджест** без хэширования; собирается для Nano S Plus (`TARGET_NANOS2`) [V](https://github.com/LedgerHQ/app-openpgp/blob/HEAD/src/gpg_pso.c) | (2) **P256Validator как есть** | UIF-подтверждение на устройстве + PW1 PIN [V тот же файл] | открытое приложение | `openpgp-card` (PC/SC CCID) [I: Ledger OpenPGP app виден как CCID-карта] | H/M |
+|  |  | (2) **OpenPGP app**: secp256r1, `cx_ecdsa_sign_no_throw(..., CX_NONE, digest)`, то есть **сырой дайджест** без хэширования; собирается для Nano S Plus (`TARGET_NANOS2`) [V](https://github.com/LedgerHQ/app-openpgp/blob/HEAD/src/gpg_pso.c) | (2) **P256Validator как есть** | UIF-подтверждение на устройстве + PW1 PIN [V тот же файл]; в прогоне 2026-11-21 подтверждение ничего не показало о дайджесте, а PIN GnuPG запросил на компьютере | открытое приложение | `openpgp-card` (PC/SC CCID) [V: виден; прогон 2026-11-21, см. конец раздела 2] | H/M |
 |  |  | (3) Security Key app: FIDO2/U2F; resident keys выключены [V](https://developers.ledger.com/docs/ai-tools/hardware-security/security-key) | (3) WebAuthnValidator (non-resident подойдёт) | кнопка | | CTAP2 | M |
 |  |  | (4) SSH/PGP Agent app — **DEPRECATED** [V](https://github.com/LedgerHQ/app-ssh-agent) | — | | | | — |
 | **Trezor Safe 3 / Safe 5** | $59 / ~$129 [V](https://financer.com/crypto/crypto-wallet-hardware/) | (1) Ethereum: secp256k1, `personal_sign` | (1) ECDSAValidator | экран + кнопка или тач, PIN на устройстве; seed | **полностью открытая FW** | `alloy-signer-trezor` 2.5, `trezor-client` 0.1.6 [V crates.io] | **H** |
@@ -110,7 +112,12 @@ CTAP2-стек в CLI. Ключи с PIV/OpenPGP за те же деньги п�
 - **Отдельное устройство с экраном и seed-backup + recovery-фактор на цепи.**
   Основной вариант: Trezor (Safe 3/5/7, `SignIdentity` nist256p1 →
   `P256Validator`) или Ledger (OpenPGP app secp256r1 → `P256Validator`; либо
-  Ethereum app → `ECDSAValidator`). Recovery: второй валидатор с доступом
+  Ethereum app → `ECDSAValidator`). По прогону 2026-11-21 приложение
+  OpenPGP на Ledger ничего не показывает о дайджесте на экране и теряет
+  ключи при обновлении: в нынешнем виде оно этой планке не соответствует
+  (запись прогона и то, что изменило бы собственное приложение, — в конце
+  этого раздела).
+  Recovery: второй валидатор с доступом
   **только** к `changeRootValidator` (см. §5) — холодный ключ в сейфе или
   второе устройство.
 - Подписывать с машины, которая **не** хост агента. userOpHash сверять на
@@ -119,10 +126,89 @@ CTAP2-стек в CLI. Ключи с PIV/OpenPGP за те же деньги п�
 ### «Уже в руках»
 | Что | Как использовать как owner | Валидатор | Работа |
 |---|---|---|---|
-| **Ledger Nano S Plus** | (а) Ethereum app, `personal_sign(userOpHash)`; (б) OpenPGP app, ключ secp256r1, PSO:CDS над userOpHash | (а) ECDSAValidator `0x845A…cE57` (уже на Base); (б) P256Validator как есть | (а) `alloy-signer-ledger` → `signMessage`, root = ECDSAValidator: смена root-валидатора + поддержка в CLI; (б) клиент `openpgp-card` + DER/MPI → `r‖s` + low-s. Вариант (б) не меняет цепь вообще [V код app-openpgp; I — что app ставится из Ledger Live на S Plus] |
+| **Ledger Nano S Plus** | (а) Ethereum app, `personal_sign(userOpHash)`; (б) OpenPGP app, ключ secp256r1, PSO:CDS над userOpHash | (а) ECDSAValidator `0x845A…cE57` (уже на Base); (б) P256Validator как есть | (а) `alloy-signer-ledger` → `signMessage`, root = ECDSAValidator: смена root-валидатора + поддержка в CLI; (б) клиент `openpgp-card` + DER/MPI → `r‖s` + low-s. Вариант (б) не меняет цепь вообще [V код app-openpgp; V — app ставится на S Plus, прогон 2026-11-21] |
 | **YubiKey 5 PIV** | слот 9c, PIN always + touch always (`docs/YUBIKEY.md`) | P256Validator как есть | ноль: бэкенд есть; это текущий owner-ключ тестовых аккаунтов |
 | **TROPIC01 devkit** | отдельное USB-устройство владельца, втыкается только для owner-операций, с приватным pairing-ключом (§3) | P256Validator как есть | provisioning pairing-ключа (SH1), UAP-ограничения, invalidate SH0; хранение SH1-priv (зашифрованно) на owner-машине |
 | **TPM второй машины / Windows-ПК / Mac** | owner-ключ на другой машине, CLI запускается там | P256Validator как есть | ноль для TPM и CNG; для Mac — ноль без presence и правка шима для Touch ID: бэкенды `tpm`, `windows_tpm`, Secure Enclave уже есть; нужен только перенос root-операций (`sudo agent-signer permission …`) на ту машину |
+
+### Ledger, приложение OpenPGP: первый эксперимент (2026-11-21)
+
+Прогон до какого-либо кода бэкенда, только командами `gpg-connect-agent`:
+Ledger Nano S Plus с приложением OpenPGP (спецификация карты 3.3), с macOS,
+GnuPG 2.5.18 через PC/SC.
+
+- **Путь P-256 работает.** Ключ, созданный на устройстве в слоте подписи
+  (шаблон `nistp256`), подписал выбранный нами 32-байтный дайджест как есть.
+  Ответ — `r` и `s` в двух 33-байтных полях, каждое с ведущим нулём;
+  обрезанные до 32 байт, они проходят `agent-signer verify` и прекомпайл
+  P-256 в Base Sepolia. Вектор —
+  `contracts/test/vectors/p256_ledger_openpgp.json`. `s` оказался низким;
+  бэкенд всё равно обязан нормализовать.
+- **Подтверждение слепое.** При включённой в приложении настройке UIF для
+  подписей устройство показывает экран подтверждения, где названа подпись и
+  нет ничего о дайджесте; подтверждают двумя действиями кнопками.
+- **PIN спрашивали на компьютере.** GnuPG сам запросил PIN-коды приложения.
+  Хост при этом предлагает для этого устройства проверку PIN на ридере
+  (функция PC/SC `VERIFY_PIN_DIRECT`), так что собственный бэкенд мог бы не
+  пускать PIN на компьютер; не пробовали.
+- **Пять секунд у встроенного CCID-драйвера macOS.** Драйвер сдался через
+  5,0 с после запроса подписи, пока устройство ждало подтверждения.
+  Подтверждение, данное позже, всё равно подписало на устройстве (счётчик
+  подписей вырос), ответ был потерян, устройство пришлось переподключить.
+  Руководство Ledger советует другой драйвер macOS (`useIFDCCID`); не
+  пробовали.
+- **Данные приложения не переживают обновлений**
+  [V](https://openpgp.apps.ledger.com/app-openpgp.html): ключи, PIN-коды и
+  настройки стираются при обновлении приложения или ОС устройства. В режиме
+  seed ключи можно восстановить из seed устройства, иначе они пропадают.
+  Owner-ключу, который держат так, нужен готовый recovery-ключ до любого
+  обновления.
+- PIN-коды приложения имеют общеизвестные значения по умолчанию; сменить
+  до реального использования.
+
+Не сделано: бэкенд, аккаунт с таким ключом в роли root, путь secp256k1,
+Trezor.
+
+### Ledger: что даёт путь через OpenPGP и что изменило бы собственное приложение
+
+Слабые места, найденные в эксперименте, принадлежат приложению OpenPGP, а
+не устройству. Левый столбец — то, что показал прогон [V]; правый — то, что
+делало бы приложение, написанное для этого проекта, исходя из того, как
+устроены приложения для Ledger [I]. Такого приложения пока нет.
+
+| | Приложение OpenPGP как оно есть | Собственное приложение для устройства |
+|---|---|---|
+| Подпись P-256, которую принимает `P256Validator` | да | да: тот же вызов подписи из SDK Ledger |
+| Что устройство показывает перед подписью | что запрошена подпись, о дайджесте ничего | собственные экраны: аккаунт, операция, лимиты мандата. Сделать это читаемым на маленьком экране — отдельная работа |
+| PIN | свой у приложения, в нашем прогоне вводился на компьютере, значения по умолчанию общеизвестны | своего нет: защитой служит PIN разблокировки устройства |
+| Транспорт | ридер смарт-карт (CCID); со встроенным драйвером macOS пять секунд на подтверждение | собственные команды приложения по USB: без драйвера карт и без такого лимита |
+| Ключ после обновления приложения или ОС | стирается, если не был включён режим seed | выводится из seed устройства: переживает обновления и восстанавливается по recovery-фразе |
+| На компьютере | сегодня GnuPG; наш бэкенд говорил бы по PC/SC | наш бэкенд, говорящий командами приложения |
+| Как пользователь его получает | из каталога Ledger, в режиме разработчика | см. ниже |
+
+**Чего стоит публичный выпуск.** Прежде чем Ledger включит приложение в
+каталог, оно должно пройти аудит безопасности у одного из одобренных
+партнёров Ledger, за счёт разработчика [V](https://developers.ledger.com/docs/device-app/getting-started); работать на всех
+четырёх устройствах (Nano S Plus, Nano X, Stax, Flex) [V](https://developers.ledger.com/docs/device-app/submission-process/deliverables/security-audit); в
+комплект входят wallet-компаньон, документация для поддержки и тесты
+[V](https://developers.ledger.com/docs/device-app/submission-process/process); каждое обновление подаётся с функциональными тестами и аудитом
+в объёме изменений [V](https://developers.ledger.com/docs/device-app/submission-process/maintenance).
+
+**До выпуска или без него** приложение можно загрузить как сборку
+разработчика на Nano S Plus, Stax или Flex [V](https://developers.ledger.com/docs/device-app/references/tools); Nano X таких
+приложений не принимает [I]. Так его мог бы поставить любой, кому нужна
+более сильная проверка на собственном устройстве. У этого есть цена,
+которую надо называть вместе с ним: сборка наша и не проверена Ledger,
+устройство просит разрешить для неё «unsafe manager», а устройство с
+сертификатом разработчика не проходит проверку подлинности Ledger, нужную
+собственному приложению Ledger для любой установки, пока этот сертификат и
+поставленные через него приложения не удалены [V](https://developers.ledger.com/docs/device-app/references/tools).
+
+**Для решения в #67.** Путь через OpenPGP требует только бэкенда и
+сохраняет перечисленные слабые места. Собственное приложение их снимает и
+стоит самого приложения, его бэкенда и, для публичного выпуска, аудита и
+его поддержки. Проект может написать такое приложение, если владелец решит,
+что оно нужно.
 
 ---
 

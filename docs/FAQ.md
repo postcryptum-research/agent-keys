@@ -154,7 +154,7 @@ is the target setup, and which parts are missing.
 | Role | Where | Status |
 |---|---|---|
 | agent key | the Mac's Secure Enclave | **works today** — run on an Apple M1, keys on-chain ([`SECURE_ENCLAVE.md`](SECURE_ENCLAVE.md)) |
-| owner key | a separate device with a button: a YubiKey 5 (PIV, P-256) | **works today** — PIN and a touch per signature; root of the Base Sepolia account since 2026-11-02, run on macOS too ([`YUBIKEY.md`](YUBIKEY.md)). Nitrokey 3, Ledger and Trezor: studied, not supported ([`OWNER_DEVICES.md`](OWNER_DEVICES.md)) |
+| owner key | a separate device with a button: a YubiKey 5 (PIV, P-256) | **works today** — PIN and a touch per signature; root of the Base Sepolia account since 2026-11-02, run on macOS too ([`YUBIKEY.md`](YUBIKEY.md)). Nitrokey 3, Ledger and Trezor: not supported, there is no backend for any of them. A Ledger was run once (2026-11-21): its OpenPGP app gives the P-256 signature the account takes, with weaknesses that stand in the way; the other two were studied only ([`OWNER_DEVICES.md`](OWNER_DEVICES.md)) |
 | owner key, the other way | the owner's phone: the project's own app, the key in the Android Keystore or the iPhone's Secure Enclave, a fingerprint or Face ID per signature, the operation reviewed on the phone's screen before signing | **development builds only** — the loop passed on a real Android phone and a real iPhone against a local chain, not on Base Sepolia; no store distribution, the app is installed with `adb` or from Xcode ([`MOBILE_OWNER_PLAN.md`](MOBILE_OWNER_PLAN.md), [`MOBILE_DEV_MODE.md`](MOBILE_DEV_MODE.md)) |
 | recovery key | an encrypted file on two USB drives in different places | file: works today; behind a time lock: **not built** — today the recovery key takes over at once ([`RESILIENCE.md`](RESILIENCE.md)) |
 | money | most of it **not** on the agent's account — in an owner-controlled vault; the agent's account is topped up per period | operational, works today |
@@ -274,6 +274,22 @@ does. Losing the agent key costs nothing but a rotation; losing the owner key
 is what the recovery key is for; losing both freezes the account for good
 ([`RESILIENCE.md`](RESILIENCE.md)).
 
+### And if a device is stolen, not lost?
+
+Then the thief holds the chip, and the answer depends on which key is in it
+(the table is in [`HOW_IT_WORKS.md`](HOW_IT_WORKS.md#if-a-device-is-stolen)):
+
+- **The agent's machine:** the key cannot be copied, but the chip signs for
+  whoever gets the machine running, since the agent key has no PIN. The damage
+  is held to the mandate until you revoke or rotate the agent with the owner
+  key. Not nothing: bounded.
+- **The owner device:** nothing without its PIN or biometric, everything with
+  it. Take root with the recovery key and retire the stolen key.
+- **Both:** only the devices' own locks and the speed of your recovery stand
+  between the thief and the account.
+- **The recovery file with its passphrase:** root at once. Recovery has no
+  delay today.
+
 ### How do I move the owner key to a new device?
 
 One command, signed by the current owner key (or by the recovery key after
@@ -314,8 +330,11 @@ command says what that risks.
 Only for setups that hold real value, as the **owner** key — a separate
 device with a button. For small amounts, owner and recovery keys as encrypted
 files on USB drives are enough. A YubiKey 5 works as the owner key today
-([`YUBIKEY.md`](YUBIKEY.md)); Ledger and Trezor are not supported
-([`OWNER_DEVICES.md`](OWNER_DEVICES.md)). Ledger and Trezor do not suit the
+([`YUBIKEY.md`](YUBIKEY.md)); Ledger and Trezor are not supported: there
+is no backend for either. A first experiment showed that a Ledger can give
+the signature the account takes, and what would have to be solved before it
+could hold an owner key ([`OWNER_DEVICES.md`](OWNER_DEVICES.md), the end of
+section 2). Ledger and Trezor do not suit the
 agent key: they want a button press per signature. A YubiKey slot is
 accepted as the agent key only with PIN policy never and touch policy
 never; the CLI refuses any other slot for that role.

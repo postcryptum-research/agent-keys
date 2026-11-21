@@ -1,0 +1,9 @@
+{
+  "backend": "ledger-openpgp",
+  "message": "agent-keys: P-256 signature by an OpenPGP card app, issue 67",
+  "digest": "0x6b3af88e0f7124409943017e86dd82b96d4f30827926f85851f6dfb5b1faaaa6",
+  "r": "0xa38e475f9848536cc98957dc8108b584b80936fe5d10e6ceecb38cee9f771967",
+  "s": "0x2838c1dba4c753aa90efe0b55fa1bc8a620ccdfacf092a8f450b9e82786db3f2",
+  "x": "0xb827e7cffa352a67e8de330d1bbe0075ad42a74ec4136b01f54278356aaf0e26",
+  "y": "0x40eed7cfe9923251507f5cc579a0c5942980a4cb6afaeb03d1ecff54a984e669"
+}

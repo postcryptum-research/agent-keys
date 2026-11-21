@@ -21,6 +21,8 @@
 > Status on 2026-11-19: the YubiKey 5 PIV backend, the phone owner apps, the
 > encrypted key file, the recovery validator and `owner set-root` are
 > implemented; the cells that state the project's status say so.
+> On 2026-11-21 the Ledger OpenPGP route was run once: the record of that
+> run, and what a device app of our own would change, close section 2.
 
 
 Date: 2026-10-20. The statements about the project's own status were brought up to the tree on 2026-11-19 (YubiKey PIV backend, phone owner apps, key file, recovery validator, `owner set-root`). Markers: **[V]** — verified (URL or
@@ -70,7 +72,7 @@ Fit — suitability for the owner role: H / M / L. Prices are a 2026 guideline.
 | Keycard (+ Shell) | card ~$25–30 [I]; Shell €109 discounted (usually €149) [V](https://get.keycard.tech/pages/keycard-shell) | **secp256k1**, "hash in — signature out", APDU with secure channel [V](https://docs.keycard.tech/en/developers) | ECDSAValidator | PIN + pairing; Shell has a screen and keypad | open applet and Shell | PC/SC + its own secure channel; no Rust crate [V: no `keycard` on crates.io] | M |
 | Satochip | ~€25 + reader ~€15 [V](https://sitegeek.fr/article-technologie/satochip-test-du-hardware-wallet-pour-vos-cryptomonnaies-open-source-et-abordable) | **secp256k1**, hash signing [I] | ECDSAValidator | PIN | open applet [V](https://github.com/Toporin/SatoChipApplet) | PC/SC, its own protocol, no Rust crate | L–M |
 | **Ledger Nano S Plus** | ~$59–79 [V](https://financer.com/crypto/crypto-wallet-hardware/) | (1) Ethereum app: secp256k1, `personal_sign` | (1) **ECDSAValidator** (address above) | screen + 2 buttons, PIN on the device; seed backup | Secure Element closed; OS partly open, apps open | `alloy-signer-ledger` 2.5 [V crates.io], `coins-ledger` | **H** |
-|  |  | (2) **OpenPGP app**: secp256r1, `cx_ecdsa_sign_no_throw(..., CX_NONE, digest)`, i.e. a **raw digest** without hashing; builds for Nano S Plus (`TARGET_NANOS2`) [V](https://github.com/LedgerHQ/app-openpgp/blob/HEAD/src/gpg_pso.c) | (2) **P256Validator as is** | UIF confirmation on the device + PW1 PIN [V same file] | open app | `openpgp-card` (PC/SC CCID) [I: the Ledger OpenPGP app appears as a CCID card] | H/M |
+|  |  | (2) **OpenPGP app**: secp256r1, `cx_ecdsa_sign_no_throw(..., CX_NONE, digest)`, i.e. a **raw digest** without hashing; builds for Nano S Plus (`TARGET_NANOS2`) [V](https://github.com/LedgerHQ/app-openpgp/blob/HEAD/src/gpg_pso.c) | (2) **P256Validator as is** | UIF confirmation on the device + PW1 PIN [V same file]; in the run of 2026-11-21 the confirmation showed nothing of the digest and GnuPG asked for the PIN on the computer | open app | `openpgp-card` (PC/SC CCID) [V: it does; run on 2026-11-21, see the end of section 2] | H/M |
 |  |  | (3) Security Key app: FIDO2/U2F; resident keys disabled [V](https://developers.ledger.com/docs/ai-tools/hardware-security/security-key) | (3) WebAuthnValidator (non-resident will do) | button | | CTAP2 | M |
 |  |  | (4) SSH/PGP Agent app — **DEPRECATED** [V](https://github.com/LedgerHQ/app-ssh-agent) | — | | | | — |
 | **Trezor Safe 3 / Safe 5** | $59 / ~$129 [V](https://financer.com/crypto/crypto-wallet-hardware/) | (1) Ethereum: secp256k1, `personal_sign` | (1) ECDSAValidator | screen + button or touch, PIN on the device; seed | **fully open FW** | `alloy-signer-trezor` 2.5, `trezor-client` 0.1.6 [V crates.io] | **H** |
@@ -111,7 +113,11 @@ a CTAP2 stack in the CLI. Keys with PIV/OpenPGP for the same money are simpler f
 - **A separate device with a screen and seed backup + an on-chain recovery factor.**
   Main option: Trezor (Safe 3/5/7, `SignIdentity` nist256p1 →
   `P256Validator`) or Ledger (OpenPGP app secp256r1 → `P256Validator`; or
-  Ethereum app → `ECDSAValidator`). Recovery: a second validator with access
+  Ethereum app → `ECDSAValidator`). As run on 2026-11-21, the Ledger's
+  OpenPGP app shows nothing of the digest on its screen and loses its keys
+  on an update: as it stands it does not meet this bar (the record, and what
+  a device app of our own would change, are at the end of this section).
+  Recovery: a second validator with access
   **only** to `changeRootValidator` (see §5) — a cold key in a safe or
   a second device.
 - Sign from a machine that is **not** the agent host. Check the userOpHash on
@@ -120,10 +126,85 @@ a CTAP2 stack in the CLI. Keys with PIV/OpenPGP for the same money are simpler f
 ### "Already in hand"
 | What | How to use it as owner | Validator | Work |
 |---|---|---|---|
-| **Ledger Nano S Plus** | (a) Ethereum app, `personal_sign(userOpHash)`; (b) OpenPGP app, secp256r1 key, PSO:CDS over userOpHash | (a) ECDSAValidator `0x845A…cE57` (already on Base); (b) P256Validator as is | (a) `alloy-signer-ledger` → `signMessage`, root = ECDSAValidator: change of the root validator + CLI support; (b) `openpgp-card` client + DER/MPI → `r‖s` + low-s. Option (b) does not change the chain at all [V app-openpgp code; I — that the app installs from Ledger Live on the S Plus] |
+| **Ledger Nano S Plus** | (a) Ethereum app, `personal_sign(userOpHash)`; (b) OpenPGP app, secp256r1 key, PSO:CDS over userOpHash | (a) ECDSAValidator `0x845A…cE57` (already on Base); (b) P256Validator as is | (a) `alloy-signer-ledger` → `signMessage`, root = ECDSAValidator: change of the root validator + CLI support; (b) `openpgp-card` client + DER/MPI → `r‖s` + low-s. Option (b) does not change the chain at all [V app-openpgp code; V — the app installs on the S Plus, run on 2026-11-21] |
 | **YubiKey 5 PIV** | slot 9c, PIN always + touch always (`docs/YUBIKEY.md`) | P256Validator as is | zero: the backend exists; it is the current owner key of the test accounts |
 | **TROPIC01 devkit** | a separate USB owner device, plugged in only for owner operations, with a private pairing key (§3) | P256Validator as is | provisioning the pairing key (SH1), UAP restrictions, invalidate SH0; storing SH1-priv (encrypted) on the owner machine |
 | **TPM of a second machine / Windows PC / Mac** | owner key on another machine, the CLI runs there | P256Validator as is | zero for the TPM and CNG; for a Mac, zero without presence and a shim change for Touch ID: the `tpm`, `windows_tpm`, Secure Enclave backends already exist; only moving root operations (`sudo agent-signer permission …`) to that machine is needed |
+
+### Ledger, the OpenPGP app: the first experiment (2026-11-21)
+
+Run before any backend code, with `gpg-connect-agent` commands only: a Ledger
+Nano S Plus with the OpenPGP app (card specification 3.3), from macOS with
+GnuPG 2.5.18 over PC/SC.
+
+- **The P-256 path works.** A key generated on the device in the signature
+  slot (template `nistp256`) signed a 32-byte digest of our choosing as is.
+  The answer is `r` and `s` in two 33-byte fields, each with a leading zero;
+  cut to 32 bytes it verifies with `agent-signer verify` and with the P-256
+  precompile on Base Sepolia. The vector is
+  `contracts/test/vectors/p256_ledger_openpgp.json`. `s` happened to be low;
+  a backend still has to normalise.
+- **The confirmation is blind.** With the app's UIF setting on for
+  signatures the device shows a confirmation screen that names a signature
+  and nothing of the digest; two button actions approve it.
+- **The PIN was asked on the computer.** GnuPG prompted for the app's PINs
+  itself. The host does offer PIN verification on the reader for this device
+  (the PC/SC feature `VERIFY_PIN_DIRECT`), so a backend of our own could keep
+  the PIN off the computer; not tried.
+- **Five seconds on macOS's built-in CCID driver.** That driver gave up 5.0 s
+  after the signing request, while the device waited for the confirmation. A
+  confirmation given later still signed on the device (its signature counter
+  rose), the answer was lost, and the device had to be plugged in again.
+  Ledger's guide recommends macOS's other driver (`useIFDCCID`); not tried.
+- **The app's data does not survive updates**
+  [V](https://openpgp.apps.ledger.com/app-openpgp.html): keys, PINs and
+  settings are erased when the app or the device's OS is updated. In the
+  app's seed mode the keys can be regenerated from the device's seed;
+  otherwise they are gone. An owner key held this way needs a recovery key
+  in place before any update.
+- The app's PINs have public default values; change them before real use.
+
+Not done: a backend, an account with such a key as its root, the secp256k1
+route, a Trezor.
+
+### Ledger: what the OpenPGP route has, and what a device app of our own would change
+
+The weaknesses the experiment found belong to the OpenPGP app, not to the
+device. The left column is what the run showed [V]; the right one is what an
+app written for this project would do, from how Ledger device apps are built
+[I]. Nothing of such an app exists.
+
+| | The OpenPGP app as it is | A device app of our own |
+|---|---|---|
+| A P-256 signature `P256Validator` accepts | yes | yes: the same signing call of Ledger's SDK |
+| What the device shows before it signs | that a signature is asked, nothing of the digest | screens of our own: the account, the operation, the mandate's limits. Making that readable on a small screen is design work |
+| PIN | the app's own, entered on the computer in our run, with public default values | none of its own: the device's unlock PIN is the gate |
+| Transport | a smart-card reader (CCID); on macOS's built-in driver five seconds to confirm | the app's own commands over USB: no card driver and no such limit |
+| The key after an app or OS update | erased, unless the app's seed mode was on | derived from the device's seed: it survives updates and comes back from the recovery phrase |
+| On the computer | GnuPG today; a backend of ours would speak PC/SC | a backend of ours speaking the app's commands |
+| How a user gets it | from Ledger's catalogue, in its developer mode | see below |
+
+**What a public release costs.** Before Ledger lists an app it must pass a
+security audit by one of Ledger's approved partners, at the developer's
+expense [V](https://developers.ledger.com/docs/device-app/getting-started); it must work with all four signers (Nano S Plus,
+Nano X, Stax, Flex) [V](https://developers.ledger.com/docs/device-app/submission-process/deliverables/security-audit); the deliverables include a companion wallet,
+support documentation and tests [V](https://developers.ledger.com/docs/device-app/submission-process/process); and every update is submitted
+with functional tests and an audit scoped to its changes [V](https://developers.ledger.com/docs/device-app/submission-process/maintenance).
+
+**Before a release, or without one,** the app can be side-loaded as a
+development build onto a Nano S Plus, a Stax or a Flex [V](https://developers.ledger.com/docs/device-app/references/tools); a
+Nano X does not take side-loaded apps [I]. Anyone who wants the stronger
+review on their own device could install it that way. It has a price that
+has to be said with it: the build is ours and not reviewed by Ledger, the
+device asks to allow an "unsafe manager" for it, and a device set up with a
+developer certificate does not pass Ledger's genuine check, which Ledger's
+own app needs to install anything, until that certificate and the apps
+installed through it are removed [V](https://developers.ledger.com/docs/device-app/references/tools).
+
+**For the decision in #67.** The OpenPGP route needs only a backend and
+keeps the weaknesses above. An app of our own removes them and costs the
+app, its backend and, for a public release, the audit and its upkeep. The
+project can build such an app if the owner decides there is a need for it.
 
 ---
 
