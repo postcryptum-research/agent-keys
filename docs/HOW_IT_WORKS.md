@@ -46,6 +46,13 @@ or whoever controls it, asks for.
 | **owner** | a separate device: a YubiKey, a phone, another machine's chip (or an encrypted cold file) | sets the mandate, rotates the agent's key and revokes it, each in one transaction; it is the account's root | yes: PIN and touch, or a biometric |
 | **recovery** | a cold encrypted file on a USB drive, kept off line | replaces a lost or stolen owner key, and does nothing else | yes: its passphrase |
 
+**Tested hardware so far.** Agent key: a TPM 2.0 on Linux and on Windows, an
+Apple Secure Enclave, a TROPIC01. Owner key: a YubiKey 5 (PIV), root of a Base
+Sepolia account; an Android phone and an iPhone (development builds, on a
+local chain); a TPM and a Secure Enclave. Other devices join the list once
+they have been tested; [`FAQ.md`](FAQ.md) has the status of each and
+[`OWNER_DEVICES.md`](OWNER_DEVICES.md) the study of the candidates.
+
 The owner key should stay out of reach of the agent's machine; the software
 does not enforce where you keep it. The rest stands on that separation:
 whoever controls the agent's machine cannot widen the agent's limits.
