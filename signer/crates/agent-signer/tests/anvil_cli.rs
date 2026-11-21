@@ -1816,6 +1816,202 @@ fn x402_pay_and_reclaim() {
     assert_eq!(payee_balance(), U256::from(250_000));
 }
 
+// ---------------------------------------------------------------- trading
+
+mod trading_abi {
+    alloy::sol! {
+        struct CowOrder {
+            address sellToken;
+            address buyToken;
+            address receiver;
+            uint256 sellAmount;
+            uint256 buyAmount;
+            uint32 validTo;
+            bytes32 appData;
+            uint256 feeAmount;
+            bytes32 kind;
+            bool partiallyFillable;
+            bytes32 sellTokenBalance;
+            bytes32 buyTokenBalance;
+        }
+        function settle(CowOrder o, address owner, bytes signature) external;
+        function allowance(address owner, address spender) external view returns (uint256);
+    }
+}
+
+const ORDER_REGISTER: &str = "0x27ddae76";
+const ORDER_RECLAIM: &str = "0x4344b733";
+
+/// A trading mandate end to end (issue #80), on the policy and the decoder
+/// built from this repository's sources and a stand-in for CoW's settlement:
+/// the owner installs it with the venue's allowance, the agent registers and
+/// signs an order, the venue settles it on the account's word; an order
+/// outside the terms goes nowhere, an unfilled one comes back to the budget,
+/// a new period renews the budget, and revoking takes the allowance back.
+#[test]
+fn trading_orders_under_a_mandate() {
+    let chain = chain_or_skip!("trading");
+    let (owner, agent) = (key(1), key(2));
+    let counter = chain.addr("demoCounter");
+    let policy = chain.addr("agentPolicy");
+    let until = far_future(&chain);
+    let fixture: Value = serde_json::from_str(
+        &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/trading-code.json")).unwrap(),
+    )
+    .unwrap();
+    let deploy = |name: &str, args: Vec<u8>| {
+        let mut code = hex::decode(fixture[name].as_str().unwrap().trim_start_matches("0x")).unwrap();
+        code.extend(args);
+        chain.send_from(FACILITATOR, None, code)["contractAddress"].as_str().unwrap().to_string()
+    };
+    let word = |a: &str| a.parse::<Address>().unwrap().abi_encode();
+
+    // the policy of this source in the place of the deployed one: its only
+    // constructor-set state is an immutable, which is part of its code
+    let built = deploy("agentPolicyInitCode", word(&chain.addr("safeNonceAssert")));
+    let code = chain.rpc("eth_getCode", json!([built, "latest"]));
+    chain.rpc("anvil_setCode", json!([policy, code]));
+
+    let (usd, weth) = (deploy("mockTokenInitCode", vec![]), deploy("mockTokenInitCode", vec![]));
+    let settlement = deploy("settlementInitCode", vec![]);
+    let decoder = deploy("cowSwapDecoderInitCode", word(&settlement));
+
+    let account = chain.deploy(&chain.config("agent.json", &base_cfg(&owner, &agent, &counter, until)));
+    // the trading mandate: 200 a time, 300 a period, never under 0.0002 WETH for a USD
+    const PERIOD: u64 = 30 * 86_400;
+    let trading = |name: &str, permission: &'static str| {
+        let path = chain.config(
+            name,
+            &Cfg {
+                permission,
+                allow: vec![(counter.clone(), INCREMENT), (policy.clone(), ORDER_REGISTER), (policy.clone(), ORDER_RECLAIM)],
+                account: Some(account.clone()),
+                tokens: json!([{"token": usd, "maxPerOp": "200000000", "budget": "300000000", "payees": "anyone"}]),
+                ..base_cfg(&owner, &agent, &counter, until)
+            },
+        );
+        let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        v["policy"]["period"] = json!(PERIOD);
+        v["policy"]["venues"] = json!([{
+            "kind": "cowswap", "decoder": decoder, "appData": format!("0x{}", "00".repeat(32)), "maxLife": 1800,
+            "pairs": [{"sellToken": usd, "buyToken": weth, "minBuy": "200000000000000", "perSell": "1000000"}],
+        }]);
+        std::fs::write(&path, v.to_string()).unwrap();
+        path
+    };
+    let cfg = trading("trading.json", "0x74726431");
+    let acct: Address = account.parse().unwrap();
+    let balance = |token: &str, who: Address| U256::from_be_slice(&chain.call(token, balanceOfCall { account: who }.abi_encode()));
+    let allowance = || {
+        let call = trading_abi::allowanceCall { owner: acct, spender: settlement.parse().unwrap() };
+        U256::from_be_slice(&chain.call(&usd, call.abi_encode()))
+    };
+    chain.send_from(FACILITATOR, Some(&usd), mintCall { to: acct, amount: U256::from(10_000_000_000u64) }.abi_encode());
+    chain.send_from(FACILITATOR, Some(&weth), mintCall { to: settlement.parse().unwrap(), amount: U256::from(10u64).pow(U256::from(18)) }.abi_encode());
+
+    let sell = |amount: &str, least: &str| -> Vec<String> {
+        ["order", "sell", "--agent", &cfg, "--sell", &usd, "--buy", &weth, "--sell-amount", amount, "--buy-amount", least]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    };
+    let run = |args: &[String]| chain.cli(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    let placed = |args: &[String]| -> Value {
+        let out = run(args);
+        let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert!(out.status.success(), "order sell failed:\n{stderr}\n{stdout}");
+        serde_json::from_str(stdout.lines().find(|l| l.starts_with('{')).unwrap_or_else(|| panic!("no order in: {stdout}"))).unwrap()
+    };
+    let refused = |args: &[String]| -> String {
+        let out = run(args);
+        assert!(!out.status.success(), "the order was expected to be refused");
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+    };
+
+    // before the owner installs the mandate there is no allowance, and the CLI says so
+    assert!(allowance().is_zero());
+    let early = refused(&sell("150000000", "37500000000000000"));
+    assert!(early.contains("the owner gives the allowance with the mandate"), "{early}");
+
+    // the owner's one operation: the old permission out, the trading one in, the allowance given
+    chain.ok(&["permission", "rotate", "--agent", &cfg, "--old-id", "0x74657331"]);
+    assert!(allowance() >= U256::from(300_000_000u64), "{}", allowance());
+    let shown = chain.ok(&["permission", "show", "--agent", &cfg]);
+    assert!(shown.contains("ok period") && shown.contains("ok venue") && !shown.contains("DIFF"), "{shown}");
+
+    // an ordinary call under a mandate with a period carries the period in its signature
+    let before = chain.counter();
+    chain.ok(&["demo", "--agent", &cfg]);
+    assert_eq!(chain.counter(), before + U256::from(1));
+
+    // an order within the terms: registered, signed, and settled by the venue on the account's word
+    let o = placed(&sell("150000000", "37500000000000000"));
+    let settle = |o: &Value| {
+        let field = |k: &str| o[k].as_str().unwrap().to_string();
+        trading_abi::settleCall {
+            o: trading_abi::CowOrder {
+                sellToken: field("sellToken").parse().unwrap(),
+                buyToken: field("buyToken").parse().unwrap(),
+                receiver: Address::ZERO,
+                sellAmount: field("sellAmount").parse().unwrap(),
+                buyAmount: field("buyAmount").parse().unwrap(),
+                validTo: o["validTo"].as_u64().unwrap() as u32,
+                appData: field("appData").parse().unwrap(),
+                feeAmount: U256::ZERO,
+                kind: alloy::primitives::keccak256("sell"),
+                partiallyFillable: false,
+                sellTokenBalance: alloy::primitives::keccak256("erc20"),
+                buyTokenBalance: alloy::primitives::keccak256("erc20"),
+            },
+            owner: acct,
+            signature: field("signature").parse().unwrap(),
+        }
+        .abi_encode()
+    };
+    assert_eq!(o["signingScheme"], "eip1271");
+    assert_eq!(o["uid"].as_str().unwrap().len(), 2 + 2 * 56);
+    chain.send_from(FACILITATOR, Some(&settlement), settle(&o));
+    assert_eq!(balance(&usd, acct), U256::from(10_000_000_000u64 - 150_000_000));
+    assert_eq!(balance(&weth, acct), U256::from(37_500_000_000_000_000u64));
+
+    // outside the terms: under the lowest price (stopped before any operation),
+    // over the cap for one order and over the period's budget (refused by the policy)
+    let cheap = refused(&sell("150000000", "29999999999999999"));
+    assert!(cheap.contains("below the mandate's lowest price"), "{cheap}");
+    refused(&sell("200000001", "50000000000000000"));
+    refused(&sell("151000000", "37750000000000000"));
+    assert!(chain.ok(&["permission", "show", "--agent", &cfg]).contains("(spent 150000000)"));
+
+    // the same order again, to the second, is the same order: registered once
+    let twice = refused(&sell("150000000", "37500000000000000"));
+    assert!(twice.contains("already registered"), "{twice}");
+
+    // an order nobody fills is charged while it lives and comes back after it
+    let mut unfilled = sell("150000000", "37500000000000000");
+    unfilled.extend(["--valid-for".to_string(), "599".to_string()]);
+    placed(&unfilled);
+    assert!(chain.ok(&["permission", "show", "--agent", &cfg]).contains("(spent 300000000)"));
+    assert!(chain.ok(&["order", "reclaim", "--agent", &cfg, "--from-block", "0"]).contains("reclaimed 0 unfilled"));
+    chain.advance(700);
+    let back = chain.ok(&["order", "reclaim", "--agent", &cfg, "--from-block", "0"]);
+    assert!(back.contains("reclaimed 1 unfilled"), "{back}");
+    assert!(chain.ok(&["permission", "show", "--agent", &cfg]).contains("(spent 150000000)"));
+    // the filled one does not come back, now or later
+    assert!(chain.ok(&["order", "reclaim", "--agent", &cfg, "--from-block", "0"]).contains("reclaimed 0 unfilled"));
+
+    // a new period, a new budget
+    refused(&sell("200000000", "50000000000000000"));
+    chain.advance(PERIOD);
+    let o = placed(&sell("200000000", "50000000000000000"));
+    chain.send_from(FACILITATOR, Some(&settlement), settle(&o));
+    assert_eq!(balance(&usd, acct), U256::from(10_000_000_000u64 - 350_000_000));
+
+    // revoking takes the venue's allowance back with the mandate
+    chain.ok(&["permission", "revoke", "--agent", &cfg, "--id", "0x74726431"]);
+    assert!(allowance().is_zero());
+    chain.fails(&["demo", "--agent", &cfg]);
+}
+
 // ---------------------------------------------------------------- bundler and paymaster
 
 /// A fake ERC-4337 bundler with the four methods `agent-signer` uses. It packs

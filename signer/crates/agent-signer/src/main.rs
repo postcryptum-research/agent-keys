@@ -8,6 +8,7 @@ mod attestation;
 mod der;
 mod phone;
 mod possession;
+mod order;
 mod x402;
 
 use std::path::{Path, PathBuf};
@@ -152,11 +153,56 @@ enum Cmd {
         #[command(subcommand)]
         cmd: X402Cmd,
     },
+    /// Place orders at a trading venue, within the mandate's terms.
+    Order {
+        #[command(subcommand)]
+        cmd: OrderCmd,
+    },
     /// Demo: the agent increments the deployed counter.
     Demo {
         #[command(flatten)]
         agent: AgentArgs,
         /// Let the paymaster pay instead of the account.
+        #[arg(long)]
+        sponsored: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum OrderCmd {
+    /// Register a sell order under the mandate, sign it with the agent key
+    /// and print it as the venue's order book takes it. Sends it nowhere.
+    Sell {
+        #[command(flatten)]
+        agent: AgentArgs,
+        /// The venue's decoder, when the config has several venues.
+        #[arg(long)]
+        venue: Option<Address>,
+        /// The token sold and the token bought.
+        #[arg(long)]
+        sell: Address,
+        #[arg(long)]
+        buy: Address,
+        /// Base units sold: all of it or nothing.
+        #[arg(long)]
+        sell_amount: String,
+        /// The least base units to receive for it.
+        #[arg(long)]
+        buy_amount: String,
+        /// How long the order lives, seconds from the chain's latest block.
+        #[arg(long, default_value_t = 600)]
+        valid_for: u32,
+        /// Let the paymaster pay the registration's gas.
+        #[arg(long)]
+        sponsored: bool,
+    },
+    /// Return to the budget the orders that ended unfilled.
+    Reclaim {
+        #[command(flatten)]
+        agent: AgentArgs,
+        /// Look for registrations from this block (default: the last 50,000).
+        #[arg(long)]
+        from_block: Option<u64>,
         #[arg(long)]
         sponsored: bool,
     },
@@ -1490,6 +1536,22 @@ async fn main() -> Result<()> {
                 let s = session(&agent).await?;
                 let done = s.x402_reclaim(from_block, sponsored).await?;
                 println!("reclaimed {} expired authorization(s)", done.len());
+            }
+        },
+        Cmd::Order { cmd } => match cmd {
+            OrderCmd::Sell { agent, venue, sell, buy, sell_amount, buy_amount, valid_for, sponsored } => {
+                let s = session(&agent).await?;
+                let sell_amount = sell_amount.parse::<U256>().context("--sell-amount")?;
+                let buy_amount = buy_amount.parse::<U256>().context("--buy-amount")?;
+                let placed = s.order_sell(venue, sell, buy, sell_amount, buy_amount, valid_for, sponsored).await?;
+                eprintln!("order digest:   {}", placed.digest);
+                eprintln!("not sent to any order book: the order is live once one has it");
+                println!("{}", placed.json());
+            }
+            OrderCmd::Reclaim { agent, from_block, sponsored } => {
+                let s = session(&agent).await?;
+                let done = s.order_reclaim(from_block, sponsored).await?;
+                println!("reclaimed {done} unfilled order(s)");
             }
         },
         Cmd::Demo { agent, sponsored } => {
