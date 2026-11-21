@@ -161,6 +161,45 @@ GnuPG 2.5.18 over PC/SC.
 Not done: a backend, an account with such a key as its root, the secp256k1
 route, a Trezor.
 
+### Ledger: what the OpenPGP route has, and what a device app of our own would change
+
+The weaknesses the experiment found belong to the OpenPGP app, not to the
+device. The left column is what the run showed [V]; the right one is what an
+app written for this project would do, from how Ledger device apps are built
+[I]. Nothing of such an app exists.
+
+| | The OpenPGP app as it is | A device app of our own |
+|---|---|---|
+| A P-256 signature `P256Validator` accepts | yes | yes: the same signing call of Ledger's SDK |
+| What the device shows before it signs | that a signature is asked, nothing of the digest | screens of our own: the account, the operation, the mandate's limits. Making that readable on a small screen is design work |
+| PIN | the app's own, entered on the computer in our run, with public default values | none of its own: the device's unlock PIN is the gate |
+| Transport | a smart-card reader (CCID); on macOS's built-in driver five seconds to confirm | the app's own commands over USB: no card driver and no such limit |
+| The key after an app or OS update | erased, unless the app's seed mode was on | derived from the device's seed: it survives updates and comes back from the recovery phrase |
+| On the computer | GnuPG today; a backend of ours would speak PC/SC | a backend of ours speaking the app's commands |
+| How a user gets it | from Ledger's catalogue, in its developer mode | see below |
+
+**What a public release costs.** Before Ledger lists an app it must pass a
+security audit by one of Ledger's approved partners, at the developer's
+expense [V](https://developers.ledger.com/docs/device-app/getting-started); it must work with all four signers (Nano S Plus,
+Nano X, Stax, Flex) [V](https://developers.ledger.com/docs/device-app/submission-process/deliverables/security-audit); the deliverables include a companion wallet,
+support documentation and tests [V](https://developers.ledger.com/docs/device-app/submission-process/process); and every update is submitted
+with functional tests and an audit scoped to its changes [V](https://developers.ledger.com/docs/device-app/submission-process/maintenance).
+
+**Before a release, or without one,** the app can be side-loaded as a
+development build onto a Nano S Plus, a Stax or a Flex [V](https://developers.ledger.com/docs/device-app/references/tools); a
+Nano X does not take side-loaded apps [I]. Anyone who wants the stronger
+review on their own device could install it that way. It has a price that
+has to be said with it: the build is ours and not reviewed by Ledger, the
+device asks to allow an "unsafe manager" for it, and a device set up with a
+developer certificate does not pass Ledger's genuine check, which Ledger's
+own app needs to install anything, until that certificate and the apps
+installed through it are removed [V](https://developers.ledger.com/docs/device-app/references/tools).
+
+**For the decision in #67.** The OpenPGP route needs only a backend and
+keeps the weaknesses above. An app of our own removes them and costs the
+app, its backend and, for a public release, the audit and its upkeep. The
+project can build such an app if the owner decides there is a need for it.
+
 ---
 
 ## 3. An open secure element as a separate USB owner device
