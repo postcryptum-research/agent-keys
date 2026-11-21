@@ -445,7 +445,7 @@ contract PolicyFuzzDifferential is PolicyFuzzBase {
         vm.etch(TOKEN_B, nonces);
         fresh = new AgentPolicy(NONCE_ASSERT);
         deployed = AgentPolicy(address(0xDE9107ED));
-        vm.etch(address(deployed), vm.parseBytes(vm.readFile("test/vectors/agent-policy-84532-0x2E6F47B2.hex")));
+        vm.etch(address(deployed), vm.parseBytes(vm.readFile("test/vectors/agent-policy-84532-0x12b7E799.hex")));
         assertEq(deployed.NONCE_ASSERT(), NONCE_ASSERT, "the vector is not the instance it is taken for");
         account.install(fresh, _installData(fresh));
         account.install(deployed, _installData(deployed));

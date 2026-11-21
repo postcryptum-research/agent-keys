@@ -22,12 +22,14 @@ budget, one past it), with a share of damaged ones.
 | `testFuzz_differential_mandatesFromTheSeed` | both install or both refuse a mandate built from the seed (it draws from everything install must refuse), and what is then readable of it is the same |
 | `testFuzz_differential_arbitraryCallData`, `…arbitraryInstallData` | the same answer from both for arbitrary bytes |
 
-The differential tests exist because the source and the deployed instance
-differ only in where they keep their state
+The differential tests were written when the source and the deployed
+instance differed only in where they kept their state
 ([#83](https://github.com/postcryptum-research/agent-keys/issues/83)): any
-difference in behaviour is a bug in one of them. When a new instance is
-deployed, its runtime code replaces the vector in `contracts/test/vectors/`
-and the differential tests then guard the next change.
+difference in behaviour was a bug in one of them, and 10,000 runs found
+none. That source was deployed on 2026-11-21 and its runtime code is now the
+vector in `contracts/test/vectors/`, so today both sides are the same code
+and the differential tests guard the next change to the source. The model
+tests do not depend on the vector.
 
 ```sh
 cd contracts

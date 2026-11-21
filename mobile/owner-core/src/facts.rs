@@ -29,9 +29,10 @@ const TOKENS: &[(u64, Address, &str, u8, B256)] = &[(
 /// `AgentPolicy` instances that enforce per-token payee lists (issue #66).
 /// An earlier instance decodes such a mandate and ignores the lists, so the
 /// review refuses to show payees for any module that is not here. The
-/// instance deployed to Base Sepolia on 2026-11-20 is the first; the anvil
-/// harness runs Base Sepolia's deployed code and follows this list too.
-const PAYEE_POLICIES: &[Address] = &[address!("2E6F47B2F3d0F3E6071eCdBc0b445a2B26d23D95")];
+/// instance deployed to Base Sepolia on 2026-11-20 was the first; the one of
+/// 2026-11-21 (the storage layout of issue #83) is the current one, and the
+/// anvil harness runs Base Sepolia's deployed code and follows this list too.
+const PAYEE_POLICIES: &[Address] = &[address!("12b7E79974CC4F4181a40Aa11f9d3170018ae0E2")];
 
 /// The chains this build has facts for.
 pub fn chains() -> Vec<u64> {
@@ -197,7 +198,7 @@ mod tests {
     #[test]
     fn base_sepolia() {
         let f = for_chain(84532);
-        let policy = address!("2E6F47B2F3d0F3E6071eCdBc0b445a2B26d23D95");
+        let policy = address!("12b7E79974CC4F4181a40Aa11f9d3170018ae0E2");
         let signer = address!("a19e6061b1C193573e5fe46c39363FfDd5CCA22E");
         assert_eq!(f.names[&policy], "AgentPolicy");
         assert_eq!((&f.policy_modules, &f.signer_modules), (&vec![policy], &vec![signer]), "the current policy and signer only, each in its slot");
@@ -209,6 +210,10 @@ mod tests {
         let v7 = address!("dd544A6F0220778Fff16F51B468656e73E32ae85");
         assert_eq!(f.names[&v7], "AgentPolicy v7 (superseded)");
         assert!(!f.policy_modules.contains(&v7));
+        // the first instance with payee lists, before the storage layout of #83
+        let v8 = address!("2E6F47B2F3d0F3E6071eCdBc0b445a2B26d23D95");
+        assert_eq!(f.names[&v8], "AgentPolicy v8 (superseded)");
+        assert!(!f.policy_modules.contains(&v8));
         assert_eq!(f.payee_policy_modules, vec![policy]);
         assert_eq!(f.names[&address!("68544284bfDbbd6bDB9F6A1D80D05C387015daA9")], "P256Signer v1 (superseded)");
         // both recovery validators can take over; only the current paymaster sponsors
