@@ -13,7 +13,7 @@ interface IGPv2Settlement {
 /// @notice Reads a GPv2 order and allows it only if:
 ///         - its proceeds go to the account (`receiver` is zero or the account);
 ///         - it sells and buys a pair the owner listed, at no less than the
-///           pair's lowest price if the owner set one;
+///           pair's lowest price, which every pair has;
 ///         - it is a sell order, filled whole or not at all, with both
 ///           balances plain ERC-20 (not Balancer's vault);
 ///         - its `appData` is the one the owner pinned.
@@ -39,9 +39,13 @@ contract CowSwapDecoder is IVenueDecoder {
         Pair[] pairs;
     }
 
-    /// A pair the agent may trade, one way. With `minBuy` non-zero an order
+    /// A pair the agent may trade, one way, and its lowest price: an order
     /// must ask for at least `minBuy` of `buyToken` per `perSell` of
-    /// `sellToken`, both in the tokens' smallest units.
+    /// `sellToken`, both in the tokens' smallest units and neither zero.
+    /// Without it a compromised agent could sell for nothing; with it the
+    /// most it can lose on an order is the distance from this price to the
+    /// market's. The policy has no oracle: the owner sets the price and it
+    /// stays until the mandate is replaced.
     struct Pair {
         address sellToken;
         address buyToken;
@@ -127,7 +131,7 @@ contract CowSwapDecoder is IVenueDecoder {
 
     /// @notice Whether `config` is one `judge` can read and an owner can be
     /// shown: at least one pair, no pair twice, no token paired with itself,
-    /// a lowest price given whole or not at all.
+    /// a lowest price for every pair.
     function checkConfig(bytes calldata config) external pure returns (bool) {
         Config memory c = abi.decode(config, (Config));
         if (c.pairs.length == 0 || c.maxLife == 0) revert InvalidConfig();
@@ -136,7 +140,7 @@ contract CowSwapDecoder is IVenueDecoder {
             if (p.sellToken == address(0) || p.buyToken == address(0) || p.sellToken == p.buyToken) {
                 revert InvalidConfig();
             }
-            if ((p.minBuy == 0) != (p.perSell == 0)) revert InvalidConfig();
+            if (p.minBuy == 0 || p.perSell == 0) revert InvalidConfig();
             for (uint256 j; j < i; j++) {
                 if (c.pairs[j].sellToken == p.sellToken && c.pairs[j].buyToken == p.buyToken) revert InvalidConfig();
             }
@@ -155,12 +159,12 @@ contract CowSwapDecoder is IVenueDecoder {
             Pair memory p = pairs[i];
             if (p.sellToken != o.sellToken || p.buyToken != o.buyToken) continue;
             if (p.sellToken == p.buyToken) break;
-            if (p.minBuy != 0) {
-                // buyAmount / sellAmount >= minBuy / perSell, in 512 bits
-                (uint256 hi1, uint256 lo1) = _mul(o.buyAmount, p.perSell);
-                (uint256 hi2, uint256 lo2) = _mul(o.sellAmount, p.minBuy);
-                if (hi1 < hi2 || (hi1 == hi2 && lo1 < lo2)) revert BelowTheLowestPrice();
-            }
+            // a pair without a price is not a pair: refused here too, whatever checkConfig said
+            if (p.minBuy == 0 || p.perSell == 0) break;
+            // buyAmount / sellAmount >= minBuy / perSell, in 512 bits
+            (uint256 hi1, uint256 lo1) = _mul(o.buyAmount, p.perSell);
+            (uint256 hi2, uint256 lo2) = _mul(o.sellAmount, p.minBuy);
+            if (hi1 < hi2 || (hi1 == hi2 && lo1 < lo2)) revert BelowTheLowestPrice();
             return;
         }
         revert PairNotListed(o.sellToken, o.buyToken);

@@ -53,7 +53,8 @@ contract CowSwapDecoderTest is Test {
         c.appData = APP_DATA;
         c.maxLife = LIFE;
         c.pairs = new CowSwapDecoder.Pair[](2);
-        c.pairs[0] = CowSwapDecoder.Pair(USDC, WETH, 0, 0);
+        // at least 0.0002 WETH for each USDC (5,000 USDC for one WETH at most)
+        c.pairs[0] = CowSwapDecoder.Pair(USDC, WETH, 0.0002 ether, 1e6);
         // at least 0.99 USDT for each USDC
         c.pairs[1] = CowSwapDecoder.Pair(USDC, USDT, 99, 100);
     }
@@ -130,10 +131,24 @@ contract CowSwapDecoderTest is Test {
         _judge(o);
         o.buyAmount = 198e6 - 1;
         _refused(o, abi.encodeWithSelector(CowSwapDecoder.BelowTheLowestPrice.selector));
-        // a pair without a lowest price takes any, zero included: the price is the agent's
+        // selling for nothing is refused on every pair
         o.buyToken = WETH;
         o.buyAmount = 0;
-        _judge(o);
+        _refused(o, abi.encodeWithSelector(CowSwapDecoder.BelowTheLowestPrice.selector));
+    }
+
+    /// A config whose pair has no price never reached an owner's screen
+    /// (`checkConfig` refuses it); if one is installed all the same, its
+    /// pair is not a pair.
+    function test_judge_aPairWithoutAPriceIsNotAPair() public {
+        bytes memory order = abi.encode(_order());
+        CowSwapDecoder.Config memory c = _config();
+        c.pairs[0] = CowSwapDecoder.Pair(USDC, WETH, 0, 0);
+        vm.expectRevert(abi.encodeWithSelector(CowSwapDecoder.PairNotListed.selector, USDC, WETH));
+        decoder.judge(account, abi.encode(c), order);
+        c.pairs[0] = CowSwapDecoder.Pair(USDC, WETH, 1, 0);
+        vm.expectRevert(abi.encodeWithSelector(CowSwapDecoder.PairNotListed.selector, USDC, WETH));
+        decoder.judge(account, abi.encode(c), order);
     }
 
     function test_judge_theLowestPriceDoesNotOverflow() public {
@@ -274,7 +289,7 @@ contract CowSwapDecoderTest is Test {
         c.appData = o.appData;
         c.maxLife = LIFE;
         c.pairs = new CowSwapDecoder.Pair[](1);
-        c.pairs[0] = CowSwapDecoder.Pair(o.sellToken, o.buyToken, 0, 0);
+        c.pairs[0] = CowSwapDecoder.Pair(o.sellToken, o.buyToken, 1, type(uint256).max);
         (,,,, digest) = decoder.judge(owner, abi.encode(c), abi.encode(o));
     }
 
@@ -318,6 +333,11 @@ contract CowSwapDecoderTest is Test {
         _badConfig(c);
 
         c = _config();
+        c.pairs[0].minBuy = 0; // no price
+        c.pairs[0].perSell = 0;
+        _badConfig(c);
+
+        c = _config();
         c.pairs[0].sellToken = address(0);
         _badConfig(c);
     }
@@ -352,6 +372,7 @@ contract CowSwapDecoderTest is Test {
             assertEq(o.sellToken, USDC, "sell token");
             assertTrue(o.buyToken == WETH || o.buyToken == USDT, "buy token");
             if (o.buyToken == USDT) assertGe(o.buyAmount * 100, o.sellAmount * 99, "lowest price");
+            if (o.buyToken == WETH) assertGe(o.buyAmount * 1e6, o.sellAmount * 0.0002 ether, "lowest price");
             assertEq(o.kind, good.kind);
             assertFalse(o.partiallyFillable);
             assertEq(o.sellTokenBalance, good.sellTokenBalance);
