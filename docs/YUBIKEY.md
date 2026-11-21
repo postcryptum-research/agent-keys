@@ -350,12 +350,12 @@ conformance to ERC-7562; the rule-enforcing check of the instance on chain is
 asked for in [#99](https://github.com/postcryptum-research/agent-keys/issues/99), together with the rotation of the enclave test
 account's permission, the last one still on the earlier policy.
 
-### Onto the AgentPolicy with account-owned storage (2026-11-21, issue #99)
+### The enclave test account onto it, and the rule-enforcing check (2026-11-21, issue #99)
 
-After #87 deployed the AgentPolicy whose storage belongs to the account under
-ERC-7562 (`0x12b7E79974CC4F4181a40Aa11f9d3170018ae0E2`; the previous instance
-stays as `agentPolicyV8`), the enclave test account's permission `0x73653032`
-moved onto it with one signature by the root key:
+The enclave test account's permission `0x73653032`, the last one still on
+the earlier policy, moved onto the same instance
+(`0x12b7E79974CC4F4181a40Aa11f9d3170018ae0E2`) with one signature by the root
+key:
 `permission rotate --old-id 0x73653032 --sponsored` — tx
 `0x3e27ab971217086f79c0b683454b71d9e66b8434d348c242114157ec2f2d2739`
 (block 61723571, 451,465 gas, paymaster-sponsored, own `handleOps`).
@@ -392,7 +392,8 @@ verdict was for the branch's build deployed on a fork; this one is for the
 instance on chain, under the account's own permission, with operations
 signed by its agent key and sent to the local bundler only.
 
-The main account's two permissions are rotated by the owner separately.
+With this rotation no live permission of the test accounts is left on an
+earlier policy.
 
 ## Security notes
 
