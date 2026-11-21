@@ -16,9 +16,22 @@ bundle=dev.tpmsign.owner.spike
 cd "$here"
 [ -d build/core/OwnerCoreFFI.xcframework ] || { echo "run ./build-core.sh first"; exit 1; }
 xcrun devicectl list devices --json-output build/devices.json >/dev/null
-device=$(python3 -c 'import json,sys; print(next((d["hardwareProperties"]["udid"] for d in json.load(open(sys.argv[1]))["result"]["devices"] if d["hardwareProperties"].get("reality")=="physical" and d["connectionProperties"].get("tunnelState")=="connected"), ""))' build/devices.json)
+paired=$(python3 -c 'import json,sys; print(" ".join(d["hardwareProperties"]["udid"] for d in json.load(open(sys.argv[1]))["result"]["devices"] if d["hardwareProperties"].get("reality")=="physical" and d["connectionProperties"].get("pairingState")=="paired"))' build/devices.json)
 rm -f build/devices.json
+# The connection to a phone sleeps when idle, and the list above then shows it
+# as "disconnected" although the phone is there. Asking for the lock state
+# wakes the connection, and tells a locked phone from an absent one.
+device=
+locked=
+for d in $paired; do
+  xcrun devicectl device info lockState --device "$d" --timeout 20 --json-output build/lock.json >/dev/null 2>&1 || continue
+  locked=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["result"]["passcodeRequired"])' build/lock.json 2>/dev/null || true)
+  device=$d
+  break
+done
+rm -f build/lock.json
 [ -n "$device" ] || { echo "no iPhone connected: plug it in, unlock it, and trust this Mac on it"; exit 1; }
+[ "$locked" = False ] || { echo "the iPhone is locked: unlock it and run this again"; exit 1; }
 xcodegen generate --quiet
 # Xcode registers the phone with the team and makes the provisioning profile itself
 xcodebuild build -quiet -project OwnerApp.xcodeproj -scheme OwnerApp -destination "id=$device" -derivedDataPath build/derived \
