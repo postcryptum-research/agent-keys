@@ -812,6 +812,14 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
                 None => b.row(s, "Token payee", format!("{}: anyone — the agent picks the recipient and the spender", b.name(*token))),
             }
         }
+        // A venue's own contract, or its decoder, is no target under any mandate, with
+        // venues of its own or without: at the venue an order can be signed past the
+        // decoder, and the venue holds the owner's allowance.
+        for t in &targets {
+            if let Some((_, v)) = b.facts.venues.iter().find(|(d, v)| *d == t || v.place == *t) {
+                return Err(format!("this mandate lets the agent call {}'s own contract, where it could sign any order; refused", v.name));
+            }
+        }
         if let Some((_, venues)) = &trading {
             let capped: Vec<Address> = tokens.iter().map(|t| t.0).collect();
             let listed: Vec<Address> = payees.iter().map(|p| p.0).collect();
@@ -849,6 +857,45 @@ fn period_text(period: u32) -> String {
     format!("{every}. Each budget above is per period; across a renewal up to twice a budget can be spent in a short time")
 }
 
+/// A CoW Swap venue's terms as the phone reads them from the config bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CowTerms {
+    /// The only `appData` an order may carry.
+    pub app_data: B256,
+    /// The longest an order may live, seconds.
+    pub max_life: u32,
+    /// `(sell token, buy token, min buy, per sell)`: never less than `min
+    /// buy` of the buy token for each `per sell` of the sell token.
+    pub pairs: Vec<(Address, Address, U256, U256)>,
+}
+
+/// Reads a `CowSwapDecoder` config, or says what is wrong with it. The
+/// phone shows these terms and the decoder on chain enforces what it reads
+/// from the same bytes, so the two must read alike: this takes only bytes
+/// that are the one canonical encoding of what it returns, and only a
+/// config the decoder's own rules allow. It may refuse more than the
+/// decoder; it must never read other terms than the decoder does
+/// (`agent-signer/tests/anvil_cli.rs` holds it to the decoder).
+pub fn cow_terms(config: &[u8]) -> Result<CowTerms, String> {
+    type CowConfig = (B256, u32, Vec<(Address, Address, U256, U256)>);
+    let (app_data, max_life, pairs) = CowConfig::abi_decode_validate(config).map_err(|e| format!("does not decode: {e}"))?;
+    if (app_data, max_life, pairs.clone()).abi_encode() != config {
+        return Err("is not canonical".into());
+    }
+    if pairs.is_empty() || pairs.len() > 16 || max_life == 0 {
+        return Err("has no pair, too many, or no order lifetime".into());
+    }
+    for (j, (sell, buy, min_buy, per_sell)) in pairs.iter().enumerate() {
+        if sell.is_zero() || buy.is_zero() || sell == buy || min_buy.is_zero() || per_sell.is_zero() {
+            return Err("has a pair without two tokens or without a lowest price".into());
+        }
+        if pairs[..j].iter().any(|p| p.0 == *sell && p.1 == *buy) {
+            return Err("lists a pair twice".into());
+        }
+    }
+    Ok(CowTerms { app_data, max_life, pairs })
+}
+
 /// The venues of a trading mandate (issue #80), in the order of what can
 /// hurt most. A venue is shown only when the build knows its decoder by
 /// address and code, the laptop sent the config the mandate's hash names,
@@ -862,7 +909,6 @@ fn venue_rows(
     capped: &[Address],
     listed: &[Address],
 ) -> Result<(), String> {
-    type CowConfig = (B256, u32, Vec<(Address, Address, U256, U256)>);
     for (i, (decoder, code_hash, config_hash)) in venues.iter().enumerate() {
         let Some(venue) = b.facts.venues.get(decoder).cloned() else {
             return Err(format!("the trading venue {} is not one this build knows; refused", decoder.to_checksum(None)));
@@ -879,23 +925,11 @@ fn venue_rows(
         let Some(config) = b.venue_configs.iter().find(|c| alloy_primitives::keccak256(c) == *config_hash) else {
             return Err(format!("the laptop did not send the config this mandate pins for {}; refused", venue.name));
         };
-        let (app_data, max_life, pairs) =
-            CowConfig::abi_decode_validate(config).map_err(|e| format!("the config for {}: {e}", venue.name))?;
-        if (app_data, max_life, pairs.clone()).abi_encode() != config.as_ref() {
-            return Err(format!("the config for {} is not canonical; refused", venue.name));
-        }
-        if pairs.is_empty() || pairs.len() > 16 || max_life == 0 {
-            return Err(format!("the config for {} has no pair, too many, or no order lifetime; refused", venue.name));
-        }
+        let CowTerms { app_data, max_life, pairs } =
+            cow_terms(config).map_err(|e| format!("the config for {} {e}; refused", venue.name))?;
         b.row(s, "Trading on", format!("{} (decoder {} verified in this build)", venue.name, decoder.to_checksum(None)));
         b.row(s, "Proceeds go to", "this account only");
-        for (j, (sell, buy, min_buy, per_sell)) in pairs.iter().enumerate() {
-            if sell.is_zero() || buy.is_zero() || sell == buy || min_buy.is_zero() || per_sell.is_zero() {
-                return Err(format!("the config for {} has a pair without two tokens or without a lowest price; refused", venue.name));
-            }
-            if pairs[..j].iter().any(|p| p.0 == *sell && p.1 == *buy) {
-                return Err(format!("the config for {} lists a pair twice; refused", venue.name));
-            }
+        for (sell, buy, min_buy, per_sell) in pairs.iter() {
             // the policy registers an order only for a token it limits, and not for one
             // with a payee list: a pair it would never let through is not shown as allowed
             if !capped.contains(sell) {
@@ -1333,6 +1367,26 @@ mod tests {
             reach.selectors.push(FixedBytes::from([0xec, 0x6c, 0xb1, 0x3f]));
             refused(open_trading(&reach, &one_venue(&c), vec![c.clone()], &f), "could sign any order");
         }
+
+        // the same under a mandate with no venue of its own
+        let mut plain = trading_params();
+        plain.targets = vec![COUNTER, SETTLEMENT];
+        plain.selectors = vec![FixedBytes::from(SELECTOR_INCREMENT), FixedBytes::from([0xec, 0x6c, 0xb1, 0x3f])];
+        refused(open_trading(&plain, &kernel::Trading { period: 3_600, venues: vec![] }, vec![], &f), "could sign any order");
+        refused(
+            {
+                let pdata = kernel::permission_data(POLICY, &plain, SIGNER, &key(2));
+                let perm = FixedBytes::from([0x70, 0x6c, 0x61, 0x6e]);
+                let mut o = op(kernel::execute_batch_calldata(vec![
+                    (ACCOUNT, U256::ZERO, kernel::install_permission_calldata(perm, pdata, 1)),
+                    (ACCOUNT, U256::ZERO, kernel::grant_execute_calldata(perm)),
+                ]));
+                o.gas_fees = kernel::pack_gas(1, 1);
+                let bytes = SignRequest::new(&o, ENTRY, 31337, NOW + 120, None, BTreeMap::new(), None).to_bytes();
+                open_request(&bytes, &commitment(&bytes), NOW, &enrolled(), &f)
+            },
+            "could sign any order",
+        );
 
         // a venue twice
         let mut twice = one_venue(&c);

@@ -266,6 +266,17 @@ enum PermissionCmd {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Set the allowance of each venue in the config back to one budget of
+    /// the token it sells. Root operation signed by the owner key. The venue
+    /// takes tokens through this allowance, not through the mandate, so it
+    /// is never more than one budget; under a mandate with a period the
+    /// owner renews it.
+    Allowance {
+        #[command(flatten)]
+        agent: AgentArgs,
+        #[arg(long)]
+        sponsored: bool,
+    },
     /// Replace permission `old_id` with the one the config describes — new
     /// agent key and/or mandate — in one root operation. Pin `account` in
     /// the config first.
@@ -1470,6 +1481,11 @@ async fn main() -> Result<()> {
                     inc.block,
                     inc.gas_used
                 );
+            }
+            PermissionCmd::Allowance { agent, sponsored } => {
+                let s = session(&agent).await?;
+                let inc = s.renew_venue_allowances(sponsored).await?;
+                println!("venue allowances set to one budget: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
             }
             PermissionCmd::Rotate { agent, old_id, sponsored, dry_run } => {
                 let s = session(&agent).await?;

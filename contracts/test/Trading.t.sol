@@ -101,7 +101,7 @@ contract TradingTest is AgentPermissionTest {
     CowSwapDecoder internal decoder;
     uint48 internal tradingExpiry;
 
-    function _with(uint32 period_) internal {
+    function _world() internal {
         vm.warp(T0);
         tradingExpiry = uint48(T0 + 30 days);
         usd = new MockToken();
@@ -110,6 +110,10 @@ contract TradingTest is AgentPermissionTest {
         decoder = new CowSwapDecoder(address(settlement));
         usd.mint(acct, 10_000e6);
         weth.mint(address(settlement), 100 ether);
+    }
+
+    function _with(uint32 period_) internal {
+        _world();
         _install(
             TRD_ID, _params(period_, _venues(address(decoder), address(decoder).codehash, keccak256(_cowConfig())))
         );
@@ -531,6 +535,56 @@ contract TradingTest is AgentPermissionTest {
     function _plainOp(PermissionId id, bytes memory data) internal view returns (PackedUserOperation memory op) {
         op = _op(_permissionNonce(id), _singleCall(address(policy), 0, data));
         op.signature = abi.encodePacked(bytes1(0xff), _sign(AGENT, entryPoint.getUserOpHash(op)));
+    }
+
+    /// The venue's own contract is out of the agent's reach under every
+    /// mandate of the account, not only the one that trades there: at the
+    /// settlement an order can be signed past the decoder
+    /// (`setPreSignature`), and it holds the owner's allowance. A mandate
+    /// that named it before it became a venue loses it, a later one is
+    /// refused at install, and it stays so after the trading mandate is gone.
+    function test_trading_theVenueIsNoTargetUnderAnyMandate() public {
+        _world();
+        PermissionId old = PermissionId.wrap(0x6f6c6431); // "old1"
+        address[] memory targets = new address[](2);
+        bytes4[] memory selectors = new bytes4[](2);
+        (targets[0], selectors[0]) = (address(counter), Counter.increment.selector);
+        (targets[1], selectors[1]) = (address(settlement), Settlement.setPreSignature.selector);
+        AgentPolicy.TokenCap[] memory noCaps = new AgentPolicy.TokenCap[](0);
+        bytes memory plain = abi.encode(targets, selectors, MAX_VALUE, BUDGET, tradingExpiry, noCaps, uint48(0));
+        _install(old, plain);
+        assertFalse(policy.venuePlace(acct, address(settlement)));
+
+        bytes memory preSign = abi.encodeCall(Settlement.setPreSignature, (hex"01", true));
+        PackedUserOperation memory op = _op(_permissionNonce(old), _singleCall(address(settlement), 0, preSign));
+        op.signature = abi.encodePacked(bytes1(0xff), _sign(AGENT, entryPoint.getUserOpHash(op)));
+        _send(op);
+
+        // the account takes the settlement as a venue
+        _install(
+            TRD_ID, _params(DAY, _venues(address(decoder), address(decoder).codehash, keccak256(_cowConfig())))
+        );
+        assertTrue(policy.venuePlace(acct, address(settlement)));
+        assertTrue(policy.venuePlace(acct, address(decoder)));
+        assertFalse(policy.venuePlace(address(this), address(settlement)), "another account's venues are its own");
+
+        // the older mandate still lists it, and the agent no longer reaches it
+        op = _op(_permissionNonce(old), _singleCall(address(settlement), 0, preSign));
+        op.signature = abi.encodePacked(bytes1(0xff), _sign(AGENT, entryPoint.getUserOpHash(op)));
+        _expectRefused(op);
+        // the rest of that mandate works as before
+        op = _op(_permissionNonce(old), _singleCall(address(counter), 0, abi.encodeCall(Counter.increment, ())));
+        op.signature = abi.encodePacked(bytes1(0xff), _sign(AGENT, entryPoint.getUserOpHash(op)));
+        _send(op);
+
+        // a new mandate that names it is refused whole
+        _refusedInstall(plain);
+
+        // and it stays out of reach when the trading mandate is revoked
+        _send(_rootOp(_singleCall(acct, 0, _uninstallCall(ValidatorLib.permissionToIdentifier(TRD_ID)))));
+        op = _op(_permissionNonce(old), _singleCall(address(settlement), 0, preSign));
+        op.signature = abi.encodePacked(bytes1(0xff), _sign(AGENT, entryPoint.getUserOpHash(op)));
+        _expectRefused(op);
     }
 
     function test_order_revokingEndsEveryVouch() public {

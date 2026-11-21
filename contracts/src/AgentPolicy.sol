@@ -263,6 +263,13 @@ contract AgentPolicy is IPolicy {
     mapping(bytes32 key => mapping(address account => uint48)) internal _chargedIn;
     /// key: `keccak256(mandate, decoder)`
     mapping(bytes32 key => mapping(address account => VenuePin)) internal _venues;
+    /// The venues an account has ever pinned in a mandate: each venue's own
+    /// contract and its decoder. None of them is a target for the agent
+    /// under any mandate of the account, whichever was installed first:
+    /// at the venue itself an order could be signed past the decoder
+    /// (CoW: `setPreSignature`), and the venue holds the owner's allowance.
+    /// Never cleared: an address that was a venue stays out of reach.
+    mapping(address place => mapping(address account => bool)) internal _venuePlaces;
 
     constructor(address nonceAssert) {
         NONCE_ASSERT = nonceAssert;
@@ -321,6 +328,13 @@ contract AgentPolicy is IPolicy {
 
     /// @notice The pinned code hash and config hash of a venue's decoder
     /// under the permission; zeros when it is not one of its venues.
+    /// @notice Whether `place` is, or ever was, a venue's own contract or a
+    /// venue's decoder in a mandate of `account`: then no mandate of the
+    /// account may name it as a target.
+    function venuePlace(address account, address place) external view returns (bool) {
+        return _venuePlaces[place][account];
+    }
+
     function venue(address account, bytes32 id, address decoder) external view returns (VenuePin memory) {
         return _venue(account, _mandate(id, _configs[id][account].epoch), decoder);
     }
@@ -458,9 +472,13 @@ contract AgentPolicy is IPolicy {
             ) revert InvalidConfig();
             (v.codeHash, v.configHash) = (venues[i].codeHash, venues[i].configHash);
             address place = IVenueDecoder(decoder).venue();
+            // this mandate's own targets were judged before the venue was known
             for (uint256 j; j < targets.length; j++) {
                 if (targets[j] == place || targets[j] == decoder) revert ForbiddenTarget(targets[j], bytes4(0));
             }
+            // a venue that is the account or this policy would close the account's own paths
+            if (place == msg.sender || place == address(this) || decoder == address(this)) revert InvalidConfig();
+            (_venuePlaces[place][msg.sender], _venuePlaces[decoder][msg.sender]) = (true, true);
         }
     }
 
@@ -679,7 +697,7 @@ contract AgentPolicy is IPolicy {
         if (p.value == 0 || p.token != j.token) revert OrderNotRegistered();
         // the venue fills an order up to and at `validTo`
         if (block.timestamp <= j.validTo) revert OrderStillLive();
-        if (!IVenueDecoder(decoder).untouched(msg.sender, order)) revert OrderTouched();
+        if (!IVenueDecoder(decoder).untouched{gas: JUDGE_GAS}(msg.sender, order)) revert OrderTouched();
         emit OrderReclaimed(msg.sender, id, j.digest, p.value);
         _refund(m, j.digest, j.token, _token(msg.sender, m, j.token), p.value);
     }
@@ -993,6 +1011,7 @@ contract AgentPolicy is IPolicy {
     /// that holds an allowance from the account can move it.
     function _targetAllowed(address target, bytes4 selector) internal view returns (bool) {
         if (target == msg.sender || target == PERMIT2) return false;
+        if (_venuePlaces[target][msg.sender]) return false;
         if (target == address(this)) {
             return selector == this.x402Authorize.selector || selector == this.x402Reclaim.selector
                 || selector == this.orderRegister.selector || selector == this.orderReclaim.selector;

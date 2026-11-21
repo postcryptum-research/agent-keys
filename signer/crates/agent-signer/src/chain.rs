@@ -967,8 +967,10 @@ impl Session {
     /// The owner's allowance of each sold token to each venue's spender, as
     /// calls of the account: given with the mandate, taken back with it
     /// (`clear`). The policy bounds what the agent can register; this bounds
-    /// what the venue can ever take, whatever the policy does: one budget, or
-    /// with a period one budget for each period of the mandate's life.
+    /// what the venue's spender can ever take, whatever the policy does, and
+    /// that taking does not pass through the policy. So it is one budget and
+    /// no more, also when the mandate has a period: the owner gives the next
+    /// one (`permission allowance`) when this one is used.
     pub fn venue_allowances(&self, clear: bool) -> Result<Vec<(Address, U256, Bytes)>> {
         let mut legs: Vec<(Address, Address, U256)> = Vec::new();
         let p = &self.cfg.policy;
@@ -981,15 +983,7 @@ impl Session {
                 let budget = self.cfg.token_budget(pair.sell_token)?.with_context(|| {
                     format!("the venue sells {}, and `tokens` gives it no limit: the policy registers no order for it", pair.sell_token)
                 })?;
-                let periods = if p.period == 0 {
-                    1
-                } else {
-                    let from = p.valid_after.max(
-                        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
-                    );
-                    p.valid_until.saturating_sub(from) / p.period as u64 + 2
-                };
-                let amount = if clear { U256::ZERO } else { budget.saturating_mul(U256::from(periods)) };
+                let amount = if clear { U256::ZERO } else { budget };
                 legs.push((pair.sell_token, spender, amount));
             }
         }
@@ -1001,6 +995,16 @@ impl Session {
                 (token, U256::ZERO, Bytes::from(call))
             })
             .collect())
+    }
+
+    /// Root operation signed by the owner key: set each venue's allowance
+    /// back to one budget of the token it sells.
+    pub async fn renew_venue_allowances(&self, sponsored: bool) -> Result<Included> {
+        let calls = self.venue_allowances(false)?;
+        if calls.is_empty() {
+            bail!("the config's mandate has no `venues`: there is no allowance to give");
+        }
+        self.send_raw(kernel::execute_batch_calldata(calls), true, sponsored).await
     }
 
     pub async fn add_calldata(&self) -> Result<Bytes> {

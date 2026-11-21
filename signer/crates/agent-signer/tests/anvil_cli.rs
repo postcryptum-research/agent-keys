@@ -2000,9 +2000,15 @@ fn trading_orders_under_a_mandate() {
     // the filled one does not come back, now or later
     assert!(chain.ok(&["order", "reclaim", "--agent", &cfg, "--from-block", "0"]).contains("reclaimed 0 unfilled"));
 
-    // a new period, a new budget
+    // a new period, a new budget; but the venue's allowance is one budget and no more,
+    // whatever the period: the owner gives the next one
     refused(&sell("200000000", "50000000000000000"));
     chain.advance(PERIOD);
+    assert_eq!(allowance(), U256::from(150_000_000u64), "what the first order took is gone from the allowance");
+    let dry = refused(&sell("200000000", "50000000000000000"));
+    assert!(dry.contains("the owner gives the allowance"), "{dry}");
+    chain.ok(&["permission", "allowance", "--agent", &cfg]);
+    assert_eq!(allowance(), U256::from(300_000_000u64));
     let o = placed(&sell("200000000", "50000000000000000"));
     chain.send_from(FACILITATOR, Some(&settlement), settle(&o));
     assert_eq!(balance(&usd, acct), U256::from(10_000_000_000u64 - 350_000_000));
@@ -2011,6 +2017,125 @@ fn trading_orders_under_a_mandate() {
     chain.ok(&["permission", "revoke", "--agent", &cfg, "--id", "0x74726431"]);
     assert!(allowance().is_zero());
     chain.fails(&["demo", "--agent", &cfg]);
+}
+
+/// What the phone reads from a venue's config and what the decoder on chain
+/// enforces from the same bytes are held together (the auditor's point on
+/// issue #80): for configs from a seed, well-formed and damaged, every one
+/// the phone accepts is one the decoder accepts, and the terms the phone
+/// would show are the terms the decoder judges by: an order at a pair's
+/// lowest price passes with the token, the amount and the lifetime the phone
+/// read, one unit under it does not, and a pair the phone did not read is
+/// not traded. The phone may refuse more than the decoder; it never reads
+/// other terms.
+#[test]
+fn the_phone_reads_a_venue_config_as_the_decoder_does() {
+    use owner_core::kernel as k;
+    use owner_core::review::cow_terms;
+    let chain = chain_or_skip!("venue-config");
+    let fixture: Value = serde_json::from_str(
+        &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/trading-code.json")).unwrap(),
+    )
+    .unwrap();
+    let deploy = |name: &str, args: Vec<u8>| {
+        let mut code = hex::decode(fixture[name].as_str().unwrap().trim_start_matches("0x")).unwrap();
+        code.extend(args);
+        chain.send_from(FACILITATOR, None, code)["contractAddress"].as_str().unwrap().to_string()
+    };
+    let settlement = deploy("settlementInitCode", vec![]);
+    let decoder = deploy("cowSwapDecoderInitCode", settlement.parse::<Address>().unwrap().abi_encode());
+    // a call that may revert: the returned bytes, or nothing
+    let ask = |signature: &str, args: Vec<u8>| -> Option<Vec<u8>> {
+        let mut data = alloy::primitives::keccak256(signature)[..4].to_vec();
+        data.extend(args);
+        let body = json!({"jsonrpc": "2.0", "id": 1, "method": "eth_call", "params": [{"to": decoder, "data": Bytes::from(data).to_string()}, "latest"]});
+        let v: Value = serde_json::from_str(&http_post(&chain.url, &body.to_string())).unwrap();
+        v.get("result").and_then(|r| r.as_str()).map(|r| hex::decode(r.trim_start_matches("0x")).unwrap())
+    };
+    let account: Address = "0x00000000000000000000000000000000000Acc01".to_lowercase().parse().unwrap();
+
+    let mut rng: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut next = move |n: u64| {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        rng % n
+    };
+    let tokens: Vec<Address> = (1u8..=5).map(|i| Address::repeat_byte(i)).collect();
+    let (mut both, mut chain_only, mut neither) = (0, 0, 0);
+    for _ in 0..400 {
+        // a config: mostly within the rules, with a share of what the rules refuse
+        let count = if next(12) == 0 { 0 } else { 1 + next(3) };
+        let pairs: Vec<(Address, Address, U256, U256)> = (0..count)
+            .map(|i| {
+                // mostly distinct pairs: token i sold for another one
+                let sell = if next(25) == 0 { Address::ZERO } else { tokens[i as usize] };
+                let buy = if next(25) == 0 { sell } else { tokens[(i + 1 + next(2)) as usize] };
+                let amount = |n: u64| if n % 30 == 0 { U256::ZERO } else { U256::from(1 + n % 1_000_000) };
+                (sell, buy, amount(next(u64::MAX)), amount(next(u64::MAX)))
+            })
+            .collect();
+        let life = if next(15) == 0 { 0 } else { 1 + next(86_400) as u32 };
+        let app_data = if next(3) == 0 { B256::ZERO } else { B256::repeat_byte(next(256) as u8) };
+        let mut config = k::cow_config(app_data, life, &pairs).to_vec();
+        // and damaged bytes: one changed, the end cut, a word added
+        match next(8) {
+            0 => {
+                let at = next(config.len() as u64) as usize;
+                config[at] ^= 1 << next(8);
+            }
+            1 => config.truncate(config.len() - 1 - next(40) as usize % config.len()),
+            2 => config.extend([0u8; 32]),
+            _ => {}
+        }
+
+        let phone = cow_terms(&config);
+        let on_chain = ask("checkConfig(bytes)", (Bytes::from(config.clone()),).abi_encode_params()).is_some();
+        let Ok(terms) = phone else {
+            if on_chain { chain_only += 1 } else { neither += 1 }
+            continue;
+        };
+        assert!(on_chain, "the phone accepts a config the decoder refuses: 0x{}", hex::encode(&config));
+        both += 1;
+
+        let valid_to = 1_900_000_000u32;
+        let judge = |sell: Address, buy: Address, sell_amount: U256, buy_amount: U256| {
+            let order = k::CowSellOrder { sell_token: sell, buy_token: buy, sell_amount, buy_amount, valid_to, app_data: terms.app_data };
+            ask("judge(address,bytes,bytes)", (account, Bytes::from(config.clone()), order.encode()).abi_encode_params())
+        };
+        for (sell, buy, min_buy, per_sell) in &terms.pairs {
+            let times = U256::from(1 + next(1000));
+            // a multiple of the price's two terms is exactly at the price; the terms
+            // themselves when a multiple does not fit a word (the decoder compares in 512 bits)
+            let (sold, least) = match (per_sell.checked_mul(times), min_buy.checked_mul(times)) {
+                (Some(sold), Some(least)) => (sold, least),
+                _ => (*per_sell, *min_buy),
+            };
+            let answer = judge(*sell, *buy, sold, least).unwrap_or_else(|| panic!("an order at the lowest price the phone read is refused: 0x{}", hex::encode(&config)));
+            assert_eq!(answer.len(), 160);
+            assert_eq!(Address::from_slice(&answer[12..32]), *sell, "the token charged");
+            assert_eq!(U256::from_be_slice(&answer[32..64]), sold, "the amount charged");
+            assert_eq!(U256::from_be_slice(&answer[64..96]), U256::from(valid_to - terms.max_life), "the lifetime");
+            assert_eq!(U256::from_be_slice(&answer[96..128]), U256::from(valid_to));
+            assert!(judge(*sell, *buy, sold, least - U256::from(1)).is_none(), "an order under the lowest price the phone read passes: 0x{}", hex::encode(&config));
+            // other order data than the phone read
+            let other = k::CowSellOrder { sell_token: *sell, buy_token: *buy, sell_amount: sold, buy_amount: least, valid_to, app_data: B256::repeat_byte(0xee) };
+            if terms.app_data != other.app_data {
+                assert!(ask("judge(address,bytes,bytes)", (account, Bytes::from(config.clone()), other.encode()).abi_encode_params()).is_none());
+            }
+        }
+        // a pair the phone did not read is not traded, at any price
+        for sell in &tokens {
+            for buy in &tokens {
+                if !terms.pairs.iter().any(|p| p.0 == *sell && p.1 == *buy) {
+                    assert!(judge(*sell, *buy, U256::from(1), U256::MAX >> 1).is_none(), "a pair the phone did not read is traded: 0x{}", hex::encode(&config));
+                }
+            }
+        }
+    }
+    // the generator reaches all three kinds
+    assert!(both >= 150 && chain_only >= 5 && neither >= 50, "accepted by both {both}, by the decoder only {chain_only}, by neither {neither}");
+    eprintln!("configs: {both} accepted by both, {chain_only} by the decoder only, {neither} by neither");
 }
 
 // ---------------------------------------------------------------- bundler and paymaster
