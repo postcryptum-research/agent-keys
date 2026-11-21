@@ -350,6 +350,51 @@ conformance to ERC-7562; the rule-enforcing check of the instance on chain is
 asked for in [#99](https://github.com/postcryptum-research/agent-keys/issues/99), together with the rotation of the enclave test
 account's permission, the last one still on the earlier policy.
 
+### The enclave test account onto it, and the rule-enforcing check (2026-11-21, issue #99)
+
+The enclave test account's permission `0x73653032`, the last one still on
+the earlier policy, moved onto the same instance
+(`0x12b7E79974CC4F4181a40Aa11f9d3170018ae0E2`) with one signature by the root
+key:
+`permission rotate --old-id 0x73653032 --sponsored` — tx
+`0x3e27ab971217086f79c0b683454b71d9e66b8434d348c242114157ec2f2d2739`
+(block 61723571, 451,465 gas, paymaster-sponsored, own `handleOps`).
+`permission show` afterwards: policy module `0x12b7…e0E2`, every field `ok`,
+`payees` anyone on chain and in the config. The two config changes that go
+with a rotation were on master already.
+
+The enclave agent ran on it twice: `demo --sponsored` by our own delivery
+(counter 73 → 74, tx
+`0x86114bcba78d2d8e4ab15c4fbbb412ebe13849778c5e22dad153b6ce7215b57c`, block
+61723603), and `demo --bundler` through a public bundler with the account
+paying (counter 74 → 75, tx
+`0xb1944a22ea6372da56618028e1864b5d704881861f1cc685aa3dd466f6143612`, block
+61723625).
+
+**Under a rule-enforcing bundler.** A public bundler's acceptance says
+nothing about the ERC-7562 rules on this network
+([#83](https://github.com/postcryptum-research/agent-keys/issues/83)), so two
+operations of the rotated account were traced against the instance on chain:
+a local fork of Base Sepolia at block 61724385, the policy's code there
+checked equal to the code on chain, Alto 0.0.21 in safe mode, the traces
+given to `scripts/erc7562/check-traces.mjs`.
+
+| Operation of the rotated account | The checker as it is | With the P-256 precompile allowed | The policy's storage slots touched in validation |
+|---|---|---|---|
+| the demo counter's increment | refused, for the precompile only | passes | 6, all the sender's |
+| `x402Authorize` of one unit of USDC (the token path) | refused, for the precompile only | passes | 11, all the sender's |
+
+"For the precompile only" is the message "account accesses un-deployed
+contract address 0x…0100 with opcode STATICCALL": this build of the checker
+does not know the RIP-7212 precompile, as `scripts/erc7562/README.md`
+records. No storage rule is broken in either operation. The earlier passing
+verdict was for the branch's build deployed on a fork; this one is for the
+instance on chain, under the account's own permission, with operations
+signed by its agent key and sent to the local bundler only.
+
+With this rotation no live permission of the test accounts is left on an
+earlier policy.
+
 ## Security notes
 
 - **What the device protects:** the private key never leaves the applet;
