@@ -1,0 +1,14 @@
+name: Install Foundry
+description: A pinned Foundry release, checked against its SHA-256, on the PATH.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        VER=v1.10.0
+        SHA=90729233bd9a683b872783ae2e3217fb56876fa2a3c37185f13e39dca8525041
+        curl -sSL -o "$RUNNER_TEMP/foundry.tgz" "https://github.com/foundry-rs/foundry/releases/download/${VER}/foundry_${VER}_linux_amd64.tar.gz"
+        echo "${SHA}  $RUNNER_TEMP/foundry.tgz" | sha256sum -c -
+        mkdir -p "$RUNNER_TEMP/foundry"
+        tar -xzf "$RUNNER_TEMP/foundry.tgz" -C "$RUNNER_TEMP/foundry"
+        echo "$RUNNER_TEMP/foundry" >> "$GITHUB_PATH"

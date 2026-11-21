@@ -89,10 +89,57 @@ struct Chain {
     url: String,
     dir: PathBuf,
     code: Value,
+    test: String,
+}
+
+/// Two contracts that pass their calldata on, the first to the second and
+/// the second to the EntryPoint: the validation tracer of a rule-enforcing
+/// bundler looks for the EntryPoint three calls deep, where the bundler's own
+/// simulation has it.
+const TRACE_VIA: [&str; 2] = ["0x00000000000000000000000000000000000a7562", "0x00000000000000000000000000000000000b7562"];
+
+fn forwarder(to: &str) -> String {
+    format!("0x363d3d373d3d363d3d73{}5af100", to.trim_start_matches("0x"))
+}
+
+impl Chain {
+    /// For the ERC-7562 check (`scripts/erc7562`, issue #83). With
+    /// `ERC7562_TRACER` naming a file with the bundler's validation tracer and
+    /// `ERC7562_TRACE_DIR` a directory, every `handleOps` this test got
+    /// included is run again on the state before its block, under that
+    /// tracer, and the trace is written there with the operation's
+    /// transaction. Without them this does nothing. Needs an anvil that runs
+    /// JavaScript tracers.
+    fn write_validation_traces(&self) {
+        let (Ok(tracer), Ok(out)) = (std::env::var("ERC7562_TRACER"), std::env::var("ERC7562_TRACE_DIR")) else { return };
+        let tracer = std::fs::read_to_string(tracer).expect("ERC7562_TRACER");
+        std::fs::create_dir_all(&out).unwrap();
+        let entry_point = self.addr("entryPoint").to_lowercase();
+        let latest = u64::from_str_radix(self.rpc("eth_blockNumber", json!([])).as_str().unwrap().trim_start_matches("0x"), 16).unwrap();
+        for n in 1..=latest {
+            let block = self.rpc("eth_getBlockByNumber", json!([format!("0x{n:x}"), true]));
+            for tx in block["transactions"].as_array().unwrap() {
+                let input = tx["input"].as_str().unwrap();
+                // handleOps(PackedUserOperation[],address)
+                if tx["to"].as_str().map(str::to_lowercase).as_deref() != Some(&entry_point) || !input.starts_with("0x765e827f") {
+                    continue;
+                }
+                let trace = self.rpc(
+                    "debug_traceCall",
+                    json!([{"from": tx["from"], "to": TRACE_VIA[0], "data": input, "gas": "0x1c9c380"}, format!("0x{:x}", n - 1), {"tracer": tracer}]),
+                );
+                let file = Path::new(&out).join(format!("{}-{n:04}.json", self.test));
+                std::fs::write(file, json!({"test": self.test, "block": n, "from": tx["from"], "input": input, "trace": trace}).to_string()).unwrap();
+            }
+        }
+    }
 }
 
 impl Drop for Chain {
     fn drop(&mut self) {
+        if !std::thread::panicking() {
+            self.write_validation_traces();
+        }
         let _ = self.anvil.kill();
         let _ = self.anvil.wait();
         let _ = std::fs::remove_dir_all(&self.dir);
@@ -171,7 +218,7 @@ impl Chain {
             &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/chain-code.json")).unwrap(),
         )
         .unwrap();
-        let chain = Chain { anvil, url: format!("http://127.0.0.1:{port}"), dir, code };
+        let chain = Chain { anvil, url: format!("http://127.0.0.1:{port}"), dir, code, test: test.to_string() };
         let started = Instant::now();
         while TcpStream::connect(format!("127.0.0.1:{port}")).is_err() {
             assert!(started.elapsed() < Duration::from_secs(20), "anvil did not start");
@@ -197,6 +244,10 @@ impl Chain {
     fn install(&self) {
         for (_, c) in self.code["contracts"].as_object().unwrap() {
             self.rpc("anvil_setCode", json!([c["address"], c["code"]]));
+        }
+        if std::env::var("ERC7562_TRACE_DIR").is_ok() {
+            self.rpc("anvil_setCode", json!([TRACE_VIA[1], forwarder(&self.addr("entryPoint"))]));
+            self.rpc("anvil_setCode", json!([TRACE_VIA[0], forwarder(TRACE_VIA[1])]));
         }
         let deployments = json!({
             "chainId": 31337,
