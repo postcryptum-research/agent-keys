@@ -1,0 +1,71 @@
+[package]
+name = "owner-core-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Fuzz targets (cargo-fuzz, libFuzzer) for the code that reads bytes it has no reason to trust; docs/FUZZING.md"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+owner-core = { path = "..", features = ["test-chains"] }
+hw-signer = { path = "../../../signer/crates/hw-signer", default-features = false }
+alloy-primitives = { version = "1.7", default-features = false, features = ["std"] }
+serde_json = "1"
+
+# A standalone package, like owner-core itself.
+[workspace]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "sign_request"
+path = "fuzz_targets/sign_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "call_data"
+path = "fuzz_targets/call_data.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "operation"
+path = "fuzz_targets/operation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "enroll"
+path = "fuzz_targets/enroll.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "qr_uri"
+path = "fuzz_targets/qr_uri.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "der"
+path = "fuzz_targets/der.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "enclave_blob"
+path = "fuzz_targets/enclave_blob.rs"
+test = false
+doc = false
+bench = false
