@@ -108,10 +108,14 @@ impl Chain {
     /// `ERC7562_TRACE_DIR` a directory, every `handleOps` this test got
     /// included and that did not revert is run again on the state before its
     /// block, under that tracer, and the trace is written there with the
-    /// operation's transaction. (anvil mines a block per transaction here, so
-    /// the state before the block is the state the operation met.) Without
-    /// the two variables this does nothing. Needs an anvil that runs
-    /// JavaScript tracers.
+    /// operation's transaction. anvil mines a block per transaction here, so
+    /// the state before the block is the state the operation met, unless a
+    /// test changed the chain in between without a transaction
+    /// (`anvil_setCode` and the like); the same call is therefore made
+    /// plainly first and must succeed, or the trace would be of an operation
+    /// that failed half-way. Without the two variables this does nothing.
+    /// Needs an anvil that runs JavaScript tracers, and an empty directory:
+    /// files of an earlier run are not removed.
     fn write_validation_traces(&self) {
         let (Ok(tracer), Ok(out)) = (std::env::var("ERC7562_TRACER"), std::env::var("ERC7562_TRACE_DIR")) else { return };
         let tracer = std::fs::read_to_string(tracer).expect("ERC7562_TRACER");
@@ -132,12 +136,20 @@ impl Chain {
                     continue;
                 }
                 assert_eq!(txs.len(), 1, "block {n} has more than one transaction: the state before it is not the state the operation met");
+                let before = format!("0x{:x}", n - 1);
+                // the forwarders do not pass a revert on, so the replay is asked directly first
+                let replay: Value = serde_json::from_str(&http_post(
+                    &self.url,
+                    &json!({"jsonrpc": "2.0", "id": 1, "method": "eth_call", "params": [{"from": tx["from"], "to": tx["to"], "data": input, "gas": "0x1c9c380"}, before]}).to_string(),
+                ))
+                .unwrap();
+                assert!(replay.get("error").is_none(), "{}: the handleOps of block {n} does not succeed on the state before it: {replay}", self.test);
                 let trace = self.rpc(
                     "debug_traceCall",
-                    json!([{"from": tx["from"], "to": TRACE_VIA[0], "data": input, "gas": "0x1c9c380"}, format!("0x{:x}", n - 1), {"tracer": tracer}]),
+                    json!([{"from": tx["from"], "to": TRACE_VIA[0], "data": input, "gas": "0x1c9c380"}, before, {"tracer": tracer}]),
                 );
                 let file = Path::new(&out).join(format!("{}-{n:04}-{i}.json", self.test));
-                std::fs::write(file, json!({"test": self.test, "block": n, "from": tx["from"], "input": input, "trace": trace}).to_string()).unwrap();
+                std::fs::write(file, json!({"test": self.test, "block": n, "from": tx["from"], "entryPoint": entry_point, "input": input, "trace": trace}).to_string()).unwrap();
             }
         }
     }
@@ -145,12 +157,15 @@ impl Chain {
 
 impl Drop for Chain {
     fn drop(&mut self) {
-        if !std::thread::panicking() {
-            self.write_validation_traces();
-        }
+        // the traces need the chain; the chain and its directory (with a key file) must go whatever happens to them
+        let traced = (!std::thread::panicking())
+            .then(|| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.write_validation_traces())));
         let _ = self.anvil.kill();
         let _ = self.anvil.wait();
         let _ = std::fs::remove_dir_all(&self.dir);
+        if let Some(Err(panic)) = traced {
+            std::panic::resume_unwind(panic);
+        }
     }
 }
 

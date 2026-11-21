@@ -112,10 +112,12 @@ No bundler runs:
    verdicts: the checker as it is; with the P-256 precompile allowed; and with
    that and the factory and paymaster staked.
 
-**The gate** (`--gate`): an operation with neither factory nor paymaster must
-pass with the precompile allowed; one with either must pass once they are
-staked. A change that makes validation touch a slot that is not the
-account's, or use a banned opcode, fails the job.
+**The gate** (`--gate`), with the precompile allowed: an operation without a
+factory must pass with nobody staked; a first operation must pass with its
+factory staked and, unstaked, be refused for that one known reason and no
+other. An operation that could not be checked, or a replay that does not
+succeed, fails the job; so does a change that makes validation touch a slot
+that is not the account's or use a banned opcode.
 
 **What the first run showed** (2026-11-21, 54 operations):
 
@@ -131,17 +133,20 @@ slots for the account, and ERC-7562 allows that during a first operation only
 to a staked factory. The CLI names Kernel's factory itself in `initCode`, and
 that contract holds no stake at the EntryPoint; ZeroDev's staked
 meta-factory, which deploys through it, is what a rule-enforcing bundler
-expects there. Until the CLI goes through it, an account's first operation
-would be refused by such a bundler, and the gate counts these operations as
-passing only on the assumption of a staked factory.
+expects there ([#102](https://github.com/postcryptum-research/agent-keys/issues/102)). Until the CLI goes through it, an account's first
+operation would be refused by such a bundler, and the gate holds these
+operations to exactly that refusal.
 
 **Limits of this check:** the local chain runs the runtime code of the
 deployed contracts (`tests/fixtures/chain-code.json`), so a change to a
 contract's source is seen here when that fixture is renewed; the stake of a
-factory or paymaster is assumed, not read from a chain; one checker, as above.
+factory or paymaster is assumed, not read from a chain; the replay is on the
+state before the operation's block, which a test that changes the chain
+without a transaction would make another state (the replay must succeed, so
+this shows as a failure and not as a wrong verdict); one checker, as above.
 
 To run it by hand (the checker is another project's code: on a machine where
-that is acceptable):
+that is acceptable), with an empty directory for the traces:
 
 ```sh
 cd scripts/erc7562 && npm ci --ignore-scripts
