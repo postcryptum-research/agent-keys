@@ -31,7 +31,12 @@ for d in $paired; do
 done
 rm -f build/lock.json
 [ -n "$device" ] || { echo "no iPhone connected: plug it in, unlock it, and trust this Mac on it"; exit 1; }
-[ "$locked" = False ] || { echo "the iPhone is locked: unlock it and run this again"; exit 1; }
+case $locked in
+  False) ;;
+  True) echo "the iPhone is locked: unlock it and run this again"; exit 1 ;;
+  # an answer of another shape (another devicectl version, say) is no reason to stop
+  *) echo "the iPhone answered, but its lock state could not be read; going on (if the install fails, unlock the phone)" ;;
+esac
 xcodegen generate --quiet
 # Xcode registers the phone with the team and makes the provisioning profile itself
 xcodebuild build -quiet -project OwnerApp.xcodeproj -scheme OwnerApp -destination "id=$device" -derivedDataPath build/derived \
