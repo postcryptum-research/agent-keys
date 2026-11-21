@@ -413,6 +413,50 @@ protects against file deletion, but not against erasing the Mac or replacing the
   things is required, and the likelihood drops by orders of magnitude — provided there are regular checks,
   otherwise failures "accumulate" unnoticed.
 
+### 2.4 A device stolen, not lost
+
+§2.1 to §2.3 are about a key that is gone. A stolen device is another event:
+the key is not gone, somebody else holds the chip. (Added 2026-11-21, issue #90;
+the short form is the table in `HOW_IT_WORKS.md`.)
+
+- **The agent's machine.**
+  - The key cannot be copied out of the chip, and the thief cannot change the
+    mandate: that takes the owner key, which is not on this machine, and the
+    policy refuses the account and itself as the agent's targets
+    [V `AgentPolicy.sol`, `_targetAllowed`].
+  - The chip signs for whoever gets the machine running: the agent key has no
+    PIN and no touch, since the agent works unattended. A Secure Enclave key is
+    usable "only on this device and while it is unlocked"
+    [V `hw-signer/swift/SecureEnclaveShim.swift:43–54`]. A TPM key sealed to
+    PCRs refuses to sign under another OS and a plain one does not (§1.4;
+    [V `docs/FAQ.md`, "Realistic failures"]); one behind an authValue
+    (`key create --auth-file`) asks for it [V `main.rs`, `key create`].
+  - What is signed that way is held to the mandate until the owner revokes or
+    rotates the agent (§2.1). **Bounded damage, not none.**
+- **The owner device.**
+  - Without its PIN or biometric: nothing. A YubiKey blocks the PIN after three
+    wrong tries [V `docs/YUBIKEY.md`, "Setting a YubiKey up"]. The phone apps
+    ask for the biometric on every use, and the key is invalidated when a new
+    biometric is enrolled [V `docs/MOBILE_OWNER_DESIGN.md` §5.2, §5.3, §10 T7,
+    §12 D2].
+  - With it: everything. The owner key is root (§2.2 lists what root can do),
+    and that includes uninstalling the recovery validator [I, from the same
+    list].
+  - The owner's move is the recovery key: `owner recover`, then `owner set-root`
+    with `--retire` for the stolen key's validator [V `main.rs`, `owner`;
+    `docs/RECOVERY_DRILL.md`]. Without a recovery key this is §2.3 with a thief
+    added.
+- **Both at once.** The agent's part is bounded by the mandate from the first
+  minute. The rest hangs on the lock of the owner device: nothing on chain
+  tells a thief from the owner [I]. The recovery key makes a new owner key
+  root, and that owner revokes the agent and installs a new one. It is a race
+  between the recovery and the lock, which is the reason to keep the recovery
+  key where it can be reached within hours, and to rehearse it (§4).
+- **The recovery file with its passphrase.** Root at once: recovery has no
+  delay (§0, item 5). §3.4 is the remedy and it is not built
+  [V `contracts/src`: no timelocked validator]. The file alone is held by its
+  passphrase: scrypt N ≥ 2^18 and an AEAD cipher [V `docs/KEY_POLICY.md`].
+
 ---
 
 ## 3. Recovery architectures without key export

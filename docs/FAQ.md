@@ -274,6 +274,22 @@ does. Losing the agent key costs nothing but a rotation; losing the owner key
 is what the recovery key is for; losing both freezes the account for good
 ([`RESILIENCE.md`](RESILIENCE.md)).
 
+### And if a device is stolen, not lost?
+
+Then the thief holds the chip, and the answer depends on which key is in it
+(the table is in [`HOW_IT_WORKS.md`](HOW_IT_WORKS.md#if-a-device-is-stolen)):
+
+- **The agent's machine:** the key cannot be copied, but the chip signs for
+  whoever gets the machine running, since the agent key has no PIN. The damage
+  is held to the mandate until you revoke or rotate the agent with the owner
+  key. Not nothing: bounded.
+- **The owner device:** nothing without its PIN or biometric, everything with
+  it. Take root with the recovery key and retire the stolen key.
+- **Both:** only the devices' own locks and the speed of your recovery stand
+  between the thief and the account.
+- **The recovery file with its passphrase:** root at once. Recovery has no
+  delay today.
+
 ### How do I move the owner key to a new device?
 
 One command, signed by the current owner key (or by the recovery key after
