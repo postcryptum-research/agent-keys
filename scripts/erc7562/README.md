@@ -92,6 +92,70 @@ For a policy that is not deployed yet: deploy it on the fork with anvil's test
 key, name it as `agentPolicy` in a copy of the deployments file, and make an
 account with software keys (a CLI built with `--features insecure-software-keys`).
 
+## In CI: every operation of the CLI's local-chain tests
+
+The `erc7562` job of `.github/workflows/ci.yml` asks the same checker about
+every operation the CLI's integration tests get included on a local chain
+(`signer/crates/agent-signer/tests/anvil_cli.rs`: an account's first
+operation, agent operations plain, with tokens, in a batch, through a Safe,
+x402, sponsored by the paymaster, and the owner's and the recovery key's own).
+No bundler runs:
+
+1. `write-tracer.mjs` writes the bundler's validation tracer to a file.
+2. The tests run with `ERC7562_TRACER` and `ERC7562_TRACE_DIR` set. Each test
+   then, at its end, takes every `handleOps` that was included and runs it
+   again on the state before its block under that tracer
+   (`debug_traceCall`, anvil 1.10 or later), through two forwarding contracts,
+   since the tracer looks for the EntryPoint three calls deep.
+3. `check-run.mjs` gives each trace to the checker, with the operation's
+   factory and paymaster read from the operation itself, and prints three
+   verdicts: the checker as it is; with the P-256 precompile allowed; and with
+   that and the factory and paymaster staked.
+
+**The gate** (`--gate`), with the precompile allowed: an operation without a
+factory must pass with nobody staked; a first operation must pass with its
+factory staked and, unstaked, be refused for that one known reason and no
+other. An operation that could not be checked, or a replay that does not
+succeed, fails the job; so does a change that makes validation touch a slot
+that is not the account's or use a banned opcode.
+
+**What the first run showed** (2026-11-21, 54 operations):
+
+| Operations | Verdict with the precompile allowed |
+|---|---|
+| 27 by the root key, 1 by the recovery key, 14 by the agent | pass |
+| 1 by the agent with the paymaster paying | passes, the paymaster unstaked |
+| 11 first operations of an account (with `initCode`) | **refused: "unstaked factory accessed … slot …"**; pass with the factory staked |
+
+The last row is a finding and not a property of the test chain: creating the
+account installs the validator and the agent's permission, which writes their
+slots for the account, and ERC-7562 allows that during a first operation only
+to a staked factory. The CLI names Kernel's factory itself in `initCode`, and
+that contract holds no stake at the EntryPoint; ZeroDev's staked
+meta-factory, which deploys through it, is what a rule-enforcing bundler
+expects there ([#102](https://github.com/postcryptum-research/agent-keys/issues/102)). Until the CLI goes through it, an account's first
+operation would be refused by such a bundler, and the gate holds these
+operations to exactly that refusal.
+
+**Limits of this check:** the local chain runs the runtime code of the
+deployed contracts (`tests/fixtures/chain-code.json`), so a change to a
+contract's source is seen here when that fixture is renewed; the stake of a
+factory or paymaster is assumed, not read from a chain; the replay is on the
+state before the operation's block, which a test that changes the chain
+without a transaction would make another state (the replay must succeed, so
+this shows as a failure and not as a wrong verdict); one checker, as above.
+
+To run it by hand (the checker is another project's code: on a machine where
+that is acceptable), with an empty directory for the traces:
+
+```sh
+cd scripts/erc7562 && npm ci --ignore-scripts
+node write-tracer.mjs /tmp/tracer.js
+(cd ../../signer && ERC7562_TRACER=/tmp/tracer.js ERC7562_TRACE_DIR=/tmp/traces \
+   cargo test -p agent-signer --features insecure-software-keys --test anvil_cli)
+node check-run.mjs /tmp/traces --gate
+```
+
 ## What was used
 
 - The throwaway copy of the policy in traces 1 and 2:
