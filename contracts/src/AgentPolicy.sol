@@ -18,6 +18,7 @@ import {ExecLib} from "kernel/src/utils/ExecLib.sol";
 import {LibERC7579} from "kernel/lib/solady/src/accounts/LibERC7579.sol";
 
 import {SafeNonceAssert} from "./SafeNonceAssert.sol";
+import {IVenueDecoder} from "./venues/IVenueDecoder.sol";
 
 /// The one Kernel view the policy reads at install time: which EntryPoint
 /// the account answers to, so that it can never become an agent's target.
@@ -106,6 +107,36 @@ contract AgentPolicy is IPolicy {
         uint128 budget;
         uint128 spent;
         uint48 validAfter; // 0 = from installation on
+        // The budgets' window in seconds; 0 = one budget for the mandate's
+        // whole life. Windows are counted from the Unix epoch: with 86400,
+        // a day from midnight UTC.
+        uint32 period;
+        // The window `spent` counts for, plus one; 0 before the first.
+        uint48 periodSeen;
+    }
+
+    /// A trading venue of a mandate (issue #80): the decoder the policy asks
+    /// about the venue's orders, bound by its code, and the hash of the
+    /// owner's config for it.
+    struct Venue {
+        address decoder;
+        bytes32 codeHash;
+        bytes32 configHash;
+    }
+
+    /// A decoder's answer about an order; `ok` false when there is none.
+    struct Judged {
+        bool ok;
+        address token;
+        uint256 mostSold;
+        uint48 notBefore;
+        uint48 validTo;
+        bytes32 digest;
+    }
+
+    struct VenuePin {
+        bytes32 codeHash;
+        bytes32 configHash;
     }
 
     /// Install-time limit for one ERC-20 token. `domainSeparator` is the
@@ -155,6 +186,10 @@ contract AgentPolicy is IPolicy {
     error X402NotRegistered();
     error X402StillLive();
     error X402Settled();
+    error OrderNotRegistered();
+    error OrderStillLive();
+    error OrderTouched();
+    error NotTheVenue();
 
     event X402Authorized(
         address indexed account,
@@ -166,6 +201,8 @@ contract AgentPolicy is IPolicy {
         bytes32 nonce
     );
     event X402Reclaimed(address indexed account, bytes32 indexed id, bytes32 digest, uint256 value);
+    event OrderRegistered(address indexed account, address indexed decoder, bytes order);
+    event OrderReclaimed(address indexed account, bytes32 indexed id, bytes32 digest, uint256 value);
 
     event AgentPolicySet(
         address indexed account, bytes32 indexed id, uint48 validUntil, uint128 maxValuePerOp, uint128 budget
@@ -217,6 +254,22 @@ contract AgentPolicy is IPolicy {
     mapping(bytes32 key => mapping(address account => Pending)) internal _x402;
     /// key: `keccak256(mandate, token, payee)`
     mapping(bytes32 key => mapping(address account => bool)) internal _payees;
+    /// key: `keccak256(mandate, token)`. The window the token's `spent`
+    /// counts for, plus one. Beside `TokenLimit` and not in it, so that what
+    /// `tokenLimit()` returns keeps its shape.
+    mapping(bytes32 key => mapping(address account => uint48)) internal _tokenPeriod;
+    /// key: `keccak256(mandate, digest)`. The window a registered
+    /// authorization or order was charged in, plus one.
+    mapping(bytes32 key => mapping(address account => uint48)) internal _chargedIn;
+    /// key: `keccak256(mandate, decoder)`
+    mapping(bytes32 key => mapping(address account => VenuePin)) internal _venues;
+    /// The venues an account has ever pinned in a mandate: each venue's own
+    /// contract and its decoder. None of them is a target for the agent
+    /// under any mandate of the account, whichever was installed first:
+    /// at the venue itself an order could be signed past the decoder
+    /// (CoW: `setPreSignature`), and the venue holds the owner's allowance.
+    /// Never cleared: an address that was a venue stays out of reach.
+    mapping(address place => mapping(address account => bool)) internal _venuePlaces;
 
     constructor(address nonceAssert) {
         NONCE_ASSERT = nonceAssert;
@@ -241,6 +294,10 @@ contract AgentPolicy is IPolicy {
         return _tokens[keccak256(abi.encode(m, token))][account];
     }
 
+    function _venue(address account, bytes32 m, address decoder) internal view returns (VenuePin storage) {
+        return _venues[keccak256(abi.encode(m, decoder))][account];
+    }
+
     function _pending(address account, bytes32 m, bytes32 digest) internal view returns (Pending storage) {
         return _x402[keccak256(abi.encode(m, digest))][account];
     }
@@ -249,10 +306,37 @@ contract AgentPolicy is IPolicy {
     function configs(address account, bytes32 id)
         external
         view
-        returns (uint48 validUntil, uint32 epoch, uint128 maxValuePerOp, uint128 budget, uint128 spent, uint48 validAfter)
+        returns (
+            uint48 validUntil,
+            uint32 epoch,
+            uint128 maxValuePerOp,
+            uint128 budget,
+            uint128 spent,
+            uint48 validAfter
+        )
     {
         Config storage c = _configs[id][account];
         return (c.validUntil, c.epoch, c.maxValuePerOp, c.budget, c.spent, c.validAfter);
+    }
+
+    /// @notice The budgets' window of a permission in seconds (0: none) and
+    /// the window its native `spent` counts for, plus one.
+    function period(address account, bytes32 id) external view returns (uint32 seconds_, uint48 seen) {
+        Config storage c = _configs[id][account];
+        return (c.period, c.periodSeen);
+    }
+
+    /// @notice The pinned code hash and config hash of a venue's decoder
+    /// under the permission; zeros when it is not one of its venues.
+    /// @notice Whether `place` is, or ever was, a venue's own contract or a
+    /// venue's decoder in a mandate of `account`: then no mandate of the
+    /// account may name it as a target.
+    function venuePlace(address account, address place) external view returns (bool) {
+        return _venuePlaces[place][account];
+    }
+
+    function venue(address account, bytes32 id, address decoder) external view returns (VenuePin memory) {
+        return _venue(account, _mandate(id, _configs[id][account].epoch), decoder);
     }
 
     /// The install data's first word — the offset of `targets` — tells the
@@ -264,12 +348,17 @@ contract AgentPolicy is IPolicy {
     /// loosely as `abi.decode` does.
     uint256 internal constant HEAD_WITHOUT_PAYEES = 7 * 32;
     uint256 internal constant HEAD_WITH_PAYEES = 8 * 32;
+    /// Ten words: `payees` (which may then be empty), `uint32 period` and
+    /// `Venue[] venues`. For a mandate with a budget per period, with
+    /// venues, or both; one with neither is encoded in a shorter form.
+    uint256 internal constant HEAD_WITH_TRADING = 10 * 32;
 
     /// @param data `bytes32 id ++ abi.encode(address[] targets, bytes4[] selectors,
     ///              uint128 maxValuePerOp, uint128 budget, uint48 validUntil, TokenCap[] tokens,
     ///              uint48 validAfter)`, optionally with one more parameter
-    ///              `TokenPayees[] payees`. A mandate without payee lists is
-    ///              encoded as before this parameter existed.
+    ///              `TokenPayees[] payees`, or with three more:
+    ///              `TokenPayees[] payees, uint32 period, Venue[] venues`. A
+    ///              mandate is encoded in the shortest form that holds it.
     function onInstall(bytes calldata data) external payable override {
         bytes32 id = bytes32(data[0:32]);
         Config storage c = _configs[id][msg.sender];
@@ -302,6 +391,7 @@ contract AgentPolicy is IPolicy {
                 TokenLimit(tokens[i].maxPerOp, tokens[i].budget, 0, true, false, tokens[i].domainSeparator);
         }
         _installPayees(m, data[32:]);
+        c.period = _installTrading(m, data[32:], targets);
         // A token with a limit is callable through the four metered
         // functions only (`_chargeToken`). Any other entry on it would pass
         // neither its caps nor its payee list, so the limit the owner wrote
@@ -314,6 +404,7 @@ contract AgentPolicy is IPolicy {
         c.maxValuePerOp = maxValuePerOp;
         c.budget = budget;
         c.spent = 0;
+        c.periodSeen = 0;
         usedIds[msg.sender]++;
         emit AgentPolicySet(msg.sender, id, validUntil, maxValuePerOp, budget);
     }
@@ -330,11 +421,20 @@ contract AgentPolicy is IPolicy {
         if (params.length < 32) revert InvalidConfig();
         uint256 head = uint256(bytes32(params[0:32]));
         if (head == HEAD_WITHOUT_PAYEES) return;
-        if (head != HEAD_WITH_PAYEES) revert InvalidConfig();
-        (,,,,,,, TokenPayees[] memory lists) =
-            abi.decode(params, (address[], bytes4[], uint128, uint128, uint48, TokenCap[], uint48, TokenPayees[]));
-        // the eight-word form exists to carry a list: without one, use the other
-        if (lists.length == 0) revert InvalidConfig();
+        TokenPayees[] memory lists;
+        if (head == HEAD_WITH_PAYEES) {
+            (,,,,,,, lists) =
+                abi.decode(params, (address[], bytes4[], uint128, uint128, uint48, TokenCap[], uint48, TokenPayees[]));
+            // the eight-word form exists to carry a list: without one, use the other
+            if (lists.length == 0) revert InvalidConfig();
+        } else if (head == HEAD_WITH_TRADING) {
+            (,,,,,,, lists,,) = abi.decode(
+                params,
+                (address[], bytes4[], uint128, uint128, uint48, TokenCap[], uint48, TokenPayees[], uint32, Venue[])
+            );
+        } else {
+            revert InvalidConfig();
+        }
         for (uint256 i; i < lists.length; i++) {
             TokenLimit storage t = _token(msg.sender, m, lists[i].token);
             address[] memory payees = lists[i].payees;
@@ -345,6 +445,40 @@ contract AgentPolicy is IPolicy {
                 if (payees[j] == address(0) || _payees[key][msg.sender]) revert InvalidConfig();
                 _payees[key][msg.sender] = true;
             }
+        }
+    }
+
+    /// @dev The ten-word form's last two parameters. A venue's decoder must
+    /// be the code the owner pinned, once per mandate; the venue's own
+    /// contract (CoW's settlement, with `setPreSignature` on it) may not be
+    /// among the mandate's targets: only orders the decoder judged reach it.
+    function _installTrading(bytes32 m, bytes calldata params, address[] memory targets)
+        internal
+        returns (uint32 period_)
+    {
+        if (uint256(bytes32(params[0:32])) != HEAD_WITH_TRADING) return 0;
+        Venue[] memory venues;
+        (,,,,,,,, period_, venues) = abi.decode(
+            params, (address[], bytes4[], uint128, uint128, uint48, TokenCap[], uint48, TokenPayees[], uint32, Venue[])
+        );
+        // the ten-word form exists to carry one of the two
+        if (period_ == 0 && venues.length == 0) revert InvalidConfig();
+        for (uint256 i; i < venues.length; i++) {
+            address decoder = venues[i].decoder;
+            VenuePin storage v = _venue(msg.sender, m, decoder);
+            if (
+                v.codeHash != bytes32(0) || venues[i].configHash == bytes32(0) || decoder.code.length == 0
+                    || decoder.codehash != venues[i].codeHash
+            ) revert InvalidConfig();
+            (v.codeHash, v.configHash) = (venues[i].codeHash, venues[i].configHash);
+            address place = IVenueDecoder(decoder).venue();
+            // this mandate's own targets were judged before the venue was known
+            for (uint256 j; j < targets.length; j++) {
+                if (targets[j] == place || targets[j] == decoder) revert ForbiddenTarget(targets[j], bytes4(0));
+            }
+            // a venue that is the account or this policy would close the account's own paths
+            if (place == msg.sender || place == address(this) || decoder == address(this)) revert InvalidConfig();
+            (_venuePlaces[place][msg.sender], _venuePlaces[decoder][msg.sender]) = (true, true);
         }
     }
 
@@ -395,6 +529,8 @@ contract AgentPolicy is IPolicy {
         if (c.validUntil == 0) return SIG_VALIDATION_FAILED_UINT;
 
         _beginOperation();
+        (bool inWindow, uint48 from, uint48 until) = _enterPeriod(c, userOp.signature);
+        if (!inWindow) return SIG_VALIDATION_FAILED_UINT;
         (bool ok, uint256 value) = _judgeExecute(_mandate(id, c.epoch), userOp.callData);
         if (!ok || value > c.maxValuePerOp) return SIG_VALIDATION_FAILED_UINT;
 
@@ -406,7 +542,84 @@ contract AgentPolicy is IPolicy {
         if (spent > c.budget) return SIG_VALIDATION_FAILED_UINT;
         c.spent = uint128(spent);
 
-        return packValidationData(ValidAfter.wrap(c.validAfter), ValidUntil.wrap(c.validUntil));
+        // an order registered in this operation says "not before" and ends
+        // at its `validTo`: an order that can no longer be filled is not
+        // registered
+        uint48 notBefore = uint48(_perOperation(NOT_BEFORE));
+        if (notBefore > from) from = notBefore;
+        uint256 notAfter = _perOperation(NOT_AFTER);
+        if (notAfter != 0 && notAfter - 1 < until) until = uint48(notAfter - 1);
+        if (from >= until) return SIG_VALIDATION_FAILED_UINT;
+        return packValidationData(ValidAfter.wrap(from), ValidUntil.wrap(until));
+    }
+
+    /// @dev The window this operation is valid in and, for a mandate with a
+    /// budget per period, the move into the period the operation names.
+    ///
+    /// Validation may not read the clock (ERC-7562), so the operation says
+    /// which period it is for, in the six bytes Kernel hands this policy as
+    /// its part of the signature, and the validity window returned is cut to
+    /// that period: the EntryPoint, which may read the clock, refuses the
+    /// operation at any other time. A period earlier than one already seen
+    /// is refused; a later one starts its budgets afresh.
+    ///
+    /// Across a boundary an agent can spend one period's budget just before
+    /// it and the next one's just after: up to twice the budget in a short
+    /// time. That is the number an owner is to be shown.
+    ///
+    /// Both ends are inclusive, as EntryPoint v0.7 reads them: an operation
+    /// is in time from `validAfter` up to and at `validUntil`.
+    function _enterPeriod(Config storage c, bytes calldata mine)
+        internal
+        returns (bool ok, uint48 from, uint48 until)
+    {
+        (from, until) = (c.validAfter, c.validUntil);
+        uint256 seen;
+        if (c.period != 0) {
+            if (mine.length != 6) return (false, 0, 0);
+            uint256 index = uint48(bytes6(mine));
+            seen = index + 1;
+            if (seen < c.periodSeen) return (false, 0, 0);
+            uint256 start = index * c.period;
+            uint256 end = start + c.period - 1;
+            if (end > type(uint48).max) return (false, 0, 0);
+            if (seen > c.periodSeen) {
+                c.periodSeen = uint48(seen);
+                c.spent = 0;
+            }
+            if (start > from) from = uint48(start);
+            if (end < until) until = uint48(end);
+        }
+        _setPerOperation(PERIOD_NOW, seen);
+        _setPerOperation(NOT_BEFORE, 0);
+        _setPerOperation(NOT_AFTER, 0);
+        ok = true;
+    }
+
+    /// @dev What the token has spent in the period this operation is in,
+    /// starting the token's count afresh when the period is new to it.
+    function _tokenSpent(bytes32 m, address token, TokenLimit storage t) internal returns (uint256) {
+        uint256 seen = _perOperation(PERIOD_NOW);
+        if (seen != 0) {
+            bytes32 key = keccak256(abi.encode(m, token));
+            if (_tokenPeriod[key][msg.sender] != seen) {
+                _tokenPeriod[key][msg.sender] = uint48(seen);
+                t.spent = 0;
+            }
+        }
+        return t.spent;
+    }
+
+    /// @dev Gives a registered charge back to the token's budget, if the
+    /// budget still counts the period it was charged in. A charge of an
+    /// earlier period is gone with that period.
+    function _refund(bytes32 m, bytes32 digest, address token, TokenLimit storage t, uint128 value) internal {
+        bytes32 key = keccak256(abi.encode(m, digest));
+        if (_chargedIn[key][msg.sender] == _tokenPeriod[keccak256(abi.encode(m, token))][msg.sender]) {
+            t.spent -= value;
+        }
+        delete _chargedIn[key][msg.sender];
+        delete _x402[key][msg.sender];
     }
 
     /// @dev The only message an agent may "sign": a registered x402
@@ -462,9 +675,106 @@ contract AgentPolicy is IPolicy {
         if (p.value == 0) revert X402NotRegistered();
         if (block.timestamp < validBefore) revert X402StillLive();
         if (IERC3009State(token).authorizationState(msg.sender, nonce)) revert X402Settled();
-        t.spent -= p.value;
         emit X402Reclaimed(msg.sender, id, digest, p.value);
-        delete _x402[keccak256(abi.encode(m, digest))][msg.sender];
+        _refund(m, digest, token, t, p.value);
+    }
+
+    /// @notice Executed after validation registered the order: only leaves
+    /// a record for wallets and `orderReclaim`.
+    function orderRegister(address decoder, bytes calldata, /* config */ bytes calldata order) external {
+        emit OrderRegistered(msg.sender, decoder, order);
+    }
+
+    /// @notice Return to the budget an order that can never be filled any
+    /// more: past its `validTo` and untouched at the venue. Only the account
+    /// can, for its own records. An order the owner cancelled at the venue
+    /// counts there as filled, and its charge does not come back.
+    function orderReclaim(bytes32 id, address decoder, bytes calldata config, bytes calldata order) external {
+        bytes32 m = _mandate(id, _configs[id][msg.sender].epoch);
+        Judged memory j = _askDecoder(m, decoder, config, order);
+        if (!j.ok) revert NotTheVenue();
+        Pending storage p = _pending(msg.sender, m, j.digest);
+        if (p.value == 0 || p.token != j.token) revert OrderNotRegistered();
+        // the venue fills an order up to and at `validTo`
+        if (block.timestamp <= j.validTo) revert OrderStillLive();
+        if (!IVenueDecoder(decoder).untouched{gas: JUDGE_GAS}(msg.sender, order)) revert OrderTouched();
+        emit OrderReclaimed(msg.sender, id, j.digest, p.value);
+        _refund(m, j.digest, j.token, _token(msg.sender, m, j.token), p.value);
+    }
+
+    /// The most gas a decoder gets to judge an order.
+    uint256 internal constant JUDGE_GAS = 150_000;
+
+    /// @dev Asks a venue's decoder about `order`, by `STATICCALL` with a gas
+    /// bound. False unless the decoder is one of the mandate's venues, its
+    /// code is the code the owner pinned, `config` is the owner's, and the
+    /// answer is exactly the five words of `IVenueDecoder.judge`.
+    function _askDecoder(bytes32 m, address decoder, bytes calldata config, bytes calldata order)
+        internal
+        view
+        returns (Judged memory j)
+    {
+        VenuePin storage v = _venue(msg.sender, m, decoder);
+        if (v.codeHash == bytes32(0) || decoder.codehash != v.codeHash || keccak256(config) != v.configHash) {
+            return j;
+        }
+        (bool ok, bytes memory answer) =
+            decoder.staticcall{gas: JUDGE_GAS}(abi.encodeCall(IVenueDecoder.judge, (msg.sender, config, order)));
+        if (!ok || answer.length != 5 * 32) return j;
+        (uint256 token, uint256 mostSold, uint256 notBefore, uint256 validTo, bytes32 digest) =
+            abi.decode(answer, (uint256, uint256, uint256, uint256, bytes32));
+        if (token >> 160 != 0 || notBefore > type(uint48).max || validTo > type(uint48).max) return j;
+        return Judged(true, address(uint160(token)), mostSold, uint48(notBefore), uint48(validTo), digest);
+    }
+
+    /// @dev Validation of `orderRegister(...)`: the decoder says what the
+    /// order sells and how much at most; that is judged like a transfer of
+    /// the token (cap per operation, the shared budget) and the digest is
+    /// recorded. A token with a payee list cannot be sold at a venue: what
+    /// is sold goes to whoever fills the order, and the owner listed who may
+    /// be paid.
+    function _registerOrder(bytes32 m, bytes calldata d) internal returns (bool) {
+        (bool ok, address decoder, bytes calldata config, bytes calldata order) = _orderArguments(d);
+        if (!ok) return false;
+        Judged memory j = _askDecoder(m, decoder, config, order);
+        if (!j.ok || j.mostSold == 0) return false;
+        TokenLimit storage t = _token(msg.sender, m, j.token);
+        if (!t.set || t.payeesOnly) return false;
+        if (_movedThisOperation(j.token, j.mostSold) > t.maxPerOp) return false;
+        uint256 spent = _tokenSpent(m, j.token, t) + j.mostSold;
+        if (spent > t.budget) return false;
+        if (!_recordX402(m, j.digest, j.mostSold, j.validTo, j.token)) return false;
+        t.spent = uint128(spent);
+        if (j.notBefore > _perOperation(NOT_BEFORE)) _setPerOperation(NOT_BEFORE, j.notBefore);
+        uint256 notAfter = _perOperation(NOT_AFTER);
+        if (notAfter == 0 || uint256(j.validTo) + 1 < notAfter) _setPerOperation(NOT_AFTER, uint256(j.validTo) + 1);
+        return true;
+    }
+
+    /// @dev `orderRegister`'s arguments, where they sit in the calldata:
+    /// the canonical encoding only, to the last byte. False otherwise.
+    function _orderArguments(bytes calldata d)
+        internal
+        pure
+        returns (bool, address decoder, bytes calldata config, bytes calldata order)
+    {
+        (config, order) = (d[0:0], d[0:0]);
+        if (d.length < 4 + 5 * 32) return (false, address(0), config, order);
+        bytes calldata a = d[4:];
+        uint256 first = uint256(bytes32(a[0:32]));
+        uint256 configLength = uint256(bytes32(a[96:128]));
+        if (first >> 160 != 0 || uint256(bytes32(a[32:64])) != 96 || configLength > a.length) {
+            return (false, address(0), config, order);
+        }
+        uint256 orderAt = 128 + ((configLength + 31) & ~uint256(31));
+        if (uint256(bytes32(a[64:96])) != orderAt || orderAt + 32 > a.length) {
+            return (false, address(0), config, order);
+        }
+        uint256 orderLength = uint256(bytes32(a[orderAt:orderAt + 32]));
+        if (orderLength > a.length || a.length != orderAt + 32 + ((orderLength + 31) & ~uint256(31))) {
+            return (false, address(0), config, order);
+        }
+        return (true, address(uint160(first)), a[128:128 + configLength], a[orderAt + 32:orderAt + 32 + orderLength]);
     }
 
     function x402Pending(address account, bytes32 id, bytes32 digest) external view returns (Pending memory) {
@@ -480,9 +790,8 @@ contract AgentPolicy is IPolicy {
         uint256 validBefore,
         bytes32 nonce
     ) internal pure returns (bytes32) {
-        bytes32 structHash = keccak256(
-            abi.encode(TRANSFER_WITH_AUTHORIZATION_TYPEHASH, from, to, value, validAfter, validBefore, nonce)
-        );
+        bytes32 structHash =
+            keccak256(abi.encode(TRANSFER_WITH_AUTHORIZATION_TYPEHASH, from, to, value, validAfter, validBefore, nonce));
         return keccak256(abi.encodePacked(hex"1901", domainSeparator, structHash));
     }
 
@@ -490,15 +799,15 @@ contract AgentPolicy is IPolicy {
     /// token (per-op cap, shared budget), then the digest is recorded.
     function _registerX402(bytes32 m, bytes calldata d) internal returns (bool) {
         if (d.length != 4 + 7 * 32) return false;
-        (address token, address from, address to, uint256 value, uint256 validAfter, uint256 validBefore, bytes32 nonce) =
-            abi.decode(d[4:], (address, address, address, uint256, uint256, uint256, bytes32));
+        (address token, address from, address to, uint256 value, uint256 validAfter, uint256 validBefore, bytes32 nonce)
+        = abi.decode(d[4:], (address, address, address, uint256, uint256, uint256, bytes32));
         if (from != msg.sender) return false; // the account checkUserOpPolicy runs for
         TokenLimit storage t = _token(msg.sender, m, token);
         if (!t.set || t.domainSeparator == bytes32(0)) return false;
         if (value == 0 || validBefore > type(uint48).max) return false;
         if (_movedThisOperation(token, value) > t.maxPerOp) return false;
         if (t.payeesOnly && !_payees[_payeeKey(m, token, to)][msg.sender]) return false;
-        uint256 spent = t.spent + value;
+        uint256 spent = _tokenSpent(m, token, t) + value;
         if (spent > t.budget) return false;
         bytes32 digest = _x402Digest(t.domainSeparator, from, to, value, validAfter, validBefore, nonce);
         if (!_recordX402(m, digest, value, validBefore, token)) return false;
@@ -514,7 +823,9 @@ contract AgentPolicy is IPolicy {
     {
         Pending storage p = _pending(msg.sender, m, digest);
         if (p.value != 0) return false;
+        if (value > type(uint128).max) return false;
         (p.value, p.validBefore, p.token) = (uint128(value), uint48(validBefore), token);
+        _chargedIn[keccak256(abi.encode(m, digest))][msg.sender] = uint48(_perOperation(PERIOD_NOW));
         return true;
     }
 
@@ -531,6 +842,28 @@ contract AgentPolicy is IPolicy {
         uint256 seqSlot = uint256(keccak256(abi.encode(msg.sender, OPERATION_SEQ)));
         assembly ("memory-safe") {
             tstore(seqSlot, add(tload(seqSlot), 1))
+        }
+    }
+
+    /// Per-operation notes, kept beside the token totals: the period the
+    /// operation is in (plus one; 0 without periods), and the latest "not
+    /// before" of the orders it registers.
+    bytes32 internal constant PERIOD_NOW = keccak256("agent-keys.AgentPolicy.periodNow");
+    bytes32 internal constant NOT_BEFORE = keccak256("agent-keys.AgentPolicy.notBefore");
+    /// The earliest `validTo` of the orders it registers, plus one; 0 = none.
+    bytes32 internal constant NOT_AFTER = keccak256("agent-keys.AgentPolicy.notAfter");
+
+    function _perOperation(bytes32 what) internal view returns (uint256 value) {
+        uint256 slot = uint256(keccak256(abi.encode(msg.sender, what)));
+        assembly ("memory-safe") {
+            value := tload(slot)
+        }
+    }
+
+    function _setPerOperation(bytes32 what, uint256 value) internal {
+        uint256 slot = uint256(keccak256(abi.encode(msg.sender, what)));
+        assembly ("memory-safe") {
+            tstore(slot, value)
         }
     }
 
@@ -651,6 +984,10 @@ contract AgentPolicy is IPolicy {
         if (target == address(this) && selector == this.x402Authorize.selector) {
             return (from == FROM_ACCOUNT && value == 0 && _registerX402(m, data)) ? (true, 0) : (false, 0);
         }
+        // a venue's order: the same, through the venue's decoder
+        if (target == address(this) && selector == this.orderRegister.selector) {
+            return (from == FROM_ACCOUNT && value == 0 && _registerOrder(m, data)) ? (true, 0) : (false, 0);
+        }
         if (!_chargeToken(m, target, selector, data)) return (false, 0);
         return (true, value);
     }
@@ -674,8 +1011,10 @@ contract AgentPolicy is IPolicy {
     /// that holds an allowance from the account can move it.
     function _targetAllowed(address target, bytes4 selector) internal view returns (bool) {
         if (target == msg.sender || target == PERMIT2) return false;
+        if (_venuePlaces[target][msg.sender]) return false;
         if (target == address(this)) {
-            return selector == this.x402Authorize.selector || selector == this.x402Reclaim.selector;
+            return selector == this.x402Authorize.selector || selector == this.x402Reclaim.selector
+                || selector == this.orderRegister.selector || selector == this.orderReclaim.selector;
         }
         return true;
     }
@@ -701,7 +1040,10 @@ contract AgentPolicy is IPolicy {
         if (!decoded) return (false, 0);
         if (operation == 0) {
             (ok, moved) = _judge(m, to, innerValue, inner, FROM_SAFE);
-        } else if (operation == 1 && innerValue == 0 && _selector(inner) == MULTI_SEND && _allowed[_allowedKey(m, to, MULTI_SEND)][msg.sender]) {
+        } else if (
+            operation == 1 && innerValue == 0 && _selector(inner) == MULTI_SEND
+                && _allowed[_allowedKey(m, to, MULTI_SEND)][msg.sender]
+        ) {
             (ok, moved) = _judgeBatch(m, inner);
         }
         return ok ? (true, value + moved) : (false, 0);
@@ -716,10 +1058,7 @@ contract AgentPolicy is IPolicy {
     /// a vault's `withdraw` or anything else allow-listed on it cannot move
     /// it past its caps or pay an address its payee list does not name.
     /// Install refuses such a mandate; this is the same rule at validation.
-    function _chargeToken(bytes32 m, address token, bytes4 selector, bytes calldata data)
-        internal
-        returns (bool)
-    {
+    function _chargeToken(bytes32 m, address token, bytes4 selector, bytes calldata data) internal returns (bool) {
         uint256 arg;
         if (selector == ERC20_TRANSFER || selector == ERC20_APPROVE || selector == ERC20_INCREASE_ALLOWANCE) arg = 1;
         else if (selector == ERC20_TRANSFER_FROM) arg = 2;
@@ -737,7 +1076,7 @@ contract AgentPolicy is IPolicy {
             if (payee >> 160 != 0 || !_payees[_payeeKey(m, token, address(uint160(payee)))][msg.sender]) return false;
         }
         if (_movedThisOperation(token, amount) > t.maxPerOp) return false;
-        uint256 spent = t.spent + amount;
+        uint256 spent = _tokenSpent(m, token, t) + amount;
         if (spent > t.budget) return false;
         t.spent = uint128(spent);
         return true;

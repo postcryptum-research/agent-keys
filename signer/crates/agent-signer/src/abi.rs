@@ -107,6 +107,31 @@ sol! {
         function payeeAllowed(address account, bytes32 id, address token, address payee) external view returns (bool);
     }
 
+    /// A venue's decoder (`CowSwapDecoder`).
+    #[sol(rpc)]
+    interface IVenueDecoder {
+        function venue() external view returns (address);
+        function spender() external view returns (address);
+        function domainSeparator() external view returns (bytes32);
+        function untouched(address account, bytes calldata order) external view returns (bool);
+    }
+
+    /// AgentPolicy's trading side (issue #80).
+    #[sol(rpc)]
+    interface IAgentPolicyTrading {
+        function period(address account, bytes32 id) external view returns (uint32 seconds_, uint48 seen);
+        function venue(address account, bytes32 id, address decoder) external view returns (bytes32 codeHash, bytes32 configHash);
+        function orderRegister(address decoder, bytes calldata config, bytes calldata order) external;
+        function orderReclaim(bytes32 id, address decoder, bytes calldata config, bytes calldata order) external;
+        event OrderRegistered(address indexed account, address indexed decoder, bytes order);
+    }
+
+    #[sol(rpc)]
+    interface IErc20Allowance {
+        function allowance(address owner, address spender) external view returns (uint256);
+        function balanceOf(address owner) external view returns (uint256);
+    }
+
     /// The EIP-3009 side of a token (USDC FiatToken v2.2).
     #[sol(rpc)]
     interface IEip3009Token {
