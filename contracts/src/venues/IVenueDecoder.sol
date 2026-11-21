@@ -27,6 +27,10 @@ interface IVenueDecoder {
     /// its charge is given back; it may read the venue's storage.
     function untouched(address account, bytes calldata order) external view returns (bool);
 
+    /// @notice The venue's own contract (CoW: the settlement). A mandate may
+    /// not name it as a target: only orders this decoder judged reach it.
+    function venue() external view returns (address);
+
     /// @notice Who takes the sell token from the account at this venue. For
     /// the owner's tools (the allowance); the policy does not ask.
     function spender() external view returns (address);

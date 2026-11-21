@@ -96,12 +96,13 @@ contract CowSwapDecoder is IVenueDecoder {
     /// gas bound.
     uint256 public constant MAX_PAIRS = 16;
 
-    address public immutable settlement;
+    /// The settlement.
+    address public immutable override venue;
     bytes32 public immutable domainSeparator;
     address public immutable override spender;
 
     constructor(address settlement_) {
-        settlement = settlement_;
+        venue = settlement_;
         domainSeparator = IGPv2Settlement(settlement_).domainSeparator();
         spender = IGPv2Settlement(settlement_).vaultRelayer();
     }
@@ -136,7 +137,7 @@ contract CowSwapDecoder is IVenueDecoder {
     function untouched(address account, bytes calldata order) external view override returns (bool) {
         Order memory o = _order(order);
         bytes memory uid = abi.encodePacked(_digest(order), account, o.validTo);
-        return IGPv2Settlement(settlement).filledAmount(uid) == 0;
+        return IGPv2Settlement(venue).filledAmount(uid) == 0;
     }
 
     /// @notice Whether `config` is one `judge` can read and an owner can be

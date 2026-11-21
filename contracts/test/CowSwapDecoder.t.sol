@@ -86,7 +86,7 @@ contract CowSwapDecoderTest is Test {
     }
 
     function test_constructor_takesTheSettlementsFacts() public view {
-        assertEq(decoder.settlement(), SETTLEMENT);
+        assertEq(decoder.venue(), SETTLEMENT);
         assertEq(decoder.spender(), settlement.vaultRelayer());
         assertEq(decoder.domainSeparator(), settlement.domainSeparator());
         // CoW's constants, as GPv2Order.sol has them
