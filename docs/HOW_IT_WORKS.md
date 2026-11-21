@@ -36,16 +36,42 @@ or whoever controls it, asks for.
 | Malware reads the disk | all funds gone | nothing of the account's — its keys are not in files |
 | Prompt injection: "send everything to 0xdead" | sent | refused on-chain, unless the mandate allows that transfer — then at most its limits |
 | Malware takes over the agent itself | all funds gone | at most what the mandate allows, until the owner revokes the agent |
-| The laptop is stolen | the key is copied | the key cannot be extracted from the chip; the mandate still applies, and the owner revokes |
+| The laptop is stolen | the key is copied | the key cannot be copied out of the chip; a thief who gets the machine running can sign as the agent, held to the mandate, until the owner revokes ([below](#if-a-device-is-stolen)) |
 
-## The owner stays in charge
+## Three keys, three jobs
 
-The owner key is separate — on another device (a YubiKey, another
-machine's chip) or an encrypted cold file on a USB drive — and should stay
-out of reach of the agent's machine; the software does not enforce where
-you keep it. It sets the mandate,
-rotates the agent's key and revokes it, each in one transaction. A cold
-recovery key can take over if the owner device is lost.
+| Key | Where it lives | What it does | Needs a person |
+|---|---|---|---|
+| **agent** | the chip of the machine the agent runs on: a TPM, an Apple Secure Enclave, a TROPIC01 | signs the agent's actions; each one is checked against the mandate | no: it works unattended, with no PIN and no touch |
+| **owner** | a separate device: a YubiKey, a phone, another machine's chip (or an encrypted cold file) | sets the mandate, rotates the agent's key and revokes it, each in one transaction; it is the account's root | yes: PIN and touch, or a biometric |
+| **recovery** | a cold encrypted file on a USB drive, kept off line | replaces a lost or stolen owner key, and does nothing else | yes: its passphrase |
+
+The owner key should stay out of reach of the agent's machine; the software
+does not enforce where you keep it. The rest stands on that separation:
+whoever controls the agent's machine cannot widen the agent's limits.
+
+## If a device is stolen
+
+A stolen device is not a lost one: the thief holds the chip. What that gives
+them depends on which key is in it.
+
+| The thief has | What they can do | What stands in the way | What the owner does |
+|---|---|---|---|
+| the agent's machine | sign as the agent once the machine runs. Not copy the key, and not change the mandate | the machine's own lock: its login and disk encryption. A TPM key sealed to PCRs refuses to sign under another OS, a plain one does not ([`RESILIENCE.md` §1.4](RESILIENCE.md#14-pcr-sealed-keys-by-design)); a Secure Enclave key works only while that Mac is unlocked ([`SECURE_ENCLAVE.md`](SECURE_ENCLAVE.md)). Then the mandate: allowed calls, caps, budget, expiry | revoke or rotate the agent with the owner key, one transaction (`permission revoke`, `permission rotate`) |
+| the owner device | nothing without its PIN or biometric. With it, everything: the owner key is the account's root | that lock only. A YubiKey blocks its PIN after three wrong tries ([`YUBIKEY.md`](YUBIKEY.md#setting-a-yubikey-up-once-with-ykman)); a phone asks for the biometric on every use and drops the key when a new biometric is enrolled ([`MOBILE_OWNER_DESIGN.md` §5 and §10, T7](MOBILE_OWNER_DESIGN.md#10-threat-model)) | take root with the recovery key (`owner recover`), hand it to a new owner key and retire the stolen key's validator (`owner set-root --retire`), then check the mandate ([`RECOVERY_DRILL.md`](RECOVERY_DRILL.md)) |
+| both | the agent's limits at once; the whole account if the owner device's lock gives way | the devices' own locks and, for the agent's part, the mandate. Nothing on chain tells a thief from the owner | the same, fast: the recovery key makes a new owner key root, and that owner revokes the agent and installs a new one. It is a race against the lock of the owner device |
+| the recovery file and its passphrase | take root at once: **recovery has no delay today** | the passphrase; the file is encrypted with scrypt and an AEAD cipher ([`KEY_POLICY.md`](KEY_POLICY.md)) | replace the recovery key if the theft is noticed in time. A delay that the owner can cancel is what [`RESILIENCE.md` §3.4](RESILIENCE.md#34-timelock-on-recovery-recommended-for-a-value-bearing-deployment) recommends before real value; it is not built |
+
+- **With both devices gone, the only things between a thief and the account
+  are the devices' own locks and the speed of the recovery.** Once the recovery
+  key has made a new owner key root, that owner takes the agent back under
+  control.
+- **Without a recovery key there is no such move:** a stolen owner device,
+  like a lost one, leaves the agent running until its mandate expires and the
+  account frozen after that ([`RESILIENCE.md` §2.3](RESILIENCE.md#23-owner-and-recovery-lost-the-dead-account)).
+
+The longer form, with where each statement comes from, is
+[`RESILIENCE.md` §2.4](RESILIENCE.md#24-a-device-stolen-not-lost).
 
 ## Where to go next
 
