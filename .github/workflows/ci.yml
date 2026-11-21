@@ -31,6 +31,35 @@ jobs:
         working-directory: mobile/owner-core
         run: cargo test --locked --features ffi,test-chains
 
+  # A short run of every Rust fuzz target from its seeds (docs/FUZZING.md):
+  # enough to see that the targets build and that no seed or near neighbour
+  # breaks a rule. The long runs are made by hand.
+  fuzz:
+    runs-on: ubuntu-latest
+    env:
+      NIGHTLY: nightly-2026-06-21
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain and cargo-fuzz
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal
+          cargo install cargo-fuzz --version 0.13.2 --locked
+      - name: Each target for a minute
+        working-directory: mobile/owner-core
+        run: |
+          for target in $(cargo +"$NIGHTLY" fuzz list); do
+            echo "::group::$target"
+            mkdir -p "fuzz/corpus/$target"
+            cargo +"$NIGHTLY" fuzz run "$target" "fuzz/corpus/$target" "fuzz/seeds/$target" -- -max_total_time=60 -max_len=8192 -timeout=10
+            echo "::endgroup::"
+          done
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-artifacts
+          path: mobile/owner-core/fuzz/artifacts
+          retention-days: 14
+
   # The CLI's tests, the local-chain ones among them, and what a
   # rule-enforcing bundler makes of every operation they send (issue #83,
   # scripts/erc7562/README.md). The bundler's package is installed from the
