@@ -1982,14 +1982,15 @@ fn trading_orders_under_a_mandate() {
     refused(&sell("151000000", "37750000000000000"));
     assert!(chain.ok(&["permission", "show", "--agent", &cfg]).contains("(spent 150000000)"));
 
-    // the same order again, to the second, is the same order: registered once
-    let twice = refused(&sell("150000000", "37500000000000000"));
+    // the same order again, to the second of its end, is the same order: registered once
+    let mut same = sell("150000000", "37500000000000000");
+    same.extend(["--valid-for".to_string(), (o["validTo"].as_u64().unwrap() - chain.now()).to_string()]);
+    let twice = refused(&same);
     assert!(twice.contains("already registered"), "{twice}");
 
     // an order nobody fills is charged while it lives and comes back after it
-    let mut unfilled = sell("150000000", "37500000000000000");
-    unfilled.extend(["--valid-for".to_string(), "599".to_string()]);
-    placed(&unfilled);
+    // (one unit more asked for it: another order than the first, whenever it ends)
+    placed(&sell("150000000", "37500000000000001"));
     assert!(chain.ok(&["permission", "show", "--agent", &cfg]).contains("(spent 300000000)"));
     assert!(chain.ok(&["order", "reclaim", "--agent", &cfg, "--from-block", "0"]).contains("reclaimed 0 unfilled"));
     chain.advance(700);
