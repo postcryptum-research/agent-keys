@@ -65,6 +65,11 @@ ERC-4337 smart account that verifies the chip's **P-256** signature on-chain
 through the RIP-7212 precompile. No secp256k1 key, no MPC, no custodian: the
 only on-chain owner is the public key of the chip.
 
+Why a smart account and not a plain EOA: every secure element speaks NIST
+P-256 and none speaks secp256k1, which an EOA needs. Account abstraction
+removes that wall: the chip stays a P-256 signer, and the account checks its
+signature itself.
+
 ## Quick start
 
 Any platform, no hardware (software backend — dev/CI only):
@@ -84,6 +89,8 @@ cd ../contracts && forge test      # RIP-7212 enabled locally via odyssey = true
 
 Linux with a TPM, the `vector` command and the other platforms:
 [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md#quick-start).
+An account of your own on Base Sepolia, step by step:
+[`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md#run-an-agent-account-on-base-sepolia).
 
 ## If the worst happens
 
@@ -116,15 +123,6 @@ How this compares with what else exists — old-phone signers such as Cake
 Wallet's Cupcake, hosted agent-wallet platforms, passkey accounts and the
 nearest open-source projects: [`docs/related/`](docs/related/README.md).
 
-## Contact
-
-[postcryptum.io](https://postcryptum.io) · [@PostCryptumHQ on X](https://x.com/PostCryptumHQ) · reporting a
-security problem: [`SECURITY.md`](SECURITY.md).
-
-## Why not an EOA
-
-In the FAQ: [`docs/FAQ.md`](docs/FAQ.md#why-not-an-eoa).
-
 ## Examples
 
 Open-source agent stacks with their wallet layer — a key file or a custodial
@@ -138,15 +136,6 @@ one seam, `agent-signer op send --json` (x402 payments through
 What each one changes and what it showed on Base Sepolia:
 [`examples/README.md`](examples/README.md#what-each-example-shows-on-base-sepolia).
 
-## Layout
-
-In [`CONTRIBUTING.md`](CONTRIBUTING.md#layout).
-
-## Run an agent account on Base Sepolia
-
-The walkthrough is in
-[`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md#run-an-agent-account-on-base-sepolia).
-
 ## Reference
 
 Y. Madhwal, *Integrating Secure Elements with Account Abstraction for
@@ -154,10 +143,10 @@ Autonomous IoT Blockchain Agents* (Skoltech research seminar, 2026) — the same
 design with an ATECC608A; this project generalizes it to the TPM / Secure
 Enclave in ordinary machines and to AI agents.
 
-## Earlier name
+## Contact
 
-Until November 2026 the project was called TPM_sign. Which identifiers keep that name, and why renaming
-them needs a migration: [`CONTRIBUTING.md`](CONTRIBUTING.md#earlier-name).
+[postcryptum.io](https://postcryptum.io) · [@PostCryptumHQ on X](https://x.com/PostCryptumHQ) · reporting a
+security problem: [`SECURITY.md`](SECURITY.md) · sending a change: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 
