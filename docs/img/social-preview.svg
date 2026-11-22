@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>agent-keys: generated in the chip, seen by no one, bound by the owner</title>
+  <!-- The repository's social preview: the card shown where its link is shared. 1280 x 640.
+       Render:  rsvg-convert -w 1280 -h 640 docs/img/social-preview.svg -o social-preview.png
+       Upload:  the repository's Settings, General, Social preview (in the browser; under 1 MB).
+       Grid: 80 left and right, 72 top and bottom. The right column (the chip above, the site below) is one
+       width; the top row (the name and the chip) shares one middle line; the bottom row one baseline.
+       The widths were set for Helvetica: after a change of font or of a text, check the right column again. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4338ca"/>
+      <stop offset="1" stop-color="#0d9488"/>
+    </linearGradient>
+    <linearGradient id="chip" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#34d399"/>
+      <stop offset="1" stop-color="#059669"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="640" fill="url(#bg)"/>
+
+  <text x="80" y="142" font-size="40" font-weight="800" fill="#e0e7ff">agent-keys</text>
+
+  <text x="80" y="250" font-size="76" font-weight="800" fill="#ffffff">Generated in the chip.</text>
+  <text x="80" y="342" font-size="76" font-weight="800" fill="#a7f3d0">Seen by no one.</text>
+  <text x="80" y="434" font-size="76" font-weight="800" fill="#ffffff">Bound by the owner.</text>
+
+  <text x="80" y="498" font-size="29" fill="#e0e7ff">Hardware-held keys and on-chain spending limits for AI agents</text>
+
+  <line x1="80" y1="528" x2="1200" y2="528" stroke="#ffffff" stroke-opacity="0.22" stroke-width="1"/>
+  <text x="80" y="563" font-size="24" fill="#c7d2fe">github.com/postcryptum-research/agent-keys</text>
+  <text x="1200" y="563" font-size="24" text-anchor="end" fill="#c7d2fe">postcryptum.io</text>
+
+  <!-- the chip of the project's picture; its box is as wide as the site's name below it -->
+  <g transform="translate(1044,72) scale(1.2)">
+    <rect width="130" height="100" rx="16" fill="#ffffff" fill-opacity="0.15"/>
+    <rect x="35" y="22" width="60" height="56" rx="8" fill="url(#chip)" stroke="#ecfdf5" stroke-width="3"/>
+    <g stroke="#ecfdf5" stroke-width="3" stroke-linecap="round">
+      <line x1="47" y1="14" x2="47" y2="22"/><line x1="65" y1="14" x2="65" y2="22"/><line x1="83" y1="14" x2="83" y2="22"/>
+      <line x1="47" y1="78" x2="47" y2="86"/><line x1="65" y1="78" x2="65" y2="86"/><line x1="83" y1="78" x2="83" y2="86"/>
+    </g>
+    <path d="M57,52 l6,6 l12,-14" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>
