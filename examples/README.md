@@ -24,6 +24,22 @@ Background: `docs/ERC1271.md` — why the agent signs no general off-chain
 messages, how Safes (Olas, Jinn) work anyway through `AgentPolicy`'s Safe
 pass-through, and how x402 payments get a narrow ERC-1271 by registration.
 
+## What each example shows on Base Sepolia
+
+| Example | What changes | Shown on Base Sepolia |
+|---|---|---|
+| [Coinbase AgentKit](agentkit/) (TS, Claude via LangChain) | a new `EvmWalletProvider` | an allowed call lands; a transfer to an outsider — what a prompt injection asks for — is refused by `AgentPolicy` |
+| [Claude Code / OpenClaw skill](claude-skill/) | a `SKILL.md` that teaches the agent the CLI | — |
+| [Jinn](jinn/) (Olas-based operator) | a Safe broadcaster whose Safe owner is the Kernel account | a claim-like call and a settlement-like MultiSend batch through the Safe execute; the Safe adding an owner is refused |
+| [Olas](olas/) (open-autonomy, Python) | Safe owner and keeper become the Kernel account; the consensus key stays, without funds | a 1-agent service's `transaction_settlement_abci` path, built with open-autonomy's own code, settles through the Kernel; a keeper retry cannot execute twice |
+| [ElizaOS](elizaos/) (1.7, Claude) | a plugin (`plugin-agent-keys`) instead of `plugin-evm`'s private key | an allowed call lands, a transfer to an outsider is refused; `PAY_FOR_URL` pays an x402 API from the mandate's USDC budget |
+| [x402](x402/) (HTTP 402 payments) | `agent-signer x402 fetch`: each payment registered under the mandate, then signed | a paid API answers 200 and the x402.org facilitator settles the USDC on-chain; expired unused registrations are reclaimed |
+
+The Jinn and Olas folders also hold an integration analysis with file:line
+references, a patch plan and proposals for upstream; for Jinn, a first patch
+series against `Jinn-Network/mono` (the venue loop on a Kernel-owned Safe,
+[`examples/jinn/patches/`](jinn/patches/)).
+
 ## Common setup
 
 ```sh
