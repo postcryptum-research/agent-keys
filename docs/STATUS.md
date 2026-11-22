@@ -1,7 +1,5 @@
 # Status: what runs today
 
-*Moved here from the README on 2026-11-22, word for word; only link paths were changed, and transactions that the README showed cut are written in full.*
-
 **Status: it runs on Base Sepolia.** An account whose owner key and agent key
 both live in a TPM 2.0 executed its first operation on 2026-10-20 — the agent
 key, bound by `AgentPolicy`, incremented the demo counter; the operation was

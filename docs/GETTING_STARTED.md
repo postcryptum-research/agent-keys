@@ -1,7 +1,5 @@
 # Getting started
 
-*Moved here from the README on 2026-11-22, word for word; only link paths were changed.*
-
 ## Quick start
 
 Any platform, no hardware (software backend — dev/CI only):
