@@ -37,13 +37,13 @@ traces in `traces/`:
 
 | Trace | Verdict |
 |---|---|
-| 1 `AgentPolicy`, an operation without a token call | refused: forbidden access to the policy's slot `0x854e…70d8` = `configs[account][id]`, the word with `spent` |
-| 2 `AgentPolicy`, a token operation | refused: forbidden access to slot `0xf461…cd1b` = `_mandates[account][id][epoch].tokens[token]`, the word with the token's `spent` |
+| 1 `AgentPolicy`, an operation without a token call | refused: forbidden access to the policy's slot `0x854e0b187d93efd5af455f72df5ca9f3da2e32b4209332a93f91da866b2070d8` = `configs[account][id]`, the word with `spent` |
+| 2 `AgentPolicy`, a token operation | refused: forbidden access to slot `0xf4615f3a519cfc240186a2f064738f1fa15e222574a8d19a7af80be8201fcd1b` = `_mandates[account][id][epoch].tokens[token]`, the word with the token's `spent` |
 | 3 test policy: reads `TIMESTAMP` | refused: banned opcode |
 | 4 test policy: persistent write at slot 0 | refused: forbidden access to slot 0 |
 | 5 test policy: transient write at slot 0 | refused: forbidden access to slot 0 |
 | 6 test policy: transient write at `keccak(sender ‖ 1)` | storage passes; stops at the P-256 precompile, see below |
-| 7 `AgentPolicy` as deployed on 2026-11-21 (`0x12b7…e0E2`), an operation without a token call | storage passes: 6 slots of the policy, all the sender's; stops at the P-256 precompile |
+| 7 `AgentPolicy` as deployed on 2026-11-21 (`0x12b7E79974CC4F4181a40Aa11f9d3170018ae0E2`), an operation without a token call | storage passes: 6 slots of the policy, all the sender's; stops at the P-256 precompile |
 | 8 the same instance, an `x402Authorize` under a token limit | storage passes: 11 slots of the policy, all the sender's; stops at the P-256 precompile |
 
 The exact messages are in `expected.json`, each trace twice: the checker as it
