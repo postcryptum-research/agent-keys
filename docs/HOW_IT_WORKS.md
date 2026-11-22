@@ -1,6 +1,9 @@
 # How it works — on one page
 
-![Your AI agent's money, out of reach of a stolen file](img/how-it-works.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/how-it-works-dark.svg">
+  <img src="img/how-it-works-light.svg" alt="Your AI agent's money, out of reach of a stolen file">
+</picture>
 
 ## The short version
 
