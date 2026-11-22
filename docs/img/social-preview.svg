@@ -1,43 +1,86 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif">
-  <title>agent-keys: generated in the chip, seen by no one, bound by the owner</title>
-  <!-- The repository's social preview: the card shown where its link is shared. 1280 x 640.
-       Render:  rsvg-convert -w 1280 -h 640 docs/img/social-preview.svg -o social-preview.png
-       Upload:  the repository's Settings, General, Social preview (in the browser; under 1 MB).
-       Grid: 80 left and right, 72 top and bottom. The right column (the chip above, the site below) is one
-       width; the top row (the name and the chip) shares one middle line; the bottom row one baseline.
-       The widths were set for Helvetica: after a change of font or of a text, check the right column again. -->
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  agent-keys: the repository's social preview (1280 x 640).
+  Upload the PNG under Settings > General > Social preview.
+  Render:  rsvg-convert -w 1280 -h 640 docs/img/social-preview.svg -o social-preview.png
+  Needs the Inter font installed (ExtraBold, Bold, SemiBold, Medium).
+  Text and the chip sit inside GitHub's 40pt safe border; only the grid,
+  glow and circuit traces bleed to the edges and may be cropped.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-label="agent-keys: Generated in the chip. Seen by no one. Bound by the owner.">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#4338ca"/>
-      <stop offset="1" stop-color="#0d9488"/>
-    </linearGradient>
-    <linearGradient id="chip" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#34d399"/>
-      <stop offset="1" stop-color="#059669"/>
+    <radialGradient id="glowGreen" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#10B981" stop-opacity="0.30"/>
+      <stop offset="0.7" stop-color="#10B981" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowIndigo" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#4F46E5" stop-opacity="0.35"/>
+      <stop offset="0.7" stop-color="#4F46E5" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#FFFFFF" stroke-opacity="0.05" stroke-width="1"/>
+    </pattern>
+    <linearGradient id="chip" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#34D399"/>
+      <stop offset="1" stop-color="#047857"/>
     </linearGradient>
   </defs>
-  <rect width="1280" height="640" fill="url(#bg)"/>
 
-  <text x="80" y="142" font-size="40" font-weight="800" fill="#e0e7ff">agent-keys</text>
+  <!-- background -->
+  <rect width="1280" height="640" fill="#0A1022"/>
+  <ellipse cx="0" cy="0" rx="600" ry="400" fill="url(#glowIndigo)"/>
+  <ellipse cx="1040" cy="300" rx="460" ry="380" fill="url(#glowGreen)"/>
+  <rect width="1280" height="640" fill="url(#grid)"/>
 
-  <text x="80" y="250" font-size="76" font-weight="800" fill="#ffffff">Generated in the chip.</text>
-  <text x="80" y="342" font-size="76" font-weight="800" fill="#a7f3d0">Seen by no one.</text>
-  <text x="80" y="434" font-size="76" font-weight="800" fill="#ffffff">Bound by the owner.</text>
+  <!-- circuit traces -->
+  <g fill="none" stroke="#6EE7B7" stroke-opacity="0.45" stroke-width="2">
+    <path d="M980 180 V120 H1080 V60"/>
+    <path d="M1040 180 V80 H1280"/>
+    <path d="M1100 180 V140 H1240"/>
+    <path d="M980 420 V500 H860"/>
+    <path d="M1040 420 V500 H1160"/>
+    <path d="M1100 420 V470 H1280"/>
+    <path d="M1160 240 H1230 V200"/>
+    <path d="M1160 300 H1280"/>
+    <path d="M1160 360 H1210 V420"/>
+    <path d="M920 300 H880"/>
+  </g>
+  <g fill="#6EE7B7">
+    <circle cx="1080" cy="60" r="5"/>
+    <circle cx="1240" cy="140" r="5"/>
+    <circle cx="860" cy="500" r="5"/>
+    <circle cx="1160" cy="500" r="5"/>
+    <circle cx="1230" cy="200" r="5"/>
+    <circle cx="1210" cy="420" r="5"/>
+    <circle cx="880" cy="300" r="5"/>
+  </g>
 
-  <text x="80" y="498" font-size="29" fill="#e0e7ff">Hardware-held keys and on-chain spending limits for AI agents</text>
+  <!-- chip -->
+  <g stroke="#A7F3D0" stroke-width="10" stroke-linecap="round">
+    <path d="M980 160 V180"/><path d="M1040 160 V180"/><path d="M1100 160 V180"/>
+    <path d="M980 420 V440"/><path d="M1040 420 V440"/><path d="M1100 420 V440"/>
+    <path d="M900 240 H920"/><path d="M900 300 H920"/><path d="M900 360 H920"/>
+    <path d="M1160 240 H1180"/><path d="M1160 300 H1180"/><path d="M1160 360 H1180"/>
+  </g>
+  <rect x="920" y="180" width="240" height="240" rx="36" fill="url(#chip)" stroke="#A7F3D0" stroke-width="6"/>
+  <rect x="944" y="204" width="192" height="192" rx="24" fill="none" stroke="#FFFFFF" stroke-opacity="0.25" stroke-width="2"/>
+  <circle cx="1010" cy="300" r="30" fill="none" stroke="#FFFFFF" stroke-width="12"/>
+  <path d="M1040 300 H1096 M1078 300 V324 M1096 300 V320" fill="none" stroke="#FFFFFF" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
 
-  <line x1="80" y1="528" x2="1200" y2="528" stroke="#ffffff" stroke-opacity="0.22" stroke-width="1"/>
-  <text x="80" y="563" font-size="24" fill="#c7d2fe">github.com/postcryptum-research/agent-keys</text>
-  <text x="1200" y="563" font-size="24" text-anchor="end" fill="#c7d2fe">postcryptum.io</text>
+  <!-- text -->
+  <g font-family="Inter, 'Helvetica Neue', Arial, sans-serif">
+    <text x="80" y="101" font-size="22" font-weight="600" fill="#94A3B8">PostCryptum Research<tspan dx="14" fill="#475569">/</tspan><tspan dx="14" font-weight="800" fill="#FFFFFF">agent-keys</tspan></text>
 
-  <!-- the chip of the project's picture; its box is as wide as the site's name below it -->
-  <g transform="translate(1044,72) scale(1.2)">
-    <rect width="130" height="100" rx="16" fill="#ffffff" fill-opacity="0.15"/>
-    <rect x="35" y="22" width="60" height="56" rx="8" fill="url(#chip)" stroke="#ecfdf5" stroke-width="3"/>
-    <g stroke="#ecfdf5" stroke-width="3" stroke-linecap="round">
-      <line x1="47" y1="14" x2="47" y2="22"/><line x1="65" y1="14" x2="65" y2="22"/><line x1="83" y1="14" x2="83" y2="22"/>
-      <line x1="47" y1="78" x2="47" y2="86"/><line x1="65" y1="78" x2="65" y2="86"/><line x1="83" y1="78" x2="83" y2="86"/>
+    <g font-size="62" font-weight="800" letter-spacing="-1.55" fill="#FFFFFF">
+      <text x="80" y="214">Generated in the chip.</text>
+      <text x="80" y="281" fill="#6EE7B7">Seen by no one.</text>
+      <text x="80" y="348">Bound by the owner.</text>
     </g>
-    <path d="M57,52 l6,6 l12,-14" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <text x="80" y="414" font-size="25" font-weight="500" fill="#CBD5E1">Hardware-held keys and on-chain spending limits for AI agents</text>
+
+    <line x1="80" y1="518.5" x2="1200" y2="518.5" stroke="#94A3B8" stroke-opacity="0.25" stroke-width="1"/>
+    <text x="80" y="555" font-size="20" font-weight="500" fill="#CBD5E1">github.com/postcryptum-research/agent-keys</text>
+    <text x="1200" y="555" font-size="20" font-weight="700" fill="#FFFFFF" text-anchor="end">postcryptum.io</text>
   </g>
 </svg>
