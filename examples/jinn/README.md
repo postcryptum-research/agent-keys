@@ -61,7 +61,7 @@ Output on Base Sepolia (2026-10-20), agent key in a TROPIC01, permission
 (rotation tx `0xef321bd0cfce69f617c4efc28628d88f148134d0d4cdadd9a33cfaa03d5ff4aa`):
 
 ```
-Safe 0xd0b972a8ee7D8AB91a2e3381Eb6F10550B80E52A (owner: Kernel 0xEdB645B1…bC9E9), counter = 12
+Safe 0xd0b972a8ee7D8AB91a2e3381Eb6F10550B80E52A (owner: Kernel 0xEdB645B14e2f952C5784e34949b58F0826fBc9E9), counter = 12
 ✔ single call (claim-like): tx 0x451c7214beb0d43dcacf299eb2828c9daeb253ceef3f2ccfdad683535c18dc16, counter = 13
 ✔ MultiSendCallOnly batch (settlement-like): tx 0xd9bdc92ab3afac2baf9ab4ac8055c0cb5cbc195dd8a4db2b3f74025901c0fd31, counter = 15
 ✘ Safe adds an owner (compromised agent): policy-denied — refused by AgentPolicy on-chain
@@ -113,7 +113,7 @@ jinn signer-migrate --yes               # the handover; safe to re-run
 ```
 
 ```
-Migrated: agent EOA 0x7471…D030 -> Kernel 0x86A6…CB1a
+Migrated: agent EOA 0x7471bE25Ec54354c8D70491Ae10bd86705fAD030 -> Kernel 0x86A6…CB1a
   service Safe 0xD4a2…f86B
     kernel-approves-safe   done     0x…   (the Kernel signs first: deployed, key proven)
     mandate-admits-safe    checked        (AgentPolicy admits Safe.execTransaction)

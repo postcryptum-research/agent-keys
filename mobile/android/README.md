@@ -612,7 +612,7 @@ enrolled phone owner key "owner-phone" for account 0xdc0fa0c9AA445eFE417d1C07Da7
   app            android 0.0.3-p1 (core none)
 
 Nothing changed on-chain. Next, signed by the current owner key:
-  agent-signer owner set-root --agent …/owner.json --validator <P256Validator> --public-key 0xa6a2…eed5,0x2167…f585 --expect-fingerprint ZOLH5-D2DIS-66ZBB-4T6NL [--retire <validator>]
+  agent-signer owner set-root --agent …/owner.json --validator <P256Validator> --public-key 0xa6a22946b6546621392368bf5aeec01d2432ac5b871ad9d36fc13fb444c0eed5,0x216799da099495a257f2a9fa0d92ea94dcf3195ab88ac6d46ee99e183c4bf585 --expect-fingerprint ZOLH5-D2DIS-66ZBB-4T6NL [--retire <validator>]
 then point the config's owner at the phone (ownerPublicKey stays the account's creation key):
 { "owner": { "phone": { "label": "owner-phone", "publicKey": { … }, "fingerprint": "ZOLH5-D2DIS-66ZBB-4T6NL" } } }
 

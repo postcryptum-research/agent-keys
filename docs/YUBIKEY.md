@@ -158,11 +158,11 @@ in. The PIN is asked at every owner operation; the terminal then says
 
 Account `0xEdB645B14e2f952C5784e34949b58F0826fBc9E9`, configs
 `signer/agent.tropic01.base-sepolia.json` and the three others of that
-account. Before: root = `P256Validator` V1 `0xDe1A…24D1` holding the TPM owner
+account. Before: root = `P256Validator` V1 `0xDe1Af9b0Fcc5Dda03380b069F26EA2bfbd3c24D1` holding the TPM owner
 key `0x81010010`; recovery installed; agent permission `trp1` in a TROPIC01.
 
 1. **Handover.** The TPM owner key signed `owner set-root --validator
-   0xdA4c…50c2 --retire 0xDe1A…24D1 --public-key <x>,<y> --sponsored`
+   0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2 --retire 0xDe1Af9b0Fcc5Dda03380b069F26EA2bfbd3c24D1 --public-key <x>,<y> --sponsored`
    (today the command must also say what the new key is, `--not-a-phone`
    here, and the YubiKey signs a challenge before anything is sent:
    `--new-key '{"yubikey": {"slot": "9c"}}'`): the
@@ -170,7 +170,7 @@ key `0x81010010`; recovery installed; agent permission `trp1` in a TROPIC01.
    with the TPM key uninstalled in the same operation, paymaster-sponsored,
    through the public bundler — tx
    `0x010aa69c4e3ce347c851a643178a97184f350d05eeb63d56673be5e52256aff4`
-   (block 53508267). `owner status`: root validator `0xda4c…50c2`, recovery
+   (block 53508267). `owner status`: root validator `0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2`, recovery
    still `installed = true, may take root = true`. On chain,
    `publicKeys(account)` on the new validator is the YubiKey's `(x, y)` and
    zeros on the old one.
@@ -229,7 +229,7 @@ Enclave test account** `0xD62Dd4afD4e77cDFA6f8eaD1D2655745cF5af628`
    recovery still `installed = true, may take root = true`.
 3. **The old owner is refused before any signature.** A config still naming
    the enclave key: `the key about to sign (0x6b12ddff…) is not the
-   account's root key (0x3c34687f… in validator 0xdA4c…50c2)`. No PIN, no
+   account's root key (0x3c34687f… in validator 0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2)`. No PIN, no
    touch, nothing sent — the check from this PR, on macOS.
 4. **The YubiKey is root.** `op send --root` to `DemoCounter.increment`,
    PIN + touch — tx
@@ -253,7 +253,7 @@ permission `0x73653032` moved onto it with one YubiKey signature:
 `permission rotate --old-id 0x73653032 --sponsored` — tx
 `0x37d637ebcc011e1de3612d02fbb1af61294dee80334edbb628965aed2a59a845`
 (block 57463810, 440,350 gas, paymaster-sponsored, own `handleOps`).
-`permission show` afterwards: policy module `0xdd54…ae85`, every field `ok`,
+`permission show` afterwards: policy module `0xdd544A6F0220778Fff16F51B468656e73E32ae85`, every field `ok`,
 token limit `ok`; the enclave agent's `demo --sponsored` ran on it (counter
 39 → 40, tx `0x32a240d3810ae387d9a1c2f13fbbceb93f637ea07207c0f332d0d2bbe7a2ef29`).
 
@@ -270,7 +270,7 @@ in `signer/agent.x402.base-sepolia.json`:
 `permission rotate --old-id 0x78347031 --sponsored`, PIN + touch — tx
 `0x6656551e6d7abb87823adfece6f52d0d8f5385c29391c56b453cb88a7d19f5ed`
 (block 57473629, 425,972 gas, paymaster-sponsored, through the bundler).
-`permission show` afterwards: policy module `0xdd54…ae85`, every field and
+`permission show` afterwards: policy module `0xdd544A6F0220778Fff16F51B468656e73E32ae85`, every field and
 both x402 allow entries `ok`, spend counters back at zero (a rotation
 installs a fresh mandate). The account's window-demo permission
 `0x77696e31` was left alone: its window closed on 2026-10-20, so it
@@ -285,7 +285,7 @@ onto it with one signature by the root key:
 `permission rotate --old-id 0x73653032 --sponsored` — tx
 `0x2b786fb475ecb5902c2d1509a92b576d78e5d5c93b346e37539711e500371b84`
 (block 61355254, 449,578 gas, paymaster-sponsored, own `handleOps`).
-`permission show` afterwards: policy module `0x2E6F…3D95`, every field `ok`,
+`permission show` afterwards: policy module `0x2E6F47B2F3d0F3E6071eCdBc0b445a2B26d23D95`, every field `ok`,
 `payees` anyone on chain and in the config. The two config changes that go
 with a rotation (the deployments file and the mandate's x402 entries) were on
 master already.
@@ -317,7 +317,7 @@ bundler: its everyday permission `0x74727334` (tx
 61371991, 432,803 gas) and its x402 permission `0x78347031` (tx
 `0x5a1684804722fd7e15258b7e3007f3fa8dc1c55392466880595e6b4a06c3d9ec`, block
 61372068, 430,059 gas). `permission show` for both: policy module
-`0x2E6F…3D95`, every field `ok`, and for the x402 one `payees` anyone on
+`0x2E6F47B2F3d0F3E6071eCdBc0b445a2B26d23D95`, every field `ok`, and for the x402 one `payees` anyone on
 chain and in the config. The TROPIC01 agent then ran on the new policy
 through the bundler, sponsored (counter 71 → 72, tx
 `0x0ceb42d75ff204e55ea7eb22e9b512e1c85d2707915e3e0cf78796d2f04c1ea5`). No
@@ -341,7 +341,7 @@ and delivered by the bundler:
   `0x5c16825a8ef8d92ce74ab2870e24d74711eba65f06a47e920251c804075d3030`
   (block 61716821, 431,363 gas).
 
-`permission show` for both: policy module `0x12b7…e0E2`, every field `ok`,
+`permission show` for both: policy module `0x12b7E79974CC4F4181a40Aa11f9d3170018ae0E2`, every field `ok`,
 spend counters at zero. The TROPIC01 agent then ran on the new policy through
 the bundler, sponsored (counter 72 → 73, tx
 `0xfa8c67a7cde085b710cc9cc020ccbb56e7ae4f2b188b3b5fa1d1a8610d41b3e9`, block
@@ -359,7 +359,7 @@ key:
 `permission rotate --old-id 0x73653032 --sponsored` — tx
 `0x3e27ab971217086f79c0b683454b71d9e66b8434d348c242114157ec2f2d2739`
 (block 61723571, 451,465 gas, paymaster-sponsored, own `handleOps`).
-`permission show` afterwards: policy module `0x12b7…e0E2`, every field `ok`,
+`permission show` afterwards: policy module `0x12b7E79974CC4F4181a40Aa11f9d3170018ae0E2`, every field `ok`,
 `payees` anyone on chain and in the config. The two config changes that go
 with a rotation were on master already.
 
