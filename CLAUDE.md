@@ -68,6 +68,11 @@ gitleaks git . --redact --log-opts="--all" --exit-code 1    # what CI runs, over
    showed and what was not checked. Dates are UTC.
 7. **Stage files by path.** Build outputs (`target/`, `out/`, `build/`,
    compiled libraries) never go in.
+8. **Addresses and transaction hashes are written in full.** All 42
+   characters of an address and all 66 of a hash, in docs, commit messages,
+   pull requests and issues; never cut with an ellipsis. A cut value cannot
+   be searched for or checked against the chain. Text moved or quoted from
+   elsewhere gets its cut values restored from the link target or the chain.
 
 ## Never in the repository, a pull request or an issue
 
