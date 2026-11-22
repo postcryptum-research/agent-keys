@@ -10,7 +10,10 @@ agent spends only within the limits its owner sets, enforced on chain.
 ![status: testnet](https://img.shields.io/badge/status-testnet-orange)
 ![chain: Base Sepolia](https://img.shields.io/badge/chain-Base%20Sepolia-0052FF)
 
-![A key in a file against a key inside a chip, how one action goes, the mandate, and what happens when a device is stolen](docs/img/how-it-works.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/how-it-works-dark.svg">
+  <img src="docs/img/how-it-works-light.svg" alt="A key in a file against a key inside a chip, how one action goes, the mandate, and what happens when a device is stolen">
+</picture>
 
 ## What you get
 
