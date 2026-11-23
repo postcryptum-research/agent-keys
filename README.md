@@ -9,6 +9,7 @@ agent spends only within the limits its owner sets, enforced on chain.
 [![secret scan](https://github.com/postcryptum-research/agent-keys/actions/workflows/gitleaks.yml/badge.svg)](https://github.com/postcryptum-research/agent-keys/actions/workflows/gitleaks.yml)
 ![status: testnet](https://img.shields.io/badge/status-testnet-orange)
 ![chain: Base Sepolia](https://img.shields.io/badge/chain-Base%20Sepolia-0052FF)
+[![external audit: not yet](https://img.shields.io/badge/external%20audit-not%20yet-red)](#status)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/how-it-works-dark.svg">
@@ -28,11 +29,16 @@ agent spends only within the limits its owner sets, enforced on chain.
 - **On top of the agent stack you have.** Coinbase AgentKit, ElizaOS, Olas, Jinn, a Claude Code skill, x402
   payments ([`examples/`](examples/README.md)).
 
+**What you do not get yet:** an external audit, and a mainnet deployment. It is testnet only today: see
+[Status](#status).
+
 ## See it work
 
 A run on Base Sepolia with the agent's key in a Mac's Secure Enclave, from the record in
-[`docs/SECURE_ENCLAVE.md`](docs/SECURE_ENCLAVE.md) (options that only name the config and the `.env` are left
-out of the commands):
+[`docs/SECURE_ENCLAVE.md`](docs/SECURE_ENCLAVE.md). Options that only name the config and the `.env` are left
+out of the commands.
+
+**1. The key is made inside the chip.** Only its public half ever comes out.
 
 ```console
 $ agent-signer key create --enclave tpm_sign-demo
@@ -41,6 +47,12 @@ $ agent-signer key create --enclave tpm_sign-demo
   "x": "0x37b8e8aa2ca3bef1522e1b27d16c23454b3beae195562f67ac631952d95c2cd9",
   "y": "0x3cc90d6478511e3007b6d28870ba854d9490ddf209a1ca8b455760ef17b177d3"
 }
+```
+
+**2. The agent acts within its mandate.** It increments a counter, and the operation is included
+([the transaction](https://sepolia.basescan.org/tx/0xc431bafe3588431c82b96aac7318c3c4340e16be784322bba5d801f3a401300c)).
+
+```console
 $ agent-signer demo
 path:           permission (agent key)
 gas paid by:    the account
@@ -48,16 +60,16 @@ userOpHash:     0x0893b341617b0b849fd55a683d8095ae544e0d7fcba92564405cf3b798f84c
 delivery:       self-bundled via handleOps
 included: tx 0xc431bafe3588431c82b96aac7318c3c4340e16be784322bba5d801f3a401300c (block 48414001, 664572 gas)
 counter:  26 -> 27
+```
+
+**3. A prompt injection asks for one wei to an outsider.** The policy refuses it (`PolicyFailed(0)`), and no
+gas is spent.
+
+```console
 $ agent-signer op send --target 0x000000000000000000000000000000000000dEaD --wei 1
 path:           permission (agent key)
 Error: EntryPoint rejected the operation: AA23 reverted (op 0), inner revert 0x3e4983f60000000000000000000000000000000000000000000000000000000000000000
 ```
-
-The first command makes the key inside the enclave; only its public half ever comes out. The second is the
-agent acting within its mandate
-([the transaction](https://sepolia.basescan.org/tx/0xc431bafe3588431c82b96aac7318c3c4340e16be784322bba5d801f3a401300c)).
-The third is what a prompt injection asks for, one wei to an outsider: the policy refuses it
-(`PolicyFailed(0)`) and no gas is spent.
 
 ## In technical terms
 
@@ -75,20 +87,39 @@ signature itself.
 
 ## Quick start
 
-Any platform, no hardware (software backend — dev/CI only):
+No hardware is needed: a software backend stands in for the chip, for development and CI only. The blocks
+continue one another, so paste them in order.
+
+**Get the code**, with the contracts' dependencies:
+
+```sh
+git clone --recurse-submodules https://github.com/postcryptum-research/agent-keys
+cd agent-keys
+```
+
+**Test the signer**, and the core it shares with the phone apps (a crate outside the signer's workspace):
 
 ```sh
 cd signer && cargo test
-cd ../mobile/owner-core && cargo test   # the core shared with the phone apps; outside the signer workspace
-cd ../../signer
-# end to end on a local anvil: the real CLI against EntryPoint, Kernel, our
-# modules, a Safe, a paymaster, a fake bundler and an x402 server (software
-# keys, so only in this test-only build)
-cargo test -p agent-signer --features insecure-software-keys --test anvil_cli
-cd ../contracts && forge test      # RIP-7212 enabled locally via odyssey = true
-# forge 1.8+ dropped `odyssey`; there the precompile comes with the Osaka
-# EVM: forge test --evm-version osaka
+cd ../mobile/owner-core && cargo test
 ```
+
+**Run the CLI end to end** on a local anvil: the real CLI against EntryPoint, Kernel, our modules, a Safe, a
+paymaster, a fake bundler and an x402 server. The keys are software keys, which only this test-only build
+accepts.
+
+```sh
+cd ../../signer
+cargo test -p agent-signer --features insecure-software-keys --test anvil_cli
+```
+
+**Test the contracts.** From Foundry 1.8 the P-256 precompile (RIP-7212) comes with the Osaka EVM:
+
+```sh
+cd ../contracts && forge test --evm-version osaka
+```
+
+An older Foundry runs plain `forge test`: the config enables the precompile there with `odyssey = true`.
 
 Linux with a TPM, the `vector` command and the other platforms:
 [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md#quick-start).
@@ -97,20 +128,24 @@ An account of your own on Base Sepolia, step by step:
 
 ## If the worst happens
 
-| What happens | A key in a file | agent-keys |
+| What happens | A&nbsp;key&nbsp;in&nbsp;a&nbsp;file | agent-keys |
 |---|---|---|
-| Malware reads the disk | all funds gone | nothing of the account's — its keys are not in files |
+| Malware reads the disk | all&nbsp;funds&nbsp;gone | nothing of the account's — its keys are not in files |
 | Prompt injection: "send everything to 0xdead" | sent | refused on-chain, unless the mandate allows that transfer — then at most its limits |
-| Malware takes over the agent itself | all funds gone | at most what the mandate allows, until the owner revokes the agent |
-| The laptop is stolen | the key is copied | the key cannot be copied out of the chip; a thief who gets the machine running can sign as the agent, held to the mandate, until the owner revokes ([below](docs/HOW_IT_WORKS.md#if-a-device-is-stolen)) |
+| Malware takes over the agent itself | all&nbsp;funds&nbsp;gone | at most what the mandate allows, until the owner revokes the agent |
+| The laptop is stolen | the&nbsp;key&nbsp;is&nbsp;copied | the key cannot be copied out of the chip; a thief who gets the machine running can sign as the agent, held to the mandate, until the owner revokes ([more](docs/HOW_IT_WORKS.md#if-a-device-is-stolen)) |
 
 More, including a stolen device: [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md).
 
 ## Status
 
-Testnet only, with no real funds. It runs on Base Sepolia; what runs today, phase by phase and backend by
-backend, with the transactions: [`docs/STATUS.md`](docs/STATUS.md). The reviews so far are internal, not a
-professional third-party audit ([`docs/FAQ.md`](docs/FAQ.md#is-it-audited)).
+> [!WARNING]
+> **No external audit yet.** The reviews so far are internal, not a professional third-party audit
+> ([`docs/FAQ.md`](docs/FAQ.md#is-it-audited)). agent-keys runs on a test network, Base Sepolia, and holds no
+> real funds. A third-party audit comes before any mainnet funds; until then, use it at your own risk.
+
+What runs today, phase by phase and backend by backend, with the transactions:
+[`docs/STATUS.md`](docs/STATUS.md).
 
 ## Docs
 

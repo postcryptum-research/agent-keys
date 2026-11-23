@@ -34,12 +34,12 @@ or whoever controls it, asks for.
 
 ## If the worst happens
 
-| What happens | A key in a file | agent-keys |
+| What happens | A&nbsp;key&nbsp;in&nbsp;a&nbsp;file | agent-keys |
 |---|---|---|
-| Malware reads the disk | all funds gone | nothing of the account's — its keys are not in files |
+| Malware reads the disk | all&nbsp;funds&nbsp;gone | nothing of the account's — its keys are not in files |
 | Prompt injection: "send everything to 0xdead" | sent | refused on-chain, unless the mandate allows that transfer — then at most its limits |
-| Malware takes over the agent itself | all funds gone | at most what the mandate allows, until the owner revokes the agent |
-| The laptop is stolen | the key is copied | the key cannot be copied out of the chip; a thief who gets the machine running can sign as the agent, held to the mandate, until the owner revokes ([below](#if-a-device-is-stolen)) |
+| Malware takes over the agent itself | all&nbsp;funds&nbsp;gone | at most what the mandate allows, until the owner revokes the agent |
+| The laptop is stolen | the&nbsp;key&nbsp;is&nbsp;copied | the key cannot be copied out of the chip; a thief who gets the machine running can sign as the agent, held to the mandate, until the owner revokes ([below](#if-a-device-is-stolen)) |
 
 ## Three keys, three jobs
 
