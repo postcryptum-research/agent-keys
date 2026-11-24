@@ -151,6 +151,28 @@ pub struct PolicyParams {
     pub payees: Vec<(Address, Vec<Address>)>,
 }
 
+/// What a mandate for trading adds (issue #80): the budgets' window and the
+/// venues. `period` in seconds, 0 for one budget for the mandate's life;
+/// `venues` as `(decoder, code hash, config hash)`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Trading {
+    pub period: u32,
+    pub venues: Vec<(Address, B256, B256)>,
+}
+
+impl Trading {
+    pub fn is_none(&self) -> bool {
+        self.period == 0 && self.venues.is_empty()
+    }
+}
+
+/// A CoW Swap venue's config, as `CowSwapDecoder` reads it:
+/// `abi.encode((bytes32 appData, uint32 maxLife, (address sellToken, address
+/// buyToken, uint256 minBuy, uint256 perSell)[] pairs))`.
+pub fn cow_config(app_data: B256, max_life: u32, pairs: &[(Address, Address, U256, U256)]) -> Bytes {
+    (app_data, max_life, pairs.to_vec()).abi_encode().into()
+}
+
 /// Kernel's `PermissionEnableDataFormat`: `abi.encode(bytes[] entries)` where
 /// each entry is `flag(2) ‖ module(20) ‖ initData`; policies first, signer last.
 /// The numeric policy fields are encoded as full words, which is byte-identical
@@ -158,6 +180,19 @@ pub struct PolicyParams {
 pub fn permission_data(
     policy: Address,
     params: &PolicyParams,
+    signer: Address,
+    agent_key: &PublicKey,
+) -> Bytes {
+    permission_data_with_trading(policy, params, &Trading::default(), signer, agent_key)
+}
+
+/// The same with a budget period, venues or both: then the policy's
+/// parameters take their ten-word form, payee lists included even when
+/// empty. Without either, the bytes are those of `permission_data`.
+pub fn permission_data_with_trading(
+    policy: Address,
+    params: &PolicyParams,
+    trading: &Trading,
     signer: Address,
     agent_key: &PublicKey,
 ) -> Bytes {
@@ -181,7 +216,10 @@ pub fn permission_data(
     // without them the bytes, and so a counterfactual account's address, are
     // what they were before lists existed. The policy tells the two forms
     // apart by the first head word.
-    let policy_init = if params.payees.is_empty() {
+    let policy_init = if !trading.is_none() {
+        let (a, b, c, d, e, f, g) = seven;
+        (a, b, c, d, e, f, g, params.payees.clone(), trading.period, trading.venues.clone()).abi_encode_params()
+    } else if params.payees.is_empty() {
         seven.abi_encode_params()
     } else {
         let (a, b, c, d, e, f, g) = seven;
@@ -369,6 +407,81 @@ pub fn permission_signature(sig: &Signature) -> Bytes {
     [&[0xffu8][..], &sig.r, &sig.s].concat().into()
 }
 
+/// Permission path under a mandate with a budget per period: the policy's
+/// part of the signature (Kernel: index 0, an 8-byte length, the bytes) is
+/// the six-byte index of the period the operation is for, `now / period`.
+pub fn permission_signature_in_period(period_index: u64, sig: &Signature) -> Bytes {
+    let index = period_index.to_be_bytes();
+    [&[0u8][..], &6u64.to_be_bytes(), &index[2..], &[0xff], &sig.r, &sig.s].concat().into()
+}
+
+/// A CoW Protocol sell order as `CowSwapDecoder` takes it: the twelve words
+/// of `GPv2Order.Data`, filled whole, plain ERC-20 balances, no fee, the
+/// proceeds to the order's owner.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CowSellOrder {
+    pub sell_token: Address,
+    pub buy_token: Address,
+    pub sell_amount: U256,
+    pub buy_amount: U256,
+    pub valid_to: u32,
+    pub app_data: B256,
+}
+
+impl CowSellOrder {
+    /// `abi.encode(GPv2Order.Data)`.
+    pub fn encode(&self) -> Bytes {
+        use alloy_primitives::keccak256;
+        (
+            self.sell_token,
+            self.buy_token,
+            Address::ZERO, // receiver: the owner
+            self.sell_amount,
+            self.buy_amount,
+            U256::from(self.valid_to),
+            self.app_data,
+            U256::ZERO, // feeAmount
+            keccak256("sell"),
+            false,
+            keccak256("erc20"),
+            keccak256("erc20"),
+        )
+            .abi_encode()
+            .into()
+    }
+
+    /// The EIP-712 digest the settlement asks the owner to vouch for.
+    pub fn digest(&self, domain_separator: B256) -> B256 {
+        use alloy_primitives::keccak256;
+        let type_hash = keccak256(
+            "Order(address sellToken,address buyToken,address receiver,uint256 sellAmount,uint256 buyAmount,uint32 validTo,bytes32 appData,uint256 feeAmount,string kind,bool partiallyFillable,string sellTokenBalance,string buyTokenBalance)",
+        );
+        let struct_hash = keccak256([type_hash.as_slice(), &self.encode()].concat());
+        keccak256([&[0x19u8, 0x01][..], domain_separator.as_slice(), struct_hash.as_slice()].concat())
+    }
+}
+
+/// The EIP-712 domain separator of CoW's settlement on a chain.
+pub fn cow_domain_separator(chain_id: u64, settlement: Address) -> B256 {
+    use alloy_primitives::keccak256;
+    keccak256(
+        (
+            keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+            keccak256("Gnosis Protocol"),
+            keccak256("v2"),
+            U256::from(chain_id),
+            settlement,
+        )
+            .abi_encode(),
+    )
+}
+
+/// `AgentPolicy.orderRegister(decoder, config, order)`.
+pub fn order_register_calldata(decoder: Address, config: &[u8], order: &[u8]) -> Bytes {
+    let args = (decoder, Bytes::copy_from_slice(config), Bytes::copy_from_slice(order)).abi_encode_params();
+    [&[0x27u8, 0xdd, 0xae, 0x76][..], &args].concat().into()
+}
+
 /// Root path: the bare pair.
 pub fn root_signature(sig: &Signature) -> Bytes {
     [&sig.r[..], &sig.s[..]].concat().into()
@@ -411,6 +524,78 @@ mod tests {
             vec![address!("00000000000000000000000000000000000000d1"), address!("00000000000000000000000000000000000000d2")],
         )];
         assert_eq!(init(payees), b256!("00f7275b78b049a3af82e32d41654173b4e2da115082c3e049c8e7f629da723f"));
+    }
+
+    /// The ten-word form, the venue's config and the two order calls, against
+    /// `cast abi-encode` / `cast calldata` of the Solidity types.
+    #[test]
+    fn trading_parameters_and_order_calls() {
+        let token = address!("00000000000000000000000000000000000000c1");
+        let decoder = address!("00000000000000000000000000000000000000e1");
+        let (h1, h2) = (B256::repeat_byte(0x44), B256::repeat_byte(0x55));
+        let init = |payees, trading: &Trading| {
+            let params = PolicyParams {
+                targets: vec![token],
+                selectors: vec![FixedBytes::from([0xa9, 0x05, 0x9c, 0xbb])],
+                max_value_per_op: 7,
+                budget: 9,
+                valid_until: 1000,
+                tokens: vec![(token, 5, 50, B256::ZERO)],
+                valid_after: 3,
+                payees,
+            };
+            let data = permission_data_with_trading(A, &params, trading, B, &PublicKey { x: [1; 32], y: [2; 32] });
+            let entries = Vec::<Bytes>::abi_decode(&data).unwrap();
+            alloy_primitives::keccak256(&entries[0][22..])
+        };
+        let venue = Trading { period: 86_400, venues: vec![(decoder, h1, h2)] };
+        assert_eq!(init(vec![], &venue), b256!("ba3c12e045cea07ebf5cfc7acdaff2f76915c3e30222ae34034753d9e41e2307"));
+        let payees = vec![(token, vec![address!("00000000000000000000000000000000000000d1")])];
+        let period_only = Trading { period: 3_600, venues: vec![] };
+        assert_eq!(init(payees, &period_only), b256!("f93f7ce6c4f1c164c7b5679505e3cfa19809b46a575654ea843af386bb408144"));
+        // neither: the bytes of the seven-word form
+        assert_eq!(init(vec![], &Trading::default()), b256!("6af2f27ba0bcd1851dc4161b2e4a9ff02f3b02f4d5bb1b48c9a5691d77ad0d6a"));
+
+        let config = cow_config(h1, 1800, &[(token, decoder, U256::from(99), U256::from(100))]);
+        assert_eq!(alloy_primitives::keccak256(&config), b256!("bd17f342cd26c2da70ee8c0fe56447cb04075240b14936e9ae45470bbdc7f737"));
+        assert_eq!(
+            alloy_primitives::keccak256(order_register_calldata(decoder, &[0x12, 0x34], &[0xab, 0xcd, 0xef])),
+            b256!("08453e4f1e3e9495f734e5698aaf154c96a6e22c0b20ed67a2523cd9ce67f174")
+        );
+    }
+
+    /// The order's digest against CoW's own: an order from the public
+    /// mainnet order book (2026-11-21), whose uid begins with its digest.
+    #[test]
+    fn cow_order_digest_is_the_order_books() {
+        let settlement = address!("9008D19f58AAbD9eD0D60971565AA8510560ab41");
+        let order = CowSellOrder {
+            sell_token: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            buy_token: address!("dAC17F958D2ee523a2206206994597C13D831ec7"),
+            sell_amount: U256::from(100_000_000u64),
+            buy_amount: U256::from(100_215_097u64),
+            valid_to: 1_795_270_546,
+            app_data: B256::ZERO,
+        };
+        assert_eq!(order.encode().len(), 12 * 32);
+        assert_eq!(
+            order.digest(cow_domain_separator(1, settlement)),
+            b256!("ef9a1f96802a5a751d7a34427a773d18e7089c42b20346e5d1817ccc4249bcbc")
+        );
+        // Base Sepolia's separator, as the settlement there returns it
+        assert_eq!(
+            cow_domain_separator(84532, settlement),
+            b256!("75e06a5fc9670d3e53c52ba9d3ff16ef1f1c671964aa68ad94588ee7462d0338")
+        );
+    }
+
+    #[test]
+    fn the_period_travels_in_the_policys_part_of_the_signature() {
+        let sig = Signature { r: [0xaa; 32], s: [0xbb; 32] };
+        let bytes = permission_signature_in_period(20_833, &sig);
+        assert_eq!(bytes.len(), 1 + 8 + 6 + 1 + 64);
+        assert_eq!(&bytes[..16], &[0, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0x51, 0x61, 0xff][..]);
+        assert_eq!(&bytes[16..], &permission_signature(&sig)[1..]);
     }
 
     #[test]

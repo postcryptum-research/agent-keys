@@ -129,12 +129,27 @@ impl Session {
         let timeout = accepted.get("maxTimeoutSeconds").and_then(Value::as_u64).unwrap_or(0);
         let mut nonce = [0u8; 32];
         OsRng.fill_bytes(&mut nonce);
+        // Under a budget per period an authorization ends with the period it
+        // is charged in: the policy refuses one usable later. It is usable
+        // before `validBefore`, so that is the next period's first second at most.
+        let mut valid_before = now() + timeout.max(MIN_LIFETIME_SECS);
+        if let Some(next) = self.period_next().await? {
+            let chain_now = self.chain_time().await?;
+            const LEAST_LIFE_SECS: u64 = 60;
+            if next - chain_now <= LEAST_LIFE_SECS {
+                bail!("this budget period ends in {} s, and a payment authorization ends with the period it is charged in: pay after the renewal", next - chain_now);
+            }
+            if valid_before > next {
+                valid_before = next;
+                eprintln!("x402:           the authorization ends with this budget period, in {} s", next - chain_now);
+            }
+        }
         let auth = Authorization {
             token,
             to,
             value,
             valid_after: U256::ZERO,
-            valid_before: U256::from(now() + timeout.max(MIN_LIFETIME_SECS)),
+            valid_before: U256::from(valid_before),
             nonce: B256::from(nonce),
         };
         eprintln!("x402:           pay {value} of {token} to {to}, valid until {}", auth.valid_before);
