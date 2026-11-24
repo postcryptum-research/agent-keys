@@ -22,9 +22,12 @@ interface IVenueDecoder {
         view
         returns (address sellToken, uint256 mostSold, uint48 notBefore, uint48 validTo, bytes32 digest);
 
-    /// @notice Whether nothing of `order` was filled or cancelled at the
-    /// venue. Asked outside validation, after the order's `validTo`, before
-    /// its charge is given back; it may read the venue's storage.
+    /// @notice Whether the venue's storage shows nothing of `order` filled
+    /// or cancelled now. Asked outside validation, after the order's
+    /// `validTo`; it may read the venue's storage. It is the venue's present
+    /// record and no proof of the past: where a venue lets that record be
+    /// cleared (CoW does, after `validTo`), a filled order can read as
+    /// untouched.
     function untouched(address account, bytes calldata order) external view returns (bool);
 
     /// @notice The venue's own contract (CoW: the settlement). A mandate may
