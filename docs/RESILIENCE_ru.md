@@ -859,6 +859,10 @@ seed-backed** — разумна, потому что роли разные:
 - `owner add-recovery --recovery-key <spec>` — уже есть
   `add_recovery_calldata` [V `mobile/owner-core/src/kernel.rs:54–70`]. Добавить проверку, что
   валидатор ещё не установлен, и печать реестровой записи.
+- `owner replace-recovery` и `owner remove-recovery --leave-no-recovery`
+  (2026-11-24, issue #114): ключ владельца заменяет установленный ключ
+  восстановления одной операцией или удаляет его. До них первый ключ
+  восстановления аккаунта оставался с ним навсегда.
 - `owner recover --new-owner <spec>`:
   - шаг 1: recovery-op `changeRootValidator(recoveryVId)`; для таймлока —
     сначала `recover initiate`, потом `recover execute` после `D`;

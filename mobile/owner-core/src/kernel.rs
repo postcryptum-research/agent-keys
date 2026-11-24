@@ -69,6 +69,29 @@ pub fn add_recovery_calldata(account: Address, validator: Address, key: &PublicK
     execute_batch_calldata(vec![(account, U256::ZERO, install.into()), (account, U256::ZERO, grant.into())])
 }
 
+/// Owner (root) batch that replaces the recovery key (issue #114): the
+/// recovery validator is uninstalled, which clears the key it held for the
+/// account, and installed again with `key` and the one grant it has. One
+/// operation: there is no moment with the old key gone and no new one.
+/// `nonce` as for `install_permission_calldata`.
+pub fn replace_recovery_calldata(account: Address, validator: Address, key: &PublicKey, nonce: u32) -> Bytes {
+    let vid = validator_id(validator);
+    let grant = IKernel::grantAccessCall { vId: vid, selector: IKernel::changeRootValidatorCall::SELECTOR.into(), allow: true }.abi_encode();
+    execute_batch_calldata(vec![
+        (account, U256::ZERO, uninstall_validator_call(validator)),
+        (account, U256::ZERO, install_validator_call(vid, key, nonce)),
+        (account, U256::ZERO, grant.into()),
+    ])
+}
+
+/// Owner (root) batch that removes the recovery key: its grant of
+/// `changeRootValidator` is withdrawn and the validator uninstalled.
+pub fn remove_recovery_calldata(account: Address, validator: Address) -> Bytes {
+    let vid = validator_id(validator);
+    let forbid = IKernel::grantAccessCall { vId: vid, selector: IKernel::changeRootValidatorCall::SELECTOR.into(), allow: false }.abi_encode();
+    execute_batch_calldata(vec![(account, U256::ZERO, forbid.into()), (account, U256::ZERO, uninstall_validator_call(validator))])
+}
+
 /// `installValidations([validator], [{nonce, hook = address(1)}], [abi.encode(x, y)], [""])`.
 pub fn install_validator_call(vid: ValidationId, key: &PublicKey, nonce: u32) -> Bytes {
     IKernel::installValidationsCall {
