@@ -81,7 +81,7 @@ one for written slots.
 ```sh
 cd scripts/erc7562
 npm install          # the checker comes with the bundler's package, pinned in package.json
-npm run check        # the six recorded traces against expected.json; exit 1 on a difference
+npm run check        # the eight recorded traces against expected.json; exit 1 on a difference
 node check-traces.mjs my-trace.json     # both verdicts for a trace of your own
 ```
 
@@ -103,7 +103,7 @@ account with software keys (a CLI built with `--features insecure-software-keys`
 
 ## In CI: every operation of the CLI's local-chain tests
 
-The `erc7562` job of `.github/workflows/ci.yml` asks the same checker about
+The `cli-and-erc7562` job of `.github/workflows/ci.yml` asks the same checker about
 every operation the CLI's integration tests get included on a local chain
 (`signer/crates/agent-signer/tests/anvil_cli.rs`: an account's first
 operation, agent operations plain, with tokens, in a batch, through a Safe,
@@ -114,12 +114,12 @@ No bundler runs:
 2. The tests run with `ERC7562_TRACER` and `ERC7562_TRACE_DIR` set. Each test
    then, at its end, takes every `handleOps` that was included and runs it
    again on the state before its block under that tracer
-   (`debug_traceCall`, anvil 1.10 or later), through two forwarding contracts,
+   (`debug_traceCall` with a JavaScript tracer: anvil 1.8.5 runs it, CI uses 1.10.0), through two forwarding contracts,
    since the tracer looks for the EntryPoint three calls deep.
 3. `check-run.mjs` gives each trace to the checker, with the operation's
    factory and paymaster read from the operation itself, and prints three
    verdicts: the checker as it is; with the P-256 precompile allowed; and with
-   that and the factory and paymaster staked.
+   that and the factory staked (the paymaster never: ours must not need a stake).
 
 **The gate** (`--gate`), with the precompile allowed: an operation without a
 factory must pass with nobody staked; a first operation must pass with its

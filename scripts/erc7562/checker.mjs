@@ -18,19 +18,19 @@ export const P256_PRECOMPILE = "0x0000000000000000000000000000000000000100";
 //   op:               { sender, factory?, paymaster? }, the sender defaulting to the trace's
 //   precompileAllowed the P-256 precompile (RIP-7212) is not taken for an
 //                     un-deployed contract: a bundler set up for a network that has it
-//   staked            the factory and the paymaster are taken as staked
+//   staked            true: the factory and the paymaster are taken as staked;
+//                     "factory": the factory alone
 export function verdict(recorded, { op = {}, precompileAllowed = false, staked = false, entryPoint = ENTRY_POINT } = {}) {
   const trace = structuredClone(recorded);
   if (precompileAllowed) for (const level of trace.callsFromEntryPoint) delete level.contractSize?.[P256_PRECOMPILE];
   const sender = op.sender ?? trace.callsFromEntryPoint[0].topLevelTargetAddress;
-  const stake = staked ? 1n : 0n;
-  const entity = (addr) => (addr ? { addr, stake, unstakeDelaySec: stake } : undefined);
+  const entity = (addr, stake) => (addr ? { addr, stake, unstakeDelaySec: stake } : undefined);
   const userOp = { sender, nonce: op.nonce ?? 0n, callData: op.callData ?? "0x", signature: "0x", factory: op.factory, paymaster: op.paymaster };
   const validation = {
     returnInfo: {},
     senderInfo: { addr: sender, stake: 0n, unstakeDelaySec: 0n },
-    factoryInfo: entity(op.factory),
-    paymasterInfo: entity(op.paymaster),
+    factoryInfo: entity(op.factory, staked ? 1n : 0n),
+    paymasterInfo: entity(op.paymaster, staked === true ? 1n : 0n),
   };
   try {
     tracerResultParserV07(userOp, trace, validation, entryPoint);
