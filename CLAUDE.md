@@ -56,11 +56,13 @@ scripts/source-record.sh                          # every contract's bytecode ag
    Instances are listed in `contracts/deployments/<chainId>.json`, earlier
    ones kept under a versioned name. A contract's code changes only in a
    change that redeploys it and records the new instance. Comments may
-   change at any time, since compiler metadata is kept out of the bytecode:
-   `scripts/source-record.sh` builds every contract at the base and at the
-   change and compares creation and runtime bytecode, and CI runs it on
-   every pull request. Fix in the same change the line numbers that docs
-   cite. Formatting alone is not a reason to touch a contract's file.
+   change without a redeploy while compiler metadata is kept out of the
+   bytecode and `scripts/source-record.sh` (run by CI on every pull
+   request) finds every contract's creation and runtime bytecode identical
+   to the base's, except in a contract covered by an external audit: its
+   source stays the audited commit's until its next audited version. Fix in
+   the same change the line numbers that docs cite. Formatting alone is not
+   a reason to touch a contract's file.
 4. **Validation runs under ERC-7562.** No clock and no storage but the
    account's (`keccak(account ‖ x) + n`) in validator, signer and policy
    code. `scripts/erc7562/` checks a trace.

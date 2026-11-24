@@ -7,15 +7,19 @@
 #   scripts/source-record.sh [base]        # base: a commit or ref, default origin/master
 #
 # - No bytecode differs: comments and blank lines changed at most. Passes.
-# - Some bytecode differs and a file under contracts/deployments/ changes
-#   too: a change that redeploys. Passes, and names the contracts.
-# - Some bytecode differs and no deployments file changes: fails.
+# - A contract's bytecode differs and a deployments file changes that
+#   contract's key (`agentPolicy` for AgentPolicy, a versioned `agentPolicyV2`
+#   too): a change that redeploys it. Passes, and names the contract.
+# - A contract's bytecode differs, some deployments file records it, and none
+#   changes its key: fails.
+# - A contract's bytecode differs and no deployments file records it (a
+#   library, a contract not yet deployed): named only.
 #
 # A contract that is new since the base has no instance to keep true and is
 # only named. The comparison means what it says while foundry.toml keeps
 # compiler metadata out of the bytecode (bytecode_hash = "none"); the script
-# refuses to run otherwise. It does not tell which contract a changed
-# deployments file is about.
+# refuses to run otherwise. It does not read a chain: that the recorded
+# address holds this code is checked when the instance is recorded.
 set -euo pipefail
 
 base="${1:-origin/master}"
@@ -66,14 +70,28 @@ table "$work/base" > "$work/before"
 table "$root" > "$work/after"
 [ -s "$work/before" ] && [ -s "$work/after" ] || { echo "no contract was compared"; exit 1; }
 
+# the key a deployments file records a contract under: its name, first letter small
+key_of() { local n="${1##*:}"; printf '%s%s' "$(printf %s "${n:0:1}" | tr '[:upper:]' '[:lower:]')" "${n:1}"; }
+recorded() { grep -Eqs "^ *\"$1(V[0-9]+)?\" *:" contracts/deployments/*.json; }
+rekeyed() { git diff -U0 "$merge_base" -- contracts/deployments | grep -Eq "^[+-] *\"$1(V[0-9]+)?\" *:"; }
+
 changed=0
+failed=0
 while read -r id c r; do
   was="$(grep -F "$id " "$work/before" || true)"
   if [ -z "$was" ]; then
     echo "new       $id"
   elif [ "$was" != "$id $c $r" ]; then
-    echo "DIFFERS   $id"
+    key="$(key_of "$id")"
     changed=1
+    if ! recorded "$key"; then
+      echo "DIFFERS   $id (no deployments file records \"$key\")"
+    elif rekeyed "$key"; then
+      echo "DIFFERS   $id (\"$key\" changes in a deployments file: redeployed)"
+    else
+      echo "DIFFERS   $id and \"$key\" does not change in any deployments file"
+      failed=1
+    fi
   else
     echo "identical $id"
   fi
@@ -86,9 +104,8 @@ if [ "$changed" = 0 ]; then
   echo "No contract's bytecode differs from $merge_base: the source is still the record of what is on chain."
   exit 0
 fi
-if git diff --quiet "$merge_base" -- contracts/deployments; then
-  echo "Bytecode differs and no file under contracts/deployments/ changes."
+if [ "$failed" = 1 ]; then
   echo "A contract's code changes only in a change that redeploys it and records the new instance (house rule 3)."
   exit 1
 fi
-echo "Bytecode differs and a deployments file changes: a change that redeploys."
+echo "Every recorded contract whose bytecode differs has its key changed in a deployments file."
