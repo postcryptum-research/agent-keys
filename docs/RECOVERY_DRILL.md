@@ -39,7 +39,7 @@ are `agent-signer …`, run where the key in question lives.
 
 | Step | Command | Expected (V, run 2026-10-21 on Base Sepolia; steps 2 and 4–8 also in the anvil test) |
 |---|---|---|
-| 0 | `key check --keyfile <file>` | `OK: … signs (…)` after the passphrase; proves the file opens |
+| 0 | `key check --keyfile <file>` | `OK: <file> signs`, then the key's fingerprint, `x` and `y`, after the passphrase; proves the file opens |
 | 1 | `owner status --agent recovery.json` | `recovery: … installed = false` |
 | 2 | `owner add-recovery --agent recovery.json` (owner key signs) | `recovery key installed: tx …`; `owner status` shows `installed = true, may take root = true, is root now = false` |
 | 3 | *simulate the loss*: put the owner device away, or use a config that no longer names it | — |
@@ -74,9 +74,11 @@ when L1–L3 have each passed within the periods in §5.
       read on a block explorer shows the same pair. The CLI makes the same
       comparison before every `owner recover`, from the file's public half
       and without the passphrase, and refuses a file that does not match
-      (V, `chain.rs` `check_recovery_key`); `owner status` still reports only
-      the install state, so the explorer check stays in the drill (I: add the
-      comparison to `owner status` too).
+      (V, `chain.rs` `check_recovery_key`). `owner status` prints the
+      installed key as `recovery key:` with the same fingerprint, `x` and `y`
+      that `key show --keyfile` prints for the file, so the two can be
+      compared without an explorer (V, `anvil_cli.rs` `recovery_drill`); the
+      explorer read stays as a check from a second source.
 - [ ] **Nothing on the agent's host**: the file is never copied there,
       and the agent's config carries no `recovery` entry (only the owner's
       local config does).

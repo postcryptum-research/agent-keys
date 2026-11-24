@@ -169,6 +169,18 @@ pub struct Session {
     pub token_domains: std::collections::HashMap<Address, B256>,
 }
 
+/// A public key as every command shows it: the fingerprint, then `x` and
+/// `y` in full on their own lines behind `indent`. Never cut: eight digits
+/// of `x` can be neither looked up nor told from another key's (issue #115).
+pub fn key_text(key: &hw_signer::PublicKey, indent: &str) -> String {
+    format!(
+        "fingerprint {}\n{indent}x = 0x{}\n{indent}y = 0x{}",
+        owner_core::fingerprint::fingerprint(key),
+        hex::encode(key.x),
+        hex::encode(key.y)
+    )
+}
+
 impl Session {
     pub async fn open(env: &Env, cfg: AgentConfig, base: &Path) -> Result<Self> {
         let (provider, gas_wallet) = match &env.gas_key {
@@ -613,7 +625,14 @@ impl Session {
             None => open_signer(&self.cfg.agent, Role::Agent)?.public_key()?,
         };
         let same_key = on_key.x.0 == cfg_key.x && on_key.y.0 == cfg_key.y;
-        println!("{}agent key       chain 0x{}… / config 0x{}…", mark(same_key), hex::encode(&on_key.x[..4]), hex::encode(&cfg_key.x[..4]));
+        // in full, with the fingerprint: a cut key can be neither looked up nor told from another (issue #115)
+        let on_key = hw_signer::PublicKey { x: on_key.x.0, y: on_key.y.0 };
+        if same_key {
+            println!("{}agent key       chain and config: {}", mark(true), key_text(&on_key, "                  "));
+        } else {
+            println!("{}agent key       chain:  {}", mark(false), key_text(&on_key, "                  "));
+            println!("                  config: {}", key_text(&cfg_key, "                  "));
+        }
         // policies
         for data in &pc.policyData {
             let policy = Address::from_slice(&data[2..]);
@@ -724,11 +743,12 @@ impl Session {
         let on_chain = IP256ValidatorView::new(validator, self.provider.clone()).publicKeys(self.account).call().await?;
         let ours = signer.public_key()?;
         if on_chain.x.0 != ours.x || on_chain.y.0 != ours.y {
+            let on_chain = hw_signer::PublicKey { x: on_chain.x.0, y: on_chain.y.0 };
             bail!(
-                "the key about to sign (0x{}…) is not the account's root key (0x{}… in validator {validator}); \
-                 after a handover, point the config's owner at the new device — `owner status` shows the root validator",
-                hex::encode(&ours.x[..4]),
-                hex::encode(&on_chain.x[..4])
+                "the key about to sign is not the account's root key; after a handover, point the config's owner \
+                 at the new device — `owner status` shows the root validator\n  about to sign: {}\n  root key in validator {validator}: {}",
+                key_text(&ours, "    "),
+                key_text(&on_chain, "    ")
             );
         }
         Ok(())
@@ -772,11 +792,12 @@ impl Session {
             bail!("no recovery key is installed on this account ({validator}): `owner add-recovery` first");
         }
         if on_chain.x.0 != ours.x || on_chain.y.0 != ours.y {
+            let on_chain = hw_signer::PublicKey { x: on_chain.x.0, y: on_chain.y.0 };
             bail!(
-                "the recovery key about to sign (0x{}…) is not the one installed on the account (0x{}… in {validator}); \
-                 check the config's `recovery` entry",
-                hex::encode(&ours.x[..4]),
-                hex::encode(&on_chain.x[..4])
+                "the recovery key about to sign is not the one installed on the account; check the config's `recovery` entry\n  \
+                 about to sign: {}\n  installed in {validator}: {}",
+                key_text(ours, "    "),
+                key_text(&on_chain, "    ")
             );
         }
         Ok(())
@@ -794,7 +815,7 @@ impl Session {
         if root[0] == 0x01 && self.known_validators().contains(&validator) {
             let k = IP256ValidatorView::new(validator, self.provider.clone()).publicKeys(self.account).call().await?;
             let key = hw_signer::PublicKey { x: k.x.0, y: k.y.0 };
-            println!("root key:       fingerprint {} (x = 0x{}…)", owner_core::fingerprint::fingerprint(&key), hex::encode(&key.x[..4]));
+            println!("root key:       {}", key_text(&key, "                "));
         } else {
             println!("root key:       not readable here (the root validator is not one of this repository's P-256 validators)");
         }
@@ -810,6 +831,12 @@ impl Session {
                 println!(
                     "recovery:       {v} (installed = {installed}, may take root = {may_take_root}, is root now = {is_root})"
                 );
+                // which key that is, to compare with `key show --keyfile <the recovery file>` (issue #115)
+                let k = IP256ValidatorView::new(v, self.provider.clone()).publicKeys(self.account).call().await?;
+                if !k.x.is_zero() || !k.y.is_zero() {
+                    let key = hw_signer::PublicKey { x: k.x.0, y: k.y.0 };
+                    println!("recovery key:   {}", key_text(&key, "                "));
+                }
             }
             None => println!("recovery:       (no p256RecoveryValidator in deployments)"),
         }

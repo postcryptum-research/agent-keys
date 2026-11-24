@@ -35,17 +35,30 @@ agent-signer permission show --agent my-agent.json --env-file .env
 ```
 
 ```
-  ok agent key       chain 0xff669706… / config 0xff669706…
+  ok agent key       chain and config: fingerprint BPQBJ-WZ7L7-7AHTA-QCCMZ
+                  x = 0x2f23ebb1c38db28363df39984086922a0585f3fa7fd315d8925ebd1663548c9f
+                  y = 0x689bdaa9d3c18660d3666e2e507f0bb1a485d2c002b1129f5a0c1a20d6ef51c9
 policy module:  0x3f590A5879B5f28466b6DAeF69FfA9777f84b424
   ok validUntil      chain 1795046400 / config 1795046400
 DIFF budget          chain 3000000000000000 / config 999000000000000000000
-DIFF allow           0x…dEaD 0x00000000  — in the config, NOT allowed on chain
+DIFF allow           0x000000000000000000000000000000000000dEaD 0x00000000  — in the config, NOT allowed on chain
 ```
 
 (`DIFF` lines here come from a deliberately edited copy: the chain kept its
-values.) `account status` and `owner status` show the account, its balances
-and its root / recovery keys the same way. `owner status` also prints the
-fingerprint of the account's root key: compare it with the fingerprint a
+values; the key is the software key of the local-chain tests.) A key that
+differs is shown twice, `chain:` and `config:`, each whole. `account status`
+and `owner status` show the account, its balances and its root / recovery
+keys the same way.
+
+**Every command shows a public key the same way**: its fingerprint, then
+`x` and `y` in full, never cut
+([#115](https://github.com/postcryptum-research/agent-keys/issues/115)).
+That holds for `permission show` (the agent key), `owner status` (`root
+key:` and, when one is installed, `recovery key:`), `key show` (a
+`fingerprint` field beside `x` and `y`), `key check`, and the refusals that
+name a key that does not match. So any two of them can be compared: the
+root key with `key show` of the owner's device, the recovery key with `key
+show --keyfile` of the recovery file, and either with the fingerprint a
 phone shows before a key is deleted there
 ([`MOBILE_OWNER_DESIGN.md`](MOBILE_OWNER_DESIGN.md) §5.4).
 
