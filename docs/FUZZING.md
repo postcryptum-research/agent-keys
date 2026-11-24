@@ -147,10 +147,12 @@ the long run.
 **Found in CI (2026-11-24).** The `operation` target panicked on a sponsored
 operation whose two paymaster gas limits were near 2^128: the review added
 them as u128, which panics in a build with overflow checks and wraps in one
-without, showing a small maximum cost. The cost line now sums and
-multiplies saturating, `preVerificationGas` and the fee cap included;
-`review::tests::the_largest_gas_numbers_neither_panic_nor_wrap` holds it, and
-the input is kept as the seed `fuzz/seeds/operation/paymaster-gas-overflow`.
+without, showing a small maximum cost. The cost line now sums the gas
+limits in 256 bits and adds `preVerificationGas` and multiplies by the fee
+cap checked: the cost shown is exact, and one that does not fit 256 bits is
+refused. `review::tests::the_largest_gas_numbers_neither_panic_nor_wrap`
+holds the sum and the product each on its own, and the input is kept as the
+seed `fuzz/seeds/operation/paymaster-gas-overflow`.
 
 **Limits.**
 
