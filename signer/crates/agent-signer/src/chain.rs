@@ -500,17 +500,68 @@ impl Session {
     pub async fn add_recovery(&self, key: &hw_signer::PublicKey, sponsored: bool) -> Result<Included> {
         let validator = self.recovery_validator()?;
         if self.is_installed(validator).await? {
-            bail!("a recovery key is already installed ({validator})");
+            bail!("a recovery key is already installed ({validator}); `owner replace-recovery` installs the config's key in its place");
         }
         let nonce = self.install_nonce_for(kernel::validator_id(validator)).await?;
         let call = kernel::add_recovery_calldata(self.account, validator, key, nonce);
         self.send_raw_at(call, SignAs::Owner, sponsored, None).await
     }
 
+    /// The recovery validator with a key installed that the owner key may
+    /// change: installed, and not root at the moment (Kernel does not
+    /// uninstall the root validator; after `owner recover` the handover is
+    /// finished first).
+    async fn recovery_to_change(&self) -> Result<(Address, hw_signer::PublicKey)> {
+        let validator = self.recovery_validator()?;
+        if !self.is_installed(validator).await? {
+            bail!("no recovery key is installed on this account ({validator}): `owner add-recovery` installs one");
+        }
+        let root = IKernel::new(self.account, self.provider.clone()).rootValidator().call().await?;
+        if root == kernel::validator_id(validator) {
+            bail!(
+                "the recovery key is root now (after `owner recover`): finish the handover first with \
+                 `owner set-root --as-recovery`, then change the recovery key with the new owner key"
+            );
+        }
+        let k = IP256ValidatorView::new(validator, self.provider.clone()).publicKeys(self.account).call().await?;
+        Ok((validator, hw_signer::PublicKey { x: k.x.0, y: k.y.0 }))
+    }
+
+    /// Owner operation: the installed recovery key is replaced by `key`
+    /// (issue #114). For a recovery file that was stolen, lost, or is to
+    /// change hands. One operation; the old key can sign nothing after it.
+    pub async fn replace_recovery(&self, key: &hw_signer::PublicKey, sponsored: bool) -> Result<Included> {
+        let (validator, installed) = self.recovery_to_change().await?;
+        if installed.x == key.x && installed.y == key.y {
+            bail!(
+                "the config's recovery key is the one installed already: fingerprint {}\n  x = 0x{}\n  y = 0x{}",
+                owner_core::fingerprint::fingerprint(key),
+                hex::encode(key.x),
+                hex::encode(key.y)
+            );
+        }
+        let nonce = self.install_nonce_for(kernel::validator_id(validator)).await?;
+        let call = kernel::replace_recovery_calldata(self.account, validator, key, nonce);
+        self.send_raw_at(call, SignAs::Owner, sponsored, None).await
+    }
+
+    /// Owner operation: the recovery key is removed and none takes its place.
+    pub async fn remove_recovery(&self, sponsored: bool) -> Result<Included> {
+        let (validator, _) = self.recovery_to_change().await?;
+        let call = kernel::remove_recovery_calldata(self.account, validator);
+        self.send_raw_at(call, SignAs::Owner, sponsored, None).await
+    }
+
     /// Recovery operation: the recovery key makes itself root (the owner's
     /// device is lost or broken).
     pub async fn recover(&self, sponsored: bool) -> Result<Included> {
-        let call = kernel::change_root_calldata(self.recovery_validator()?, None);
+        let validator = self.recovery_validator()?;
+        // said here, for every kind of key: without this a removed recovery key shows as a
+        // revert at estimation
+        if !self.is_installed(validator).await? {
+            bail!("no recovery key is installed on this account ({validator}): `owner add-recovery` first");
+        }
+        let call = kernel::change_root_calldata(validator, None);
         self.send_raw_at(call, SignAs::Recovery, sponsored, None).await
     }
 

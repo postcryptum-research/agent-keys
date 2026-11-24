@@ -165,7 +165,7 @@ Where each field ends up, and which signed operation puts it there:
 | `policy.allow` | `AgentPolicy.isAllowed(account, id, target, selector)` | same |
 | `policy.maxValuePerOp`, `budget`, `validUntil`, `validAfter` | `AgentPolicy.configs(account, id)` (with `spent`, which the chain updates) | same |
 | `policy.tokens` | `AgentPolicy.tokenLimit(account, id, token)` (with its `spent`; for `x402` tokens also the token's EIP-712 domain); a payee list: `AgentPolicy.payeeAllowed(account, id, token, payee)` | same |
-| `recovery` | `P256RecoveryValidator.publicKeys(account)` + Kernel `isAllowedSelector(recovery, changeRootValidator)` | `owner add-recovery` (owner) |
+| `recovery` | `P256RecoveryValidator.publicKeys(account)` + Kernel `isAllowedSelector(recovery, changeRootValidator)` | `owner add-recovery`, `owner replace-recovery`, `owner remove-recovery` (owner) |
 | `account`, `salt` | the account's address (`salt` only before deployment) | — (identifies the account) |
 | `deployments` | — | — (which module addresses the CLI uses for *new* installs) |
 | key locations (`tpm` handle, `pcrs`, `authFile`, `port`/`slot`, `keyfile` path, labels) | nothing | — (how this machine reaches its key) |
@@ -187,6 +187,8 @@ its module until then; `permission show` names it.
 | `permission rotate` / `add` | `agent`, `permissionId`, `policy`, `account`, `deployments` | installs this file's permission (rotate: and removes `--old-id`) | owner key |
 | `permission revoke --id` | `account` | removes a permission | owner key |
 | `owner add-recovery` | `recovery`, `account` | installs the recovery key | owner key |
+| `owner replace-recovery` | `recovery` (the new key), `account` | replaces the installed recovery key in one operation: the old key can sign nothing afterwards. `--check-new-key` opens the new key here and has it sign a fresh digest first; without it only the public half is read and the key stays cold. Refused while the recovery key is root (after `owner recover`: finish the handover first) | owner key |
+| `owner remove-recovery --leave-no-recovery` | `account` | removes the recovery key and installs none: losing the owner key then loses the account, and the root validator's key cannot be replaced in place until a recovery key is installed again | owner key |
 | `owner recover` | `recovery`, `account` | makes the recovery key root | recovery key |
 | `owner set-root` | `account` (+ arguments; `--validator <P256Validator>`, required, names the validator instance the new key is installed on; `--expect-fingerprint` refuses a `--public-key` that is not the one the owner saw; one of `--to-phone <label>`, which makes a handover to a phone key wait until the phone has shown that it holds it, and `--not-a-phone` is required. With `--not-a-phone` the new key also shows that it can sign before anything is sent: `--new-key '<its key spec>'` for a key on this machine, or else the command prints a challenge for `key prove` on the key's machine and waits for the proof. `--no-proof-of-possession` skips that and says what it risks) | hands root to a new key on `--validator`; with `--retire <validator>` (required after `recover`) uninstalls the old one | current root (owner, or recovery after `recover`) |
 | `key prove --key '<key spec>' --challenge <line>` | nothing (no config) | nothing on-chain: the key signs the challenge that `owner set-root --not-a-phone` printed on another machine, and prints the proof to paste there | the key being proven |

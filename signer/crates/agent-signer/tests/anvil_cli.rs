@@ -633,6 +633,77 @@ fn recovery_drill() {
     chain.ok(&["demo", "--agent", &new_cfg]);
 }
 
+/// Issue #114: the recovery key an account got first is not the one it has to keep. The
+/// owner key replaces it in one operation (a file stolen, lost, or changing hands), after
+/// which the old key recovers nothing and the new one does; and removes it, on an explicit
+/// word, after which another can be installed again.
+#[test]
+fn the_recovery_key_is_replaced_and_removed() {
+    let chain = chain_or_skip!("recovery-replace");
+    let (owner, agent, first, second, third, new_owner) = (key(1), key(2), key(4), key(6), key(7), key(5));
+    let counter = chain.addr("demoCounter");
+    let until = far_future(&chain);
+    let account = chain.deploy(&chain.config("agent.json", &base_cfg(&owner, &agent, &counter, until)));
+    let with = |name: &str, o: &Key, r: &Key| {
+        chain.config(name, &Cfg { owner: o, recovery: Some(r), account: Some(account.clone()), ..base_cfg(o, &agent, &counter, until) })
+    };
+    let (cfg1, cfg2) = (with("first.json", &owner, &first), with("second.json", &owner, &second));
+    let status = |cfg: &str| chain.ok(&["owner", "status", "--agent", cfg]);
+
+    // nothing to replace or remove yet
+    let refused = chain.fails(&["owner", "replace-recovery", "--agent", &cfg1]);
+    assert!(refused.contains("no recovery key is installed"), "{refused}");
+    chain.ok(&["owner", "add-recovery", "--agent", &cfg1]);
+    // a second add is refused and names the command that does it
+    let refused = chain.fails(&["owner", "add-recovery", "--agent", &cfg2]);
+    assert!(refused.contains("already installed") && refused.contains("owner replace-recovery"), "{refused}");
+    // the same key again is not a replacement
+    let refused = chain.fails(&["owner", "replace-recovery", "--agent", &cfg1]);
+    assert!(refused.contains("the one installed already"), "{refused}");
+
+    // replaced, the new key having shown here that it signs
+    let out = chain.cli(&["owner", "replace-recovery", "--agent", &cfg2, "--check-new-key"]);
+    let (said, err) = (String::from_utf8_lossy(&out.stdout).to_string(), String::from_utf8_lossy(&out.stderr).to_string());
+    assert!(out.status.success() && said.contains("recovery key replaced") && said.contains("the new recovery key signs"), "{said}\n{err}");
+    assert!(err.contains(&format!("new recovery key: fingerprint {}", fingerprint_of(&second))) && err.contains(&second.x) && err.contains(&second.y), "{err}");
+    assert!(status(&cfg2).contains("installed = true, may take root = true, is root now = false"));
+    // the old file recovers nothing; the root did not move
+    let refused = chain.fails(&["owner", "recover", "--agent", &cfg1]);
+    assert!(refused.contains("not the one installed on the account"), "{refused}");
+    let before = chain.counter();
+    chain.ok(&["op", "send", "--agent", &cfg2, "--root", "--target", &counter, "--data", INCREMENT]);
+    assert_eq!(chain.counter(), before + U256::from(1));
+
+    // the new one does: it takes root, and while it is root it is not changed
+    chain.ok(&["owner", "recover", "--agent", &cfg2]);
+    for args in [vec!["owner", "replace-recovery", "--agent", &cfg1], vec!["owner", "remove-recovery", "--agent", &cfg2, "--leave-no-recovery"]] {
+        let refused = chain.fails(&args);
+        assert!(refused.contains("the recovery key is root now"), "{refused}");
+    }
+    let validator = chain.addr("p256Validator");
+    chain.ok(&[
+        "owner", "set-root", "--agent", &cfg2, "--as-recovery", "--not-a-phone", "--validator", &validator, "--retire", &validator,
+        "--public-key", &format!("{},{}", new_owner.x, new_owner.y), "--new-key", &spec(&new_owner),
+    ]);
+
+    // removing it takes the owner's explicit word
+    let (new2, new3) = (with("new-second.json", &new_owner, &second), with("new-third.json", &new_owner, &third));
+    let refused = chain.fails(&["owner", "remove-recovery", "--agent", &new2]);
+    assert!(refused.contains("--leave-no-recovery") && status(&new2).contains("installed = true"), "{refused}");
+    let said = chain.ok(&["owner", "remove-recovery", "--agent", &new2, "--leave-no-recovery"]);
+    assert!(said.contains("recovery key removed"), "{said}");
+    assert!(status(&new2).contains("installed = false, may take root = false"), "{}", status(&new2));
+    let refused = chain.fails(&["owner", "recover", "--agent", &new2]);
+    assert!(refused.contains("no recovery key is installed"), "{refused}");
+    // the same validator takes a key again afterwards, and that key recovers
+    chain.ok(&["owner", "add-recovery", "--agent", &new3]);
+    assert!(status(&new3).contains("installed = true, may take root = true"));
+    chain.ok(&["owner", "recover", "--agent", &new3]);
+    assert!(status(&new3).contains("is root now = true"));
+    // the agent's permission is as it was through all of it
+    chain.ok(&["demo", "--agent", &new3]);
+}
+
 /// Issue #51: `owner set-root --not-a-phone` hands the root to a key in one step, and the
 /// new key has no accept step. A fingerprint shows which public key was pasted, not that
 /// anybody can sign with it. So the key shows that first, by signing a challenge the command
