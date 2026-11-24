@@ -97,7 +97,7 @@ is ignored. Field names are case-sensitive.
 | `ownerPublicKey` | no | `{"x": "0x…64 hex", "y": "0x…64 hex"}` | the owner's public key, as `key show` prints it. Lets the agent derive and deploy the account without the owner key being reachable. Needed when `account` is not pinned, and for the first operation that deploys the account |
 | `agentPublicKey` | no | same | the agent's public key. Without it every command that opens a chain session opens the agent key for its public half, so it is needed on any machine that cannot reach the agent's chip — status, revoke and recovery commands included, not only install and rotate |
 | `recovery` | no | key spec (`keyfile` or a hardware key) | the cold recovery key (`owner add-recovery`, `owner recover`, `owner set-root --as-recovery`) |
-| `salt` | no | hex number, default `0x0` | the factory salt; only affects the address of an account not deployed yet |
+| `salt` | no | hex number, default `0x0` | the factory salt; only affects the address of an account not deployed yet. The address does not depend on whether the account is created through the staked factory (`kernelFactoryStaker` in the deployments file, [#102](https://github.com/postcryptum-research/agent-keys/issues/102)) or through Kernel's factory itself |
 | `policy` | yes | object (below) | the mandate this permission should have |
 
 ### Key specs

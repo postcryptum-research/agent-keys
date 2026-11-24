@@ -1259,9 +1259,12 @@ async fn main() -> Result<()> {
                 let s = session(&agent).await?;
                 println!("account:  {}", s.account);
                 println!("factory:  {}", s.dep.kernel_factory);
+                if let Some(staker) = s.factory_staker().await? {
+                    println!("staker:   {staker}");
+                }
                 println!("salt:     {}", s.cfg.salt()?);
                 println!("initData: {}", s.init_data()?);
-                println!("initCode: {}", kernel::init_code(s.dep.kernel_factory, s.init_data()?, s.cfg.salt()?));
+                println!("initCode: {}", s.init_code().await?);
             }
         },
         Cmd::Op { cmd } => match cmd {

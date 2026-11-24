@@ -194,6 +194,38 @@ impl Chain {
         self.code["contracts"][name]["address"].as_str().unwrap().to_string()
     }
 
+    /// ZeroDev's FactoryStaker as it stands on the chains the project runs on
+    /// (issue #102): it approves Kernel's factory and holds 0.1 ETH of stake
+    /// at the EntryPoint with a day's unstake delay. Its code is installed
+    /// without its storage, so an owner is written into Solady's owner slot
+    /// and does the two things the real owner did.
+    fn stake_the_factory_staker(&self) {
+        let staker = self.addr("kernelFactoryStaker");
+        let owner: Address = FACILITATOR.parse().unwrap();
+        // Solady Ownable: _OWNER_SLOT
+        let slot = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffff74873927";
+        self.rpc("anvil_setStorageAt", json!([staker, slot, B256::left_padding_from(owner.as_slice()).to_string()]));
+        let factory: Address = self.addr("kernelFactory").parse().unwrap();
+        let entry: Address = self.addr("entryPoint").parse().unwrap();
+        let call = |signature: &str, args: Vec<u8>, value: &str| {
+            let data = [&alloy::primitives::keccak256(signature)[..4], &args[..]].concat();
+            let tx = json!({"from": FACILITATOR, "to": staker, "data": Bytes::from(data).to_string(), "value": value, "gas": "0x989680"});
+            let hash = self.rpc("eth_sendTransaction", json!([tx]));
+            let started = Instant::now();
+            loop {
+                let r = self.rpc("eth_getTransactionReceipt", json!([hash]));
+                if !r.is_null() {
+                    assert_eq!(r["status"], "0x1", "{signature} reverted: {r}");
+                    break;
+                }
+                assert!(started.elapsed() < Duration::from_secs(10), "{signature}: no receipt");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        };
+        call("approveFactory(address,bool)", (factory, true).abi_encode(), "0x0");
+        call("stake(address,uint32)", (entry, 86_400u32).abi_encode(), "0x16345785d8a0000");
+    }
+
     fn install(&self) {
         for (_, c) in self.code["contracts"].as_object().unwrap() {
             self.rpc("anvil_setCode", json!([c["address"], c["code"]]));
@@ -201,11 +233,13 @@ impl Chain {
         let deployments = json!({
             "chainId": 31337,
             "entryPoint": self.addr("entryPoint"), "kernel": self.addr("kernel"), "kernelFactory": self.addr("kernelFactory"),
+            "kernelFactoryStaker": self.addr("kernelFactoryStaker"),
             "p256Validator": self.addr("p256Validator"), "p256RecoveryValidator": self.addr("p256RecoveryValidator"),
             "p256Signer": self.addr("p256Signer"), "agentPolicy": self.addr("agentPolicy"),
             "safeNonceAssert": self.addr("safeNonceAssert"), "demoCounter": self.addr("demoCounter"),
         });
         std::fs::write(self.dir.join("deployments.json"), deployments.to_string()).unwrap();
+        self.stake_the_factory_staker();
         std::fs::write(self.dir.join("gas.key"), GAS_KEY).unwrap();
         std::fs::write(
             self.dir.join(".env"),
@@ -401,10 +435,16 @@ impl Chain {
     fn deploy(&self, cfg: &str) -> String {
         let init = self.ok(&["account", "init-data", "--agent", cfg]);
         let account = init.lines().find_map(|l| l.strip_prefix("account:")).unwrap().trim().to_string();
+        // the first operation names the staked factory, not Kernel's own (issue #102)
+        let init_code = init.lines().find_map(|l| l.strip_prefix("initCode:")).unwrap().trim().to_lowercase();
+        let staker = self.addr("kernelFactoryStaker").to_lowercase();
+        assert!(init_code.starts_with(&staker), "initCode names {}", &init_code[..42]);
         self.ok(&["account", "fund", "--agent", cfg, "--wei", "1000000000000000000"]);
         let before = self.counter();
         self.ok(&["demo", "--agent", cfg]);
         assert_eq!(self.counter(), before + U256::from(1), "the first operation deploys the account and runs");
+        // ... and the account is where Kernel's factory puts it, with code
+        assert!(self.rpc("eth_getCode", json!([account, "latest"])).as_str().unwrap().len() > 2, "no code at {account}");
         account
     }
 }
@@ -1814,6 +1854,57 @@ fn x402_pay_and_reclaim() {
     assert!(reclaimed.contains("reclaimed 1 expired"), "{reclaimed}");
     assert!(chain.ok(&["permission", "show", "--agent", &cfg]).contains("(spent 250000)"));
     assert_eq!(payee_balance(), U256::from(250_000));
+}
+
+/// An account is created through ZeroDev's staked FactoryStaker when the
+/// deployments file names it and it still approves Kernel's factory, and
+/// through Kernel's factory itself otherwise (issue #102). The account is
+/// the same one at the same address either way: Kernel's factory derives
+/// it from the same data and salt, whoever calls it.
+#[test]
+fn an_account_is_created_through_the_staked_factory() {
+    let chain = chain_or_skip!("staker");
+    let (owner, agent) = (key(1), key(2));
+    let counter = chain.addr("demoCounter");
+    let cfg = chain.config("agent.json", &base_cfg(&owner, &agent, &counter, far_future(&chain)));
+    let (staker, factory) = (chain.addr("kernelFactoryStaker").to_lowercase(), chain.addr("kernelFactory").to_lowercase());
+    let field = |out: &str, name: &str| out.lines().find_map(|l| l.strip_prefix(name)).unwrap_or_else(|| panic!("no {name} in {out}")).trim().to_lowercase();
+
+    // the staker holds its stake at the EntryPoint, as on the real chains; Kernel's factory holds none
+    let stake = |who: &str| {
+        let data = [&alloy::primitives::keccak256("getDepositInfo(address)")[..4], &who.parse::<Address>().unwrap().abi_encode()[..]].concat();
+        let out = chain.call(&chain.addr("entryPoint"), data);
+        (U256::from_be_slice(&out[32..64]) == U256::from(1), U256::from_be_slice(&out[64..96]), U256::from_be_slice(&out[96..128]))
+    };
+    assert_eq!(stake(&staker), (true, U256::from(10u64).pow(U256::from(17)), U256::from(86_400)));
+    assert!(!stake(&factory).0);
+
+    let with = chain.ok(&["account", "init-data", "--agent", &cfg]);
+    assert!(field(&with, "initCode:").starts_with(&staker) && field(&with, "staker:") == staker, "{with}");
+
+    // a deployments file without the staker: Kernel's factory by name, the same account
+    let dep_path = chain.dir.join("deployments.json");
+    let mut dep: Value = serde_json::from_str(&std::fs::read_to_string(&dep_path).unwrap()).unwrap();
+    dep.as_object_mut().unwrap().remove("kernelFactoryStaker");
+    std::fs::write(chain.dir.join("deployments-plain.json"), dep.to_string()).unwrap();
+    let mut plain: Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    plain["deployments"] = json!(chain.dir.join("deployments-plain.json"));
+    let plain_cfg = chain.dir.join("agent-plain.json");
+    std::fs::write(&plain_cfg, plain.to_string()).unwrap();
+    let without = chain.ok(&["account", "init-data", "--agent", plain_cfg.to_str().unwrap()]);
+    assert!(field(&without, "initCode:").starts_with(&factory) && !without.contains("staker:"), "{without}");
+    assert_eq!(field(&with, "account:"), field(&without, "account:"));
+
+    // the staker's owner withdraws the approval: the CLI says so and names the factory itself
+    let revoke = [&alloy::primitives::keccak256("approveFactory(address,bool)")[..4], &(factory.parse::<Address>().unwrap(), false).abi_encode()[..]].concat();
+    chain.send_from(FACILITATOR, Some(&staker), revoke);
+    let fallen = chain.ok(&["account", "init-data", "--agent", &cfg]);
+    assert!(fallen.contains("no longer approves") && field(&fallen, "initCode:").starts_with(&factory), "{fallen}");
+    let approve = [&alloy::primitives::keccak256("approveFactory(address,bool)")[..4], &(factory.parse::<Address>().unwrap(), true).abi_encode()[..]].concat();
+    chain.send_from(FACILITATOR, Some(&staker), approve);
+
+    // created through the staker, the account is at that address and works
+    assert_eq!(chain.deploy(&cfg).to_lowercase(), field(&with, "account:"));
 }
 
 // ---------------------------------------------------------------- bundler and paymaster
