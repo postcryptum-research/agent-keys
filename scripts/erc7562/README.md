@@ -187,12 +187,14 @@ that is not the account's or use a banned opcode.
 The last row is a finding and not a property of the test chain: creating the
 account installs the validator and the agent's permission, which writes their
 slots for the account, and ERC-7562 allows that during a first operation only
-to a staked factory. The CLI names Kernel's factory itself in `initCode`, and
+to a staked factory. The CLI then named Kernel's factory itself in `initCode`, and
 that contract holds no stake at the EntryPoint; ZeroDev's staked
 meta-factory, which deploys through it, is what a rule-enforcing bundler
-expects there ([#102](https://github.com/postcryptum-research/agent-keys/issues/102)). Until the CLI goes through it, an account's first
-operation would be refused by such a bundler, and the gate holds these
-operations to exactly that refusal.
+expects there ([#102](https://github.com/postcryptum-research/agent-keys/issues/102)). Since #127 the CLI goes through it: an account's
+first operation names `0xd703aaE79538628d27099B8c4f621bE4CCd142d5` in
+`initCode` (recorded trace 9). The gate still takes a first operation's
+factory as unstaked in its first verdicts, so these operations show the
+factory's refusal there and pass once it is staked.
 
 **Limits of this check:** the local chain runs the runtime code of the
 deployed contracts (`tests/fixtures/chain-code.json`), so a change to a

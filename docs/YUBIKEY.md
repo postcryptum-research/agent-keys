@@ -385,7 +385,7 @@ given to `scripts/erc7562/check-traces.mjs`.
 | `x402Authorize` of one unit of USDC (the token path) | refused, for the precompile only | passes | 11, all the sender's |
 
 "For the precompile only" is the message "account accesses un-deployed
-contract address 0x…0100 with opcode STATICCALL": this build of the checker
+contract address 0x0000000000000000000000000000000000000100 with opcode STATICCALL": this build of the checker
 does not know the RIP-7212 precompile, as `scripts/erc7562/README.md`
 records. No storage rule is broken in either operation. The earlier passing
 verdict was for the branch's build deployed on a fork; this one is for the
