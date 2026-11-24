@@ -31,6 +31,7 @@ cargo test -p agent-signer --features insecure-software-keys --test anvil_cli   
 cd mobile/owner-core && cargo test                # add --features ffi,test-chains for the phone's side
 cd scripts/erc7562 && npm install && npm run check
 gitleaks git . --redact --log-opts="--all" --exit-code 1    # what CI runs, over the whole history
+scripts/source-record.sh                          # every contract's bytecode against origin/master (house rule 3)
 ```
 
 - Rust 1.94.1 or newer.
@@ -53,9 +54,13 @@ gitleaks git . --redact --log-opts="--all" --exit-code 1    # what CI runs, over
    a doc has a Russian original (`*_ru.md`), both do.
 3. **A deployed contract's source is the record of what is on chain.**
    Instances are listed in `contracts/deployments/<chainId>.json`, earlier
-   ones kept under a versioned name. Change a contract's source only in a
-   change that redeploys it, and leave the other contracts' files alone,
-   formatting included.
+   ones kept under a versioned name. A contract's code changes only in a
+   change that redeploys it and records the new instance. Comments may
+   change at any time, since compiler metadata is kept out of the bytecode:
+   `scripts/source-record.sh` builds every contract at the base and at the
+   change and compares creation and runtime bytecode, and CI runs it on
+   every pull request. Fix in the same change the line numbers that docs
+   cite. Formatting alone is not a reason to touch a contract's file.
 4. **Validation runs under ERC-7562.** No clock and no storage but the
    account's (`keccak(account ‖ x) + n`) in validator, signer and policy
    code. `scripts/erc7562/` checks a trace.

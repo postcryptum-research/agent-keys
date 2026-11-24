@@ -21,6 +21,25 @@ jobs:
         working-directory: contracts
         run: forge test --evm-version osaka
 
+  # House rule 3: a deployed contract's source is the record of what is on
+  # chain. A pull request may change comments in contracts/src freely; if any
+  # contract's bytecode differs from the merge base, a deployments file must
+  # change with it. scripts/source-record.sh says which contracts differ.
+  source-record:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/foundry
+      - name: Bytecode against the base
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: scripts/source-record.sh "origin/$BASE_REF"
+
   rust:
     runs-on: ubuntu-latest
     steps:
