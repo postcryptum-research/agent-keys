@@ -114,7 +114,8 @@ pub fn uninstall_validator_call(validator: Address) -> Bytes {
 
 /// `changeRootValidator(vId, hook = address(1), abi.encode(x, y), "")`.
 /// `key` is installed only if `validator` is not installed yet — callers
-/// must check that, or the old key silently stays.
+/// must check that, or the old key silently stays. The phone's review
+/// refuses a root change with a key (issue #147).
 pub fn change_root_calldata(validator: Address, key: Option<&PublicKey>) -> Bytes {
     IKernel::changeRootValidatorCall {
         rootValidator: validator_id(validator),
