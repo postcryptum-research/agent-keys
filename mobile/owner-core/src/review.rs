@@ -989,12 +989,15 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
                 None => b.row(s, "Token payee", format!("{}: anyone — the agent picks the recipient and the spender", b.name(*token))),
             }
         }
-        // A venue's own contract, or its decoder, is no target under any mandate, with
-        // venues of its own or without: at the venue an order can be signed past the
-        // decoder, and the venue holds the owner's allowance.
+        // A venue's own contract, its decoder or its spender is no target under any
+        // mandate, with venues of its own or without: at the venue an order can be
+        // signed past the decoder, and the spender holds the owner's allowance.
         for t in &targets {
             if let Some((_, v)) = b.facts.venues.iter().find(|(d, v)| *d == t || v.place == *t) {
                 return Err(format!("this mandate lets the agent call {}'s own contract, where it could sign any order; refused", v.name));
+            }
+            if let Some(v) = b.facts.venues.values().find(|v| v.spender == *t) {
+                return Err(format!("this mandate lets the agent call {}'s spender, which holds this account's allowance for orders there; refused", v.name));
             }
         }
         if let Some((_, venues)) = &trading {
@@ -1629,12 +1632,19 @@ mod tests {
             reach.selectors.push(FixedBytes::from([0xec, 0x6c, 0xb1, 0x3f]));
             refused(open_trading(&reach, &one_venue(&c), vec![c.clone()], &f), "could sign any order");
         }
+        // the venue's spender among the targets: through it the allowance would move (issue #149)
+        let mut reach = trading_params();
+        reach.targets.push(RELAYER);
+        reach.selectors.push(FixedBytes::from([0xec, 0x6c, 0xb1, 0x3f]));
+        refused(open_trading(&reach, &one_venue(&c), vec![c.clone()], &f), "CoW Swap's spender");
 
         // the same under a mandate with no venue of its own
         let mut plain = trading_params();
         plain.targets = vec![COUNTER, SETTLEMENT];
         plain.selectors = vec![FixedBytes::from(SELECTOR_INCREMENT), FixedBytes::from([0xec, 0x6c, 0xb1, 0x3f])];
         refused(open_trading(&plain, &kernel::Trading { period: 3_600, venues: vec![] }, vec![], &f), "could sign any order");
+        let spender = kernel::PolicyParams { targets: vec![COUNTER, RELAYER], ..clone_params(&plain) };
+        refused(open_trading(&spender, &kernel::Trading { period: 3_600, venues: vec![] }, vec![], &f), "CoW Swap's spender");
         refused(
             {
                 let pdata = kernel::permission_data(POLICY, &plain, SIGNER, &key(2));

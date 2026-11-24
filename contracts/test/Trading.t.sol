@@ -66,10 +66,20 @@ contract Settlement {
     function setPreSignature(bytes calldata, bool) external {}
 }
 
+/// A venue's spender apart from its own contract, as CoW's vault relayer is
+/// apart from the settlement: whoever may call it moves what the account
+/// approved to it.
+contract Relayer {
+    function pull(MockToken token, address from, address to, uint256 amount) external {
+        token.transferFrom(from, to, amount);
+    }
+}
+
 /// A decoder that answers whatever it was built to answer.
 contract CrookedDecoder {
     bytes internal answer;
     address public venue;
+    address public spender;
 
     constructor(bytes memory answer_) {
         answer = answer_;
@@ -128,6 +138,18 @@ contract TradingTest is AgentPermissionTest {
         // at least 0.0002 WETH for each unit of the dollar token
         c.pairs[0] = CowSwapDecoder.Pair(address(usd), address(weth), 0.0002 ether, 1e6);
         return abi.encode(c);
+    }
+
+    /// A CoW decoder whose spender is `spender_`. The settlement stand-in
+    /// above is its own relayer, so in the decoder `_world` builds the
+    /// venue's contract and its spender are one address; on chain they are
+    /// two.
+    function _decoderWithSpender(address spender_) internal returns (CowSwapDecoder d) {
+        vm.mockCall(address(settlement), abi.encodeCall(Settlement.vaultRelayer, ()), abi.encode(spender_));
+        d = new CowSwapDecoder(address(settlement));
+        vm.clearMockedCalls();
+        assertEq(d.spender(), spender_);
+        assertEq(d.venue(), address(settlement));
     }
 
     function _venues(address d, bytes32 codeHash, bytes32 configHash)
@@ -334,6 +356,38 @@ contract TradingTest is AgentPermissionTest {
                 targets, selectors, DAY, _venues(address(decoder), address(decoder).codehash, keccak256(_cowConfig()))
             )
         );
+    }
+
+    /// Nor is the venue's spender (CoW's vault relayer): it holds the owner's
+    /// allowance of the sold tokens, and through it they would leave past
+    /// their caps and payee lists (issue #149). A spender that is the
+    /// account or this policy is refused, as such a venue is.
+    function test_trading_theVenuesSpenderIsNotATarget() public {
+        _with(DAY);
+        Relayer relayer = new Relayer();
+        CowSwapDecoder relayed = _decoderWithSpender(address(relayer));
+        AgentPolicy.Venue[] memory there = _venues(address(relayed), address(relayed).codehash, keccak256(_cowConfig()));
+        (address[] memory targets, bytes4[] memory selectors) = _targets();
+        (targets[2], selectors[2]) = (address(relayer), Relayer.pull.selector);
+        _refusedInstall(_paramsFor(targets, selectors, DAY, there));
+
+        // without the policy among the targets, so that only the spender check can refuse
+        (targets, selectors) = _targets();
+        (targets[0], selectors[0]) = (makeAddr("elsewhere"), bytes4(0));
+        address[2] memory wrong = [address(policy), acct];
+        for (uint256 i; i < wrong.length; i++) {
+            CowSwapDecoder d = _decoderWithSpender(wrong[i]);
+            _refusedInstall(
+                _paramsFor(targets, selectors, DAY, _venues(address(d), address(d).codehash, keccak256(_cowConfig())))
+            );
+        }
+        assertFalse(policy.venuePlace(acct, address(relayer)), "a refused install marks nothing");
+
+        // the control: the same venue under the ordinary targets installs, and its spender is now a venue place
+        _install(PermissionId.wrap(0x74726434), _params(DAY, there));
+        assertTrue(policy.venuePlace(acct, address(relayer)));
+        assertTrue(policy.venuePlace(acct, address(settlement)));
+        assertTrue(policy.venuePlace(acct, address(relayed)));
     }
 
     // --- an order, end to end ---
@@ -606,6 +660,41 @@ contract TradingTest is AgentPermissionTest {
         op = _op(_permissionNonce(old), _singleCall(address(settlement), 0, preSign));
         op.signature = abi.encodePacked(bytes1(0xff), _sign(AGENT, entryPoint.getUserOpHash(op)));
         _expectRefused(op);
+    }
+
+    /// The same for the venue's spender (issue #149): a mandate that named it
+    /// before it became a venue's spender loses it at validation, a later
+    /// one is refused at install, and the rest of the older mandate works.
+    function test_trading_theVenuesSpenderIsNoTargetUnderAnyMandate() public {
+        _world();
+        Relayer relayer = new Relayer();
+        CowSwapDecoder relayed = _decoderWithSpender(address(relayer));
+        PermissionId old = PermissionId.wrap(0x6f6c6432); // "old2"
+        address[] memory targets = new address[](2);
+        bytes4[] memory selectors = new bytes4[](2);
+        (targets[0], selectors[0]) = (address(counter), Counter.increment.selector);
+        (targets[1], selectors[1]) = (address(relayer), Relayer.pull.selector);
+        AgentPolicy.TokenCap[] memory noCaps = new AgentPolicy.TokenCap[](0);
+        bytes memory plain = abi.encode(targets, selectors, MAX_VALUE, BUDGET, tradingExpiry, noCaps, uint48(0));
+        _install(old, plain);
+
+        bytes memory pull = abi.encodeCall(Relayer.pull, (usd, acct, makeAddr("anyone"), 0));
+        PackedUserOperation memory op = _op(_permissionNonce(old), _singleCall(address(relayer), 0, pull));
+        op.signature = abi.encodePacked(bytes1(0xff), _sign(AGENT, entryPoint.getUserOpHash(op)));
+        _send(op);
+
+        // the account trades at a venue whose spender is that relayer
+        _install(TRD_ID, _params(DAY, _venues(address(relayed), address(relayed).codehash, keccak256(_cowConfig()))));
+        assertTrue(policy.venuePlace(acct, address(relayer)));
+
+        op = _op(_permissionNonce(old), _singleCall(address(relayer), 0, pull));
+        op.signature = abi.encodePacked(bytes1(0xff), _sign(AGENT, entryPoint.getUserOpHash(op)));
+        _expectRefused(op);
+        op = _op(_permissionNonce(old), _singleCall(address(counter), 0, abi.encodeCall(Counter.increment, ())));
+        op.signature = abi.encodePacked(bytes1(0xff), _sign(AGENT, entryPoint.getUserOpHash(op)));
+        _send(op);
+
+        _refusedInstall(plain);
     }
 
     function test_order_revokingEndsEveryVouch() public {
