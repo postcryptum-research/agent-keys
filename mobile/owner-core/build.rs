@@ -2,12 +2,16 @@
 //! parse (docs/MOBILE_OWNER_DESIGN.md §6.7): an app built without its facts
 //! would name nothing and refuse almost everything.
 fn main() {
-    let path = "../../contracts/deployments/84532.json";
+    check("../../contracts/deployments/84532.json", 84532);
+    check("../../contracts/deployments/11155111.json", 11155111);
+}
+
+fn check(path: &str, chain_id: u64) {
     println!("cargo:rerun-if-changed={path}");
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
     let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{path}: {e}"));
     let map = v.as_object().unwrap_or_else(|| panic!("{path}: not an object"));
-    assert_eq!(map.get("chainId").and_then(|c| c.as_u64()), Some(84532), "{path}: chainId");
+    assert_eq!(map.get("chainId").and_then(|c| c.as_u64()), Some(chain_id), "{path}: chainId");
     // every other key names a contract; these two record the compiler settings (issue #123)
     let settings = ["solc", "evmVersion"];
     for key in settings {

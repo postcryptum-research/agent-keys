@@ -8,6 +8,7 @@ mod attestation;
 mod der;
 mod phone;
 mod possession;
+mod order;
 mod x402;
 
 use std::path::{Path, PathBuf};
@@ -152,11 +153,46 @@ enum Cmd {
         #[command(subcommand)]
         cmd: X402Cmd,
     },
+    /// Place orders at a trading venue, within the mandate's terms.
+    Order {
+        #[command(subcommand)]
+        cmd: OrderCmd,
+    },
     /// Demo: the agent increments the deployed counter.
     Demo {
         #[command(flatten)]
         agent: AgentArgs,
         /// Let the paymaster pay instead of the account.
+        #[arg(long)]
+        sponsored: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum OrderCmd {
+    /// Register a sell order under the mandate, sign it with the agent key
+    /// and print it as the venue's order book takes it. Sends it nowhere.
+    Sell {
+        #[command(flatten)]
+        agent: AgentArgs,
+        /// The venue's decoder, when the config has several venues.
+        #[arg(long)]
+        venue: Option<Address>,
+        /// The token sold and the token bought.
+        #[arg(long)]
+        sell: Address,
+        #[arg(long)]
+        buy: Address,
+        /// Base units sold: all of it or nothing.
+        #[arg(long)]
+        sell_amount: String,
+        /// The least base units to receive for it.
+        #[arg(long)]
+        buy_amount: String,
+        /// How long the order lives, seconds from the chain's latest block.
+        #[arg(long, default_value_t = 600)]
+        valid_for: u32,
+        /// Let the paymaster pay the registration's gas.
         #[arg(long)]
         sponsored: bool,
     },
@@ -199,6 +235,10 @@ enum PermissionCmd {
         /// 4-byte hex permission id to remove.
         #[arg(long)]
         id: String,
+        /// The config the permission was installed from, when this one no
+        /// longer holds its venue's terms: its allowances are taken back.
+        #[arg(long)]
+        old_config: Option<PathBuf>,
         #[arg(long)]
         sponsored: bool,
     },
@@ -220,6 +260,17 @@ enum PermissionCmd {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Set the allowance of each venue in the config back to one budget of
+    /// the token it sells. Root operation signed by the owner key. The venue
+    /// takes tokens through this allowance, not through the mandate, so it
+    /// is never more than one budget; under a mandate with a period the
+    /// owner renews it.
+    Allowance {
+        #[command(flatten)]
+        agent: AgentArgs,
+        #[arg(long)]
+        sponsored: bool,
+    },
     /// Replace permission `old_id` with the one the config describes — new
     /// agent key and/or mandate — in one root operation. Pin `account` in
     /// the config first.
@@ -228,6 +279,11 @@ enum PermissionCmd {
         agent: AgentArgs,
         #[arg(long)]
         old_id: String,
+        /// The config the old permission was installed from, when this one
+        /// no longer holds its venue's terms: the allowances the new
+        /// mandate does not take over are taken back in the same operation.
+        #[arg(long)]
+        old_config: Option<PathBuf>,
         #[arg(long)]
         sponsored: bool,
         /// Print the batch calldata instead of sending it.
@@ -1464,9 +1520,10 @@ async fn main() -> Result<()> {
             }
         },
         Cmd::Permission { cmd } => match cmd {
-            PermissionCmd::Revoke { agent, id, sponsored } => {
+            PermissionCmd::Revoke { agent, id, old_config, sponsored } => {
                 let s = session(&agent).await?;
-                let inc = s.revoke_permission(parse_permission_id(&id)?, sponsored).await?;
+                let old = old_config.as_deref().map(AgentConfig::load).transpose()?.map(|c| c.0);
+                let inc = s.revoke_permission(parse_permission_id(&id)?, old.as_ref(), sponsored).await?;
                 println!("revoked permission {id}: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
             }
             PermissionCmd::Show { agent } => session(&agent).await?.permission_show().await?,
@@ -1491,17 +1548,23 @@ async fn main() -> Result<()> {
                     inc.gas_used
                 );
             }
-            PermissionCmd::Rotate { agent, old_id, sponsored, dry_run } => {
+            PermissionCmd::Allowance { agent, sponsored } => {
+                let s = session(&agent).await?;
+                let inc = s.renew_venue_allowances(sponsored).await?;
+                println!("venue allowances set to one budget: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
+            }
+            PermissionCmd::Rotate { agent, old_id, old_config, sponsored, dry_run } => {
+                let old = old_config.as_deref().map(AgentConfig::load).transpose()?.map(|c| c.0);
                 let s = session(&agent).await?;
                 if !s.pinned {
                     bail!("pin the deployed account in the config (\"account\": \"0x…\") before rotating");
                 }
                 if dry_run {
                     println!("account:  {}", s.account);
-                    println!("callData: {}", s.rotate_calldata(parse_permission_id(&old_id)?).await?);
+                    println!("callData: {}", s.rotate_calldata(parse_permission_id(&old_id)?, old.as_ref()).await?);
                     return Ok(());
                 }
-                let inc = s.rotate_permission(parse_permission_id(&old_id)?, sponsored).await?;
+                let inc = s.rotate_permission(parse_permission_id(&old_id)?, old.as_ref(), sponsored).await?;
                 println!(
                     "rotated {old_id} -> {}: tx {} (block {}, {} gas)",
                     s.cfg.permission_id, inc.tx, inc.block, inc.gas_used
@@ -1556,6 +1619,18 @@ async fn main() -> Result<()> {
                 let s = session(&agent).await?;
                 let done = s.x402_reclaim(from_block, sponsored).await?;
                 println!("reclaimed {} expired authorization(s)", done.len());
+            }
+        },
+        Cmd::Order { cmd } => match cmd {
+            OrderCmd::Sell { agent, venue, sell, buy, sell_amount, buy_amount, valid_for, sponsored } => {
+                let s = session(&agent).await?;
+                let sell_amount = sell_amount.parse::<U256>().context("--sell-amount")?;
+                let buy_amount = buy_amount.parse::<U256>().context("--buy-amount")?;
+                let placed = s.order_sell(venue, sell, buy, sell_amount, buy_amount, valid_for, sponsored).await?;
+                eprintln!("order digest:   {}", placed.digest);
+                eprintln!("not sent to any order book: the order is live once one has it");
+                eprintln!("charged to the token's budget now, filled or not: an order's charge is not given back, it returns when the budget period turns");
+                println!("{}", placed.json());
             }
         },
         Cmd::Demo { agent, sponsored } => {

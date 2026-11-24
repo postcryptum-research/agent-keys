@@ -95,6 +95,25 @@ pub struct Facts {
     /// The chain's EntryPoint, when the build knows it: a request or an
     /// enrollment naming another one is refused.
     pub entry_point: Option<Address>,
+    /// The policy modules that hold a budget per period and venues (issue
+    /// #80). An earlier instance refuses such a mandate at install.
+    pub trading_policy_modules: Vec<Address>,
+    /// The venue decoders this build can read, by address.
+    pub venues: BTreeMap<Address, Venue>,
+}
+
+/// A trading venue's decoder the build knows (§6.7, issue #80): its code is
+/// a fact of the build, like its address, and so are the venue's own
+/// contract and the address that takes the tokens.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Venue {
+    pub name: String,
+    /// `extcodehash` of the decoder as deployed.
+    pub code_hash: B256,
+    /// The venue's own contract (CoW: the settlement).
+    pub place: Address,
+    /// Who takes the sell token (CoW: the vault relayer).
+    pub spender: Address,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -189,8 +208,15 @@ impl Review {
 struct Builder<'a> {
     facts: &'a Facts,
     pins: &'a BTreeMap<Address, String>,
+    /// From the laptop, unverified until matched to a hash in a mandate.
+    venue_configs: &'a [Bytes],
     sections: Vec<Section>,
     warnings: Vec<String>,
+    /// What the mandates installed in this operation sell at a venue:
+    /// `(token, the venue's spender, the token's budget, the venue's name)`.
+    sold: Vec<(Address, Address, U256, String)>,
+    /// Every ERC-20 `approve` of this operation: `(token, spender, amount)`.
+    approvals: Vec<(Address, Address, U256)>,
 }
 
 impl Builder<'_> {
@@ -297,7 +323,15 @@ fn open_with(
             format!("EntryPoint {} is not the one this build knows for chain {chain_id}", req.entry_point.to_checksum(None)),
         );
     }
-    let mut b = Builder { facts, pins: &acct.pins, sections: Vec::new(), warnings: Vec::new() };
+    let mut b = Builder {
+        facts,
+        pins: &acct.pins,
+        venue_configs: &req.laptop.venue_configs,
+        sections: Vec::new(),
+        warnings: Vec::new(),
+        sold: Vec::new(),
+        approvals: Vec::new(),
+    };
     let s = b.section("Operation");
     b.row(s, "Account", op.sender.to_checksum(None));
     b.row(s, "Chain", chain_id.to_string());
@@ -339,11 +373,39 @@ fn open_with(
             return Review::refused(c, b.sections, why);
         }
     }
+    // An operation that installs a trading mandate carries the allowance the
+    // venue takes the sold tokens through. That allowance is spent past the
+    // mandate, so it is held to the mandate here, wherever in the batch it
+    // stands: of a token the mandate sells, only to that venue's spender, and
+    // one budget at most. A laptop that put another spender there would get a
+    // budget of the token outright.
+    for (token, who, amount) in &b.approvals {
+        let venues: Vec<&(Address, Address, U256, String)> = b.sold.iter().filter(|v| v.0 == *token).collect();
+        if venues.is_empty() {
+            continue;
+        }
+        let Some(v) = venues.iter().find(|v| v.1 == *who) else {
+            let why = format!(
+                "this operation installs a mandate that sells {} at {}, and gives an allowance of that token to {}, which is not the venue's spender; refused",
+                b.name(*token),
+                venues[0].3,
+                who.to_checksum(None)
+            );
+            return Review::refused(c, b.sections, why);
+        };
+        if *amount > v.2 {
+            let why = format!("the allowance of {} to {} is {}, more than the token's budget; refused", b.name(*token), v.3, b.token_amount(*token, *amount));
+            return Review::refused(c, b.sections, why);
+        }
+    }
 
     // cost and sponsorship (§6.4)
     let (verification_gas, call_gas) = split(op.account_gas_limits);
     let (max_priority, max_fee) = split(op.gas_fees);
-    let mut pm_gas: u128 = 0;
+    // the laptop's numbers: the four gas limits fit 130 bits summed in 256;
+    // `preVerificationGas` and the fee cap are added and multiplied checked,
+    // and a cost that does not fit a word is refused rather than shown wrong
+    let mut pm_gas = U256::ZERO;
     let s = b.section("Cost");
     if !op.paymaster_and_data.is_empty() {
         if op.paymaster_and_data.len() < 52 {
@@ -359,12 +421,16 @@ fn open_with(
                 format!("paymaster {} is not one this build knows to charge nothing (T20)", pm.to_checksum(None)),
             );
         }
-        pm_gas = pm_verification + pm_post_op;
+        pm_gas = U256::from(pm_verification) + U256::from(pm_post_op);
         b.row(s, "Gas", format!("sponsored by {}", b.name(pm)));
         b.row(s, "Paymaster gas limits", format!("verification {pm_verification}, postOp {pm_post_op}"));
     }
-    let total_gas = U256::from(verification_gas) + U256::from(call_gas) + op.pre_verification_gas + U256::from(pm_gas);
-    let max_cost = total_gas * U256::from(max_fee);
+    let max_cost = (U256::from(verification_gas) + U256::from(call_gas) + pm_gas)
+        .checked_add(op.pre_verification_gas)
+        .and_then(|total_gas| total_gas.checked_mul(U256::from(max_fee)));
+    let Some(max_cost) = max_cost else {
+        return Review::refused(c, b.sections, "the operation's gas limits and fee cap give a maximum cost beyond 2^256 wei; refused");
+    };
     b.row(s, "Maximum gas cost", format!("{} ETH", format_ether(max_cost)));
     if op.paymaster_and_data.is_empty() && max_cost > U256::from(acct.gas_cap_wei) {
         return Review::refused(
@@ -629,6 +695,189 @@ fn self_call(
     }
 }
 
+/// A mandate as the review reads it from a policy's install parameters:
+/// what the owner is shown, and so what `AgentPolicy` has to enforce from
+/// the same bytes (held together by the differential test
+/// `the_phone_reads_a_mandate_as_the_policy_installs_it`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MandateTerms {
+    pub allow: Vec<(Address, FixedBytes<4>)>,
+    pub max_value: U256,
+    pub budget: U256,
+    pub valid_until: u64,
+    pub valid_after: u64,
+    /// `(token, maxPerOp, budget, x402 domain separator or zero)`
+    pub tokens: Vec<(Address, U256, U256, B256)>,
+    /// `(token, the only addresses it may be paid to)`
+    pub payees: Vec<(Address, Vec<Address>)>,
+    /// In the ten-word form: the budget period in seconds, never zero, and
+    /// the venues as `(decoder, code hash, hash of the venue's terms)`.
+    pub trading: Option<(u32, Vec<(Address, B256, B256)>)>,
+}
+
+/// Where a mandate is being installed: what `mandate_terms` needs to refuse
+/// what the policy refuses there.
+#[derive(Debug, Clone, Copy)]
+pub struct MandatePlace {
+    pub account: Address,
+    pub entry_point: Address,
+    /// The policy module the mandate goes to.
+    pub policy: Address,
+    /// That module is known to enforce payee lists.
+    pub payees_enforced: bool,
+    /// That module is known to hold a budget period and venues.
+    pub trading_enforced: bool,
+}
+
+/// Reads `init`, a policy entry's bytes behind `flag ‖ module`, or says why
+/// the mandate is refused. `name` names an address in a refusal.
+///
+/// It refuses everything `AgentPolicy.onInstall` refuses, so that a mandate
+/// the owner is shown is one that installs: an install that fails on chain
+/// grants nothing, but the owner would have signed for a screen that did
+/// not come true.
+pub fn mandate_terms(init: &[u8], place: &MandatePlace, name: &dyn Fn(Address) -> String) -> Result<MandateTerms, String> {
+    let payees_enforced = place.payees_enforced;
+    type PolicyInit = (Vec<Address>, Vec<FixedBytes<4>>, U256, U256, U256, Vec<(Address, U256, U256, B256)>, U256);
+    type PolicyInitPayees =
+        (Vec<Address>, Vec<FixedBytes<4>>, U256, U256, U256, Vec<(Address, U256, U256, B256)>, U256, Vec<(Address, Vec<Address>)>);
+    type Venues = Vec<(Address, B256, B256)>;
+    type PolicyInitTrading = (
+        Vec<Address>,
+        Vec<FixedBytes<4>>,
+        U256,
+        U256,
+        U256,
+        Vec<(Address, U256, U256, B256)>,
+        U256,
+        Vec<(Address, Vec<Address>)>,
+        u32,
+        Venues,
+    );
+    // Three forms, told apart as the policy tells them: by the first head
+    // word, the offset of `targets` behind seven, eight or ten head words.
+    let head = init.get(..32).map(U256::from_be_slice).ok_or("policy parameters shorter than a word; refused")?;
+    let mut trading: Option<(u32, Venues)> = None;
+    let (targets, selectors, max_value, budget, until, tokens, after, payees) = if head == U256::from(10 * 32) {
+        let d = PolicyInitTrading::abi_decode_params_validate(init).map_err(|e| format!("policy parameters: {e}"))?;
+        if d.abi_encode_params() != init {
+            return Err("policy parameters are not canonical; refused".into());
+        }
+        // an earlier policy refuses these parameters at install; a module this build
+        // does not know to hold a period and venues is not shown as holding them
+        if !place.trading_enforced {
+            return Err("this mandate carries a budget period or trading venues, and the policy module it goes to is not known to enforce them; refused".into());
+        }
+        // the policy installs this form only with a period: with venues, because an
+        // order's charge is never given back and the period is what returns it
+        if d.8 == 0 {
+            return Err(if d.9.is_empty() {
+                "policy parameters in the trading form with neither a period nor a venue; refused".into()
+            } else {
+                "this mandate names trading venues and no budget period: an order's charge would never come back, and the policy does not install it; refused".into()
+            });
+        }
+        // this form may carry payee lists or none; an older module would ignore them
+        if !d.7.is_empty() && !payees_enforced {
+            return Err("this mandate carries payee lists, and the policy module it goes to is not known to enforce them; refused".into());
+        }
+        trading = Some((d.8, d.9));
+        (d.0, d.1, d.2, d.3, d.4, d.5, d.6, d.7)
+    } else if head == U256::from(8 * 32) {
+        let d = PolicyInitPayees::abi_decode_params_validate(init).map_err(|e| format!("policy parameters: {e}"))?;
+        if d.abi_encode_params() != init {
+            return Err("policy parameters are not canonical; refused".into());
+        }
+        d
+    } else {
+        let d = PolicyInit::abi_decode_params_validate(init).map_err(|e| format!("policy parameters: {e}"))?;
+        if d.abi_encode_params() != init {
+            return Err("policy parameters are not canonical; refused".into());
+        }
+        (d.0, d.1, d.2, d.3, d.4, d.5, d.6, Vec::new())
+    };
+    if head == U256::from(8 * 32) {
+        // an older policy would decode the first seven and ignore the lists:
+        // the owner would see payees that nothing enforces
+        if !payees_enforced {
+            return Err("this mandate carries payee lists, and the policy module it goes to is not known to enforce them; refused".into());
+        }
+        if payees.is_empty() {
+            return Err("policy parameters in the payee form without a payee list; refused".into());
+        }
+    }
+    for (i, (token, list)) in payees.iter().enumerate() {
+        if list.is_empty() || !tokens.iter().any(|t| t.0 == *token) || payees[..i].iter().any(|p| p.0 == *token) {
+            return Err("a payee list that is empty, repeated or for a token without a cap; refused".into());
+        }
+        if list.iter().any(|a| a.is_zero()) || (1..list.len()).any(|j| list[..j].contains(&list[j])) {
+            return Err("a payee list with the zero address or the same address twice; refused".into());
+        }
+    }
+    if targets.len() != selectors.len() {
+        return Err("policy targets and selectors differ in length; refused".into());
+    }
+    // A token with a limit is callable through the four functions the
+    // limit is checked on. Any other entry on it would move the token
+    // past its caps and its payee list: AgentPolicy refuses such a
+    // mandate at install, and an earlier AgentPolicy would let the
+    // entry through unmetered, so it is refused here for either.
+    const METERED: [[u8; 4]; 4] = [[0xa9, 0x05, 0x9c, 0xbb], [0x09, 0x5e, 0xa7, 0xb3], [0x39, 0x50, 0x93, 0x51], [0x23, 0xb8, 0x72, 0xdd]];
+    for (t, sel) in targets.iter().zip(&selectors) {
+        // Permit2 at its usual address (the constant AgentPolicy carries): its own
+        // `approve` names who may pull a token, and no policy reads that call
+        if *t == alloy_primitives::address!("000000000022D473030F116dDEE9F6B43aC78BA3") {
+            return Err("this mandate lets the agent call Permit2, through which a token's allowance can be handed to any address, past its limits and payee list; refused".into());
+        }
+        if tokens.iter().any(|token| token.0 == *t) && !METERED.contains(&sel.0) {
+            return Err(format!(
+                "this mandate limits the token {} and also allows {} on it; a limited token may only be called through transfer, transferFrom, approve and increaseAllowance, anything else would move it past its limits; refused",
+                name(*t),
+                selector_name(sel.0)
+            ));
+        }
+    }
+    // The policy keeps a time in 48 bits and an amount in 128; a larger word does not install.
+    let secs = |v: U256, what: &str| {
+        u64::try_from(v).ok().filter(|t| *t < 1 << 48).ok_or_else(|| format!("{what} does not fit a timestamp; refused"))
+    };
+    let (until, after) = (secs(until, "validUntil")?, secs(after, "validAfter")?);
+    if until == 0 || after >= until {
+        return Err("a mandate that is never valid (validUntil is zero, or not after validAfter); refused".into());
+    }
+    let fits = |v: &U256| *v <= U256::from(u128::MAX);
+    if !fits(&max_value) || !fits(&budget) || tokens.iter().any(|t| !fits(&t.1) || !fits(&t.2)) {
+        return Err("a limit larger than the policy can hold (128 bits); refused".into());
+    }
+    if targets.is_empty() {
+        return Err("a mandate that allows no call; refused".into());
+    }
+    for (i, token) in tokens.iter().enumerate() {
+        if token.0.is_zero() || tokens[..i].iter().any(|t| t.0 == token.0) {
+            return Err("a token limit for the zero address, or two for one token; refused".into());
+        }
+    }
+    // What the agent must never reach: the account (it could grant itself access or act as
+    // root), its EntryPoint (the account's deposit), and the policy beyond its own entries:
+    // the two of x402, and `orderRegister` on a policy that holds venues.
+    let mut x402 = vec![
+        alloy_primitives::keccak256("x402Authorize(address,address,address,uint256,uint256,uint256,bytes32)"),
+        alloy_primitives::keccak256("x402Reclaim(bytes32,address,address,uint256,uint256,uint256,bytes32)"),
+    ];
+    if place.trading_enforced {
+        x402.push(alloy_primitives::keccak256("orderRegister(address,bytes,bytes)"));
+    }
+    for (t, sel) in targets.iter().zip(&selectors) {
+        if *t == place.account || *t == place.entry_point {
+            return Err("this mandate lets the agent call the account itself or its EntryPoint; refused".into());
+        }
+        if *t == place.policy && !x402.iter().any(|s| s[..4] == sel.0) {
+            return Err("this mandate lets the agent call the policy outside its x402 and order entries; refused".into());
+        }
+    }
+    Ok(MandateTerms { allow: targets.into_iter().zip(selectors).collect(), max_value, budget, valid_until: until, valid_after: after, tokens, payees, trading })
+}
+
 /// Kernel's `PermissionEnableDataFormat` as `permission_data` builds it:
 /// policies first, the signer last; each entry `flag(2) ‖ module(20) ‖ init`.
 fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledAccount) -> Result<(), String> {
@@ -657,6 +906,7 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
         b.warnings.push(format!("{what} module {} is not known to this build", module.to_checksum(None)));
         Ok(())
     };
+    let mut seen_modules: Vec<Address> = Vec::new();
     for p in policies {
         if p.len() < 22 {
             return Err("a policy entry shorter than flag ‖ module; refused".into());
@@ -666,76 +916,36 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
             return Err(format!("a policy entry with flag 0x{}; a permission that skips its policy is refused", hex(&p[..2])));
         }
         let module = Address::from_slice(&p[2..22]);
+        // Kernel installs each entry under the one permission id, and a policy holds one
+        // mandate per id: the second install of the same module reverts, and with it the
+        // whole operation. Two mandates on the screen would be a screen that does not come true.
+        if seen_modules.contains(&module) {
+            return Err(format!("the policy module {} appears twice in one permission, which does not install; refused", module.to_checksum(None)));
+        }
+        seen_modules.push(module);
         b.row(s, "Policy module", b.name(module));
         module_known(b, "policy", module)?;
-        type PolicyInit = (Vec<Address>, Vec<FixedBytes<4>>, U256, U256, U256, Vec<(Address, U256, U256, B256)>, U256);
-        type PolicyInitPayees =
-            (Vec<Address>, Vec<FixedBytes<4>>, U256, U256, U256, Vec<(Address, U256, U256, B256)>, U256, Vec<(Address, Vec<Address>)>);
-        // Two forms, told apart as the policy tells them: by the first head
-        // word, the offset of `targets` behind seven or eight head words.
-        let init = &p[22..];
-        let head = init.get(..32).map(U256::from_be_slice).ok_or("policy parameters shorter than a word; refused")?;
-        let (targets, selectors, max_value, budget, until, tokens, after, payees) = if head == U256::from(8 * 32) {
-            let d = PolicyInitPayees::abi_decode_params_validate(init).map_err(|e| format!("policy parameters: {e}"))?;
-            if d.abi_encode_params() != init {
-                return Err("policy parameters are not canonical; refused".into());
-            }
-            d
-        } else {
-            let d = PolicyInit::abi_decode_params_validate(init).map_err(|e| format!("policy parameters: {e}"))?;
-            if d.abi_encode_params() != init {
-                return Err("policy parameters are not canonical; refused".into());
-            }
-            (d.0, d.1, d.2, d.3, d.4, d.5, d.6, Vec::new())
+        let terms = {
+            let place = MandatePlace {
+                account: acct.account,
+                entry_point: acct.entry_point,
+                policy: module,
+                payees_enforced: b.facts.payee_policy_modules.contains(&module),
+                trading_enforced: b.facts.trading_policy_modules.contains(&module),
+            };
+            let b = &*b;
+            mandate_terms(&p[22..], &place, &|a| b.name(a))?
         };
-        if head == U256::from(8 * 32) {
-            // an older policy would decode the first seven and ignore the lists:
-            // the owner would see payees that nothing enforces
-            if !b.facts.payee_policy_modules.contains(&module) {
-                return Err("this mandate carries payee lists, and the policy module it goes to is not known to enforce them; refused".into());
-            }
-            if payees.is_empty() {
-                return Err("policy parameters in the payee form without a payee list; refused".into());
-            }
-        }
-        for (i, (token, list)) in payees.iter().enumerate() {
-            if list.is_empty() || !tokens.iter().any(|t| t.0 == *token) || payees[..i].iter().any(|p| p.0 == *token) {
-                return Err("a payee list that is empty, repeated or for a token without a cap; refused".into());
-            }
-            if list.iter().any(|a| a.is_zero()) || (1..list.len()).any(|j| list[..j].contains(&list[j])) {
-                return Err("a payee list with the zero address or the same address twice; refused".into());
-            }
-        }
-        if targets.len() != selectors.len() {
-            return Err("policy targets and selectors differ in length; refused".into());
-        }
-        // A token with a limit is callable through the four functions the
-        // limit is checked on. Any other entry on it would move the token
-        // past its caps and its payee list: AgentPolicy refuses such a
-        // mandate at install, and an earlier AgentPolicy would let the
-        // entry through unmetered, so it is refused here for either.
-        const METERED: [[u8; 4]; 4] = [[0xa9, 0x05, 0x9c, 0xbb], [0x09, 0x5e, 0xa7, 0xb3], [0x39, 0x50, 0x93, 0x51], [0x23, 0xb8, 0x72, 0xdd]];
-        for (t, sel) in targets.iter().zip(&selectors) {
-            // Permit2 at its usual address (the constant AgentPolicy carries): its own
-            // `approve` names who may pull a token, and no policy reads that call
-            if *t == alloy_primitives::address!("000000000022D473030F116dDEE9F6B43aC78BA3") {
-                return Err("this mandate lets the agent call Permit2, through which a token's allowance can be handed to any address, past its limits and payee list; refused".into());
-            }
-            if tokens.iter().any(|token| token.0 == *t) && !METERED.contains(&sel.0) {
-                return Err(format!(
-                    "this mandate limits the token {} and also allows {} on it; a limited token may only be called through transfer, transferFrom, approve and increaseAllowance, anything else would move it past its limits; refused",
-                    b.name(*t),
-                    selector_name(sel.0)
-                ));
-            }
-        }
-        let secs = |v: U256, what: &str| u64::try_from(v).map_err(|_| format!("{what} does not fit a timestamp; refused"));
-        let (until, after) = (secs(until, "validUntil")?, secs(after, "validAfter")?);
+        let MandateTerms { allow, max_value, budget, valid_until: until, valid_after: after, tokens, payees, trading } = terms;
+        let (targets, selectors): (Vec<Address>, Vec<FixedBytes<4>>) = allow.into_iter().unzip();
         for (t, sel) in targets.iter().zip(&selectors) {
             b.row(s, "Allow", format!("{} · {}", b.name(*t), selector_name(sel.0)));
         }
         b.row(s, "Max value per operation", format!("{} ETH", format_ether(max_value)));
         b.row(s, "Budget", format!("{} ETH", format_ether(budget)));
+        if let Some((period, _)) = &trading {
+            b.row(s, "Budgets renew", period_text(*period));
+        }
         b.row(s, "Valid from", if after == 0 { "now".to_string() } else { format!("{} UTC ({after})", utc(after)) });
         b.row(s, "Valid until", format!("{} UTC ({until})", utc(until)));
         for (token, max, budget, domain) in &tokens {
@@ -769,6 +979,19 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
                 None => b.row(s, "Token payee", format!("{}: anyone — the agent picks the recipient and the spender", b.name(*token))),
             }
         }
+        // A venue's own contract, or its decoder, is no target under any mandate, with
+        // venues of its own or without: at the venue an order can be signed past the
+        // decoder, and the venue holds the owner's allowance.
+        for t in &targets {
+            if let Some((_, v)) = b.facts.venues.iter().find(|(d, v)| *d == t || v.place == *t) {
+                return Err(format!("this mandate lets the agent call {}'s own contract, where it could sign any order; refused", v.name));
+            }
+        }
+        if let Some((_, venues)) = &trading {
+            let capped: Vec<(Address, U256)> = tokens.iter().map(|t| (t.0, t.2)).collect();
+            let listed: Vec<Address> = payees.iter().map(|p| p.0).collect();
+            venue_rows(b, s, venues, &targets, &capped, &listed)?;
+        }
     }
     if signer.len() < 22 {
         return Err("a signer entry shorter than flag ‖ module; refused".into());
@@ -781,6 +1004,139 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
     module_known(b, "signer", module)?;
     let pk = decode_pubkey(&signer[22..]).ok_or("signer data is not a P-256 key; refused")?;
     b.row(s, "Agent key", fingerprint(&pk));
+    Ok(())
+}
+
+/// How a budget period reads on the screen. The number an owner is told is
+/// the adversarial one: across a renewal, about twice a budget.
+fn period_text(period: u32) -> String {
+    if period == 0 {
+        return "never: each budget is for the mandate's whole life".to_string();
+    }
+    let every = match period {
+        86_400 => "every day, from 00:00 UTC".to_string(),
+        3_600 => "every hour".to_string(),
+        604_800 => "every 7 days, counted from 1970-01-01 (a Thursday) 00:00 UTC".to_string(),
+        p if p % 86_400 == 0 => format!("every {} days, counted from 1970-01-01 00:00 UTC", p / 86_400),
+        // whole hours start at the same times each day only when they divide a day
+        p if p % 3_600 == 0 && 86_400 % p == 0 => format!("every {} hours, counted from 00:00 UTC", p / 3_600),
+        p if p % 3_600 == 0 => format!("every {} hours, counted from 1970-01-01 00:00 UTC", p / 3_600),
+        p => format!("every {p} seconds, counted from 1970-01-01 00:00 UTC"),
+    };
+    format!("{every}. Each budget above is per period; across a renewal up to twice a budget can be spent in a short time, and no more: a payment or an order the agent registers ends with its period")
+}
+
+/// A CoW Swap venue's terms as the phone reads them from the config bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CowTerms {
+    /// The only `appData` an order may carry.
+    pub app_data: B256,
+    /// The longest an order may live, seconds.
+    pub max_life: u32,
+    /// `(sell token, buy token, min buy, per sell)`: never less than `min
+    /// buy` of the buy token for each `per sell` of the sell token.
+    pub pairs: Vec<(Address, Address, U256, U256)>,
+}
+
+/// Reads a `CowSwapDecoder` config, or says what is wrong with it. The
+/// phone shows these terms and the decoder on chain enforces what it reads
+/// from the same bytes, so the two must read alike: this takes only bytes
+/// that are the one canonical encoding of what it returns, and only a
+/// config the decoder's own rules allow. It may refuse more than the
+/// decoder; it must never read other terms than the decoder does
+/// (`agent-signer/tests/anvil_cli.rs` holds it to the decoder).
+pub fn cow_terms(config: &[u8]) -> Result<CowTerms, String> {
+    type CowConfig = (B256, u32, Vec<(Address, Address, U256, U256)>);
+    let (app_data, max_life, pairs) = CowConfig::abi_decode_validate(config).map_err(|e| format!("does not decode: {e}"))?;
+    if (app_data, max_life, pairs.clone()).abi_encode() != config {
+        return Err("is not canonical".into());
+    }
+    if pairs.is_empty() || pairs.len() > 16 || max_life == 0 {
+        return Err("has no pair, too many, or no order lifetime".into());
+    }
+    for (j, (sell, buy, min_buy, per_sell)) in pairs.iter().enumerate() {
+        if sell.is_zero() || buy.is_zero() || sell == buy || min_buy.is_zero() || per_sell.is_zero() {
+            return Err("has a pair without two tokens or without a lowest price".into());
+        }
+        if pairs[..j].iter().any(|p| p.0 == *sell && p.1 == *buy) {
+            return Err("lists a pair twice".into());
+        }
+    }
+    Ok(CowTerms { app_data, max_life, pairs })
+}
+
+/// The venues of a trading mandate (issue #80), in the order of what can
+/// hurt most. A venue is shown only when the build knows its decoder by
+/// address and code, the laptop sent the config the mandate's hash names,
+/// and that config is one the decoder allows and this code can read to the
+/// last byte; anything else refuses the whole operation.
+fn venue_rows(
+    b: &mut Builder<'_>,
+    s: usize,
+    venues: &[(Address, B256, B256)],
+    targets: &[Address],
+    capped: &[(Address, U256)],
+    listed: &[Address],
+) -> Result<(), String> {
+    for (i, (decoder, code_hash, config_hash)) in venues.iter().enumerate() {
+        let Some(venue) = b.facts.venues.get(decoder).cloned() else {
+            return Err(format!("the trading venue {} is not one this build knows; refused", decoder.to_checksum(None)));
+        };
+        if venue.code_hash != *code_hash {
+            return Err(format!("the mandate pins other code for {} than this build knows; refused", venue.name));
+        }
+        if venues[..i].iter().any(|v| v.0 == *decoder) {
+            return Err("a trading venue twice in one mandate; refused".into());
+        }
+        if targets.iter().any(|t| *t == venue.place || *t == *decoder) {
+            return Err(format!("this mandate lets the agent call {}'s own contract, where it could sign any order; refused", venue.name));
+        }
+        let Some(config) = b.venue_configs.iter().find(|c| alloy_primitives::keccak256(c) == *config_hash) else {
+            return Err(format!("the laptop did not send the config this mandate pins for {}; refused", venue.name));
+        };
+        let CowTerms { app_data, max_life, pairs } =
+            cow_terms(config).map_err(|e| format!("the config for {} {e}; refused", venue.name))?;
+        b.row(s, "Trading on", format!("{} (decoder {} verified in this build)", venue.name, decoder.to_checksum(None)));
+        b.row(s, "Proceeds go to", "this account only");
+        for (sell, buy, min_buy, per_sell) in pairs.iter() {
+            // the policy registers an order only for a token it limits, and not for one
+            // with a payee list: a pair it would never let through is not shown as allowed
+            let Some((_, budget)) = capped.iter().find(|c| c.0 == *sell) else {
+                return Err(format!("the config for {} sells a token this mandate does not limit; refused", venue.name));
+            };
+            b.sold.push((*sell, venue.spender, *budget, venue.name.clone()));
+            if listed.contains(sell) {
+                return Err(format!("the config for {} sells a token whose payees this mandate lists; what is sold goes to whoever fills the order; refused", venue.name));
+            }
+            let amount = |token: &Address, v: &U256| match b.facts.tokens.get(token) {
+                Some(t) => format!("{} {}", format_units(*v, t.decimals), t.symbol),
+                None => format!("{v} raw units of {} (unverified decimals)", token.to_checksum(None)),
+            };
+            b.row(
+                s,
+                "May sell",
+                format!("{} for {}: never for less than {} per {}", b.name(*sell), b.name(*buy), amount(buy, min_buy), amount(sell, per_sell)),
+            );
+        }
+        b.row(
+            s,
+            "Price",
+            "not below the lowest price above; above it the agent picks. At worst it sells all its budgets allow at the lowest price",
+        );
+        b.row(
+            s,
+            "Orders live",
+            if max_life % 60 == 0 { format!("at most {} minutes", max_life / 60) } else { format!("at most {max_life} seconds") },
+        );
+        b.row(s, "An order is charged", "to the budget when it is registered, filled or not; the charge is not given back, it returns when budgets renew");
+        if app_data.is_zero() {
+            b.row(s, "Order data", "none (appData is zero)");
+        } else {
+            b.bold(s, "Order data", format!("appData {app_data} — this build does not know what it stands for"));
+            b.warnings.push(format!("the orders at {} carry appData this build cannot read", venue.name));
+        }
+        b.row(s, "Tokens are taken by", b.name(venue.spender));
+    }
     Ok(())
 }
 
@@ -825,11 +1181,11 @@ fn external_call(
             return Err("an ERC-20 call with a non-canonical address word; refused".into());
         }
         let who = Address::from_slice(&data[16..36]);
-        let amount = U256::from_be_slice(&data[36..68]);
-        let amount = match (amount == U256::MAX, b.facts.tokens.get(&target)) {
+        let raw = U256::from_be_slice(&data[36..68]);
+        let amount = match (raw == U256::MAX, b.facts.tokens.get(&target)) {
             (true, Some(t)) => format!("unlimited {}", t.symbol),
             (true, None) => "unlimited".to_string(),
-            (false, _) => b.token_amount(target, amount),
+            (false, _) => b.token_amount(target, raw),
         };
         if selector == SELECTOR_ERC20_TRANSFER {
             // tokens are payments too: plain only to a contract the build knows
@@ -839,8 +1195,20 @@ fn external_call(
                 b.bold(s, "ERC-20 transfer", format!("{amount} to {}, an address this build does not know", who.to_checksum(None)));
             }
         } else {
-            // an approval hands spending rights to a third party
-            b.bold(s, "ERC-20 approve", format!("{} may spend {amount} of this token", who.to_checksum(None)));
+            b.approvals.push((target, who, raw));
+            match b.sold.iter().find(|v| v.0 == target && v.1 == who && raw <= v.2) {
+                // the allowance that goes with a trading mandate of this operation
+                Some(v) => {
+                    let text = if raw.is_zero() {
+                        format!("{} — taken back", b.name(who))
+                    } else {
+                        format!("{} may take {amount} for orders at {}: at most one budget of this token", b.name(who), v.3)
+                    };
+                    b.row(s, "Allowance to the venue", text)
+                }
+                // an approval hands spending rights to a third party
+                None => b.bold(s, "ERC-20 approve", format!("{} may spend {amount} of this token", b.name(who))),
+            }
         }
         return Ok(());
     }
@@ -894,6 +1262,7 @@ fn selector_name(sel: [u8; 4]) -> String {
         SELECTOR_INCREMENT => Some("increment"),
         SELECTOR_ERC20_TRANSFER => Some("transfer"),
         SELECTOR_ERC20_APPROVE => Some("approve"),
+        [0x27, 0xdd, 0xae, 0x76] => Some("orderRegister"),
         [0, 0, 0, 0] => Some("plain value transfer"),
         _ => None,
     };
@@ -998,6 +1367,8 @@ mod tests {
             signer_modules: vec![SIGNER],
             tokens: BTreeMap::new(),
             entry_point: None,
+            trading_policy_modules: vec![POLICY],
+            venues: BTreeMap::new(),
         }
     }
 
@@ -1031,6 +1402,248 @@ mod tests {
     fn open(op: &PackedUserOp) -> Review {
         let (bytes, c) = request(op);
         open_request(&bytes, &c, NOW, &enrolled(), &facts())
+    }
+
+    // --- a trading mandate (issue #80) ---
+
+    const USD: Address = address!("7000000000000000000000000000000000000007");
+    const WETH: Address = address!("8000000000000000000000000000000000000008");
+    const DECODER: Address = address!("9000000000000000000000000000000000000009");
+    const SETTLEMENT: Address = address!("a00000000000000000000000000000000000000a");
+    const RELAYER: Address = address!("b00000000000000000000000000000000000000b");
+    const DECODER_CODE: B256 = B256::repeat_byte(0xc0);
+
+    fn trading_facts() -> Facts {
+        let mut f = facts();
+        f.tokens.insert(USD, Token { symbol: "USDC".into(), decimals: 6, domain: B256::repeat_byte(9) });
+        f.tokens.insert(WETH, Token { symbol: "WETH".into(), decimals: 18, domain: B256::repeat_byte(8) });
+        f.names.insert(USD, "USDC".into());
+        f.names.insert(WETH, "WETH".into());
+        f.names.insert(RELAYER, "CoW Swap vault relayer".into());
+        f.venues.insert(DECODER, Venue { name: "CoW Swap".into(), code_hash: DECODER_CODE, place: SETTLEMENT, spender: RELAYER });
+        f
+    }
+
+    /// At least 0.0002 WETH for each USDC, orders of 30 minutes at most.
+    fn cow() -> Bytes {
+        kernel::cow_config(B256::ZERO, 1800, &[(USD, WETH, U256::from(200_000_000_000_000u64), U256::from(1_000_000))])
+    }
+
+    fn trading_params() -> kernel::PolicyParams {
+        kernel::PolicyParams {
+            targets: vec![POLICY],
+            selectors: vec![FixedBytes::from([0x27, 0xdd, 0xae, 0x76])],
+            max_value_per_op: 0,
+            budget: 10u128.pow(16),
+            valid_until: NOW + 30 * 86_400,
+            tokens: vec![(USD, 200_000_000, 1_000_000_000, B256::ZERO)],
+            valid_after: 0,
+            payees: vec![],
+        }
+    }
+
+    /// The review of an operation that installs a trading mandate, with the
+    /// configs the laptop sends beside it.
+    fn open_trading(params: &kernel::PolicyParams, trading: &kernel::Trading, sent: Vec<Bytes>, f: &Facts) -> Review {
+        let perm = FixedBytes::from([0x74, 0x72, 0x61, 0x64]);
+        let pdata = kernel::permission_data_with_trading(POLICY, params, trading, SIGNER, &key(2));
+        let mut o = op(kernel::execute_batch_calldata(vec![
+            (ACCOUNT, U256::ZERO, kernel::install_permission_calldata(perm, pdata, 1)),
+            (ACCOUNT, U256::ZERO, kernel::grant_execute_calldata(perm)),
+        ]));
+        o.gas_fees = kernel::pack_gas(1, 1);
+        let bytes = SignRequest::new(&o, ENTRY, 31337, NOW + 120, None, BTreeMap::new(), None).with_venue_configs(sent).to_bytes();
+        open_request(&bytes, &commitment(&bytes), NOW, &enrolled(), f)
+    }
+
+    fn one_venue(config: &Bytes) -> kernel::Trading {
+        kernel::Trading { period: 86_400, venues: vec![(DECODER, DECODER_CODE, alloy_primitives::keccak256(config))] }
+    }
+
+    #[test]
+    fn a_trading_mandate_is_shown_in_what_it_allows() {
+        let r = open_trading(&trading_params(), &one_venue(&cow()), vec![cow()], &trading_facts());
+        let t = r.text();
+        assert_eq!(r.verdict, Verdict::Sign, "{t}");
+        assert!(t.contains("Trading on: CoW Swap (decoder 0x9000000000000000000000000000000000000009 verified in this build)"), "{t}");
+        assert!(t.contains("Proceeds go to: this account only"), "{t}");
+        assert!(t.contains("never for less than 0.0002 WETH per 1 USDC"), "{t}");
+        assert!(t.contains("Price: not below the lowest price above"), "{t}");
+        assert!(t.contains("Orders live: at most 30 minutes"), "{t}");
+        assert!(t.contains("An order is charged: to the budget when it is registered, filled or not; the charge is not given back"), "{t}");
+        assert!(t.contains("Order data: none"), "{t}");
+        assert!(t.contains(&format!("Tokens are taken by: {} — CoW Swap vault relayer (verified in this build)", RELAYER.to_checksum(None))), "{t}");
+        assert!(t.contains("Budgets renew: every day, from 00:00 UTC"), "{t}");
+        assert!(t.contains("up to twice a budget can be spent in a short time"), "{t}");
+        assert!(t.contains("max 200 USDC per operation, budget 1000 USDC"), "{t}");
+        assert!(t.contains("orderRegister (0x27ddae76)"), "{t}");
+        // the order of the venue's lines: where the proceeds go comes before what may be sold
+        assert!(t.find("Proceeds go to").unwrap() < t.find("May sell").unwrap());
+
+        // a period alone, no venue: nothing of the laptop's is needed
+        let r = open_trading(&trading_params(), &kernel::Trading { period: 3_600, venues: vec![] }, vec![], &trading_facts());
+        assert_eq!(r.verdict, Verdict::Sign, "{}", r.text());
+        assert!(r.text().contains("Budgets renew: every hour"), "{}", r.text());
+        assert!(!r.text().contains("Trading on"));
+
+        // appData the build cannot read is shown as that, with a warning
+        let odd = kernel::cow_config(B256::repeat_byte(7), 1800, &[(USD, WETH, U256::from(1), U256::from(1))]);
+        let r = open_trading(&trading_params(), &one_venue(&odd), vec![odd.clone()], &trading_facts());
+        assert!(r.text().contains("this build does not know what it stands for"), "{}", r.text());
+        assert!(matches!(&r.verdict, Verdict::SignWithWarnings(w) if w.iter().any(|w| w.contains("appData"))), "{:?}", r.verdict);
+        assert!(r.needs_second_confirmation());
+    }
+
+    /// The allowance that goes with a trading install is spent past the
+    /// mandate, so the review holds it to the mandate: only the venue's
+    /// spender, one budget at most, wherever in the batch it stands. A
+    /// laptop that swapped the spender would otherwise get a budget of the
+    /// token behind a screen that differs in one address.
+    #[test]
+    fn the_allowance_of_a_trading_install_goes_to_the_venue_and_is_one_budget() {
+        let (p, f, c) = (trading_params(), trading_facts(), cow());
+        let other = address!("d00000000000000000000000000000000000000d");
+        let show = |token: Address, spender: Address, amount: u64, first: bool| {
+            let perm = FixedBytes::from([0x74, 0x72, 0x61, 0x64]);
+            let pdata = kernel::permission_data_with_trading(POLICY, &p, &one_venue(&c), SIGNER, &key(2));
+            let mut approve = SELECTOR_ERC20_APPROVE.to_vec();
+            approve.extend_from_slice(&[0u8; 12]);
+            approve.extend_from_slice(spender.as_slice());
+            approve.extend_from_slice(&U256::from(amount).to_be_bytes::<32>());
+            let mut calls = vec![
+                (ACCOUNT, U256::ZERO, kernel::install_permission_calldata(perm, pdata, 1)),
+                (ACCOUNT, U256::ZERO, kernel::grant_execute_calldata(perm)),
+            ];
+            calls.insert(if first { 0 } else { 2 }, (token, U256::ZERO, approve.into()));
+            let mut o = op(kernel::execute_batch_calldata(calls));
+            o.gas_fees = kernel::pack_gas(1, 1);
+            let bytes = SignRequest::new(&o, ENTRY, 31337, NOW + 120, None, BTreeMap::new(), None)
+                .with_venue_configs(vec![c.clone()])
+                .to_bytes();
+            open_request(&bytes, &commitment(&bytes), NOW, &enrolled(), &f)
+        };
+        let refused = |r: Review, why: &str| match r.verdict {
+            Verdict::Refuse(w) => assert!(w.contains(why), "{w}"),
+            v => panic!("not refused: {v:?}"),
+        };
+
+        // to the venue's spender, one budget: a plain row that names it
+        let r = show(USD, RELAYER, 1_000_000_000, false);
+        assert_eq!(r.verdict, Verdict::Sign, "{}", r.text());
+        let t = r.text();
+        assert!(t.contains("Allowance to the venue") && t.contains("CoW Swap vault relayer (verified in this build) may take 1000 USDC for orders at CoW Swap: at most one budget"), "{t}");
+        assert!(!t.contains("ERC-20 approve"), "{t}");
+        // less than a budget, and none at all
+        assert_eq!(show(USD, RELAYER, 5, false).verdict, Verdict::Sign);
+        assert!(show(USD, RELAYER, 0, false).text().contains("taken back"));
+
+        // to anyone else: refused, after the install or before it
+        refused(show(USD, other, 1_000_000_000, false), "not the venue's spender");
+        refused(show(USD, other, 1_000_000_000, true), "not the venue's spender");
+        refused(show(USD, other, 1, false), "not the venue's spender");
+        // more than one budget: refused
+        refused(show(USD, RELAYER, 1_000_000_001, false), "more than the token's budget");
+        refused(show(USD, RELAYER, 1_000_000_001, true), "more than the token's budget");
+        // a token the mandate does not sell is not this rule's: the bold row, as before
+        let r = show(COUNTER, other, 7, false);
+        assert!(r.text().contains("ERC-20 approve"), "{}", r.text());
+    }
+
+    #[test]
+    fn a_period_reads_as_it_is_counted() {
+        assert!(period_text(6 * 3_600).starts_with("every 6 hours, counted from 00:00 UTC"));
+        // five hours do not divide a day: the windows start at other hours each day
+        assert!(period_text(5 * 3_600).starts_with("every 5 hours, counted from 1970-01-01 00:00 UTC"));
+        assert!(period_text(86_400).contains("a payment or an order the agent registers ends with its period"));
+    }
+
+    #[test]
+    fn a_trading_mandate_the_build_cannot_vouch_for_is_refused() {
+        let refused = |r: Review, why: &str| {
+            assert!(matches!(&r.verdict, Verdict::Refuse(m) if m.contains(why)), "{why}: {:?}\n{}", r.verdict, r.text());
+            assert!(r.digest.is_none());
+        };
+        let (p, f, c) = (trading_params(), trading_facts(), cow());
+
+        // venues and no period: an order's charge would never come back, and the policy does not install it
+        refused(
+            open_trading(&p, &kernel::Trading { period: 0, ..one_venue(&c) }, vec![c.clone()], &f),
+            "trading venues and no budget period",
+        );
+
+        // the policy module is not known to hold periods and venues
+        let mut old = trading_facts();
+        old.trading_policy_modules.clear();
+        refused(open_trading(&p, &one_venue(&c), vec![c.clone()], &old), "not known to enforce them");
+
+        // a decoder the build does not know, and one whose code is pinned otherwise
+        let mut unknown = one_venue(&c);
+        unknown.venues[0].0 = COUNTER;
+        refused(open_trading(&p, &unknown, vec![c.clone()], &f), "is not one this build knows");
+        let mut other_code = one_venue(&c);
+        other_code.venues[0].1 = B256::repeat_byte(1);
+        refused(open_trading(&p, &other_code, vec![c.clone()], &f), "pins other code");
+
+        // the laptop sends no config, or another one
+        refused(open_trading(&p, &one_venue(&c), vec![], &f), "did not send the config");
+        let lax = kernel::cow_config(B256::ZERO, 1800, &[(USD, WETH, U256::from(1), U256::from(1_000_000))]);
+        refused(open_trading(&p, &one_venue(&c), vec![lax.clone()], &f), "did not send the config");
+
+        // configs the decoder would refuse or that do not read to the last byte
+        let bad = |pairs: &[(Address, Address, U256, U256)], life: u32, why: &str| {
+            let config = kernel::cow_config(B256::ZERO, life, pairs);
+            refused(open_trading(&p, &one_venue(&config), vec![config.clone()], &f), why);
+        };
+        let one = U256::from(1);
+        bad(&[], 1800, "no pair");
+        bad(&[(USD, WETH, one, one)], 0, "no order lifetime");
+        bad(&[(USD, WETH, U256::ZERO, one)], 1800, "without a lowest price");
+        bad(&[(USD, WETH, one, U256::ZERO)], 1800, "without a lowest price");
+        bad(&[(USD, USD, one, one)], 1800, "without two tokens");
+        bad(&[(USD, WETH, one, one), (USD, WETH, one, U256::from(2))], 1800, "lists a pair twice");
+        bad(&[(WETH, USD, one, one)], 1800, "does not limit");
+        bad(&vec![(USD, WETH, one, one); 17], 1800, "too many");
+        let mut padded = c.to_vec();
+        padded.extend_from_slice(&[0u8; 32]);
+        let padded = Bytes::from(padded);
+        refused(open_trading(&p, &one_venue(&padded), vec![padded.clone()], &f), "config for CoW Swap");
+
+        // a sold token with a payee list
+        let listed = kernel::PolicyParams { payees: vec![(USD, vec![COUNTER])], ..trading_params() };
+        refused(open_trading(&listed, &one_venue(&c), vec![c.clone()], &f), "whose payees this mandate lists");
+
+        // the settlement or the decoder among the targets
+        for target in [SETTLEMENT, DECODER] {
+            let mut reach = trading_params();
+            reach.targets.push(target);
+            reach.selectors.push(FixedBytes::from([0xec, 0x6c, 0xb1, 0x3f]));
+            refused(open_trading(&reach, &one_venue(&c), vec![c.clone()], &f), "could sign any order");
+        }
+
+        // the same under a mandate with no venue of its own
+        let mut plain = trading_params();
+        plain.targets = vec![COUNTER, SETTLEMENT];
+        plain.selectors = vec![FixedBytes::from(SELECTOR_INCREMENT), FixedBytes::from([0xec, 0x6c, 0xb1, 0x3f])];
+        refused(open_trading(&plain, &kernel::Trading { period: 3_600, venues: vec![] }, vec![], &f), "could sign any order");
+        refused(
+            {
+                let pdata = kernel::permission_data(POLICY, &plain, SIGNER, &key(2));
+                let perm = FixedBytes::from([0x70, 0x6c, 0x61, 0x6e]);
+                let mut o = op(kernel::execute_batch_calldata(vec![
+                    (ACCOUNT, U256::ZERO, kernel::install_permission_calldata(perm, pdata, 1)),
+                    (ACCOUNT, U256::ZERO, kernel::grant_execute_calldata(perm)),
+                ]));
+                o.gas_fees = kernel::pack_gas(1, 1);
+                let bytes = SignRequest::new(&o, ENTRY, 31337, NOW + 120, None, BTreeMap::new(), None).to_bytes();
+                open_request(&bytes, &commitment(&bytes), NOW, &enrolled(), &f)
+            },
+            "could sign any order",
+        );
+
+        // a venue twice
+        let mut twice = one_venue(&c);
+        twice.venues.push(twice.venues[0]);
+        refused(open_trading(&p, &twice, vec![c.clone()], &f), "twice in one mandate");
     }
 
     fn clone_params(p: &kernel::PolicyParams) -> kernel::PolicyParams {
@@ -1117,6 +1730,39 @@ mod tests {
         pm.extend_from_slice(&[0u8; 32]);
         other.paymaster_and_data = pm.into();
         assert!(matches!(open(&other).verdict, Verdict::Refuse(ref m) if m.contains("paymaster")));
+    }
+
+    /// Gas limits and fees are the laptop's numbers, up to 2^128 - 1 each
+    /// (`preVerificationGas` up to 2^256 - 1): the cost shown is exact or the
+    /// operation is refused, never a panic or a wrapped, smaller number.
+    /// Found by the `operation` fuzz target (a sponsored operation whose two
+    /// paymaster gas limits overflowed their u128 sum).
+    #[test]
+    fn the_largest_gas_numbers_neither_panic_nor_wrap() {
+        let mut o = op(kernel::execute_calldata(COUNTER, U256::ZERO, &SELECTOR_INCREMENT));
+        let mut pm = PAYMASTER.to_vec();
+        pm.extend_from_slice(&u128::MAX.to_be_bytes());
+        pm.extend_from_slice(&u128::MAX.to_be_bytes());
+        o.paymaster_and_data = pm.into();
+        // the paymaster's two limits alone at their largest: the cost is the exact 256-bit one
+        let (vg, cg) = split(o.account_gas_limits);
+        let (_, fee) = split(o.gas_fees);
+        let exact = (U256::from(vg) + U256::from(cg) + U256::from(u128::MAX) * U256::from(2) + o.pre_verification_gas) * U256::from(fee);
+        let r = open(&o);
+        assert!(r.text().contains(&format!("Maximum gas cost: {} ETH", format_ether(exact))), "{}", r.text());
+        // the four limits at their largest fit a word summed; times the largest fee they do not
+        o.account_gas_limits = kernel::pack_gas(u128::MAX, u128::MAX);
+        o.gas_fees = kernel::pack_gas(u128::MAX, u128::MAX);
+        assert!(matches!(open(&o).verdict, Verdict::Refuse(ref m) if m.contains("beyond 2^256 wei")), "{:?}", open(&o).verdict);
+        // every number at its largest: no word holds the sum either, and it is refused, sponsored or not
+        o.pre_verification_gas = U256::MAX;
+        assert!(matches!(open(&o).verdict, Verdict::Refuse(ref m) if m.contains("beyond 2^256 wei")), "{:?}", open(&o).verdict);
+        o.paymaster_and_data = Bytes::new();
+        assert!(matches!(open(&o).verdict, Verdict::Refuse(ref m) if m.contains("beyond 2^256 wei")), "{:?}", open(&o).verdict);
+        // fits a word, but not the account's cap: refused by the cap
+        o.pre_verification_gas = U256::from(50_000u64);
+        o.gas_fees = kernel::pack_gas(1, 1u128 << 64);
+        assert!(matches!(open(&o).verdict, Verdict::Refuse(ref m) if m.contains("exceeds this enrollment's cap")), "{:?}", open(&o).verdict);
     }
 
     #[test]
@@ -1412,6 +2058,10 @@ mod tests {
         };
         assert!(matches!(open(&install(flip_flag(0, [0, 1]))).verdict, Verdict::Refuse(ref m) if m.contains("skips its policy")));
         assert!(matches!(open(&install(flip_flag(1, [0, 2]))).verdict, Verdict::Refuse(ref m) if m.contains("skips its signature")));
+        // the same policy module twice: Kernel installs both under the one id, the second
+        // install reverts, and two mandates on the screen would not come true
+        let twice = Bytes::from(vec![entries[0].clone(), entries[0].clone(), entries[1].clone()].abi_encode());
+        assert!(matches!(open(&install(twice)).verdict, Verdict::Refuse(ref m) if m.contains("appears twice in one permission")));
         // a hook on an install
         let mut c = IKernel::installValidationsCall::abi_decode(&kernel::install_permission_calldata(perm, pdata.clone(), 1)).unwrap();
         c.configs[0].hook = PAYMASTER;
@@ -1601,8 +2251,133 @@ mod tests {
         assert!(t.contains("demo counter (verified in this build)") && !t.contains("not the counter"), "{t}");
     }
 
-    /// The phone's path: the facts embedded for the request's chain. On Base
-    /// Sepolia the project's own contracts are known, a variant's paymaster is not.
+    /// On Sepolia the build knows the trading policy, CoW's venue by its
+    /// decoder's address and code, and the two tokens: a trading mandate there
+    /// is shown in full and can be signed, with its allowance; the same
+    /// mandate on the first policy instance, on Base Sepolia, or with another
+    /// decoder code is refused.
+    #[test]
+    fn a_trading_mandate_on_sepolia_is_read_from_the_build_facts() {
+        let f = crate::facts::for_chain(11155111);
+        let policy = f.trading_policy_modules[0];
+        let signer = f.signer_modules[0];
+        let (decoder, venue) = f.venues.iter().next().map(|(d, v)| (*d, v.clone())).unwrap();
+        let usdc = address!("1c7D4B196Cb0C7B01d743Fbc6116a902379C7238");
+        let weth = address!("fFf9976782d46CC05630D1f6eBAb18b2324d6B14");
+        // never under 0.0002 WETH for a USDC, orders of 30 minutes at most
+        let config = kernel::cow_config(B256::ZERO, 1800, &[(usdc, weth, U256::from(200_000_000_000_000u64), U256::from(1_000_000))]);
+        let params = |policy: Address| kernel::PolicyParams {
+            targets: vec![policy],
+            selectors: vec![FixedBytes::from([0x27, 0xdd, 0xae, 0x76])],
+            max_value_per_op: 0,
+            budget: 10u128.pow(16),
+            valid_until: NOW + 30 * 86_400,
+            tokens: vec![(usdc, 20_000_000, 50_000_000, B256::ZERO)],
+            valid_after: 0,
+            payees: vec![],
+        };
+        let show = |chain: u64, policy: Address, code_hash: B256| {
+            let trading = kernel::Trading { period: 86_400, venues: vec![(decoder, code_hash, alloy_primitives::keccak256(&config))] };
+            let perm = FixedBytes::from([0x74, 0x72, 0x64, 0x31]);
+            let pdata = kernel::permission_data_with_trading(policy, &params(policy), &trading, signer, &key(2));
+            let mut approve = SELECTOR_ERC20_APPROVE.to_vec();
+            approve.extend_from_slice(&[0u8; 12]);
+            approve.extend_from_slice(venue.spender.as_slice());
+            approve.extend_from_slice(&U256::from(50_000_000u64).to_be_bytes::<32>());
+            let mut o = op(kernel::execute_batch_calldata(vec![
+                (ACCOUNT, U256::ZERO, kernel::install_permission_calldata(perm, pdata, 1)),
+                (ACCOUNT, U256::ZERO, kernel::grant_execute_calldata(perm)),
+                (usdc, U256::ZERO, approve.into()),
+            ]));
+            o.gas_fees = kernel::pack_gas(1, 1);
+            let bytes = SignRequest::new(&o, ENTRY, chain, NOW + 120, None, BTreeMap::new(), None)
+                .with_venue_configs(vec![config.clone()])
+                .to_bytes();
+            open_request_with_build_facts(&bytes, &commitment(&bytes), NOW, &[EnrolledAccount::new(chain, ENTRY, ACCOUNT)])
+        };
+
+        let r = show(11155111, policy, venue.code_hash);
+        let t = r.text();
+        assert_eq!(r.verdict, Verdict::Sign, "{t}");
+        for needed in [
+            "Trading on: CoW Swap (decoder 0x085883DD35e12d32de2F4f9d8CeFBE663ffa7cB0 verified in this build)",
+            "never for less than 0.0002 WETH per 1 USDC",
+            "Orders live: at most 30 minutes",
+            "Tokens are taken by: 0xC92E8bdf79f0507f65a392b0ab4667716BFE0110 — CoW Swap vault relayer (verified in this build)",
+            "Budgets renew: every day, from 00:00 UTC",
+            "may take 50 USDC for orders at CoW Swap: at most one budget",
+        ] {
+            assert!(t.contains(needed), "{needed}\n{t}");
+        }
+
+        let refused = |r: Review, why: &str| assert!(matches!(&r.verdict, Verdict::Refuse(m) if m.contains(why)), "{why}: {:?}", r.verdict);
+        // another code than the build knows for the decoder
+        refused(show(11155111, policy, B256::repeat_byte(7)), "pins other code");
+        // the first instance on Sepolia, which let a registration outlive its period
+        let first = address!("5Cfa68d42e4245c9Ba71e6103D4E2D99F3E40b42");
+        assert!(matches!(show(11155111, first, venue.code_hash).verdict, Verdict::Refuse(_)));
+        // Base Sepolia: no policy there knows periods, and the venue is not that chain's
+        let base = crate::facts::for_chain(84532);
+        assert!(matches!(show(84532, base.policy_modules[0], venue.code_hash).verdict, Verdict::Refuse(_)));
+    }
+
+    /// What `AgentPolicy.onInstall` refuses, the review refuses first: a
+    /// mandate the owner is shown is one that installs. One case for each
+    /// rule; the differential test of the CLI's local-chain tests holds the
+    /// two sides together over mandates from a seed.
+    #[test]
+    fn a_mandate_the_policy_would_not_install_is_not_shown() {
+        let place = MandatePlace { account: ACCOUNT, entry_point: ENTRY, policy: POLICY, payees_enforced: true, trading_enforced: false };
+        let token = address!("a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1");
+        let transfer = FixedBytes::from([0xa9, 0x05, 0x9c, 0xbb]);
+        type Init = (Vec<Address>, Vec<FixedBytes<4>>, U256, U256, U256, Vec<(Address, U256, U256, B256)>, U256);
+        let good = || -> Init { (vec![COUNTER], vec![FixedBytes::from(SELECTOR_INCREMENT)], U256::from(1), U256::from(2), U256::from(NOW + 3600), vec![], U256::ZERO) };
+        let read = |m: Init| mandate_terms(&m.abi_encode_params(), &place, &|a| a.to_string());
+        let t = read(good()).unwrap();
+        assert_eq!((t.allow.len(), t.max_value, t.budget, t.valid_until, t.valid_after), (1, U256::from(1), U256::from(2), NOW + 3600, 0));
+        let over = U256::from(u128::MAX) + U256::from(1);
+        let x402 = |name: &str| FixedBytes::<4>::from_slice(&alloy_primitives::keccak256(name)[..4]);
+        let cases: Vec<(&str, Box<dyn Fn(&mut Init)>, &str)> = vec![
+            ("no call", Box::new(|m| (m.0.clear(), m.1.clear()).0), "allows no call"),
+            ("validUntil zero", Box::new(|m| m.4 = U256::ZERO), "never valid"),
+            ("validAfter at validUntil", Box::new(|m| m.6 = m.4), "never valid"),
+            ("validUntil past 48 bits", Box::new(|m| m.4 = U256::from(1u64 << 48)), "does not fit a timestamp"),
+            ("a value cap past 128 bits", Box::new(move |m| m.2 = over), "128 bits"),
+            ("a budget past 128 bits", Box::new(move |m| m.3 = over), "128 bits"),
+            ("a token cap past 128 bits", Box::new(move |m| m.5.push((token, over, U256::from(1), B256::ZERO))), "128 bits"),
+            ("a token budget past 128 bits", Box::new(move |m| m.5.push((token, U256::from(1), over, B256::ZERO))), "128 bits"),
+            ("a token at the zero address", Box::new(|m| m.5.push((Address::ZERO, U256::from(1), U256::from(1), B256::ZERO))), "zero address"),
+            ("a token twice", Box::new(move |m| m.5.extend([(token, U256::from(1), U256::from(1), B256::ZERO); 2])), "two for one token"),
+            ("the account as a target", Box::new(|m| (m.0.push(ACCOUNT), m.1.push(FixedBytes::ZERO)).0), "the account itself"),
+            ("the EntryPoint as a target", Box::new(|m| (m.0.push(ENTRY), m.1.push(FixedBytes::ZERO)).0), "EntryPoint"),
+            ("the policy outside x402", Box::new(move |m| (m.0.push(POLICY), m.1.push(transfer)).0), "outside its x402 and order entries"),
+        ];
+        for (what, change, why) in cases {
+            let mut m = good();
+            change(&mut m);
+            let refused = read(m).expect_err(what);
+            assert!(refused.contains(why), "{what}: {refused}");
+        }
+        // the policy's two x402 entries are the calls a mandate may make on it
+        for name in ["x402Authorize(address,address,address,uint256,uint256,uint256,bytes32)", "x402Reclaim(bytes32,address,address,uint256,uint256,uint256,bytes32)"] {
+            let mut m = good();
+            m.0.push(POLICY);
+            m.1.push(x402(name));
+            assert!(read(m).is_ok(), "{name}");
+        }
+        // `orderRegister` is an entry of a policy that holds venues, and of no other
+        let mut m = good();
+        m.0.push(POLICY);
+        m.1.push(x402("orderRegister(address,bytes,bytes)"));
+        assert!(read(m.clone()).unwrap_err().contains("outside its x402 and order entries"));
+        let trading = MandatePlace { trading_enforced: true, ..place };
+        assert!(mandate_terms(&m.abi_encode_params(), &trading, &|a| a.to_string()).is_ok());
+        // the largest values the policy holds are read
+        let mut m = good();
+        (m.2, m.3, m.4) = (U256::from(u128::MAX), U256::from(u128::MAX), U256::from((1u64 << 48) - 1));
+        assert!(read(m).is_ok());
+    }
+
     /// A refusal's reason is on the screen too: a request whose field name
     /// carries a line break and a right-to-left override is refused, and the
     /// reason shows neither.
@@ -1615,6 +2390,8 @@ mod tests {
         assert!(why.contains("SIGNED OK") && why.contains('?'), "{why:?}");
     }
 
+    /// The phone's path: the facts embedded for the request's chain. On Base
+    /// Sepolia the project's own contracts are known, a variant's paymaster is not.
     #[test]
     fn build_facts_drive_the_review() {
         let me = ACCOUNT;
