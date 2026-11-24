@@ -62,6 +62,20 @@ pub fn forbidden_target(dep: &Deployments, account: Address, target: Address, se
     modules.iter().find(|(a, _)| *a == Some(target)).map(|(_, why)| why.to_string())
 }
 
+/// Why an allow-list entry is a place of one of the config's venues: the
+/// venue's own contract or its decoder (there the agent could sign any
+/// order, past the decoder) or its spender (it holds the owner's allowance
+/// of the sold tokens). `AgentPolicy` refuses all three on chain as well,
+/// under every mandate of the account (`venuePlace`).
+pub fn venue_target(venues: &std::collections::HashMap<Address, VenueOnChain>, target: Address) -> Option<String> {
+    if let Some((decoder, v)) = venues.iter().find(|(d, v)| **d == target || v.place == target) {
+        return Some(format!("the venue of decoder {decoder} itself ({}): there the agent could sign any order, past the decoder; it places orders through the policy's `orderRegister` only", v.place));
+    }
+    venues.iter().find(|(_, v)| v.spender == target).map(|(decoder, _)| {
+        format!("the spender of the venue of decoder {decoder}: it holds the owner's allowance of the tokens sold there, and through it they would leave past their limits and payee lists")
+    })
+}
+
 /// Stands in for the real signature while a bundler estimates gas: the same
 /// length, plausible non-zero scalars, never valid. Our validators report a
 /// wrong signature as failed instead of reverting, so the simulation runs to
@@ -1170,8 +1184,8 @@ impl Session {
             if let Some(why) = forbidden_target(&self.dep, self.account, *target, selector.0) {
                 bail!("allow-list entry {target} {selector} is never a valid target for the agent: {why}");
             }
-            if let Some((decoder, v)) = self.venues.iter().find(|(d, v)| *d == target || v.place == *target) {
-                bail!("allow-list entry {target} {selector} is the venue of decoder {decoder} itself ({}): there the agent could sign any order, past the decoder; it places orders through the policy's `orderRegister` only", v.place);
+            if let Some(why) = venue_target(&self.venues, *target) {
+                bail!("allow-list entry {target} {selector} is {why}");
             }
         }
         self.venue_allowances(false)?;
@@ -1812,6 +1826,21 @@ mod forbidden_target_tests {
         assert!(forbidden_target(&dep, account, dep.agent_policy, x402ReclaimCall::SELECTOR).is_none());
         // an ordinary contract is fine
         assert!(forbidden_target(&dep, account, dep.demo_counter, any).is_none());
+    }
+
+    #[test]
+    fn the_agent_never_targets_a_place_of_its_venues() {
+        let at = |n: u8| Address::repeat_byte(n);
+        let (decoder, settlement, relayer) = (at(0xd0), at(0x5e), at(0x4e));
+        let venues = std::collections::HashMap::from([(
+            decoder,
+            VenueOnChain { code_hash: B256::ZERO, place: settlement, spender: relayer, domain: B256::ZERO },
+        )]);
+        assert!(venue_target(&venues, settlement).unwrap().contains("could sign any order"));
+        assert!(venue_target(&venues, decoder).unwrap().contains("could sign any order"));
+        // the spender holds the allowance (issue #149)
+        assert!(venue_target(&venues, relayer).unwrap().contains("holds the owner's allowance"));
+        assert!(venue_target(&venues, at(0xc0)).is_none());
     }
 }
 
