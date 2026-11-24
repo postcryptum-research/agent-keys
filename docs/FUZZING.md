@@ -109,7 +109,7 @@ bytecode needs.
 - `kontrol prove` with three workers: 6 min 41 s of wall time, about 4 GB of memory at the peak seen. The three proofs took 2 min 52 s, 2 min 42 s and 4 min 37 s.
 - With three rules broken at once (the token budget off by one, the token's cap not checked, the native cap off by one), every proof fails, with the counterexamples `amount = 101` and `value = 1000000000000000001`, in 10 min 56 s.
 
-**In CI:** `.github/workflows/kontrol.yml` runs the same by hand, once a week, and on a pull request that changes `AgentPolicy.sol`, the harness, `foundry.toml` or the workflow. The image is pinned by digest. Kontrol sends anonymous usage data unless `KPROFILE_TELEMETRY_DISABLED=true` is set, as the workflow does. The command to run it by hand is in the harness's header.
+**In CI:** `.github/workflows/kontrol.yml` runs the same by hand, once a week, and on a pull request that changes `AgentPolicy.sol`, the harness, `foundry.toml` or the workflow. The image is pinned by digest. Kontrol sends anonymous usage data unless `KPROFILE_TELEMETRY_DISABLED=true` is set, as the workflow does. The command to run it by hand is in the harness's header. Its first run, on GitHub's `ubuntu-latest` runner on 2026-11-24 ([#135](https://github.com/postcryptum-research/agent-keys/pull/135)), passed all three proofs: pulling the image took 45 s, `kontrol build` 2 min 9 s, and `kontrol prove` with three workers 6 min 49 s, about 10 min 30 s for the whole job.
 
 **What it does not prove** ([#130](https://github.com/postcryptum-research/agent-keys/issues/130)):
 - **The batch, Safe and MultiSend paths.** Their loops run over a length the caller sets; they stay with the fuzzing above.
