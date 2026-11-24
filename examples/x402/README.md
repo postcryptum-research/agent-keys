@@ -53,8 +53,13 @@ Payments that expired unused (the server never settled them) stay booked
 against the budget until the agent returns them:
 
 ```sh
-agent-signer x402 reclaim --agent agent.x402.base-sepolia.json --env-file ../../.env
+agent-signer x402 reclaim --agent agent.x402.base-sepolia.json --env-file ../../.env --from-block <the block x402 fetch printed>
 ```
+
+`x402 fetch` prints the block it registered in (`registered: tx … (block N)`).
+Without `--from-block`, `x402 reclaim` looks at the last 50,000 blocks, a
+little over a day on Base; either way its result names the blocks it looked
+at, so that `reclaimed 0` is not read as nothing being booked.
 
 ## Cost
 

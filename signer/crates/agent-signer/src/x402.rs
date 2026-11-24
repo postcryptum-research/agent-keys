@@ -231,13 +231,15 @@ impl Session {
 
     /// Return to the token budget every authorization of this permission
     /// that expired unused. Registrations are found from the policy's
-    /// `X402Authorized` events since `from_block`.
-    pub async fn x402_reclaim(&self, from_block: Option<u64>, sponsored: bool) -> Result<Vec<(Authorization, B256)>> {
+    /// `X402Authorized` events since `from_block` (default: the last
+    /// `RECLAIM_WINDOW` blocks). Also returns the blocks looked at, so that
+    /// "nothing reclaimed" is not read as "nothing booked" (issue #116).
+    pub async fn x402_reclaim(&self, from_block: Option<u64>, sponsored: bool) -> Result<(Vec<(Authorization, B256)>, (u64, u64))> {
         let policy = self.installed_policy().await?;
         let id = self.cfg.permission_id()?;
         let id32 = B256::right_padding_from(id.as_slice());
         let latest = self.provider.get_block_number().await?;
-        let start = from_block.unwrap_or(latest.saturating_sub(50_000));
+        let start = from_block.unwrap_or(latest.saturating_sub(RECLAIM_WINDOW));
         let pending_sel = alloy::primitives::keccak256("x402Pending(address,bytes32,bytes32)");
         // Expiry is the contract's call (`block.timestamp >= validBefore`): judge
         // it by the chain's clock, not this machine's.
@@ -253,11 +255,15 @@ impl Session {
             .address(policy)
             .event_signature(X402Events::X402Authorized::SIGNATURE_HASH)
             .topic1(B256::left_padding_from(self.account.as_slice()));
-        let logs = scan_in_chunks(start, latest, |lo, hi| {
+        let (logs, narrowed) = scan_in_chunks(start, latest, |lo, hi| {
             let filter = base.clone().from_block(lo).to_block(hi);
             async move { Ok(self.provider.get_logs(&filter).await?) }
         })
         .await?;
+        if let Some(chunk) = narrowed {
+            // one line, not one per halving: the node's limit, not its error text
+            eprintln!("reclaim:        this node answers eth_getLogs for at most {chunk} blocks a request; read in ranges of {chunk}");
+        }
         {
             for log in logs {
                 let ev = X402Events::X402Authorized::decode_log_data(log.data())?;
@@ -316,15 +322,21 @@ impl Session {
                 done.push((auth, inc.tx));
             }
         }
-        Ok(done)
+        Ok((done, (start, latest)))
     }
 }
 
+/// How far back `x402 reclaim` looks without `--from-block`: a little over a
+/// day on Base. An older registration needs `--from-block`, the block
+/// `x402 fetch` printed.
+pub const RECLAIM_WINDOW: u64 = 50_000;
+
 /// `eth_getLogs` over `[start, end]` in chunks. Public RPCs cap the block
 /// range of one request (Base Sepolia's: 200 blocks), so a refused chunk is
-/// halved and retried; the size that worked is kept for the next chunks.
-/// Below `MIN_CHUNK` the RPC's own error is returned.
-pub async fn scan_in_chunks<T, F, Fut>(start: u64, end: u64, mut fetch: F) -> Result<Vec<T>>
+/// halved and retried, quietly; the size that worked is kept for the next
+/// chunks and returned when it is smaller than the first, so that the caller
+/// can say so once. Below `MIN_CHUNK` the RPC's own error is returned.
+pub async fn scan_in_chunks<T, F, Fut>(start: u64, end: u64, mut fetch: F) -> Result<(Vec<T>, Option<u64>)>
 where
     F: FnMut(u64, u64) -> Fut,
     Fut: std::future::Future<Output = Result<Vec<T>>>,
@@ -341,14 +353,12 @@ where
                 out.append(&mut logs);
                 lo = hi + 1;
             }
-            Err(e) if chunk > MIN_CHUNK => {
-                chunk = (chunk / 2).max(MIN_CHUNK);
-                eprintln!("eth_getLogs refused {} blocks ({e:#}); retrying in chunks of {chunk}", hi - lo + 1);
-            }
+            // a node's range limit: narrow and retry; its error text is not printed each time
+            Err(_) if chunk > MIN_CHUNK => chunk = (chunk / 2).max(MIN_CHUNK),
             Err(e) => return Err(e.context(format!("eth_getLogs over blocks {lo}..{hi}"))),
         }
     }
-    Ok(out)
+    Ok((out, (chunk < FIRST_CHUNK).then_some(chunk)))
 }
 
 #[cfg(test)]
@@ -364,7 +374,7 @@ mod tests {
     fn shrinks_to_what_the_rpc_accepts_and_covers_every_block() {
         // A public-RPC-like cap: at most 200 blocks per request.
         let calls = RefCell::new(Vec::new());
-        let blocks = block_on(scan_in_chunks(1_000, 3_499, |lo, hi| {
+        let (blocks, narrowed) = block_on(scan_in_chunks(1_000, 3_499, |lo, hi| {
             calls.borrow_mut().push((lo, hi));
             async move {
                 if hi - lo + 1 > 200 {
@@ -375,6 +385,8 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(blocks, (1_000..=3_499).collect::<Vec<u64>>(), "every block once, in order");
+        // the range it settled on is reported once, for the caller's one line (issue #116)
+        assert_eq!(narrowed, Some(156));
         let accepted: Vec<_> = calls.borrow().iter().copied().filter(|(lo, hi)| hi - lo + 1 <= 200).collect();
         assert!(accepted.iter().all(|(lo, hi)| hi - lo + 1 <= 200));
         // after shrinking it stays shrunk: no request above the cap once one was accepted
@@ -391,12 +403,13 @@ mod tests {
     #[test]
     fn an_unrestricted_rpc_takes_one_request_per_10k() {
         let calls = RefCell::new(0);
-        let n = block_on(scan_in_chunks(0, 24_999, |lo, hi| {
+        let (found, narrowed) = block_on(scan_in_chunks(0, 24_999, |lo, hi| {
             *calls.borrow_mut() += 1;
             async move { Ok(vec![(lo, hi)]) }
         }))
-        .unwrap()
-        .len();
-        assert_eq!((n, *calls.borrow()), (3, 3));
+        .unwrap();
+        assert_eq!((found.len(), *calls.borrow()), (3, 3));
+        // nothing narrowed, nothing to say
+        assert_eq!(narrowed, None);
     }
 }
