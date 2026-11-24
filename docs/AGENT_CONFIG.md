@@ -36,7 +36,7 @@ agent-signer permission show --agent my-agent.json --env-file .env
 
 ```
   ok agent key       chain 0xff669706… / config 0xff669706…
-policy module:  0x3f590A58…b424
+policy module:  0x3f590A5879B5f28466b6DAeF69FfA9777f84b424
   ok validUntil      chain 1795046400 / config 1795046400
 DIFF budget          chain 3000000000000000 / config 999000000000000000000
 DIFF allow           0x…dEaD 0x00000000  — in the config, NOT allowed on chain
@@ -55,7 +55,7 @@ phone shows before a key is deleted there
 {
   "deployments": "../contracts/deployments/84532.json",
   "owner": { "tpm": "0x81010010" },
-  "ownerPublicKey": { "x": "0xa616…dc09", "y": "0xebe5…fa45" },
+  "ownerPublicKey": { "x": "0xa6167e4e202449fb153735e02464f56b136e8e86d60c9ef083e7d3441387dc09", "y": "0xebe5715052910fe678f525cd3420b7e1abeb0c7bc2b6a11a89b1c48f2f5bfa45" },
   "agent": { "tropic01": { "port": "/dev/ttyACM0", "slot": 1 } },
   "recovery": { "keyfile": "/media/me/USB/recovery.json" },
   "permissionId": "0x74727334",

@@ -87,11 +87,11 @@ Whole `handleOps` transactions as reported by the receipts, self-bundled:
 
 | operation | tx | gas used |
 |---|---|---:|
-| agent `increment()`, account pays | `0x00b95a89…2fafc84` | 154,412 |
-| agent `increment()`, paymaster pays | `0xae73b53d…3a5f2106` | 163,012 |
-| sealed agent key, paymaster pays | `0xc8117420…75db4b` | 180,100 |
-| first operation, deploys the account | `0x78533210…e669bb` | 700,039 |
-| owner rotates the agent permission | `0x4519a35b…195370` | 451,053 |
+| agent `increment()`, account pays | `0x00b95a898f5c1751928356f3514a47575d86cd318c6b18e6e183e7abd2fafc84` | 154,412 |
+| agent `increment()`, paymaster pays | `0xae73b53d17b74ad8c7b6d65f8cc98abd40c513a808b09764828dff8a3a5f2106` | 163,012 |
+| sealed agent key, paymaster pays | `0xc8117420694a9c17d3c91a14df3ce70f00298d2bc0fcd38f55997c1bfc75db4b` | 180,100 |
+| first operation, deploys the account | `0x785332105fd8085d50e542ff9f677eba964399bbc0d71333ddd71fed03e669bb` | 700,039 |
+| owner rotates the agent permission | `0x4519a35b5acdc19ffe713326964b5214677825d11040684f9869adbd8b195370` | 451,053 |
 
 These include the 21k base, calldata, and the EntryPoint's own bookkeeping
 around the measured execution.

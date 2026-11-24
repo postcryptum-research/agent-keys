@@ -18,7 +18,7 @@
 >   allow-listed `approveHash` Safe примет только `v = 1` от `msg.sender == Kernel`.
 > - `agent-signer op send --json` есть; логи своего userOp режет адаптер
 >   (`src/kernelSafeBroadcaster.ts`, `userOpLogs`).
-> - Проверено на Base Sepolia: Safe v1.3.0 `0xd0b972a8…E52A` с единственным владельцем Kernel;
+> - Проверено на Base Sepolia: Safe v1.3.0 `0xd0b972a8ee7D8AB91a2e3381Eb6F10550B80E52A` с единственным владельцем Kernel;
 >   от ключа в TROPIC01 под v3 прошли одиночный вызов и MultiSendCallOnly-батч через Safe,
 >   `addOwner` отклонён политикой (`README.md`, раздел Run).
 

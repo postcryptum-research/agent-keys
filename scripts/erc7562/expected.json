@@ -22,5 +22,13 @@
   "6-rule-breaker-transient-own": {
     "asItIs": "REFUSED: account accesses un-deployed contract address 0x0000000000000000000000000000000000000100 with opcode STATICCALL",
     "precompileAllowed": "PASSES"
+  },
+  "7-agent-policy-deployed-plain": {
+    "asItIs": "REFUSED: account accesses un-deployed contract address 0x0000000000000000000000000000000000000100 with opcode STATICCALL",
+    "precompileAllowed": "PASSES"
+  },
+  "8-agent-policy-deployed-x402": {
+    "asItIs": "REFUSED: account accesses un-deployed contract address 0x0000000000000000000000000000000000000100 with opcode STATICCALL",
+    "precompileAllowed": "PASSES"
   }
 }
