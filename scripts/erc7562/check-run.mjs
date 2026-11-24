@@ -10,8 +10,9 @@
 //   strict     the checker as it is, nobody staked
 //   precompile the P-256 precompile (RIP-7212) not taken for an un-deployed
 //              contract: a bundler set up for a network that has it
-//   staked     the same, with the operation's factory and paymaster staked,
-//              which ERC-7562 asks of them for what they do here
+//   staked     the same, with the operation's factory staked and nobody else:
+//              ERC-7562 asks a stake of a factory for what ours does, and a
+//              paymaster that came to need one must not pass the gate
 // --gate: exit 1 unless every operation is as GATE (below) says. The
 // directory should hold one run's traces only.
 import fs from "node:fs";
@@ -62,7 +63,7 @@ for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".json")).sort()
     paymaster: Boolean(op.paymaster),
     strict: ask(run.trace, { op, entryPoint }),
     precompile: ask(run.trace, { op, entryPoint, precompileAllowed: true }),
-    staked: ask(run.trace, { op, entryPoint, precompileAllowed: true, staked: true }),
+    staked: ask(run.trace, { op, entryPoint, precompileAllowed: true, staked: "factory" }),
   });
 }
 
@@ -78,7 +79,7 @@ const GATE = (r) =>
   !r.note && (r.factory ? r.staked === "PASSES" && (r.precompile === "PASSES" || KNOWN_FACTORY_REFUSAL.test(r.precompile)) : r.precompile === "PASSES");
 
 let failures = 0;
-const lines = ["| Operation | Path | Factory | Paymaster | Strict | Precompile allowed | And entities staked | Gate |", "|---|---|---|---|---|---|---|---|"];
+const lines = ["| Operation | Path | Factory | Paymaster | Strict | Precompile allowed | And the factory staked | Gate |", "|---|---|---|---|---|---|---|---|"];
 for (const r of rows) {
   const ok = GATE(r);
   if (!ok) failures++;

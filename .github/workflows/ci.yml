@@ -6,7 +6,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: ci-${{ github.head_ref || github.run_id }}
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 jobs:
   contracts:
@@ -15,6 +15,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+          persist-credentials: false
       - uses: ./.github/actions/foundry
       - name: forge test
         working-directory: contracts
@@ -24,12 +25,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: hw-signer
         working-directory: signer
         run: cargo test --locked -p hw-signer
       - name: owner-core
         working-directory: mobile/owner-core
         run: cargo test --locked --features ffi,test-chains
+      # The builds that ship: software keys refused in every role, no test
+      # chain known. Two tests hold exactly that and exist only without the
+      # test features.
+      - name: owner-core, the regular build
+        working-directory: mobile/owner-core
+        run: cargo test --locked
+      - name: agent-signer, the regular build
+        working-directory: signer
+        run: cargo test --locked -p agent-signer
 
   # The CLI's tests, the local-chain ones among them, and what a
   # rule-enforcing bundler makes of every operation they send (issue #83,
@@ -40,6 +52,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/foundry
       - uses: actions/setup-node@v4
         with:
