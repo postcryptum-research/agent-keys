@@ -602,6 +602,7 @@ struct KeyInfo {
     key: String,
     x: String,
     y: String,
+    fingerprint: String,
 }
 
 fn hex32(b: &[u8; 32]) -> String {
@@ -676,7 +677,8 @@ fn open_backend(backend: Backend, parent: u32, label: Option<String>, slot: u16)
 }
 
 fn print_key(key: String, pk: &PublicKey) -> Result<()> {
-    println!("{}", serde_json::to_string_pretty(&KeyInfo { key, x: hex32(&pk.x), y: hex32(&pk.y) })?);
+    let fingerprint = owner_core::fingerprint::fingerprint(pk);
+    println!("{}", serde_json::to_string_pretty(&KeyInfo { key, x: hex32(&pk.x), y: hex32(&pk.y), fingerprint })?);
     Ok(())
 }
 
@@ -697,7 +699,7 @@ fn check_signer(name: String, signer: &dyn HardwareSigner) -> Result<()> {
     if !verify_p256(&digest, &sig, &pk) {
         bail!("{name}: the signature does not verify against the key's public half");
     }
-    println!("OK: {name} signs (0x{}…)", hex::encode(&pk.x[..4]));
+    println!("OK: {name} signs\n  {}", chain::key_text(&pk, "  "));
     Ok(())
 }
 

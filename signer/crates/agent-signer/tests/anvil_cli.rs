@@ -565,6 +565,24 @@ fn agent_lifecycle() {
     let pinned = chain.config("pinned.json", &Cfg { account: Some(account.clone()), ..base });
     let shown = chain.ok(&["permission", "show", "--agent", &pinned]);
     assert!(shown.contains("ok agent key") && !shown.contains("DIFF"), "{shown}");
+    // the key is shown whole, with its fingerprint: nothing is cut (issue #115)
+    let whole = |k: &Key| vec![format!("fingerprint {}", fingerprint_of(k)), format!("x = {}", k.x), format!("y = {}", k.y)];
+    for part in whole(&agent) {
+        assert!(shown.contains(&part), "{part}\n{shown}");
+    }
+    assert!(!shown.contains('…'), "{shown}");
+    // the sample output in docs/AGENT_CONFIG.md is this key's
+    assert_eq!(fingerprint_of(&agent), "BPQBJ-WZ7L7-7AHTA-QCCMZ");
+    assert_eq!(agent.x, "0x2f23ebb1c38db28363df39984086922a0585f3fa7fd315d8925ebd1663548c9f");
+    // a config that names another agent key: both keys can be read and told apart
+    let other = key(7);
+    let differs = chain.config("other-key.json", &Cfg { agent: &other, account: Some(account.clone()), ..base_cfg(&owner, &other, &counter, until) });
+    let shown = chain.ok(&["permission", "show", "--agent", &differs]);
+    assert!(shown.contains("DIFF agent key       chain:") && shown.contains("config: fingerprint"), "{shown}");
+    for part in whole(&agent).into_iter().chain(whole(&other)) {
+        assert!(shown.contains(&part), "{part}\n{shown}");
+    }
+    assert!(!shown.contains('…'), "{shown}");
 
     // rotate to a new agent key under a new id: the old permission is gone
     let rotated = chain.config(
@@ -640,7 +658,14 @@ fn recovery_drill() {
     let old_cfg = with("old-owner.json", &owner);
 
     chain.ok(&["owner", "add-recovery", "--agent", &old_cfg]);
-    assert!(chain.ok(&["owner", "status", "--agent", &old_cfg]).contains("installed = true"));
+    let status = chain.ok(&["owner", "status", "--agent", &old_cfg]);
+    assert!(status.contains("installed = true"), "{status}");
+    // both keys whole, each with its fingerprint: the root key and the recovery key (issue #115)
+    for (line, k) in [("root key:       ", &owner), ("recovery key:   ", &recovery)] {
+        let text = format!("{line}fingerprint {}\n                x = {}\n                y = {}", fingerprint_of(k), k.x, k.y);
+        assert!(status.contains(&text), "{text}\n{status}");
+    }
+    assert!(!status.contains('…'), "{status}");
     // a different recovery key is refused by the CLI's check against the
     // chain, before anything is signed
     let wrong = key(6);
@@ -650,6 +675,8 @@ fn recovery_drill() {
     );
     let refused = chain.fails(&["owner", "recover", "--agent", &wrong_cfg]);
     assert!(refused.contains("not the one installed on the account"), "{refused}");
+    // the refusal names both keys whole
+    assert!(refused.contains(&format!("x = {}", wrong.x)) && refused.contains(&format!("x = {}", recovery.x)) && !refused.contains('…'), "{refused}");
     chain.ok(&["owner", "recover", "--agent", &old_cfg]);
     let validator = chain.addr("p256Validator");
     let public_key = format!("{},{}", new_owner.x, new_owner.y);
