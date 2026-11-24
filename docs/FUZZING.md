@@ -124,8 +124,8 @@ by one, an order with value attached, an order not charged, a window of a
 single second; these sixteen are found at 256 runs. (Four of them were
 rules of an order's refund, which the policy had then. The refund was
 removed on 2026-11-24: a filled order could be made to read as untouched
-at the venue after its end. The model now asks for a refund at every
-step and holds that none is given.) Two are not, and cannot
+at the venue after its end. The model now asks for the refund of orders
+it registered, throughout a run, and holds that none is given.) Two are not, and cannot
 be while the EntryPoint holds the window: accepting a period earlier than
 one already seen (to have seen a later one, an operation must have been
 accepted outside its window), and accepting a period index of fewer than
