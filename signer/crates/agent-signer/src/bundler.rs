@@ -70,10 +70,12 @@ pub fn bounded(name: &str, theirs: U256, ceiling: u128, of: &str) -> Result<u128
 /// dearer of the two calldata schedules — so a large first operation is not
 /// refused.
 pub fn pre_verification_ceiling(op: &PackedUserOperation, ours: u128) -> u128 {
+    // saturating: these are ceilings from our own figures, and the largest value is a right bound (rule 10)
     let packed = op.abi_encode();
-    let bytes: u128 = packed.iter().map(|&b| if b == 0 { 10 } else { 40 }).sum();
-    let l1 = 21_000 + 18_300 + 4 * packed.len().div_ceil(32) as u128 + bytes;
-    FACTOR * ours.max(l1)
+    let bytes = packed.iter().fold(0u128, |sum, &b| sum.saturating_add(if b == 0 { 10 } else { 40 }));
+    let words = u128::try_from(packed.len().div_ceil(32)).unwrap_or(u128::MAX);
+    let l1 = 39_300u128.saturating_add(words.saturating_mul(4)).saturating_add(bytes); // 21000 + 18300
+    FACTOR.saturating_mul(ours.max(l1))
 }
 
 /// Write a bundler's estimate into `op`, whose gas fields still hold the
@@ -90,15 +92,15 @@ pub fn apply_estimate(op: &mut PackedUserOperation, est: &GasEstimate) -> Result
         "the larger of the CLI's own figure and the operation's calldata cost",
     )?;
     let verification =
-        bounded("verificationGasLimit", est.verification_gas_limit, FACTOR * our_verification, OURS)?;
-    let call = bounded("callGasLimit", est.call_gas_limit, FACTOR * our_call, OURS)?;
+        bounded("verificationGasLimit", est.verification_gas_limit, FACTOR.saturating_mul(our_verification), OURS)?;
+    let call = bounded("callGasLimit", est.call_gas_limit, FACTOR.saturating_mul(our_call), OURS)?;
     let paymaster_and_data = if op.paymasterAndData.len() >= 52 {
         let pm = &op.paymasterAndData;
         let our_verification = u128::from_be_bytes(pm[20..36].try_into().expect("16 bytes"));
         let our_post_op = u128::from_be_bytes(pm[36..52].try_into().expect("16 bytes"));
         // Our paymaster runs no postOp (ours is 0, a bundler may say 1): its
         // two limits share one bound, twice the paymaster gas we set.
-        let ceiling = FACTOR * (our_verification + our_post_op);
+        let ceiling = FACTOR.saturating_mul(our_verification.saturating_add(our_post_op));
         let paymaster = |name, theirs: Option<U256>, ours| match theirs {
             Some(v) => bounded(name, v, ceiling, "the paymaster gas the CLI sets"),
             None => Ok(ours),
