@@ -33,7 +33,7 @@ pub const PERMIT2: Address = alloy::primitives::address!("000000000022D473030F11
 
 pub fn forbidden_target(dep: &Deployments, account: Address, target: Address, selector: [u8; 4]) -> Option<String> {
     use crate::abi::IAgentPolicyX402::{x402AuthorizeCall, x402ReclaimCall};
-    let modules: [(Option<Address>, &str); 7] = [
+    let modules: [(Option<Address>, &str); 8] = [
         (Some(dep.p256_validator), "the root validator: the agent could replace the owner key"),
         (dep.p256_validator_v1, "a root validator: the agent could replace the owner key"),
         (dep.p256_recovery_validator, "the recovery validator: the agent could replace the recovery key"),
@@ -41,6 +41,7 @@ pub fn forbidden_target(dep: &Deployments, account: Address, target: Address, se
         (Some(dep.p256_signer), "the permission signer: the agent could swap its own key"),
         (Some(dep.kernel), "the Kernel implementation"),
         (Some(dep.kernel_factory), "the account factory"),
+        (dep.kernel_factory_staker, "the account factory's staker"),
     ];
     if target == account {
         return Some("the account itself: the agent could grant itself access, replace the root key or execute as root".into());
@@ -343,6 +344,51 @@ impl Session {
         bail!("no replica served block {block} within 15s")
     }
 
+    /// The staked factory an account is created through (issue #102): the
+    /// deployments file's `kernelFactoryStaker`, when it has code and still
+    /// approves Kernel's factory. Otherwise `None`, with a line saying why:
+    /// the staker is ZeroDev's, and its owner can withdraw the approval.
+    pub async fn factory_staker(&self) -> Result<Option<Address>> {
+        let Some(staker) = self.dep.kernel_factory_staker else { return Ok(None) };
+        if self.provider.get_code_at(staker).await?.is_empty() {
+            eprintln!("factory:        no code at kernelFactoryStaker {staker}; naming Kernel's factory itself");
+            return Ok(None);
+        }
+        let approved = crate::abi::IFactoryStaker::new(staker, self.provider.clone())
+            .approved(self.dep.kernel_factory)
+            .call()
+            .await
+            .context("reading the factory staker's approval")?;
+        if !approved {
+            eprintln!(
+                "factory:        the staker {staker} no longer approves Kernel's factory {}; naming the factory itself",
+                self.dep.kernel_factory
+            );
+            return Ok(None);
+        }
+        Ok(Some(staker))
+    }
+
+    /// The `initCode` of the account's first operation. Through the staker
+    /// it names a staked factory, as ERC-7562 asks of an operation that
+    /// creates an account whose modules write their slots (STO-022); the
+    /// account and its address are the same either way.
+    pub async fn init_code(&self) -> Result<Bytes> {
+        let (data, salt) = (self.init_data()?, self.cfg.salt()?);
+        let Some(staker) = self.factory_staker().await? else {
+            return Ok(kernel::init_code(self.dep.kernel_factory, data, salt));
+        };
+        let info = crate::abi::IEntryPointStake::new(self.dep.entry_point, self.provider.clone())
+            .getDepositInfo(staker)
+            .call()
+            .await
+            .context("reading the factory staker's stake")?;
+        if !info.staked {
+            eprintln!("factory:        the staker {staker} holds no stake at the EntryPoint now: a bundler that enforces ERC-7562 will refuse this first operation");
+        }
+        Ok(kernel::init_code_staked(staker, self.dep.kernel_factory, data, salt))
+    }
+
     /// Send ETH from the gas wallet to the (possibly counterfactual) account.
     /// Before funding an undeployed address, simulate `createAccount` with
     /// our init data: ETH sent to an address that can never be deployed is
@@ -350,14 +396,21 @@ impl Session {
     pub async fn fund(&self, amount: U256) -> Result<B256> {
         self.require_gas_wallet("account fund")?;
         if !self.is_deployed().await? {
-            let factory = IKernelFactory::new(self.dep.kernel_factory, self.provider.clone());
-            let simulated = factory
-                .createAccount(self.init_data()?.clone(), self.cfg.salt()?)
-                .call()
-                .await
-                .context("createAccount simulation reverted; refusing to fund an address that cannot be deployed")?;
+            // the way the first operation will create it: through the staker when there is one
+            let simulated = match self.factory_staker().await? {
+                Some(staker) => crate::abi::IFactoryStaker::new(staker, self.provider.clone())
+                    .deployWithFactory(self.dep.kernel_factory, self.init_data()?.clone(), self.cfg.salt()?)
+                    .call()
+                    .await
+                    .context("deployWithFactory simulation reverted; refusing to fund an address that cannot be deployed")?,
+                None => IKernelFactory::new(self.dep.kernel_factory, self.provider.clone())
+                    .createAccount(self.init_data()?.clone(), self.cfg.salt()?)
+                    .call()
+                    .await
+                    .context("createAccount simulation reverted; refusing to fund an address that cannot be deployed")?,
+            };
             if simulated != self.account {
-                bail!("createAccount simulation returned {simulated}, expected {}", self.account);
+                bail!("the account-creation simulation returned {simulated}, expected {}", self.account);
             }
         }
         let tx = TransactionRequest::default().with_to(self.account).with_value(amount);
@@ -977,7 +1030,7 @@ impl Session {
         } else {
             // the first operation installs the mandate: same rule as `permission add`
             self.check_mandate_targets()?;
-            kernel::init_code(self.dep.kernel_factory, self.init_data()?, self.cfg.salt()?)
+            self.init_code().await?
         };
 
         let key = match sign_as {
