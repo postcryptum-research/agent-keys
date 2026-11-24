@@ -120,6 +120,9 @@ not as advice.
       as `{"tpm": {"handle": …, "authFile": …}}` — not a bare handle.
 - [ ] The auth file is `root:root`, mode `0600`, and the agent's user
       cannot read it: `sudo -u <agent-user> cat <authFile>` must fail.
+      `agent-signer` refuses an auth file that group or others have any
+      access to, on Unix; it checks the mode, not the owner [V
+      `agent.rs` `read_auth_file`].
 - [ ] The agent runs as an ordinary user: not root, not in `sudoers`, no
       `sudo` rules (`sudo -l -U <agent-user>` lists nothing), no container
       privileges that reach `/dev/tpmrm0` as root.

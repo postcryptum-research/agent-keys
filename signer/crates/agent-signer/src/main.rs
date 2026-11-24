@@ -504,7 +504,8 @@ enum KeyCmd {
         pcrs: Vec<u8>,
         /// TPM: protect the key with an authValue derived from this file's
         /// contents — for an owner key sharing the chip with the agent, a
-        /// file only root can read (docs/KEY_POLICY.md, rule 3).
+        /// file only root can read (docs/KEY_POLICY.md, rule 3); refused
+        /// unless group and others have no access to it (mode 0600).
         #[arg(long)]
         auth_file: Option<PathBuf>,
         /// Phone: accept an enrollment without attestation evidence (a
@@ -1205,7 +1206,7 @@ fn tpm_key(handle: u32, op: KeyOp) -> Result<()> {
                 (None, true) => TpmSigner::create_under(parent)?,
                 (None, false) => TpmSigner::create_sealed_under(parent, &pcrs)?,
                 (Some(file), true) => {
-                    let secret = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
+                    let secret = agent::read_auth_file(file)?;
                     TpmSigner::create_protected_under(parent, &secret)?
                 }
                 (Some(_), false) => bail!("--auth-file and --pcrs do not combine"),
@@ -1227,7 +1228,7 @@ fn tpm_key(handle: u32, op: KeyOp) -> Result<()> {
         KeyOp::Show => print_key(name, &TpmSigner::open_persistent(handle)?.public_key()?),
         KeyOp::Check { auth_file, pcrs } => match (auth_file, pcrs.is_empty()) {
             (Some(file), true) => {
-                let secret = std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
+                let secret = agent::read_auth_file(&file)?;
                 check_signer(name, &TpmSigner::open_persistent_protected(handle, &secret)?)
             }
             (None, false) => check_signer(name, &TpmSigner::open_persistent_sealed(handle, &pcrs)?),
