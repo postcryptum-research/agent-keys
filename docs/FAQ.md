@@ -496,7 +496,7 @@ fraction of a cent; on a network with 10 gwei it would be a thousand times
 more. A call
 authorized by a P-256 signature costs the same as one authorized by
 `ecrecover` (7,433 against 7,402 gas for the whole call); the overhead is
-the smart-account machinery, about 78k gas per operation over a bare call.
+the smart-account machinery, about 79k gas per operation over a bare call.
 
 **Time**, from "the agent decides" to "the call is on-chain": signing takes
 milliseconds in a TPM, about 2 seconds on the TROPIC01 devkit, about 1 second

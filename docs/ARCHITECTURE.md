@@ -279,9 +279,9 @@ Lessons that cost real debugging time:
     `contracts/test/GasBenchmark.t.sol`. P-256 verification via RIP-7212
     costs the same as `ecrecover` (7,433 vs 7,402 gas), so hardware keys
     carry no gas penalty; the full agent path (real EntryPoint, Kernel,
-    policy + signer, paymaster) adds about 77k gas per operation (about 78k
-    with today's policy); large payloads are dominated by data cost, as the
-    paper found.
+    policy + signer, paymaster) added about 77k gas per operation at that
+    date, about 79k with the policy deployed on 2026-11-21; large payloads
+    are dominated by data cost, as the paper found.
   - *3.5 done (2026-10-20): bundler RPC as a drop-in.* `--bundler <url>` or
     `BUNDLER_URL` routes an operation through an ERC-4337 bundler: the
     operation is serialized in the v0.7 unpacked form, the bundler's
