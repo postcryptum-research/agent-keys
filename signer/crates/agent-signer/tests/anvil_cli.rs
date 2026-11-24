@@ -89,13 +89,83 @@ struct Chain {
     url: String,
     dir: PathBuf,
     code: Value,
+    test: String,
+}
+
+/// Two contracts that pass their calldata on, the first to the second and
+/// the second to the EntryPoint: the validation tracer of a rule-enforcing
+/// bundler looks for the EntryPoint three calls deep, where the bundler's own
+/// simulation has it.
+const TRACE_VIA: [&str; 2] = ["0x00000000000000000000000000000000000a7562", "0x00000000000000000000000000000000000b7562"];
+
+fn forwarder(to: &str) -> String {
+    format!("0x363d3d373d3d363d3d73{}5af100", to.trim_start_matches("0x"))
+}
+
+impl Chain {
+    /// For the ERC-7562 check (`scripts/erc7562`, issue #83). With
+    /// `ERC7562_TRACER` naming a file with the bundler's validation tracer and
+    /// `ERC7562_TRACE_DIR` a directory, every `handleOps` this test got
+    /// included and that did not revert is run again on the state before its
+    /// block, under that tracer, and the trace is written there with the
+    /// operation's transaction. anvil mines a block per transaction here, so
+    /// the state before the block is the state the operation met, unless a
+    /// test changed the chain in between without a transaction
+    /// (`anvil_setCode` and the like); the same call is therefore made
+    /// plainly first and must succeed, or the trace would be of an operation
+    /// that failed half-way. Without the two variables this does nothing.
+    /// Needs an anvil that runs JavaScript tracers, and an empty directory:
+    /// files of an earlier run are not removed.
+    fn write_validation_traces(&self) {
+        let (Ok(tracer), Ok(out)) = (std::env::var("ERC7562_TRACER"), std::env::var("ERC7562_TRACE_DIR")) else { return };
+        let tracer = std::fs::read_to_string(tracer).expect("ERC7562_TRACER");
+        std::fs::create_dir_all(&out).unwrap();
+        let entry_point = self.addr("entryPoint").to_lowercase();
+        let latest = u64::from_str_radix(self.rpc("eth_blockNumber", json!([])).as_str().unwrap().trim_start_matches("0x"), 16).unwrap();
+        for n in 1..=latest {
+            let block = self.rpc("eth_getBlockByNumber", json!([format!("0x{n:x}"), true]));
+            let txs = block["transactions"].as_array().unwrap();
+            for (i, tx) in txs.iter().enumerate() {
+                let input = tx["input"].as_str().unwrap();
+                // handleOps(PackedUserOperation[],address)
+                if tx["to"].as_str().map(str::to_lowercase).as_deref() != Some(&entry_point) || !input.starts_with("0x765e827f") {
+                    continue;
+                }
+                // a `handleOps` that reverted on chain (a test of a refusal) included no operation
+                if self.rpc("eth_getTransactionReceipt", json!([tx["hash"]]))["status"] != "0x1" {
+                    continue;
+                }
+                assert_eq!(txs.len(), 1, "block {n} has more than one transaction: the state before it is not the state the operation met");
+                let before = format!("0x{:x}", n - 1);
+                // the forwarders do not pass a revert on, so the replay is asked directly first
+                let replay: Value = serde_json::from_str(&http_post(
+                    &self.url,
+                    &json!({"jsonrpc": "2.0", "id": 1, "method": "eth_call", "params": [{"from": tx["from"], "to": tx["to"], "data": input, "gas": "0x1c9c380"}, before]}).to_string(),
+                ))
+                .unwrap();
+                assert!(replay.get("error").is_none(), "{}: the handleOps of block {n} does not succeed on the state before it: {replay}", self.test);
+                let trace = self.rpc(
+                    "debug_traceCall",
+                    json!([{"from": tx["from"], "to": TRACE_VIA[0], "data": input, "gas": "0x1c9c380"}, before, {"tracer": tracer}]),
+                );
+                let file = Path::new(&out).join(format!("{}-{n:04}-{i}.json", self.test));
+                std::fs::write(file, json!({"test": self.test, "block": n, "from": tx["from"], "entryPoint": entry_point, "input": input, "trace": trace}).to_string()).unwrap();
+            }
+        }
+    }
 }
 
 impl Drop for Chain {
     fn drop(&mut self) {
+        // the traces need the chain; the chain and its directory (with a key file) must go whatever happens to them
+        let traced = (!std::thread::panicking())
+            .then(|| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.write_validation_traces())));
         let _ = self.anvil.kill();
         let _ = self.anvil.wait();
         let _ = std::fs::remove_dir_all(&self.dir);
+        if let Some(Err(panic)) = traced {
+            std::panic::resume_unwind(panic);
+        }
     }
 }
 
@@ -171,7 +241,7 @@ impl Chain {
             &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/chain-code.json")).unwrap(),
         )
         .unwrap();
-        let chain = Chain { anvil, url: format!("http://127.0.0.1:{port}"), dir, code };
+        let chain = Chain { anvil, url: format!("http://127.0.0.1:{port}"), dir, code, test: test.to_string() };
         let started = Instant::now();
         while TcpStream::connect(format!("127.0.0.1:{port}")).is_err() {
             assert!(started.elapsed() < Duration::from_secs(20), "anvil did not start");
@@ -229,6 +299,10 @@ impl Chain {
     fn install(&self) {
         for (_, c) in self.code["contracts"].as_object().unwrap() {
             self.rpc("anvil_setCode", json!([c["address"], c["code"]]));
+        }
+        if std::env::var("ERC7562_TRACE_DIR").is_ok() {
+            self.rpc("anvil_setCode", json!([TRACE_VIA[1], forwarder(&self.addr("entryPoint"))]));
+            self.rpc("anvil_setCode", json!([TRACE_VIA[0], forwarder(TRACE_VIA[1])]));
         }
         let deployments = json!({
             "chainId": 31337,

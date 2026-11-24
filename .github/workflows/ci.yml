@@ -1,0 +1,81 @@
+name: ci
+on:
+  push:
+    branches: [master]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: ./.github/actions/foundry
+      - name: forge test
+        working-directory: contracts
+        run: forge test --evm-version osaka
+
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: hw-signer
+        working-directory: signer
+        run: cargo test --locked -p hw-signer
+      - name: owner-core
+        working-directory: mobile/owner-core
+        run: cargo test --locked --features ffi,test-chains
+      # The builds that ship: software keys refused in every role, no test
+      # chain known. Two tests hold exactly that and exist only without the
+      # test features.
+      - name: owner-core, the regular build
+        working-directory: mobile/owner-core
+        run: cargo test --locked
+      - name: agent-signer, the regular build
+        working-directory: signer
+        run: cargo test --locked -p agent-signer
+
+  # The CLI's tests, the local-chain ones among them, and what a
+  # rule-enforcing bundler makes of every operation they send (issue #83,
+  # scripts/erc7562/README.md). The bundler's package is installed from the
+  # lock file with its install scripts off; of it, only the validation tracer
+  # and the rule checker are used.
+  cli-and-erc7562:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/foundry
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: The checker, from the lock file
+        working-directory: scripts/erc7562
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: The recorded traces give the recorded verdicts
+        working-directory: scripts/erc7562
+        run: npm run check
+      - name: agent-signer's tests, every operation of the local-chain ones traced
+        working-directory: signer
+        run: |
+          node ../scripts/erc7562/write-tracer.mjs "$RUNNER_TEMP/tracer.js"
+          ERC7562_TRACER="$RUNNER_TEMP/tracer.js" ERC7562_TRACE_DIR="$RUNNER_TEMP/traces" \
+            cargo test --locked -p agent-signer --features insecure-software-keys
+      - name: Verdicts
+        working-directory: scripts/erc7562
+        run: node check-run.mjs "$RUNNER_TEMP/traces" --gate --summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: erc7562-traces
+          path: ${{ runner.temp }}/traces
+          retention-days: 7
