@@ -1921,8 +1921,8 @@ fn phone_owner_real_device() {
 
 /// A minimal x402 server: 402 with PAYMENT-REQUIRED; with PAYMENT-SIGNATURE it
 /// settles through USDC's transferWithAuthorization (as a facilitator would)
-/// when `settle` is on, otherwise refuses.
-fn x402_server(chain_url: String, usdc: String, amount: u64, settle: Arc<AtomicBool>) -> String {
+/// when `settle` is on, otherwise refuses. It allows `max_timeout` seconds.
+fn x402_server(chain_url: String, usdc: String, amount: u64, settle: Arc<AtomicBool>, max_timeout: u64) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/quote", listener.local_addr().unwrap());
     let resource = url.clone();
@@ -1946,7 +1946,7 @@ fn x402_server(chain_url: String, usdc: String, amount: u64, settle: Arc<AtomicB
                 "x402Version": 2,
                 "resource": {"url": resource},
                 "accepts": [{"scheme": "exact", "network": "eip155:31337", "amount": amount.to_string(), "asset": usdc,
-                             "payTo": PAYEE, "maxTimeoutSeconds": 60, "extra": {"name": "USDC", "version": "2"}}],
+                             "payTo": PAYEE, "maxTimeoutSeconds": max_timeout, "extra": {"name": "USDC", "version": "2"}}],
             });
             let refuse = |s: &mut TcpStream| {
                 let h = B64.encode(required.to_string());
@@ -2029,7 +2029,7 @@ fn x402_pay_and_reclaim() {
         || U256::from_be_slice(&chain.call(&usdc, balanceOfCall { account: PAYEE.parse::<Address>().unwrap() }.abi_encode()));
 
     let settle = Arc::new(AtomicBool::new(true));
-    let url = x402_server(chain.url.clone(), usdc.clone(), 250_000, settle.clone());
+    let url = x402_server(chain.url.clone(), usdc.clone(), 250_000, settle.clone(), 60);
     let paid = chain.ok(&["x402", "fetch", "--agent", &cfg, &url]);
     assert!(paid.contains("paid content"), "{paid}");
     assert_eq!(payee_balance(), U256::from(250_000));
@@ -2048,6 +2048,16 @@ fn x402_pay_and_reclaim() {
     assert!(again.contains("reclaimed 0 expired") && again.contains("the last 50000; an older registration needs --from-block"), "{again}");
     assert!(chain.ok(&["permission", "show", "--agent", &cfg]).contains("(spent 250000)"));
     assert_eq!(payee_balance(), U256::from(250_000));
+
+    // a server allowing u64::MAX seconds (issue #151): no overflow, an hour, said, and paid
+    settle.store(true, Ordering::SeqCst);
+    let lavish = x402_server(chain.url.clone(), usdc.clone(), 250_000, settle.clone(), u64::MAX);
+    let paid = chain.ok(&["x402", "fetch", "--agent", &cfg, &lavish]);
+    let local_now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    assert!(paid.contains("paid content") && paid.contains("the authorization lives 3600 s"), "{paid}");
+    let valid_until: u64 = paid.split("valid until ").nth(1).and_then(|r| r.split_whitespace().next()).unwrap().parse().unwrap();
+    assert!(valid_until <= local_now + 3600, "{paid}");
+    assert_eq!(payee_balance(), U256::from(500_000));
 }
 
 // ---------------------------------------------------------------- trading

@@ -37,6 +37,19 @@ const ERC1271_MAGIC: [u8; 4] = [0x16, 0x26, 0xba, 0x7e];
 /// Shortest authorization lifetime we sign, whatever the server asks: the
 /// registration has to be included before the payment can be presented.
 const MIN_LIFETIME_SECS: u64 = 120;
+/// Longest, whatever the server asks (issue #151): the amount stays booked
+/// against the budget until `validBefore`, and `x402 reclaim` can return an
+/// unsettled one only after it. Servers ask minutes (`@x402/core` 2.28, which
+/// `examples/x402` runs on, defaults to 300 s); an hour leaves a slow
+/// facilitator room and keeps a refused payment's amount booked an hour at
+/// most.
+const MAX_LIFETIME_SECS: u64 = 3600;
+
+/// The lifetime to sign for a server's `maxTimeoutSeconds`. The server's
+/// number is the most it waits, so a shorter authorization still pays.
+fn lifetime(max_timeout_secs: u64) -> u64 {
+    max_timeout_secs.clamp(MIN_LIFETIME_SECS, MAX_LIFETIME_SECS)
+}
 
 /// One EIP-3009 authorization, as registered and as signed.
 #[derive(Debug, Clone)]
@@ -132,7 +145,10 @@ impl Session {
         // Under a budget per period an authorization ends with the period it
         // is charged in: the policy refuses one usable later. It is usable
         // before `validBefore`, so that is the next period's first second at most.
-        let mut valid_before = now() + timeout.max(MIN_LIFETIME_SECS);
+        if timeout > MAX_LIFETIME_SECS {
+            eprintln!("x402:           the server allows {timeout} s; the authorization lives {MAX_LIFETIME_SECS} s, the most this CLI signs");
+        }
+        let mut valid_before = now().saturating_add(lifetime(timeout));
         if let Some(next) = self.period_next().await? {
             let chain_now = self.chain_time().await?;
             const LEAST_LIFE_SECS: u64 = 60;
@@ -392,6 +408,21 @@ mod tests {
         // after shrinking it stays shrunk: no request above the cap once one was accepted
         let first_ok = calls.borrow().iter().position(|(lo, hi)| hi - lo + 1 <= 200).unwrap();
         assert!(calls.borrow()[first_ok..].iter().all(|(lo, hi)| hi - lo + 1 <= 200));
+    }
+
+    #[test]
+    fn a_lifetime_is_the_servers_within_two_minutes_and_an_hour() {
+        // what servers ask is signed as asked
+        assert_eq!(lifetime(300), 300);
+        assert_eq!(lifetime(MAX_LIFETIME_SECS), MAX_LIFETIME_SECS);
+        // too short for the registration to land first, or not said
+        assert_eq!(lifetime(60), MIN_LIFETIME_SECS);
+        assert_eq!(lifetime(0), MIN_LIFETIME_SECS);
+        // a giant one neither wraps nor panics, and keeps the budget booked an hour at most
+        assert_eq!(lifetime(MAX_LIFETIME_SECS + 1), MAX_LIFETIME_SECS);
+        assert_eq!(lifetime(u64::MAX), MAX_LIFETIME_SECS);
+        let t = now();
+        assert!((t..=t + MAX_LIFETIME_SECS + 1).contains(&now().saturating_add(lifetime(u64::MAX))));
     }
 
     #[test]
