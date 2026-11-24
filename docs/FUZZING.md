@@ -71,9 +71,8 @@ Not built yet. The code that reads input it has no reason to trust, most
 important first:
 
 - `mobile/owner-core/src/review.rs`: what the phone shows the owner, from
-  bytes a laptop sent. Also as a differential target: what the review says
-  a mandate installs against what `AgentPolicy` does install from the same
-  bytes;
+  bytes a laptop sent (its reading of a mandate is held to the policy's
+  install by the test below);
 - `signer/crates/hw-signer/src/enclave_blob.rs`: a DER reader in front of
   CryptoKit;
 - `signer/crates/agent-signer/src/der.rs`, `attestation.rs`, `x402.rs` (a
@@ -82,6 +81,82 @@ important first:
 The tool for these is `cargo-fuzz` (libFuzzer; it needs a nightly
 toolchain), with the same two kinds of rule: no panic and no hang on any
 bytes, and agreement with a second implementation where there is one.
+
+## The phone's review against the policy's install
+
+What the owner is shown of a mandate and what `AgentPolicy` installs from
+the same bytes are two readings in two languages. One test holds them
+together: `the_phone_reads_a_mandate_as_the_policy_installs_it`, among the
+CLI's local-chain tests (`signer/crates/agent-signer/tests/anvil_cli.rs`).
+
+```sh
+cd signer
+cargo test -p agent-signer --features insecure-software-keys --test anvil_cli the_phone_reads_a_mandate -- --nocapture
+MANDATE_DIFFERENTIAL_CASES=20000 cargo test ...    # more mandates than the 400 of a normal run
+```
+
+Mandates come from a seed: mostly well-formed and near what an install
+must refuse, a quarter of them damaged (a bit flipped, the end cut off, a
+word added, a word's top bit set). Each one goes two ways. The phone
+reviews a root operation that installs it as a permission, built the way
+`permission add` builds it, and the test also takes the terms the review
+read (`owner_core::review::mandate_terms`, the function the review itself
+calls). On a local chain with the deployed policy's code, a Kernel account
+calls `onInstall` with the same bytes.
+
+**The rules.**
+
+- A mandate the review lets the owner sign is one the policy installs.
+- For such a mandate the policy's views give back what the review read and
+  nothing more: the window and the two native limits (`configs`); every
+  call of the generator's pools allowed exactly when the review lists it
+  (`isAllowed`, 9 targets by 9 functions); for each token whether it is
+  limited, its two limits, its x402 domain and whether it has a payee list
+  (`tokenLimit`); every payee of the pool reachable exactly when the
+  review says so (`payeeAllowed`).
+- The review may refuse what the policy installs. Today that is one kind:
+  bytes the policy decodes although they are not the one encoding of
+  their values.
+- The generator reaches all three outcomes, or the test fails: at least a
+  fifth shown and installed, a fifth refused by both, one in a hundred
+  installed and not shown.
+
+**That it bites.** Sixteen rules were broken in the review's reader one at
+a time: fourteen refusals (the account or its EntryPoint as a target; the
+policy outside x402; a limit past 128 bits; a time past 48; a window never
+open; no call; a token twice; Permit2; a function outside the four on a
+limited token; a payee twice; a payee list for a token without a limit;
+targets and functions of different lengths; the payee form without a
+list; an encoding that is not canonical) and two misreadings (the budget
+read as the value cap; a payee list dropped). Every one fails the test at
+400 mandates. Dropping the canonical-encoding rule is seen only by the
+count of mandates installed and not shown falling to none: over these
+mandates the policy read such bytes as the review would have. Two were
+missed by the first form of the generator (the lengths, the payee form
+without a list), which is why it now makes both.
+
+**What it found.** The first run had 152 of 400 mandates that the review
+showed and the policy refused to install: a limit past 128 bits or a time
+past 48, no call at all, a window that is never open, a limit for the zero
+address or two for one token, and a call to the account, to its EntryPoint
+or to the policy outside its two x402 entries. No rights came of any of
+them, since such an install fails on chain; but the owner would have
+confirmed a screen that did not come true. The review now refuses each
+(`a_mandate_the_policy_would_not_install_is_not_shown` in
+`mobile/owner-core/src/review.rs` has one case per rule). No mandate was
+found that the two sides read differently.
+
+**What it does not cover.**
+
+- It is a seeded test of a fixed number of mandates, not a campaign with
+  coverage feedback.
+- The views say what the policy stored. That the policy then enforces what
+  it stored is the subject of the contract fuzzing above.
+- Allowed calls and payees are probed over the generator's pools; an entry
+  outside them that the policy stored and the review did not read would
+  not be seen. A venue's configuration is not part of these mandates.
+- The review's wording of a term on the screen (units, dates, names) is
+  not compared, only the values it read.
 
 ## Third-party fuzzing tools
 

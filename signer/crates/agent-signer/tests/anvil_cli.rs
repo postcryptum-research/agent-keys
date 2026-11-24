@@ -2138,3 +2138,287 @@ fn safe_guarded() {
     assert_eq!(chain.counter(), before + U256::from(3));
     assert_eq!(U256::from_be_slice(&chain.call(&safe, nonceCall {}.abi_encode())), U256::from(2));
 }
+
+// ---------------------------------------------------------------- the phone's review against the policy's install
+
+mod mandate_abi {
+    alloy::sol! {
+        function onInstall(bytes data) external;
+        function configs(address account, bytes32 id) external view returns (uint48 validUntil, uint32 epoch, uint128 maxValuePerOp, uint128 budget, uint128 spent, uint48 validAfter);
+        function isAllowed(address account, bytes32 id, address target, bytes4 selector) external view returns (bool);
+        struct TokenLimit { uint128 maxPerOp; uint128 budget; uint128 spent; bool set; bool payeesOnly; bytes32 domainSeparator; }
+        function tokenLimit(address account, bytes32 id, address token) external view returns (TokenLimit memory);
+        function payeeAllowed(address account, bytes32 id, address token, address payee) external view returns (bool);
+    }
+}
+
+/// A small generator of its own, so a seed gives the same mandates everywhere.
+struct Seeded(u64);
+
+impl Seeded {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+    fn one_in(&mut self, n: u64) -> bool {
+        self.below(n) == 0
+    }
+    fn pick<T: Copy>(&mut self, of: &[T]) -> T {
+        of[self.below(of.len() as u64) as usize]
+    }
+}
+
+/// What the owner is shown of a mandate and what `AgentPolicy` installs from
+/// the same bytes are held together. Mandates come from a seed: mostly
+/// well-formed and near what install must refuse (a limited token with a
+/// function outside the four, a payee twice, Permit2, the account itself, a
+/// number past its field, a function short of the targets, the payee form
+/// with no list), with a share damaged byte by byte. Each one goes
+/// to the phone's review, as an install of a permission in a root operation,
+/// and to the policy on a local chain, installed by the account itself.
+///
+/// - Every mandate the review lets the owner sign and the policy installs is
+///   the same mandate on both sides: the policy's own views give the allowed
+///   calls, the two native limits, the window, each token's limits and x402
+///   domain, and each payee list that `owner_core::review::mandate_terms`
+///   read, and nothing else from the pools the generator draws on.
+/// - The review shows no mandate the policy refuses to install: what the
+///   owner signs for comes true. The review may refuse more than the policy
+///   does (bytes the policy decodes although they are not the canonical
+///   encoding); it never reads other terms.
+///
+/// `MANDATE_DIFFERENTIAL_CASES` sets the number of mandates (400 by default).
+#[test]
+fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
+    use mandate_abi::*;
+    use owner_core::review::{mandate_terms, open_request_with_build_facts, EnrolledAccount, MandatePlace, Verdict};
+    use owner_core::{kernel, request, user_op::PackedUserOp};
+
+    let chain = chain_or_skip!("mandate-differential");
+    let (owner, agent) = (key(1), key(2));
+    let counter = chain.addr("demoCounter");
+    let account = chain.deploy(&chain.config("agent.json", &base_cfg(&owner, &agent, &counter, far_future(&chain))));
+    let acct: Address = account.parse().unwrap();
+    let addr = |name: &str| -> Address { chain.addr(name).parse().unwrap() };
+    let (policy, signer, entry) = (addr("agentPolicy"), addr("p256Signer"), addr("entryPoint"));
+    chain.rpc("anvil_impersonateAccount", json!([account]));
+
+    const NOW: u64 = 1_800_000_000;
+    let tokens: [Address; 4] = [Address::repeat_byte(0xa1), Address::repeat_byte(0xa2), Address::repeat_byte(0xa3), Address::ZERO];
+    let payee_pool: [Address; 4] = [Address::repeat_byte(0xb1), Address::repeat_byte(0xb2), Address::repeat_byte(0xb3), Address::ZERO];
+    let permit2: Address = "0x000000000022D473030F116dDEE9F6B43aC78BA3".parse().unwrap();
+    let targets: [Address; 9] = [addr("demoCounter"), tokens[0], tokens[1], tokens[2], Address::repeat_byte(0xc1), permit2, acct, entry, policy];
+    let selectors: [[u8; 4]; 9] = [
+        [0xd0, 0x9d, 0xe0, 0x8a], // increment()
+        [0xa9, 0x05, 0x9c, 0xbb], // transfer
+        [0x09, 0x5e, 0xa7, 0xb3], // approve
+        [0x39, 0x50, 0x93, 0x51], // increaseAllowance
+        [0x23, 0xb8, 0x72, 0xdd], // transferFrom
+        [0xa2, 0x2c, 0xb4, 0x65], // setApprovalForAll
+        [0, 0, 0, 0],
+        alloy::primitives::keccak256("x402Authorize(address,address,address,uint256,uint256,uint256,bytes32)")[..4].try_into().unwrap(),
+        alloy::primitives::keccak256("x402Reclaim(bytes32,address,address,uint256,uint256,uint256,bytes32)")[..4].try_into().unwrap(),
+    ];
+    let cases: u64 = std::env::var("MANDATE_DIFFERENTIAL_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(400);
+    let mut rng = Seeded(0x6d61_6e64_6174_65); // "mandate"
+    let (mut both, mut chain_only, mut neither) = (0u64, 0u64, 0u64);
+
+    for case in 0..cases {
+        // ---- a mandate from the seed
+        let amount = |rng: &mut Seeded| -> U256 {
+            match rng.below(8) {
+                0 => U256::ZERO,
+                1 => U256::from(1),
+                2 => U256::from(u128::MAX),
+                3 if rng.one_in(3) => U256::from(u128::MAX) + U256::from(1), // past the field
+                _ => U256::from(rng.next()),
+            }
+        };
+        let n = 1 + rng.below(4) as usize;
+        let mut allow: Vec<(Address, alloy::primitives::FixedBytes<4>)> = Vec::new();
+        for _ in 0..n {
+            // mostly a call that is fine, sometimes anything from the pools
+            let (t, s) = if rng.one_in(4) { (rng.pick(&targets), rng.pick(&selectors)) } else { (rng.pick(&targets[..5]), rng.pick(&selectors[..5])) };
+            allow.push((t, s.into()));
+        }
+        if rng.one_in(30) {
+            allow.clear();
+        }
+        let mut caps: Vec<(Address, U256, U256, B256)> = Vec::new();
+        for _ in 0..rng.below(3) {
+            let token = if rng.one_in(25) { tokens[3] } else { rng.pick(&tokens[..3]) };
+            let domain = if rng.one_in(2) { B256::ZERO } else { B256::from(U256::from(rng.next())) };
+            caps.push((token, amount(&mut rng), amount(&mut rng), domain));
+        }
+        // a limited token is called through the four functions: steer most mandates that way
+        if !rng.one_in(5) {
+            for (t, s) in allow.iter_mut() {
+                if caps.iter().any(|c| c.0 == *t) && !selectors[1..5].contains(&s.0) {
+                    *s = selectors[1].into();
+                }
+            }
+        }
+        let mut lists: Vec<(Address, Vec<Address>)> = Vec::new();
+        if rng.one_in(2) {
+            for cap in &caps {
+                if rng.one_in(2) {
+                    let mut list: Vec<Address> = Vec::new();
+                    for _ in 0..1 + rng.below(3) {
+                        let p = if rng.one_in(12) { payee_pool[3] } else { rng.pick(&payee_pool[..3]) };
+                        if !list.contains(&p) || rng.one_in(8) {
+                            list.push(p);
+                        }
+                    }
+                    lists.push((cap.0, list));
+                }
+            }
+            if rng.one_in(15) {
+                lists.push((tokens[2], vec![payee_pool[0]])); // perhaps a token without a limit, or a second list
+            }
+            if rng.one_in(20) {
+                lists.push((rng.pick(&tokens[..3]), vec![]));
+            }
+        }
+        let until = match rng.below(12) {
+            0 => U256::ZERO,
+            1 => U256::from(1u64 << 48), // past the field
+            _ => U256::from(NOW + 3600 + rng.below(1 << 30)),
+        };
+        let after = match rng.below(10) {
+            0 => until,
+            1 => U256::from(NOW + rng.below(3600)),
+            _ => U256::ZERO,
+        };
+        let (max_value, budget) = (amount(&mut rng), amount(&mut rng));
+        let (ts, mut ss): (Vec<Address>, Vec<alloy::primitives::FixedBytes<4>>) = allow.iter().cloned().unzip();
+        if rng.one_in(25) {
+            ss.pop(); // a function short of the targets
+        }
+        let seven = (ts, ss, max_value, budget, until, caps.clone(), after);
+        let mut init = if lists.is_empty() && !rng.one_in(12) {
+            seven.abi_encode_params()
+        } else {
+            let (a, b, c, d, e, f, g) = seven;
+            (a, b, c, d, e, f, g, lists.clone()).abi_encode_params()
+        };
+        // ---- damaged, one time in four
+        if rng.one_in(4) {
+            match rng.below(4) {
+                0 => {
+                    let i = rng.below(init.len() as u64) as usize;
+                    init[i] ^= 1 << rng.below(8);
+                }
+                1 => init.truncate(init.len() - 1 - rng.below(31.min(init.len() as u64 - 1)) as usize),
+                2 => init.extend_from_slice(&[0u8; 32]),
+                _ => {
+                    // a word's upper bits: a value the field does not hold, or an offset moved
+                    let word = rng.below(init.len() as u64 / 32) as usize;
+                    init[word * 32] ^= 0x80;
+                }
+            }
+        }
+
+        // ---- the phone: the review of a root operation that installs it
+        let perm = alloy::primitives::FixedBytes::<4>::from((0x6d00_0000u32 + case as u32).to_be_bytes());
+        let flag = alloy::primitives::FixedBytes::<2>::ZERO;
+        let agent_key = (B256::from_slice(&hex::decode(&agent.x[2..]).unwrap()), B256::from_slice(&hex::decode(&agent.y[2..]).unwrap())).abi_encode();
+        let entries: Vec<Bytes> = vec![
+            (flag, policy, Bytes::from(init.clone())).abi_encode_packed().into(),
+            (flag, signer, Bytes::from(agent_key)).abi_encode_packed().into(),
+        ];
+        let op = PackedUserOp {
+            sender: acct,
+            nonce: U256::from(case),
+            init_code: Bytes::new(),
+            // as `permission add` builds it: the install and the grant of `execute`, in one batch
+            call_data: kernel::execute_batch_calldata(vec![
+                (acct, U256::ZERO, kernel::install_permission_calldata(perm, entries.abi_encode().into(), 1)),
+                (acct, U256::ZERO, kernel::grant_execute_calldata(perm)),
+            ]),
+            account_gas_limits: kernel::pack_gas(300_000, 150_000),
+            pre_verification_gas: U256::from(60_000),
+            gas_fees: kernel::pack_gas(1, 1),
+            paymaster_and_data: Bytes::new(),
+        };
+        let bytes = request::SignRequest::new(&op, entry, 31337, NOW + 120, None, Default::default(), None).to_bytes();
+        let review = open_request_with_build_facts(&bytes, &request::commitment(&bytes), NOW, &[EnrolledAccount::new(31337, entry, acct)]);
+        let shown = !matches!(review.verdict, Verdict::Refuse(_));
+        let place = MandatePlace { account: acct, entry_point: entry, policy, payees_enforced: true };
+        let terms = mandate_terms(&init, &place, &|a| a.to_string());
+        // the review signs nothing whose mandate it could not read
+        assert!(!shown || terms.is_ok(), "case {case}: signed without terms: {:?}", review.verdict);
+
+        // ---- the chain: the account installs the same bytes
+        let id = B256::right_padding_from(perm.as_slice());
+        let data = onInstallCall { data: [id.as_slice(), &init[..]].concat().into() }.abi_encode();
+        let tx = json!({"from": account, "to": policy, "data": Bytes::from(data).to_string(), "gas": "0x989680"});
+        let hash = chain.rpc("eth_sendTransaction", json!([tx]));
+        let started = Instant::now();
+        let installed = loop {
+            let r = chain.rpc("eth_getTransactionReceipt", json!([hash]));
+            if !r.is_null() {
+                break r["status"] == "0x1";
+            }
+            assert!(started.elapsed() < Duration::from_secs(10), "case {case}: no receipt");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+
+        match (shown, installed) {
+            (false, false) => neither += 1,
+            (false, true) => {
+                chain_only += 1;
+                if std::env::var("MANDATE_DIFFERENTIAL_WHY").is_ok() {
+                    eprintln!("case {case}: installed, not shown: {:?}", review.verdict);
+                }
+            }
+            // Shown, and the install fails: nothing would be granted, but the owner would have
+            // signed for a screen that did not come true. The review refuses whatever the
+            // policy's install refuses, so there is no such mandate.
+            (true, false) => panic!("case {case}: the review shows a mandate the policy refuses to install: {:?}", terms.unwrap()),
+            (true, true) => {
+                both += 1;
+                let t = terms.unwrap();
+                let c = configsCall::abi_decode_returns(&chain.call(&chain.addr("agentPolicy"), configsCall { account: acct, id }.abi_encode())).unwrap();
+                assert_eq!(
+                    (U256::from(c.validUntil), U256::from(c.validAfter), U256::from(c.maxValuePerOp), U256::from(c.budget), c.spent),
+                    (U256::from(t.valid_until), U256::from(t.valid_after), t.max_value, t.budget, 0),
+                    "case {case}: the window and the native limits"
+                );
+                // every call of the pools: allowed exactly when the review lists it
+                for target in targets {
+                    for selector in selectors {
+                        let call = isAllowedCall { account: acct, id, target, selector: selector.into() };
+                        let on_chain = U256::from_be_slice(&chain.call(&chain.addr("agentPolicy"), call.abi_encode())) == U256::from(1);
+                        assert_eq!(on_chain, t.allow.contains(&(target, selector.into())), "case {case}: {target} {selector:02x?}");
+                    }
+                }
+                for token in &tokens[..3] {
+                    let raw = chain.call(&chain.addr("agentPolicy"), tokenLimitCall { account: acct, id, token: *token }.abi_encode());
+                    let l = tokenLimitCall::abi_decode_returns(&raw).unwrap();
+                    let cap = t.tokens.iter().find(|c| c.0 == *token);
+                    assert_eq!(l.set, cap.is_some(), "case {case}: whether {token} is limited");
+                    let list = t.payees.iter().find(|p| p.0 == *token);
+                    if let Some(cap) = cap {
+                        assert_eq!((U256::from(l.maxPerOp), U256::from(l.budget), l.domainSeparator, l.spent), (cap.1, cap.2, cap.3, 0), "case {case}: the limits of {token}");
+                        assert_eq!(l.payeesOnly, list.is_some(), "case {case}: whether {token} has a payee list");
+                    }
+                    for payee in &payee_pool[..3] {
+                        let call = payeeAllowedCall { account: acct, id, token: *token, payee: *payee };
+                        let on_chain = U256::from_be_slice(&chain.call(&chain.addr("agentPolicy"), call.abi_encode())) == U256::from(1);
+                        // without a list a token may reach anyone; with one, the listed and no other
+                        assert_eq!(on_chain, list.map_or(true, |l| l.1.contains(payee)), "case {case}: {token} to {payee}");
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("mandates: {cases}; shown and installed {both}, installed and not shown {chain_only}, neither {neither}");
+    // the generator reaches each side's yes and no, and the one-way difference between them
+    assert!(both * 5 >= cases && neither * 5 >= cases && chain_only * 100 >= cases, "the generator has drifted: {both} / {chain_only} / {neither}");
+}
