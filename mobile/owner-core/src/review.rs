@@ -343,7 +343,9 @@ fn open_with(
     // cost and sponsorship (§6.4)
     let (verification_gas, call_gas) = split(op.account_gas_limits);
     let (max_priority, max_fee) = split(op.gas_fees);
-    let mut pm_gas: u128 = 0;
+    // the laptop's numbers: summed and multiplied saturating, so that the
+    // largest of them show the largest cost and never panic or wrap
+    let mut pm_gas = U256::ZERO;
     let s = b.section("Cost");
     if !op.paymaster_and_data.is_empty() {
         if op.paymaster_and_data.len() < 52 {
@@ -359,12 +361,12 @@ fn open_with(
                 format!("paymaster {} is not one this build knows to charge nothing (T20)", pm.to_checksum(None)),
             );
         }
-        pm_gas = pm_verification + pm_post_op;
+        pm_gas = U256::from(pm_verification) + U256::from(pm_post_op);
         b.row(s, "Gas", format!("sponsored by {}", b.name(pm)));
         b.row(s, "Paymaster gas limits", format!("verification {pm_verification}, postOp {pm_post_op}"));
     }
-    let total_gas = U256::from(verification_gas) + U256::from(call_gas) + op.pre_verification_gas + U256::from(pm_gas);
-    let max_cost = total_gas * U256::from(max_fee);
+    let total_gas = (U256::from(verification_gas) + U256::from(call_gas) + pm_gas).saturating_add(op.pre_verification_gas);
+    let max_cost = total_gas.saturating_mul(U256::from(max_fee));
     b.row(s, "Maximum gas cost", format!("{} ETH", format_ether(max_cost)));
     if op.paymaster_and_data.is_empty() && max_cost > U256::from(acct.gas_cap_wei) {
         return Review::refused(
@@ -1209,6 +1211,29 @@ mod tests {
         pm.extend_from_slice(&[0u8; 32]);
         other.paymaster_and_data = pm.into();
         assert!(matches!(open(&other).verdict, Verdict::Refuse(ref m) if m.contains("paymaster")));
+    }
+
+    /// Gas limits and fees are the laptop's numbers, up to 2^128 - 1 each
+    /// (`preVerificationGas` up to 2^256 - 1): their sum and its product with
+    /// the fee cap must neither panic nor wrap to a small cost on the screen.
+    /// Found by the `operation` fuzz target (a sponsored operation whose two
+    /// paymaster gas limits overflowed their u128 sum).
+    #[test]
+    fn the_largest_gas_numbers_neither_panic_nor_wrap() {
+        let mut o = op(kernel::execute_calldata(COUNTER, U256::ZERO, &SELECTOR_INCREMENT));
+        o.account_gas_limits = kernel::pack_gas(u128::MAX, u128::MAX);
+        o.gas_fees = kernel::pack_gas(u128::MAX, u128::MAX);
+        o.pre_verification_gas = U256::MAX;
+        // sponsored: the account pays nothing, and the cost shown is the largest there is, not a wrapped one
+        let mut pm = PAYMASTER.to_vec();
+        pm.extend_from_slice(&u128::MAX.to_be_bytes());
+        pm.extend_from_slice(&u128::MAX.to_be_bytes());
+        o.paymaster_and_data = pm.into();
+        let r = open(&o);
+        assert!(r.text().contains(&format!("Maximum gas cost: {} ETH", format_ether(U256::MAX))), "{}", r.text());
+        // paid by the account: the cost cap refuses it
+        o.paymaster_and_data = Bytes::new();
+        assert!(matches!(open(&o).verdict, Verdict::Refuse(ref m) if m.contains("exceeds this enrollment's cap")), "{:?}", open(&o).verdict);
     }
 
     #[test]
