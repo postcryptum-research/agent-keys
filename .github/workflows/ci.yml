@@ -21,10 +21,10 @@ jobs:
         working-directory: contracts
         run: forge test --evm-version osaka
 
-  # House rule 3: a deployed contract's source is the record of what is on
-  # chain. A pull request may change comments in contracts/src freely; if any
-  # contract's bytecode differs from the merge base, a deployments file must
-  # change with it. scripts/source-record.sh says which contracts differ.
+  # House rules 3 and 9: a pull request may change comments in contracts/src
+  # freely; a contract whose bytecode differs from the merge base must carry
+  # another VERSION (or, while it carries none, have its key changed in a
+  # deployments file). scripts/source-record.sh says which contracts differ.
   source-record:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
