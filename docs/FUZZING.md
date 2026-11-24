@@ -179,22 +179,26 @@ word added, a word's top bit set). Each one goes two ways. The phone
 reviews a root operation that installs it as a permission, built the way
 `permission add` builds it, and the test also takes the terms the review
 read (`owner_core::review::mandate_terms`, the function the review itself
-calls). On a local chain with the deployed policy's code, a Kernel account
-calls `onInstall` with the same bytes.
+calls). On a local chain with the deployed policy's code, the test
+impersonates a Kernel account and calls the policy's `onInstall` with the
+same bytes; Kernel's `installValidations` is not run here.
 
 **The rules.**
 
 - A mandate the review lets the owner sign is one the policy installs.
-- For such a mandate the policy's views give back what the review read and
-  nothing more: the window and the two native limits (`configs`); every
-  call of the generator's pools allowed exactly when the review lists it
-  (`isAllowed`, 9 targets by 9 functions); for each token whether it is
-  limited, its two limits, its x402 domain and whether it has a payee list
-  (`tokenLimit`); every payee of the pool reachable exactly when the
-  review says so (`payeeAllowed`).
-- The review may refuse what the policy installs. Today that is one kind:
+- For such a mandate the policy's views give back what the review read,
+  and within the probes nothing more. The probes are the generator's pools
+  (9 targets by 9 functions, 3 tokens, 3 payees) and every target,
+  function, token and payee the review read in that case. Compared: the
+  window and the two native limits (`configs`); every probed call allowed
+  exactly when the review lists it (`isAllowed`); for each token whether
+  it is limited, its two limits, its x402 domain and whether it has a
+  payee list (`tokenLimit`); every probed payee reachable exactly when
+  the review says so (`payeeAllowed`).
+- The review refuses a mandate the policy installs for one reason only:
   bytes the policy decodes although they are not the one encoding of
-  their values.
+  their values. Any other reason fails the test, so a review that refuses
+  too much is caught as well.
 - The generator reaches all three outcomes, or the test fails: at least a
   fifth shown and installed, a fifth refused by both, one in a hundred
   installed and not shown.
@@ -211,7 +215,11 @@ read as the value cap; a payee list dropped). Every one fails the test at
 count of mandates installed and not shown falling to none: over these
 mandates the policy read such bytes as the review would have. Two were
 missed by the first form of the generator (the lengths, the payee form
-without a list), which is why it now makes both.
+without a list), which is why it now makes both. A seventeenth break
+goes the other way, a review that refuses too much (the policy's
+`x402Reclaim` entry refused): the first form of the test only counted such
+mandates and passed; it now holds their reason to the one known, and
+fails.
 
 **What it found.** The first run had 152 of 400 mandates that the review
 showed and the policy refused to install: a limit past 128 bits or a time
@@ -230,9 +238,13 @@ found that the two sides read differently.
   coverage feedback.
 - The views say what the policy stored. That the policy then enforces what
   it stored is the subject of the contract fuzzing above.
-- Allowed calls and payees are probed over the generator's pools; an entry
-  outside them that the policy stored and the review did not read would
-  not be seen. A venue's configuration is not part of these mandates.
+- An entry outside the probes that the policy stored and the review did
+  not read would not be seen; that needs a trace of the policy's storage.
+  A venue's configuration is not part of these mandates.
+- One policy entry per permission. A permission with the same policy
+  module twice does not install (the second `onInstall` reverts); the
+  review refuses it, by a unit test, and the generator does not build it.
+  That revert was not run on a chain.
 - The review's wording of a term on the screen (units, dates, names) is
   not compared, only the values it read.
 

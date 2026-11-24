@@ -629,8 +629,6 @@ fn self_call(
     }
 }
 
-/// Kernel's `PermissionEnableDataFormat` as `permission_data` builds it:
-/// policies first, the signer last; each entry `flag(2) ‖ module(20) ‖ init`.
 /// A mandate as the review reads it from a policy's install parameters:
 /// what the owner is shown, and so what `AgentPolicy` has to enforce from
 /// the same bytes (held together by the differential test
@@ -766,6 +764,8 @@ pub fn mandate_terms(init: &[u8], place: &MandatePlace, name: &dyn Fn(Address) -
     Ok(MandateTerms { allow: targets.into_iter().zip(selectors).collect(), max_value, budget, valid_until: until, valid_after: after, tokens, payees })
 }
 
+/// Kernel's `PermissionEnableDataFormat` as `permission_data` builds it:
+/// policies first, the signer last; each entry `flag(2) ‖ module(20) ‖ init`.
 fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledAccount) -> Result<(), String> {
     let entries = Vec::<Bytes>::abi_decode_validate(vdata).map_err(|e| format!("permission data: {e}"))?;
     if entries.abi_encode() != vdata {
@@ -792,6 +792,7 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
         b.warnings.push(format!("{what} module {} is not known to this build", module.to_checksum(None)));
         Ok(())
     };
+    let mut seen_modules: Vec<Address> = Vec::new();
     for p in policies {
         if p.len() < 22 {
             return Err("a policy entry shorter than flag ‖ module; refused".into());
@@ -801,6 +802,13 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
             return Err(format!("a policy entry with flag 0x{}; a permission that skips its policy is refused", hex(&p[..2])));
         }
         let module = Address::from_slice(&p[2..22]);
+        // Kernel installs each entry under the one permission id, and a policy holds one
+        // mandate per id: the second install of the same module reverts, and with it the
+        // whole operation. Two mandates on the screen would be a screen that does not come true.
+        if seen_modules.contains(&module) {
+            return Err(format!("the policy module {} appears twice in one permission, which does not install; refused", module.to_checksum(None)));
+        }
+        seen_modules.push(module);
         b.row(s, "Policy module", b.name(module));
         module_known(b, "policy", module)?;
         let terms = {
@@ -1496,6 +1504,10 @@ mod tests {
         };
         assert!(matches!(open(&install(flip_flag(0, [0, 1]))).verdict, Verdict::Refuse(ref m) if m.contains("skips its policy")));
         assert!(matches!(open(&install(flip_flag(1, [0, 2]))).verdict, Verdict::Refuse(ref m) if m.contains("skips its signature")));
+        // the same policy module twice: Kernel installs both under the one id, the second
+        // install reverts, and two mandates on the screen would not come true
+        let twice = Bytes::from(vec![entries[0].clone(), entries[0].clone(), entries[1].clone()].abi_encode());
+        assert!(matches!(open(&install(twice)).verdict, Verdict::Refuse(ref m) if m.contains("appears twice in one permission")));
         // a hook on an install
         let mut c = IKernel::installValidationsCall::abi_decode(&kernel::install_permission_calldata(perm, pdata.clone(), 1)).unwrap();
         c.configs[0].hook = PAYMASTER;
@@ -1685,8 +1697,6 @@ mod tests {
         assert!(t.contains("demo counter (verified in this build)") && !t.contains("not the counter"), "{t}");
     }
 
-    /// The phone's path: the facts embedded for the request's chain. On Base
-    /// Sepolia the project's own contracts are known, a variant's paymaster is not.
     /// What `AgentPolicy.onInstall` refuses, the review refuses first: a
     /// mandate the owner is shown is one that installs. One case for each
     /// rule; the differential test of the CLI's local-chain tests holds the
@@ -1749,6 +1759,8 @@ mod tests {
         assert!(why.contains("SIGNED OK") && why.contains('?'), "{why:?}");
     }
 
+    /// The phone's path: the facts embedded for the request's chain. On Base
+    /// Sepolia the project's own contracts are known, a variant's paymaster is not.
     #[test]
     fn build_facts_drive_the_review() {
         let me = ACCOUNT;

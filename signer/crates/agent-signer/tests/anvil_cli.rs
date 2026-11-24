@@ -2473,6 +2473,10 @@ impl Seeded {
 ///   does (bytes the policy decodes although they are not the canonical
 ///   encoding); it never reads other terms.
 ///
+/// The account is impersonated and calls the policy's `onInstall` itself;
+/// Kernel's `installValidations` is not run here (the other tests of this
+/// file run it).
+///
 /// `MANDATE_DIFFERENTIAL_CASES` sets the number of mandates (400 by default).
 #[test]
 fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
@@ -2651,11 +2655,16 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
 
         match (shown, installed) {
             (false, false) => neither += 1,
+            // Installed, and not shown. The one known reason: bytes the policy decodes
+            // although they are not the one encoding of their values. Any other reason
+            // is a review that refuses a mandate it should show.
             (false, true) => {
                 chain_only += 1;
-                if std::env::var("MANDATE_DIFFERENTIAL_WHY").is_ok() {
-                    eprintln!("case {case}: installed, not shown: {:?}", review.verdict);
-                }
+                assert!(
+                    matches!(&review.verdict, Verdict::Refuse(why) if why.contains("not canonical")),
+                    "case {case}: the review refuses a mandate the policy installs: {:?}",
+                    review.verdict
+                );
             }
             // Shown, and the install fails: nothing would be granted, but the owner would have
             // signed for a screen that did not come true. The review refuses whatever the
@@ -2670,15 +2679,35 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
                     (U256::from(t.valid_until), U256::from(t.valid_after), t.max_value, t.budget, 0),
                     "case {case}: the window and the native limits"
                 );
-                // every call of the pools: allowed exactly when the review lists it
-                for target in targets {
-                    for selector in selectors {
+                // The probes: the generator's pools, and whatever the review read in this
+                // case, which damage may have moved outside them.
+                let mut probe_targets = targets.to_vec();
+                let mut probe_selectors = selectors.to_vec();
+                for (a, s) in &t.allow {
+                    if !probe_targets.contains(a) {
+                        probe_targets.push(*a);
+                    }
+                    if !probe_selectors.contains(&s.0) {
+                        probe_selectors.push(s.0);
+                    }
+                }
+                let mut probe_tokens = tokens[..3].to_vec();
+                probe_tokens.extend(t.tokens.iter().map(|c| c.0).filter(|a| !tokens.contains(a)));
+                let mut probe_payees = payee_pool[..3].to_vec();
+                for p in t.payees.iter().flat_map(|l| &l.1) {
+                    if !probe_payees.contains(p) {
+                        probe_payees.push(*p);
+                    }
+                }
+                // every call probed: allowed exactly when the review lists it
+                for target in probe_targets {
+                    for selector in probe_selectors.iter().copied() {
                         let call = isAllowedCall { account: acct, id, target, selector: selector.into() };
                         let on_chain = U256::from_be_slice(&chain.call(&chain.addr("agentPolicy"), call.abi_encode())) == U256::from(1);
                         assert_eq!(on_chain, t.allow.contains(&(target, selector.into())), "case {case}: {target} {selector:02x?}");
                     }
                 }
-                for token in &tokens[..3] {
+                for token in &probe_tokens {
                     let raw = chain.call(&chain.addr("agentPolicy"), tokenLimitCall { account: acct, id, token: *token }.abi_encode());
                     let l = tokenLimitCall::abi_decode_returns(&raw).unwrap();
                     let cap = t.tokens.iter().find(|c| c.0 == *token);
@@ -2688,7 +2717,7 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
                         assert_eq!((U256::from(l.maxPerOp), U256::from(l.budget), l.domainSeparator, l.spent), (cap.1, cap.2, cap.3, 0), "case {case}: the limits of {token}");
                         assert_eq!(l.payeesOnly, list.is_some(), "case {case}: whether {token} has a payee list");
                     }
-                    for payee in &payee_pool[..3] {
+                    for payee in &probe_payees {
                         let call = payeeAllowedCall { account: acct, id, token: *token, payee: *payee };
                         let on_chain = U256::from_be_slice(&chain.call(&chain.addr("agentPolicy"), call.abi_encode())) == U256::from(1);
                         // without a list a token may reach anyone; with one, the listed and no other
