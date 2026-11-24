@@ -425,6 +425,16 @@ Plan for **the user paying** — that always works. The variants:
 3. **Someone else's sponsor** — a service's paymaster, or an ERC-20 paymaster
    that takes gas in USDC. Works with any ERC-4337 paymaster; the CLI only
    speaks to the project's own paymaster today.
+   **A paymaster that charges the account is outside the mandate's
+   count.** With any paymaster named, `AgentPolicy` charges no gas to the
+   budget: it takes the paymaster to pay. A token paymaster does not: it
+   takes the account's tokens for the gas, through an allowance the owner
+   gave it, and neither the native budget nor that token's budget counts
+   what it takes. The agent cannot give such an allowance itself beyond
+   its token limits (`approve` is counted), so this needs the owner's own
+   standing approval to the paymaster; an owner who gives one should keep
+   it small, since it bounds what gas can cost the account beside the
+   mandate. `WhitelistPaymaster` takes nothing from the account.
 
 How the operation reaches the chain (next question) is a separate choice.
 
