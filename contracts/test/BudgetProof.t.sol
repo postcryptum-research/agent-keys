@@ -8,21 +8,29 @@ import {ExecLib} from "kernel/src/utils/ExecLib.sol";
 import {ExecMode} from "kernel/src/types/Types.sol";
 
 /// Symbolic proof of the budget invariant for the single-call accounting path,
-/// to run with Halmos (https://github.com/a16z/halmos):
+/// proven with Kontrol (KEVM, https://github.com/runtimeverification/kontrol).
 ///
-///     halmos --contract BudgetProof
-///
-/// Halmos treats each `check_` function's arguments as symbolic, so the
+/// A prover treats each `check_` function's arguments as symbolic, so the
 /// amounts below stand for *every* value at once, not a fuzzed sample. This
 /// lifts the budget bound that `PolicyFuzz.t.sol` already asserts under
 /// differential fuzzing (lines 390-392, 414-416) from "held on the seeds
 /// tried" to "held on all inputs" — for the one path proven here.
 ///
-/// NOTE: Halmos 0.1.13 (the latest release) cannot yet execute this codebase —
-/// its symbolic EVM does not implement the MCOPY opcode, which our bytecode
-/// needs (transient storage forces cancun+, and the dependencies need a solc
-/// that emits MCOPY). See issue #124. The harness is prover-agnostic and is
-/// ready for a prover that handles MCOPY (Kontrol, Certora).
+/// To run it, from a copy of `contracts/` holding `src/`, `lib/`,
+/// `foundry.toml` and this one file in `test/` (with the whole suite in
+/// `test/` the build takes far longer), as `.github/workflows/kontrol.yml`
+/// does:
+///
+///     docker run --rm -e KPROFILE_TELEMETRY_DISABLED=true \
+///       -v "$PWD:/home/user/workspace" -w /home/user/workspace \
+///       runtimeverificationinc/kontrol:ubuntu-jammy-1.0.255 \
+///       bash -c 'kontrol build && kontrol prove --match-test "BudgetProof.check_" --workers 3'
+///
+/// All three proofs pass, and with the budget, the token's cap or the native
+/// cap broken they fail with counterexamples (issue #124; timings in
+/// docs/FUZZING.md). Kontrol sends anonymous usage data unless
+/// `KPROFILE_TELEMETRY_DISABLED=true` is set. Halmos 0.1.13 cannot run this
+/// codebase: its symbolic EVM has no MCOPY, which our bytecode needs.
 ///
 /// SCOPE, stated honestly. This proves the *accounting* invariant for a
 /// fixed-shape single call (a token `transfer`, and a plain native transfer):

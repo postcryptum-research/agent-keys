@@ -88,3 +88,30 @@ bytes, and agreement with a second implementation where there is one.
 Agentic tools that write and run tests on their own are a source of ideas
 for properties, not a part of this repository's build. One is never run on
 a developer's machine or on any machine that holds a key.
+
+## Beyond fuzzing: a proof of the budget
+
+`contracts/test/BudgetProof.t.sol` states the budget rule with symbolic
+amounts, so a proof holds it for every value, not for the values a
+generator tried. Kontrol (KEVM, by Runtime Verification) proves it. Halmos
+cannot run this codebase: its symbolic EVM has no MCOPY, which the
+bytecode needs.
+
+| Proof | What holds, for any amount |
+|---|---|
+| `check_tokenTransfer_oneOp` | a token `transfer` in one operation is accepted only within the token's cap per operation; the token's counter then equals the amount and stays within the budget; a refused one books nothing |
+| `check_nativeTransfer_oneOp` | the same for a plain native transfer and the native cap and budget |
+| `check_tokenTransfer_twoOps` | two token transfers in a row add up without wrapping and without passing the budget |
+
+**The run of 2026-11-24** ([issue #124](https://github.com/postcryptum-research/agent-keys/issues/124#issuecomment-7131857893)):
+- Setup: image `runtimeverificationinc/kontrol:ubuntu-jammy-1.0.255`, a copy of `contracts/` with this one test, the container limited to 12 CPUs and 11 GB.
+- `kontrol build`: 3 min 24 s.
+- `kontrol prove` with three workers: 6 min 41 s of wall time, about 4 GB of memory at the peak seen. The three proofs took 2 min 52 s, 2 min 42 s and 4 min 37 s.
+- With three rules broken at once (the token budget off by one, the token's cap not checked, the native cap off by one), every proof fails, with the counterexamples `amount = 101` and `value = 1000000000000000001`, in 10 min 56 s.
+
+**In CI:** `.github/workflows/kontrol.yml` runs the same by hand, once a week, and on a pull request that changes `AgentPolicy.sol`, the harness, `foundry.toml` or the workflow. The image is pinned by digest. Kontrol sends anonymous usage data unless `KPROFILE_TELEMETRY_DISABLED=true` is set, as the workflow does. The command to run it by hand is in the harness's header.
+
+**What it does not prove** ([#130](https://github.com/postcryptum-research/agent-keys/issues/130)):
+- **The batch, Safe and MultiSend paths.** Their loops run over a length the caller sets; they stay with the fuzzing above.
+- **Value-faithfulness.** That the executed call moves no more than the policy counted needs a model of Kernel's `execute`; the differential tests are the evidence for it.
+- **The breaks one at a time.** In the run above the three rules were broken together, not one at a time.
