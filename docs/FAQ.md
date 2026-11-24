@@ -459,6 +459,15 @@ ordinary transaction (`EntryPoint.handleOps`). Three ways:
 | **a bundler you run or rent** | its URL, possibly an API key | same, without others' rate limits |
 | **`agent-signer` itself** | a **gas wallet**: a small hot key with ETH (`GAS_WALLET_KEYFILE`) | the CLI sends `handleOps` from it; the EntryPoint repays it from the account's deposit or the paymaster's, so it only needs a float. It is a plain key file — keep a few dollars in it. |
 
+A bundler proposes the gas limits and fees the hardware signs, and is paid
+from them. The CLI takes each gas figure only up to twice its own estimate
+(for `preVerificationGas`, twice the larger of its own 100000 and the
+operation's L1 calldata cost) and each fee, a raised fee floor included, only
+up to twice the node's `maxFeePerGas`; beyond that it refuses to sign and
+names the figure ([#148](https://github.com/postcryptum-research/agent-keys/issues/148)).
+[V] Pimlico's public endpoints priced at 0.67 to 0.82 times the node's
+`maxFeePerGas` on Base Sepolia, Base, Ethereum and Arbitrum on 2026-11-25.
+
 With a bundler, no gas wallet is needed: leave `GAS_WALLET_KEYFILE` unset.
 It is only required to submit `handleOps` yourself and for the commands that
 send ETH from it (`account fund`, `paymaster deposit / sponsor / stake`);
