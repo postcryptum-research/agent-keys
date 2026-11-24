@@ -32,7 +32,7 @@ use crate::kernel::{self, PermissionId};
 pub const PERMIT2: Address = alloy::primitives::address!("000000000022D473030F116dDEE9F6B43aC78BA3");
 
 pub fn forbidden_target(dep: &Deployments, account: Address, target: Address, selector: [u8; 4]) -> Option<String> {
-    use crate::abi::IAgentPolicyTrading::{orderReclaimCall, orderRegisterCall};
+    use crate::abi::IAgentPolicyTrading::orderRegisterCall;
     use crate::abi::IAgentPolicyX402::{x402AuthorizeCall, x402ReclaimCall};
     let modules: [(Option<Address>, &str); 8] = [
         (Some(dep.p256_validator), "the root validator: the agent could replace the owner key"),
@@ -56,8 +56,7 @@ pub fn forbidden_target(dep: &Deployments, account: Address, target: Address, se
     if target == dep.agent_policy {
         let own = selector == x402AuthorizeCall::SELECTOR
             || selector == x402ReclaimCall::SELECTOR
-            || selector == orderRegisterCall::SELECTOR
-            || selector == orderReclaimCall::SELECTOR;
+            || selector == orderRegisterCall::SELECTOR;
         return (!own).then(|| "the policy itself, outside its x402 and order entry points".to_string());
     }
     modules.iter().find(|(a, _)| *a == Some(target)).map(|(_, why)| why.to_string())

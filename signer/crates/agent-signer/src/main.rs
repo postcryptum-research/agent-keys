@@ -196,16 +196,6 @@ enum OrderCmd {
         #[arg(long)]
         sponsored: bool,
     },
-    /// Return to the budget the orders that ended unfilled.
-    Reclaim {
-        #[command(flatten)]
-        agent: AgentArgs,
-        /// Look for registrations from this block (default: the last 50,000).
-        #[arg(long)]
-        from_block: Option<u64>,
-        #[arg(long)]
-        sponsored: bool,
-    },
 }
 
 #[derive(Subcommand)]
@@ -1578,12 +1568,8 @@ async fn main() -> Result<()> {
                 let placed = s.order_sell(venue, sell, buy, sell_amount, buy_amount, valid_for, sponsored).await?;
                 eprintln!("order digest:   {}", placed.digest);
                 eprintln!("not sent to any order book: the order is live once one has it");
+                eprintln!("charged to the token's budget now, filled or not: an order's charge is not given back, it returns when the budget period turns");
                 println!("{}", placed.json());
-            }
-            OrderCmd::Reclaim { agent, from_block, sponsored } => {
-                let s = session(&agent).await?;
-                let done = s.order_reclaim(from_block, sponsored).await?;
-                println!("reclaimed {done} unfilled order(s)");
             }
         },
         Cmd::Demo { agent, sponsored } => {

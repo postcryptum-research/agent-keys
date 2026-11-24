@@ -459,12 +459,6 @@ pub fn order_register_calldata(decoder: Address, config: &[u8], order: &[u8]) ->
     [&[0x27u8, 0xdd, 0xae, 0x76][..], &args].concat().into()
 }
 
-/// `AgentPolicy.orderReclaim(id, decoder, config, order)`.
-pub fn order_reclaim_calldata(id: B256, decoder: Address, config: &[u8], order: &[u8]) -> Bytes {
-    let args = (id, decoder, Bytes::copy_from_slice(config), Bytes::copy_from_slice(order)).abi_encode_params();
-    [&[0x43u8, 0x44, 0xb7, 0x33][..], &args].concat().into()
-}
-
 /// Root path: the bare pair.
 pub fn root_signature(sig: &Signature) -> Bytes {
     [&sig.r[..], &sig.s[..]].concat().into()
@@ -544,10 +538,6 @@ mod tests {
         assert_eq!(
             alloy_primitives::keccak256(order_register_calldata(decoder, &[0x12, 0x34], &[0xab, 0xcd, 0xef])),
             b256!("08453e4f1e3e9495f734e5698aaf154c96a6e22c0b20ed67a2523cd9ce67f174")
-        );
-        assert_eq!(
-            alloy_primitives::keccak256(order_reclaim_calldata(h1, decoder, &[0x12, 0x34], &[0xab, 0xcd, 0xef])),
-            b256!("b2dd9870883ef1040f6adcd0e9dd5609857462ad16bf32f73f737d2f29e31a3b")
         );
     }
 

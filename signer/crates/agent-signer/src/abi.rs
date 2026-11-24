@@ -139,7 +139,6 @@ sol! {
         function period(address account, bytes32 id) external view returns (uint32 seconds_, uint48 seen);
         function venue(address account, bytes32 id, address decoder) external view returns (bytes32 codeHash, bytes32 configHash);
         function orderRegister(address decoder, bytes calldata config, bytes calldata order) external;
-        function orderReclaim(bytes32 id, address decoder, bytes calldata config, bytes calldata order) external;
         event OrderRegistered(address indexed account, address indexed decoder, bytes order);
     }
 

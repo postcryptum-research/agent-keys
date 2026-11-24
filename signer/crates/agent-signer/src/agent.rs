@@ -354,6 +354,12 @@ impl AgentConfig {
     /// The period and the venues as the policy takes them. `codes` holds
     /// each decoder's code hash, read from the chain by the caller.
     pub fn trading(&self, codes: &std::collections::HashMap<Address, alloy::primitives::B256>) -> Result<owner_core::kernel::Trading> {
+        if self.policy.period == 0 && !self.policy.venues.is_empty() {
+            anyhow::bail!(
+                "the config names venues and no budget period (`policy.period`): the policy refuses such a mandate. \
+                 An order's charge is not given back, so the period is what returns an unfilled order's part of the budget"
+            );
+        }
         let venues = self
             .policy
             .venues

@@ -1981,14 +1981,14 @@ mod trading_abi {
 }
 
 const ORDER_REGISTER: &str = "0x27ddae76";
-const ORDER_RECLAIM: &str = "0x4344b733";
 
 /// A trading mandate end to end (issue #80), on the policy and the decoder
 /// built from this repository's sources and a stand-in for CoW's settlement:
 /// the owner installs it with the venue's allowance, the agent registers and
 /// signs an order, the venue settles it on the account's word; an order
-/// outside the terms goes nowhere, an unfilled one comes back to the budget,
-/// a new period renews the budget, and revoking takes the allowance back.
+/// outside the terms goes nowhere, an unfilled one stays charged until the
+/// period turns, a new period renews the budget, and revoking takes the
+/// allowance back.
 #[test]
 fn trading_orders_under_a_mandate() {
     let chain = chain_or_skip!("trading");
@@ -2027,7 +2027,7 @@ fn trading_orders_under_a_mandate() {
             name,
             &Cfg {
                 permission,
-                allow: vec![(counter.clone(), INCREMENT), (policy.clone(), ORDER_REGISTER), (policy.clone(), ORDER_RECLAIM)],
+                allow: vec![(counter.clone(), INCREMENT), (policy.clone(), ORDER_REGISTER)],
                 account: Some(account.clone()),
                 tokens: json!([{"token": usd, "maxPerOp": "200000000", "budget": "300000000", "payees": "anyone"}]),
                 ..base_cfg(&owner, &agent, &counter, until)
@@ -2144,17 +2144,23 @@ fn trading_orders_under_a_mandate() {
     let twice = refused(&same);
     assert!(twice.contains("already registered"), "{twice}");
 
-    // an order nobody fills is charged while it lives and comes back after it
-    // (one unit more asked for it: another order than the first, whenever it ends)
-    placed(&sell("150000000", "37500000000000001"));
+    // an order nobody fills stays charged after its end: there is no refund, the
+    // period returns it (one unit more asked for it: another order than the first)
+    let out = run(&sell("150000000", "37500000000000001"));
+    let said = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success() && said.contains("an order's charge is not given back"), "{said}");
     assert!(chain.ok(&["permission", "show", "--agent", &cfg]).contains("(spent 300000000)"));
-    assert!(chain.ok(&["order", "reclaim", "--agent", &cfg, "--from-block", "0"]).contains("reclaimed 0 unfilled"));
     chain.advance(700);
-    let back = chain.ok(&["order", "reclaim", "--agent", &cfg, "--from-block", "0"]);
-    assert!(back.contains("reclaimed 1 unfilled"), "{back}");
-    assert!(chain.ok(&["permission", "show", "--agent", &cfg]).contains("(spent 150000000)"));
-    // the filled one does not come back, now or later
-    assert!(chain.ok(&["order", "reclaim", "--agent", &cfg, "--from-block", "0"]).contains("reclaimed 0 unfilled"));
+    assert!(chain.ok(&["permission", "show", "--agent", &cfg]).contains("(spent 300000000)"));
+    let gone = chain.fails(&["order", "reclaim", "--agent", &cfg, "--from-block", "0"]);
+    assert!(gone.contains("unrecognized subcommand"), "{gone}");
+    // venues without a period: refused before anything is built
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    v["policy"]["period"] = json!(0);
+    let no_period = chain.dir.join("no-period.json");
+    std::fs::write(&no_period, v.to_string()).unwrap();
+    let why = chain.fails(&["permission", "rotate", "--agent", &no_period.display().to_string(), "--old-id", "0x74726431"]);
+    assert!(why.contains("no budget period"), "{why}");
 
     // a new period, a new budget; but the venue's allowance is one budget and no more,
     // whatever the period: the owner gives the next one

@@ -176,49 +176,4 @@ impl Session {
         let uid = [digest.as_slice(), self.account.as_slice(), &valid_to.to_be_bytes()].concat().into();
         Ok(Placed { order, digest, uid, signature, tx: inc.tx, account: self.account })
     }
-
-    /// Return to the token budget every order of this permission that ended
-    /// without the venue touching it. Orders are found from the policy's
-    /// `OrderRegistered` events since `from_block`; whether one can come back
-    /// is the policy's call, asked first without an operation.
-    pub async fn order_reclaim(&self, from_block: Option<u64>, sponsored: bool) -> Result<usize> {
-        let policy = self.installed_policy().await?;
-        let id32 = B256::right_padding_from(self.cfg.permission_id()?.as_slice());
-        let latest = self.provider.get_block_number().await?;
-        let start = from_block.unwrap_or(latest.saturating_sub(50_000));
-        eprintln!(
-            "reclaim:        looking at blocks {start} to {latest}{}",
-            if from_block.is_none() { "; an order registered before that is not found: pass --from-block" } else { "" }
-        );
-        let now = self.chain_time().await?;
-        let base = Filter::new()
-            .address(policy)
-            .event_signature(IAgentPolicyTrading::OrderRegistered::SIGNATURE_HASH)
-            .topic1(B256::left_padding_from(self.account.as_slice()));
-        let logs = crate::x402::scan_in_chunks(start, latest, |lo, hi| {
-            let filter = base.clone().from_block(lo).to_block(hi);
-            async move { Ok(self.provider.get_logs(&filter).await?) }
-        })
-        .await?;
-        let mut done = 0;
-        for log in logs {
-            let decoder = Address::from_word(*log.topics().get(2).context("an OrderRegistered event without its decoder")?);
-            let Some(v) = self.cfg.policy.venues.iter().find(|v| v.decoder == decoder) else { continue };
-            let order = IAgentPolicyTrading::OrderRegistered::decode_log_data(log.data())?.order;
-            // word 5 of a CoW order: validTo. The venue fills up to and at it.
-            let Some(valid_to) = order.get(5 * 32..6 * 32).map(U256::from_be_slice) else { continue };
-            if valid_to >= U256::from(now) {
-                continue; // still live: it may yet be filled
-            }
-            let call = kernel::order_reclaim_calldata(id32, decoder, &v.config()?, &order);
-            let asked = TransactionRequest::default().from(self.account).to(policy).input(call.clone().into());
-            if self.provider.call(asked).await.is_err() {
-                continue; // filled, cancelled at the venue, another permission's, or reclaimed already
-            }
-            let inc = self.send_op(policy, U256::ZERO, call, false, sponsored, None).await?;
-            eprintln!("reclaimed:      order until {valid_to} — tx {}", inc.tx);
-            done += 1;
-        }
-        Ok(done)
-    }
 }

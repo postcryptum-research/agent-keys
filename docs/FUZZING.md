@@ -81,7 +81,7 @@ as accepted only if the clock is inside that window.
 
 | Test | What must hold |
 |---|---|
-| `testFuzz_trading_modelDecisionsCountersAndOutflow` | the model and the policy decide every operation and every reclaim alike (an order that would outlive the period it is charged in is refused by both), 40 steps per seed, and count alike (native spent, token spent, the period seen); the account vouches for an order exactly while it is registered and not past its end; and, without leaning on the model's counters, in no period does more of the token leave than its budget, counting the transfers of that period and every order charged to it that the venue filled |
+| `testFuzz_trading_modelDecisionsCountersAndOutflow` | the model and the policy decide every operation alike (an order that would outlive the period it is charged in is refused by both), the policy gives no order's charge back when asked, 40 steps per seed, and count alike (native spent, token spent, the period seen); the account vouches for an order exactly while it is not past its end; and, without leaning on the model's counters, in no period does more of the token leave than its budget, counting the transfers of that period and every order charged to it that the venue filled |
 | `testFuzz_trading_noMoreThanTwoBudgetsAcrossARenewal` | the number the owner is shown: what is transferred in two neighbouring periods together is never more than two budgets |
 
 ```sh
@@ -121,7 +121,11 @@ the period's end, a refund across periods, a reclaim at `validTo` and of a
 filled order, the record left after a refund, an order's end and its
 "not before", the same order twice, an order past the cap, the budget off
 by one, an order with value attached, an order not charged, a window of a
-single second; these sixteen are found at 256 runs. Two are not, and cannot
+single second; these sixteen are found at 256 runs. (Four of them were
+rules of an order's refund, which the policy had then. The refund was
+removed on 2026-11-24: a filled order could be made to read as untouched
+at the venue after its end. The model now asks for a refund at every
+step and holds that none is given.) Two are not, and cannot
 be while the EntryPoint holds the window: accepting a period earlier than
 one already seen (to have seen a later one, an operation must have been
 accepted outside its window), and accepting a period index of fewer than

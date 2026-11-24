@@ -753,8 +753,14 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
             if !b.facts.trading_policy_modules.contains(&module) {
                 return Err("this mandate carries a budget period or trading venues, and the policy module it goes to is not known to enforce them; refused".into());
             }
-            if d.8 == 0 && d.9.is_empty() {
-                return Err("policy parameters in the trading form with neither a period nor a venue; refused".into());
+            // the policy installs this form only with a period: with venues, because an
+            // order's charge is never given back and the period is what returns it
+            if d.8 == 0 {
+                return Err(if d.9.is_empty() {
+                    "policy parameters in the trading form with neither a period nor a venue; refused".into()
+                } else {
+                    "this mandate names trading venues and no budget period: an order's charge would never come back, and the policy does not install it; refused".into()
+                });
             }
             trading = Some((d.8, d.9));
             (d.0, d.1, d.2, d.3, d.4, d.5, d.6, d.7)
@@ -1004,6 +1010,7 @@ fn venue_rows(
             "Orders live",
             if max_life % 60 == 0 { format!("at most {} minutes", max_life / 60) } else { format!("at most {max_life} seconds") },
         );
+        b.row(s, "An order is charged", "to the budget when it is registered, filled or not; the charge is not given back, it returns when budgets renew");
         if app_data.is_zero() {
             b.row(s, "Order data", "none (appData is zero)");
         } else {
@@ -1138,7 +1145,6 @@ fn selector_name(sel: [u8; 4]) -> String {
         SELECTOR_ERC20_TRANSFER => Some("transfer"),
         SELECTOR_ERC20_APPROVE => Some("approve"),
         [0x27, 0xdd, 0xae, 0x76] => Some("orderRegister"),
-        [0x43, 0x44, 0xb7, 0x33] => Some("orderReclaim"),
         [0, 0, 0, 0] => Some("plain value transfer"),
         _ => None,
     };
@@ -1307,8 +1313,8 @@ mod tests {
 
     fn trading_params() -> kernel::PolicyParams {
         kernel::PolicyParams {
-            targets: vec![POLICY, POLICY],
-            selectors: vec![FixedBytes::from([0x27, 0xdd, 0xae, 0x76]), FixedBytes::from([0x43, 0x44, 0xb7, 0x33])],
+            targets: vec![POLICY],
+            selectors: vec![FixedBytes::from([0x27, 0xdd, 0xae, 0x76])],
             max_value_per_op: 0,
             budget: 10u128.pow(16),
             valid_until: NOW + 30 * 86_400,
@@ -1346,6 +1352,7 @@ mod tests {
         assert!(t.contains("never for less than 0.0002 WETH per 1 USDC"), "{t}");
         assert!(t.contains("Price: not below the lowest price above"), "{t}");
         assert!(t.contains("Orders live: at most 30 minutes"), "{t}");
+        assert!(t.contains("An order is charged: to the budget when it is registered, filled or not; the charge is not given back"), "{t}");
         assert!(t.contains("Order data: none"), "{t}");
         assert!(t.contains(&format!("Tokens are taken by: {} — CoW Swap vault relayer (verified in this build)", RELAYER.to_checksum(None))), "{t}");
         assert!(t.contains("Budgets renew: every day, from 00:00 UTC"), "{t}");
@@ -1439,6 +1446,12 @@ mod tests {
             assert!(r.digest.is_none());
         };
         let (p, f, c) = (trading_params(), trading_facts(), cow());
+
+        // venues and no period: an order's charge would never come back, and the policy does not install it
+        refused(
+            open_trading(&p, &kernel::Trading { period: 0, ..one_venue(&c) }, vec![c.clone()], &f),
+            "trading venues and no budget period",
+        );
 
         // the policy module is not known to hold periods and venues
         let mut old = trading_facts();
@@ -2081,8 +2094,8 @@ mod tests {
         // never under 0.0002 WETH for a USDC, orders of 30 minutes at most
         let config = kernel::cow_config(B256::ZERO, 1800, &[(usdc, weth, U256::from(200_000_000_000_000u64), U256::from(1_000_000))]);
         let params = |policy: Address| kernel::PolicyParams {
-            targets: vec![policy, policy],
-            selectors: vec![FixedBytes::from([0x27, 0xdd, 0xae, 0x76]), FixedBytes::from([0x43, 0x44, 0xb7, 0x33])],
+            targets: vec![policy],
+            selectors: vec![FixedBytes::from([0x27, 0xdd, 0xae, 0x76])],
             max_value_per_op: 0,
             budget: 10u128.pow(16),
             valid_until: NOW + 30 * 86_400,
