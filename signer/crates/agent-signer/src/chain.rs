@@ -565,17 +565,102 @@ impl Session {
     pub async fn add_recovery(&self, key: &hw_signer::PublicKey, sponsored: bool) -> Result<Included> {
         let validator = self.recovery_validator()?;
         if self.is_installed(validator).await? {
-            bail!("a recovery key is already installed ({validator})");
+            bail!("a recovery key is already installed ({validator}); `owner replace-recovery` installs the config's key in its place");
         }
+        self.recovery_key_stands_apart(key).await?;
         let nonce = self.install_nonce_for(kernel::validator_id(validator)).await?;
         let call = kernel::add_recovery_calldata(self.account, validator, key, nonce);
+        self.send_raw_at(call, SignAs::Owner, sponsored, None).await
+    }
+
+    /// A recovery key is a third key. One that is the owner key recovers
+    /// nothing when that key is lost; one that is the agent's key sits on
+    /// the agent's machine and could make itself root from there. All three
+    /// are key specs of the same shape in the config, so the mistake is
+    /// easy to make.
+    async fn recovery_key_stands_apart(&self, key: &hw_signer::PublicKey) -> Result<()> {
+        let same = |other: &hw_signer::PublicKey| other.x == key.x && other.y == key.y;
+        let root = IKernel::new(self.account, self.provider.clone()).rootValidator().call().await?;
+        let validator = Address::from_slice(&root[1..21]);
+        if root[0] == 0x01 && self.known_validators().contains(&validator) {
+            let k = IP256ValidatorView::new(validator, self.provider.clone()).publicKeys(self.account).call().await?;
+            if same(&hw_signer::PublicKey { x: k.x.0, y: k.y.0 }) {
+                bail!(
+                    "the config's recovery key is the account's root key: it would recover nothing when that key is lost. \
+                     The recovery key is a separate key, kept apart from the owner's\n  {}",
+                    key_text(key, "  ")
+                );
+            }
+        } else {
+            eprintln!("root validator {validator} is not one of this repository's P-256 validators; the recovery key is not compared with the root key");
+        }
+        let agent = match &self.cfg.agent_public_key {
+            Some(pk) => Some(pk.parse()?),
+            None => open_signer(&self.cfg.agent, Role::Agent).and_then(|s| Ok(s.public_key()?)).ok(),
+        };
+        match agent {
+            Some(agent) if same(&agent) => bail!(
+                "the config's recovery key is the agent's key: it sits on the agent's machine, and from there it could make itself root. \
+                 The recovery key is a separate key, kept cold\n  {}",
+                key_text(key, "  ")
+            ),
+            Some(_) => {}
+            None => eprintln!("the agent's key could not be opened here; the recovery key is not compared with it"),
+        }
+        Ok(())
+    }
+
+    /// The recovery validator with a key installed that the owner key may
+    /// change: installed, and not root at the moment (Kernel does not
+    /// uninstall the root validator; after `owner recover` the handover is
+    /// finished first).
+    async fn recovery_to_change(&self) -> Result<(Address, hw_signer::PublicKey)> {
+        let validator = self.recovery_validator()?;
+        if !self.is_installed(validator).await? {
+            bail!("no recovery key is installed on this account ({validator}): `owner add-recovery` installs one");
+        }
+        let root = IKernel::new(self.account, self.provider.clone()).rootValidator().call().await?;
+        if root == kernel::validator_id(validator) {
+            bail!(
+                "the recovery key is root now (after `owner recover`): finish the handover first with \
+                 `owner set-root --as-recovery`, then change the recovery key with the new owner key"
+            );
+        }
+        let k = IP256ValidatorView::new(validator, self.provider.clone()).publicKeys(self.account).call().await?;
+        Ok((validator, hw_signer::PublicKey { x: k.x.0, y: k.y.0 }))
+    }
+
+    /// Owner operation: the installed recovery key is replaced by `key`
+    /// (issue #114). For a recovery file that was stolen, lost, or is to
+    /// change hands. One operation; the old key can sign nothing after it.
+    pub async fn replace_recovery(&self, key: &hw_signer::PublicKey, sponsored: bool) -> Result<Included> {
+        let (validator, installed) = self.recovery_to_change().await?;
+        if installed.x == key.x && installed.y == key.y {
+            bail!("the config's recovery key is the one installed already: {}", key_text(key, "  "));
+        }
+        self.recovery_key_stands_apart(key).await?;
+        let nonce = self.install_nonce_for(kernel::validator_id(validator)).await?;
+        let call = kernel::replace_recovery_calldata(self.account, validator, key, nonce);
+        self.send_raw_at(call, SignAs::Owner, sponsored, None).await
+    }
+
+    /// Owner operation: the recovery key is removed and none takes its place.
+    pub async fn remove_recovery(&self, sponsored: bool) -> Result<Included> {
+        let (validator, _) = self.recovery_to_change().await?;
+        let call = kernel::remove_recovery_calldata(self.account, validator);
         self.send_raw_at(call, SignAs::Owner, sponsored, None).await
     }
 
     /// Recovery operation: the recovery key makes itself root (the owner's
     /// device is lost or broken).
     pub async fn recover(&self, sponsored: bool) -> Result<Included> {
-        let call = kernel::change_root_calldata(self.recovery_validator()?, None);
+        let validator = self.recovery_validator()?;
+        // said here, for every kind of key: without this a removed recovery key shows as a
+        // revert at estimation
+        if !self.is_installed(validator).await? {
+            bail!("no recovery key is installed on this account ({validator}): `owner add-recovery` first");
+        }
+        let call = kernel::change_root_calldata(validator, None);
         self.send_raw_at(call, SignAs::Recovery, sponsored, None).await
     }
 

@@ -329,6 +329,37 @@ enum OwnerCmd {
         #[arg(long)]
         sponsored: bool,
     },
+    /// Replace the installed recovery key with the config's `recovery` key
+    /// (owner operation, signed by the owner key): for a recovery file that
+    /// was stolen, lost, or changes hands. The old key can sign nothing
+    /// afterwards.
+    ReplaceRecovery {
+        #[command(flatten)]
+        agent: AgentArgs,
+        /// Do not open the new recovery key. By default it is opened here
+        /// and signs a fresh digest before anything is sent (a key file
+        /// asks for its passphrase): a recovery key that cannot sign is
+        /// otherwise found out when it is needed, with the owner key
+        /// already gone. With this flag only its public half is read, as
+        /// `add-recovery` does, and the key stays cold.
+        #[arg(long)]
+        skip_key_check: bool,
+        #[arg(long)]
+        sponsored: bool,
+    },
+    /// Remove the recovery key and install none (owner operation). After
+    /// it, losing the owner key loses the account, and the key of the root
+    /// validator cannot be replaced in place (`set-root --retire` of the
+    /// same validator stands on the recovery validator meanwhile).
+    RemoveRecovery {
+        #[command(flatten)]
+        agent: AgentArgs,
+        /// Required: says that the account is to be left without a recovery key.
+        #[arg(long)]
+        leave_no_recovery: bool,
+        #[arg(long)]
+        sponsored: bool,
+    },
     /// The owner key is lost: the recovery key makes itself root.
     Recover {
         #[command(flatten)]
@@ -1314,6 +1345,36 @@ async fn main() -> Result<()> {
                 };
                 let inc = s.add_recovery(&key, sponsored).await?;
                 println!("recovery key installed: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
+            }
+            OwnerCmd::ReplaceRecovery { agent, skip_key_check, sponsored } => {
+                let s = session(&agent).await?;
+                let spec = s.cfg.recovery.as_ref().context("the config has no `recovery` key")?;
+                let key = match spec {
+                    agent::KeySpec::Keyfile(path) => keyfile::public_key(path)?,
+                    other => agent::open_signer(other, agent::Role::Recovery)?.public_key()?,
+                };
+                eprintln!("new recovery key: {}", chain::key_text(&key, "                  "));
+                if skip_key_check {
+                    eprintln!("the new recovery key is not opened here (--skip-key-check): that it can sign is not shown");
+                } else {
+                    let signer = agent::open_signer(spec, agent::Role::Recovery)
+                        .context("the new recovery key does not open; nothing sent (--skip-key-check leaves it unopened)")?;
+                    check_signer("the new recovery key".into(), signer.as_ref())
+                        .context("nothing sent (--skip-key-check leaves the key unopened)")?;
+                }
+                let inc = s.replace_recovery(&key, sponsored).await?;
+                println!("recovery key replaced: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
+            }
+            OwnerCmd::RemoveRecovery { agent, leave_no_recovery, sponsored } => {
+                if !leave_no_recovery {
+                    bail!(
+                        "this leaves the account without a recovery key: losing the owner key then loses the account. \
+                         To put another key in its place use `owner replace-recovery`; to go on, add --leave-no-recovery"
+                    );
+                }
+                let s = session(&agent).await?;
+                let inc = s.remove_recovery(sponsored).await?;
+                println!("recovery key removed, none installed: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
             }
             OwnerCmd::Recover { agent, sponsored } => {
                 let s = session(&agent).await?;

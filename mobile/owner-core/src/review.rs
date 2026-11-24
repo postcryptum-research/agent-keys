@@ -607,6 +607,11 @@ fn self_call(
                     return Err("uninstallValidation of a validator with data; refused".into());
                 }
                 let v = Address::from_slice(&c.vId.0[1..21]);
+                if b.facts.recovery_validators.contains(&v) {
+                    // the recovery key goes: said as that, whichever validator holds this phone's key
+                    b.bold(s, "Remove the recovery key", format!("{} — unless another is installed, losing the owner key loses the account", b.name(v)));
+                    return Ok(());
+                }
                 match acct.validator {
                     Some(mine) if mine == v => {
                         b.bold(s, "Remove validator", format!("{} — this phone will no longer control the account", b.name(v)))
@@ -1144,6 +1149,24 @@ mod tests {
         assert_eq!(r.verdict, Verdict::Sign, "{t}");
         assert!(t.contains("! Install a recovery key"), "{t}");
         assert!(t.contains("may take over this account"), "{t}");
+
+        // replace-recovery (issue #114): the old key goes and the new one comes, each said as that
+        let mut o = op(kernel::replace_recovery_calldata(me, RECOVERY, &key(5), 3));
+        o.gas_fees = kernel::pack_gas(1, 1);
+        let r = open(&o);
+        let t = r.text();
+        assert_eq!(r.verdict, Verdict::Sign, "{t}");
+        assert!(t.contains("! Remove the recovery key"), "{t}");
+        assert!(t.contains(&format!("! Install a recovery key: {}", fingerprint(&key(5)))), "{t}");
+        assert!(t.contains("may take over this account") && t.contains("Call 3 of 3"), "{t}");
+        // remove-recovery: the grant is withdrawn and the key removed, with what that costs
+        let mut o = op(kernel::remove_recovery_calldata(me, RECOVERY));
+        o.gas_fees = kernel::pack_gas(1, 1);
+        let r = open(&o);
+        let t = r.text();
+        assert_eq!(r.verdict, Verdict::Sign, "{t}");
+        assert!(t.contains("! Remove the recovery key") && t.contains("losing the owner key loses the account"), "{t}");
+        assert!(t.contains("Forbid") && !t.contains("Install a recovery key"), "{t}");
 
         // an agent permission with its mandate, then the revoke
         let params = kernel::PolicyParams {
