@@ -3,6 +3,6 @@
   "private": true,
   "description": "Feeds validation traces to a rule-enforcing bundler's ERC-7562 checker (issue #83)",
   "type": "module",
-  "scripts": { "check": "node check-traces.mjs", "tracer": "node write-tracer.mjs", "check-run": "node check-run.mjs" },
+  "scripts": { "check": "node check-traces.mjs && node --test test.mjs", "tracer": "node write-tracer.mjs", "check-run": "node check-run.mjs" },
   "dependencies": { "@pimlico/alto": "0.0.21" }
 }
