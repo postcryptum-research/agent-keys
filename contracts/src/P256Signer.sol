@@ -33,7 +33,7 @@ import {P256Point} from "./P256Point.sol";
 contract P256Signer is ISigner {
     /// @dev The version of this contract's code (semantic versioning), raised with
     /// any change to its bytecode. A release tag names the versions it carries.
-    string public constant VERSION = "0.1.0";
+    string public constant VERSION = "0.1.1";
 
     // A P-256 public key in affine coordinates, each below the field prime p
     struct PublicKey {
@@ -43,7 +43,7 @@ contract P256Signer is ISigner {
         bytes32 y;
     }
 
-    /// @dev The install data is shorter than the id and two words, or its point is not on P-256.
+    /// @dev The install data is not exactly the id and two words, or its point is not on P-256.
     error InvalidPublicKey();
 
     /// @dev Emitted when an account installs a permission with this signer.
@@ -67,15 +67,15 @@ contract P256Signer is ISigner {
     /// the account installs a permission whose signer is this contract.
     /// A permission id that already has a key here for the account cannot get
     /// another over it: to change the key, the permission is uninstalled first.
-    /// @param data `bytes32 id ++ abi.encode(bytes32 x, bytes32 y)`, as Kernel packs it.
+    /// @param data `bytes32 id ++ abi.encode(bytes32 x, bytes32 y)`, as Kernel packs it: exactly 96 bytes.
     function onInstall(bytes calldata data) external payable override {
         // The permission id comes first, as Kernel packs it
         bytes32 id = bytes32(data[0:32]);
         // This permission must not have a key yet
         if (publicKeys[id][msg.sender].x != 0) revert AlreadyInitialized(msg.sender);
-        // The data must hold the id and both coordinates
-        if (data.length < 96) revert InvalidPublicKey();
-        // Decode the two words after the id; anything after them is not read
+        // The data must be the id and both coordinates, and nothing more
+        if (data.length != 96) revert InvalidPublicKey();
+        // Decode the two words after the id
         (bytes32 x, bytes32 y) = abi.decode(data[32:96], (bytes32, bytes32));
         // An off-curve key would fail every signature and leave the permission dead
         if (!P256Point.isOnCurve(x, y)) revert InvalidPublicKey();
