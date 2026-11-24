@@ -30,5 +30,14 @@
   "8-agent-policy-deployed-x402": {
     "asItIs": "REFUSED: account accesses un-deployed contract address 0x0000000000000000000000000000000000000100 with opcode STATICCALL",
     "precompileAllowed": "PASSES"
+  },
+  "9-cli-first-operation-sponsored": {
+    "asItIs": "REFUSED: unstaked factory accessed factory slot 0xc971c53e8faacbe9398308973b81e1992106aec7dde936e40d53f88839fe60a4",
+    "precompileAllowed": "REFUSED: unstaked factory accessed factory slot 0xc971c53e8faacbe9398308973b81e1992106aec7dde936e40d53f88839fe60a4",
+    "factoryStaked": "PASSES"
+  },
+  "10-cli-sponsored": {
+    "asItIs": "REFUSED: account accesses un-deployed contract address 0x0000000000000000000000000000000000000100 with opcode STATICCALL",
+    "precompileAllowed": "PASSES"
   }
 }
