@@ -257,8 +257,8 @@ owner-core 0.2.0+test-chains loaded; key tier on this device: secure-enclave
 new key: tier secure-enclave
   FINGERPRINT  6SQSW-VSOWR-SSGGR-EG3LE
 enrollment confirmed by the laptop. Next there: owner set-root … --expect-fingerprint 6SQSW-VSOWR-SSGGR-EG3LE
-signed 0x003f58de…010729 and posted: confirmed by the laptop
-signed 0x523a482a…4d5edf and posted: confirmed by the laptop
+signed 0x003f58dead0c9a1c09e3983f6f76f199458d173810f5a726f8b5e4cdec010729 and posted: confirmed by the laptop
+signed 0x523a482a732d34823afd0b5d3516a75e16091a68b39b262f1ec72045404d5edf and posted: confirmed by the laptop
 ```
 
 So the Secure Enclave signs the raw 32-byte `userOpHash` in the form

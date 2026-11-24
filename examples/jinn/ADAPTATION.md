@@ -19,7 +19,7 @@ Legend: **[V]** — verified by reading the code (file:line), **[I]** — infere
 >   allow-listed `approveHash`, the Safe will accept only `v = 1` from `msg.sender == Kernel`.
 > - `agent-signer op send --json` exists; the logs of its own userOp are sliced by the adapter
 >   (`src/kernelSafeBroadcaster.ts`, `userOpLogs`).
-> - Verified on Base Sepolia: Safe v1.3.0 `0xd0b972a8…E52A` with Kernel as its sole owner;
+> - Verified on Base Sepolia: Safe v1.3.0 `0xd0b972a8ee7D8AB91a2e3381Eb6F10550B80E52A` with Kernel as its sole owner;
 >   from a key in TROPIC01 under v3, a single call and a MultiSendCallOnly batch through the Safe went through,
 >   `addOwner` was rejected by the policy (`README.md`, Run section).
 

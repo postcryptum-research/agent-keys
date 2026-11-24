@@ -325,6 +325,13 @@ Then put the new key in the config as `owner`. A phone's key goes with
 `--no-proof-of-possession` hands the root over without the proof; the
 command says what that risks.
 
+### Why not an EOA?
+
+Every secure element speaks NIST P-256; none speaks secp256k1, and an EOA is
+secp256k1 + `ecrecover`. The first prototype ([`legacy/`](../legacy/)) hit exactly
+that wall. Account abstraction removes it: the chip stays a P-256 signer, and
+the smart account checks that signature itself.
+
 ### Do I need a Ledger, YubiKey or Trezor?
 
 Only for setups that hold real value, as the **owner** key — a separate
@@ -456,7 +463,7 @@ works the same way.
 
 It can also pay for HTTP APIs with x402 (USDC on Base): each payment is
 first registered on-chain against the mandate's token budget, then signed
-([`ERC1271.md`](ERC1271.md#x402--registered-authorizations-implemented-agentpolicy-v6),
+([`ERC1271.md`](ERC1271.md#x402--registered-authorizations-implemented-since-agentpolicy-v6),
 `agent-signer x402 fetch`). One registration costs one operation's gas, so
 x402 suits payments well above a cent.
 
