@@ -567,9 +567,47 @@ impl Session {
         if self.is_installed(validator).await? {
             bail!("a recovery key is already installed ({validator}); `owner replace-recovery` installs the config's key in its place");
         }
+        self.recovery_key_stands_apart(key).await?;
         let nonce = self.install_nonce_for(kernel::validator_id(validator)).await?;
         let call = kernel::add_recovery_calldata(self.account, validator, key, nonce);
         self.send_raw_at(call, SignAs::Owner, sponsored, None).await
+    }
+
+    /// A recovery key is a third key. One that is the owner key recovers
+    /// nothing when that key is lost; one that is the agent's key sits on
+    /// the agent's machine and could make itself root from there. All three
+    /// are key specs of the same shape in the config, so the mistake is
+    /// easy to make.
+    async fn recovery_key_stands_apart(&self, key: &hw_signer::PublicKey) -> Result<()> {
+        let same = |other: &hw_signer::PublicKey| other.x == key.x && other.y == key.y;
+        let root = IKernel::new(self.account, self.provider.clone()).rootValidator().call().await?;
+        let validator = Address::from_slice(&root[1..21]);
+        if root[0] == 0x01 && self.known_validators().contains(&validator) {
+            let k = IP256ValidatorView::new(validator, self.provider.clone()).publicKeys(self.account).call().await?;
+            if same(&hw_signer::PublicKey { x: k.x.0, y: k.y.0 }) {
+                bail!(
+                    "the config's recovery key is the account's root key: it would recover nothing when that key is lost. \
+                     The recovery key is a separate key, kept apart from the owner's\n  {}",
+                    key_text(key, "  ")
+                );
+            }
+        } else {
+            eprintln!("root validator {validator} is not one of this repository's P-256 validators; the recovery key is not compared with the root key");
+        }
+        let agent = match &self.cfg.agent_public_key {
+            Some(pk) => Some(pk.parse()?),
+            None => open_signer(&self.cfg.agent, Role::Agent).and_then(|s| Ok(s.public_key()?)).ok(),
+        };
+        match agent {
+            Some(agent) if same(&agent) => bail!(
+                "the config's recovery key is the agent's key: it sits on the agent's machine, and from there it could make itself root. \
+                 The recovery key is a separate key, kept cold\n  {}",
+                key_text(key, "  ")
+            ),
+            Some(_) => {}
+            None => eprintln!("the agent's key could not be opened here; the recovery key is not compared with it"),
+        }
+        Ok(())
     }
 
     /// The recovery validator with a key installed that the owner key may
@@ -598,13 +636,9 @@ impl Session {
     pub async fn replace_recovery(&self, key: &hw_signer::PublicKey, sponsored: bool) -> Result<Included> {
         let (validator, installed) = self.recovery_to_change().await?;
         if installed.x == key.x && installed.y == key.y {
-            bail!(
-                "the config's recovery key is the one installed already: fingerprint {}\n  x = 0x{}\n  y = 0x{}",
-                owner_core::fingerprint::fingerprint(key),
-                hex::encode(key.x),
-                hex::encode(key.y)
-            );
+            bail!("the config's recovery key is the one installed already: {}", key_text(key, "  "));
         }
+        self.recovery_key_stands_apart(key).await?;
         let nonce = self.install_nonce_for(kernel::validator_id(validator)).await?;
         let call = kernel::replace_recovery_calldata(self.account, validator, key, nonce);
         self.send_raw_at(call, SignAs::Owner, sponsored, None).await

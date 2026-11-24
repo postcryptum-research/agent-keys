@@ -794,7 +794,18 @@ fn the_recovery_key_is_replaced_and_removed() {
     // nothing to replace or remove yet
     let refused = chain.fails(&["owner", "replace-recovery", "--agent", &cfg1]);
     assert!(refused.contains("no recovery key is installed"), "{refused}");
+    // a recovery key is a third key: not the owner's, not the agent's
+    let (as_owner, as_agent) = (with("as-owner.json", &owner, &owner), with("as-agent.json", &owner, &agent));
+    let refused = chain.fails(&["owner", "add-recovery", "--agent", &as_owner]);
+    assert!(refused.contains("is the account's root key") && refused.contains(&owner.x) && refused.contains(&owner.y), "{refused}");
+    let refused = chain.fails(&["owner", "add-recovery", "--agent", &as_agent]);
+    assert!(refused.contains("is the agent's key") && refused.contains(&agent.x), "{refused}");
     chain.ok(&["owner", "add-recovery", "--agent", &cfg1]);
+    for (cfg, why) in [(&as_owner, "is the account's root key"), (&as_agent, "is the agent's key")] {
+        let refused = chain.fails(&["owner", "replace-recovery", "--agent", cfg, "--skip-key-check"]);
+        assert!(refused.contains(why), "{refused}");
+    }
+    assert!(status(&cfg1).contains("installed = true"));
     // a second add is refused and names the command that does it
     let refused = chain.fails(&["owner", "add-recovery", "--agent", &cfg2]);
     assert!(refused.contains("already installed") && refused.contains("owner replace-recovery"), "{refused}");
@@ -802,8 +813,8 @@ fn the_recovery_key_is_replaced_and_removed() {
     let refused = chain.fails(&["owner", "replace-recovery", "--agent", &cfg1]);
     assert!(refused.contains("the one installed already"), "{refused}");
 
-    // replaced, the new key having shown here that it signs
-    let out = chain.cli(&["owner", "replace-recovery", "--agent", &cfg2, "--check-new-key"]);
+    // replaced: by default the new key shows here that it signs
+    let out = chain.cli(&["owner", "replace-recovery", "--agent", &cfg2]);
     let (said, err) = (String::from_utf8_lossy(&out.stdout).to_string(), String::from_utf8_lossy(&out.stderr).to_string());
     assert!(out.status.success() && said.contains("recovery key replaced") && said.contains("the new recovery key signs"), "{said}\n{err}");
     assert!(err.contains(&format!("new recovery key: fingerprint {}", fingerprint_of(&second))) && err.contains(&second.x) && err.contains(&second.y), "{err}");
@@ -826,6 +837,12 @@ fn the_recovery_key_is_replaced_and_removed() {
         "owner", "set-root", "--agent", &cfg2, "--as-recovery", "--not-a-phone", "--validator", &validator, "--retire", &validator,
         "--public-key", &format!("{},{}", new_owner.x, new_owner.y), "--new-key", &spec(&new_owner),
     ]);
+
+    // the owner may leave the new key unopened, and is told what that leaves unshown
+    let out = chain.cli(&["owner", "replace-recovery", "--agent", &with("new-first.json", &new_owner, &first), "--skip-key-check"]);
+    let (said, err) = (String::from_utf8_lossy(&out.stdout).to_string(), String::from_utf8_lossy(&out.stderr).to_string());
+    assert!(out.status.success() && said.contains("recovery key replaced") && !said.contains("signs"), "{said}\n{err}");
+    assert!(err.contains("is not opened here (--skip-key-check)"), "{err}");
 
     // removing it takes the owner's explicit word
     let (new2, new3) = (with("new-second.json", &new_owner, &second), with("new-third.json", &new_owner, &third));

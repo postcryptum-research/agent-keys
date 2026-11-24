@@ -336,13 +336,14 @@ enum OwnerCmd {
     ReplaceRecovery {
         #[command(flatten)]
         agent: AgentArgs,
-        /// Open the new recovery key here and have it sign a fresh digest
-        /// before anything is sent (a key file asks for its passphrase). A
-        /// recovery key that cannot sign is found out only when it is
-        /// needed; without this flag only its public half is read, as
-        /// `add-recovery` does, and the key can stay cold.
+        /// Do not open the new recovery key. By default it is opened here
+        /// and signs a fresh digest before anything is sent (a key file
+        /// asks for its passphrase): a recovery key that cannot sign is
+        /// otherwise found out when it is needed, with the owner key
+        /// already gone. With this flag only its public half is read, as
+        /// `add-recovery` does, and the key stays cold.
         #[arg(long)]
-        check_new_key: bool,
+        skip_key_check: bool,
         #[arg(long)]
         sponsored: bool,
     },
@@ -1345,22 +1346,21 @@ async fn main() -> Result<()> {
                 let inc = s.add_recovery(&key, sponsored).await?;
                 println!("recovery key installed: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
             }
-            OwnerCmd::ReplaceRecovery { agent, check_new_key, sponsored } => {
+            OwnerCmd::ReplaceRecovery { agent, skip_key_check, sponsored } => {
                 let s = session(&agent).await?;
                 let spec = s.cfg.recovery.as_ref().context("the config has no `recovery` key")?;
                 let key = match spec {
                     agent::KeySpec::Keyfile(path) => keyfile::public_key(path)?,
                     other => agent::open_signer(other, agent::Role::Recovery)?.public_key()?,
                 };
-                eprintln!(
-                    "new recovery key: fingerprint {}\n                  x = {}\n                  y = {}",
-                    owner_core::fingerprint::fingerprint(&key),
-                    hex32(&key.x),
-                    hex32(&key.y)
-                );
-                if check_new_key {
-                    let signer = agent::open_signer(spec, agent::Role::Recovery)?;
-                    check_signer("the new recovery key".into(), signer.as_ref()).context("nothing sent")?;
+                eprintln!("new recovery key: {}", chain::key_text(&key, "                  "));
+                if skip_key_check {
+                    eprintln!("the new recovery key is not opened here (--skip-key-check): that it can sign is not shown");
+                } else {
+                    let signer = agent::open_signer(spec, agent::Role::Recovery)
+                        .context("the new recovery key does not open; nothing sent (--skip-key-check leaves it unopened)")?;
+                    check_signer("the new recovery key".into(), signer.as_ref())
+                        .context("nothing sent (--skip-key-check leaves the key unopened)")?;
                 }
                 let inc = s.replace_recovery(&key, sponsored).await?;
                 println!("recovery key replaced: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
