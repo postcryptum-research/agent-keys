@@ -119,6 +119,16 @@ the runtime code of commit `8904478693c020e40f676b5161c67a1faa39105f` with the
 `0x8316c81d2fc68015872cb11d1291fc81bb3d76f15266358565475cb79936f49a`. The
 other rows are the file's record and were not compared again for this page.
 
+That code does not refuse a venue's spender as a target (for CoW, the vault
+relayer `0xC92E8bdf79f0507f65a392b0ab4667716BFE0110`): it marks only the
+venue's contract and the decoder [V `_installTrading` at commit
+`8904478693c020e40f676b5161c67a1faa39105f`]. `AgentPolicy` 0.1.1 marks the
+spender too (#149). On this instance the phone refuses a mandate that names
+the spender, and so does the CLI when the mandate's config trades at that
+venue [V the tests `a_trading_mandate_the_build_cannot_vouch_for_is_refused`
+in `mobile/owner-core` and `the_agent_never_targets_a_place_of_its_venues`
+in `agent-signer`].
+
 ### Earlier instances, still recorded
 
 | Key | Address | Why it was replaced |

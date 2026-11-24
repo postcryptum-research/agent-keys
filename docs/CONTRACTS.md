@@ -276,8 +276,9 @@ orders and says what it can cost. By the interface's terms, the mandate
 names a decoder by its address, its code hash and the hash of the owner's
 `config`; the policy asks it with `STATICCALL` inside validation and charges
 and records what it answers, so a decoder reads no storage there [V source].
-The `AgentPolicy` in this tree does not call decoders yet [V
-`contracts/src/AgentPolicy.sol` has no reference to `IVenueDecoder`].
+`AgentPolicy` asks `judge` when the agent registers an order, and `venue()`
+and `spender()` when a mandate that trades at the venue is installed [V
+`contracts/src/AgentPolicy.sol` `_askDecoder`, `_installTrading`].
 
 **Functions.**
 
@@ -291,8 +292,10 @@ The `AgentPolicy` in this tree does not call decoders yet [V
   record be cleared, a filled order reads as untouched.
 - `venue()`: the venue's own contract, which a mandate may not name as a
   target.
-- `spender()`: who takes the sell token from the account, for the owner's
-  tools (the allowance); the policy does not ask.
+- `spender()`: who takes the sell token from the account; the owner's tools
+  approve it (the allowance). Like the venue's contract and the decoder, a
+  mandate may not name it as a target, since through it the allowance
+  would move (`AgentPolicy` 0.1.1, issue #149).
 
 ## CowSwapDecoder
 
