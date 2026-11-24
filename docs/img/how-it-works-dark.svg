@@ -1,0 +1,306 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 2270" width="1200" height="2270" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-label="agent-keys: how it keeps an AI agent's funds safe">
+<title>agent-keys — how it keeps an AI agent's funds safe</title>
+<defs>
+<symbol id="i-agent" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="8" width="16" height="12" rx="3"></rect><path d="M12 4v4"></path><circle cx="12" cy="3" r="1"></circle><path d="M9 13v1.5M15 13v1.5M10 17h4"></path><path d="M2 13v3M22 13v3"></path></symbol>
+<symbol id="i-chip" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"></rect><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"></path></symbol>
+<symbol id="i-key" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"></circle><path d="M11 12l8-8M16 7l3 3M14 9l2 2"></path></symbol>
+<symbol id="i-account" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="14" rx="3"></rect><path d="M3 10h18M16 15h2"></path></symbol>
+<symbol id="i-mandate" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6z"></path><path d="M15 3v4h4"></path><path d="M9 14l2 2 4-4"></path></symbol>
+<symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7"></path></symbol>
+<symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6L6 18"></path></symbol>
+<symbol id="i-result" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M8 12.5l2.5 2.5L16 9.5"></path></symbol>
+<symbol id="i-eye" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"></path><circle cx="12" cy="12" r="3"></circle></symbol>
+<symbol id="i-user" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"></circle><path d="M4 21c0-4 4-6 8-6s8 2 8 6"></path></symbol>
+<symbol id="i-recovery" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="4"></circle><path d="M5.6 5.6l3.6 3.6M14.8 14.8l3.6 3.6M18.4 5.6l-3.6 3.6M9.2 14.8l-3.6 3.6"></path></symbol>
+<symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z"></path><path d="M8.5 12l2.5 2.5 4.5-5"></path></symbol>
+<symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l10 18H2z"></path><path d="M12 10v5M12 18v.5"></path></symbol>
+<symbol id="i-target" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="4.5"></circle><circle cx="12" cy="12" r="0.6"></circle></symbol>
+<symbol id="i-cap" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V9M7 13l5-5 5 5M5 4h14"></path></symbol>
+<symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></symbol>
+<symbol id="i-token" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M15 9.3c-.4-1.1-1.6-1.8-3-1.8-1.7 0-3 .9-3 2.1 0 2.9 6 1.7 6 4.7 0 1.2-1.3 2.2-3 2.2-1.5 0-2.7-.7-3.1-1.9M12 5.5v2M12 16.5v2"></path></symbol>
+<symbol id="i-noblank" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="6" width="16" height="12" rx="2"></rect><path d="M3 4l18 16"></path></symbol>
+<symbol id="i-file" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l5 5v13H6z"></path><path d="M14 3v5h5"></path></symbol>
+<pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#FFFFFF" stroke-opacity="0.045" stroke-width="1"></path></pattern>
+<radialGradient id="gG" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#10B981" stop-opacity="0.28"></stop><stop offset="0.7" stop-color="#10B981" stop-opacity="0"></stop></radialGradient>
+<radialGradient id="gI" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#4F46E5" stop-opacity="0.32"></stop><stop offset="0.7" stop-color="#4F46E5" stop-opacity="0"></stop></radialGradient>
+<linearGradient id="chipG" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#34D399"></stop><stop offset="1" stop-color="#047857"></stop></linearGradient>
+<marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M1 1 L9 5 L1 9" fill="none" stroke="#64748B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path></marker>
+</defs>
+<rect width="1200" height="2270" fill="#0A1022"></rect>
+<ellipse cx="0" cy="0" rx="620" ry="420" fill="url(#gI)"></ellipse>
+<ellipse cx="1150" cy="1250" rx="520" ry="620" fill="url(#gG)" opacity="0.5"></ellipse>
+<rect width="1200" height="2270" fill="url(#grid)"></rect>
+<ellipse cx="1050" cy="128" rx="300" ry="220" fill="url(#gG)"></ellipse>
+<g transform="translate(1050 128) scale(0.52) translate(-1040 -300)">
+<g fill="none" stroke="#6EE7B7" stroke-opacity="0.45" stroke-width="3"><path d="M980 180 V120 H1080 V60"></path><path d="M1040 180 V80 H1300"></path><path d="M1100 180 V140 H1240"></path><path d="M980 420 V500 H860"></path><path d="M1040 420 V500 H1160"></path><path d="M1100 420 V470 H1300"></path><path d="M1160 240 H1230 V200"></path><path d="M1160 300 H1300"></path><path d="M1160 360 H1210 V420"></path><path d="M920 300 H880"></path></g>
+<g fill="#6EE7B7"><circle cx="1080" cy="60" r="7"></circle><circle cx="1240" cy="140" r="7"></circle><circle cx="860" cy="500" r="7"></circle><circle cx="1160" cy="500" r="7"></circle><circle cx="1230" cy="200" r="7"></circle><circle cx="1210" cy="420" r="7"></circle><circle cx="880" cy="300" r="7"></circle></g>
+<g stroke="#A7F3D0" stroke-width="10" stroke-linecap="round"><path d="M980 160 V180"></path><path d="M1040 160 V180"></path><path d="M1100 160 V180"></path><path d="M980 420 V440"></path><path d="M1040 420 V440"></path><path d="M1100 420 V440"></path><path d="M900 240 H920"></path><path d="M900 300 H920"></path><path d="M900 360 H920"></path><path d="M1160 240 H1180"></path><path d="M1160 300 H1180"></path><path d="M1160 360 H1180"></path></g>
+<rect x="920" y="180" width="240" height="240" rx="36" fill="url(#chipG)" stroke="#A7F3D0" stroke-width="6"></rect>
+<rect x="944" y="204" width="192" height="192" rx="24" fill="none" stroke="#FFFFFF" stroke-opacity="0.25" stroke-width="2"></rect>
+<circle cx="1010" cy="300" r="30" fill="none" stroke="#FFFFFF" stroke-width="12"></circle>
+<path d="M1040 300 H1096 M1078 300 V324 M1096 300 V320" fill="none" stroke="#FFFFFF" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"></path>
+</g>
+<text x="60" y="66" font-size="18" font-weight="600" fill="#94A3B8">PostCryptum Research<tspan dx="12" fill="#475569">/</tspan><tspan dx="12" font-weight="800" fill="#FFFFFF">agent-keys</tspan></text>
+<g font-size="46" font-weight="800" letter-spacing="-1.1"><text x="60" y="130" fill="#FFFFFF">Your AI agent's money,</text><text x="60" y="182" fill="#6EE7B7">out of reach of a stolen file</text></g>
+<text x="60" y="218" font-size="19" fill="#CBD5E1" font-weight="500">Hardware-held keys + an on-chain mandate for autonomous agents</text>
+<rect x="40" y="275" width="545" height="380" rx="20" fill="#FFFFFF" fill-opacity="0.045" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1.5"></rect>
+<rect x="68" y="275" width="48" height="3" rx="1.5" fill="#FDA4AF"></rect>
+<rect x="70" y="304" width="81" height="26" rx="13" fill="#FDA4AF" fill-opacity="0.14"></rect>
+<text x="83" y="322" font-size="13" fill="#FDA4AF" font-weight="800" letter-spacing="1.5">BEFORE</text>
+<text x="70" y="367" font-size="26" fill="#F1F5F9" font-weight="800" letter-spacing="-0.4">A key in a file</text>
+<rect x="70" y="391" width="84" height="84" rx="24" fill="#FDA4AF" fill-opacity="0.18000000000000002"></rect>
+<rect x="70" y="391" width="84" height="84" rx="24" fill="none" stroke="#FDA4AF" stroke-opacity="0.35"></rect>
+<use href="#i-file" x="88.48" y="409.48" width="47.04" height="47.04" stroke="#FDA4AF" stroke-width="2"></use>
+<text x="112" y="495" font-size="13" fill="#FDA4AF" font-weight="600" text-anchor="middle" font-family="'JetBrains Mono', 'SFMono-Regular', Menlo, monospace">agent.key</text>
+<line x1="168" y1="433" x2="216" y2="433" stroke="#64748B" stroke-width="2.5" marker-end="url(#arr)"></line>
+<rect x="228" y="403" width="60" height="60" rx="17" fill="#FDA4AF" fill-opacity="0.18000000000000002"></rect>
+<rect x="228" y="403" width="60" height="60" rx="17" fill="none" stroke="#FDA4AF" stroke-opacity="0.35"></rect>
+<use href="#i-eye" x="241.2" y="416.2" width="33.6" height="33.6" stroke="#FDA4AF" stroke-width="2"></use>
+<text x="310" y="427" font-size="18" fill="#F1F5F9" font-weight="700">Whoever reads it</text>
+<text x="310" y="451" font-size="18" fill="#F1F5F9" font-weight="700">owns the wallet.</text>
+<circle cx="80" cy="532" r="11" fill="#FDA4AF" fill-opacity="0.18000000000000002"></circle>
+<use href="#i-x" x="73" y="525" width="14" height="14" stroke="#FDA4AF" stroke-width="2.6"></use>
+<text x="100" y="537" font-size="17" fill="#CBD5E1">The agent's private key sits on disk</text>
+<circle cx="80" cy="566" r="11" fill="#FDA4AF" fill-opacity="0.18000000000000002"></circle>
+<use href="#i-x" x="73" y="559" width="14" height="14" stroke="#FDA4AF" stroke-width="2.6"></use>
+<text x="100" y="571" font-size="17" fill="#CBD5E1">Malware, a leaked backup or a poisoned</text>
+<text x="100" y="595" font-size="17" fill="#CBD5E1">dependency can copy it in a second</text>
+<circle cx="80" cy="622" r="11" fill="#FDA4AF" fill-opacity="0.18000000000000002"></circle>
+<use href="#i-x" x="73" y="615" width="14" height="14" stroke="#FDA4AF" stroke-width="2.6"></use>
+<text x="100" y="627" font-size="17" fill="#CBD5E1">The key can sign anything, forever</text>
+<rect x="615" y="275" width="545" height="380" rx="20" fill="#FFFFFF" fill-opacity="0.045" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1.5"></rect>
+<rect x="643" y="275" width="48" height="3" rx="1.5" fill="#6EE7B7"></rect>
+<rect x="645" y="304" width="72" height="26" rx="13" fill="#6EE7B7" fill-opacity="0.14"></rect>
+<text x="658" y="322" font-size="13" fill="#6EE7B7" font-weight="800" letter-spacing="1.5">AFTER</text>
+<text x="645" y="367" font-size="26" fill="#F1F5F9" font-weight="800" letter-spacing="-0.4">A key inside a chip</text>
+<rect x="645" y="391" width="84" height="84" rx="24" fill="#6EE7B7" fill-opacity="0.18000000000000002"></rect>
+<rect x="645" y="391" width="84" height="84" rx="24" fill="none" stroke="#6EE7B7" stroke-opacity="0.35"></rect>
+<use href="#i-chip" x="663.48" y="409.48" width="47.04" height="47.04" stroke="#6EE7B7" stroke-width="2"></use>
+<text x="755" y="419" font-size="18" fill="#F1F5F9" font-weight="700">TPM · Apple Secure Enclave</text>
+<text x="755" y="445" font-size="18" fill="#F1F5F9" font-weight="700">TROPIC01 · Windows TPM</text>
+<text x="755" y="473" font-size="15" fill="#6EE7B7" font-weight="500">The chip signs. The key never leaves it.</text>
+<circle cx="655" cy="532" r="11" fill="#6EE7B7" fill-opacity="0.18000000000000002"></circle>
+<use href="#i-check" x="648" y="525" width="14" height="14" stroke="#6EE7B7" stroke-width="2.6"></use>
+<text x="675" y="537" font-size="17" fill="#CBD5E1">No key file exists — nothing to read or copy</text>
+<circle cx="655" cy="566" r="11" fill="#6EE7B7" fill-opacity="0.18000000000000002"></circle>
+<use href="#i-check" x="648" y="559" width="14" height="14" stroke="#6EE7B7" stroke-width="2.6"></use>
+<text x="675" y="571" font-size="17" fill="#CBD5E1">Every action is checked on-chain against</text>
+<text x="675" y="595" font-size="17" fill="#CBD5E1">the owner's mandate</text>
+<circle cx="655" cy="622" r="11" fill="#6EE7B7" fill-opacity="0.18000000000000002"></circle>
+<use href="#i-check" x="648" y="615" width="14" height="14" stroke="#6EE7B7" stroke-width="2.6"></use>
+<text x="675" y="627" font-size="17" fill="#CBD5E1">The owner can revoke the agent in one step</text>
+<text x="40" y="705" font-size="26" fill="#F1F5F9" font-weight="800" letter-spacing="-0.4">How one action goes</text>
+<rect x="40" y="731" width="184" height="176" rx="18" fill="#FFFFFF" fill-opacity="0.045" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1.5"></rect>
+<rect x="106.0" y="753" width="52" height="52" rx="15" fill="#A5B4FC" fill-opacity="0.18000000000000002"></rect>
+<rect x="106.0" y="753" width="52" height="52" rx="15" fill="none" stroke="#A5B4FC" stroke-opacity="0.35"></rect>
+<use href="#i-agent" x="117.44" y="764.44" width="29.12" height="29.12" stroke="#A5B4FC" stroke-width="2"></use>
+<text x="210" y="757" font-size="12" fill="#7C8BA1" font-weight="700" text-anchor="end" font-family="'JetBrains Mono', 'SFMono-Regular', Menlo, monospace">01</text>
+<text x="132.0" y="837" font-size="17" fill="#F1F5F9" font-weight="800" text-anchor="middle">The AI agent</text>
+<text x="132.0" y="863" font-size="15" fill="#A5B4FC" font-weight="500" text-anchor="middle">decides what to do</text>
+<text x="132.0" y="885" font-size="15" fill="#A5B4FC" font-weight="500" text-anchor="middle">(AgentKit, ElizaOS…)</text>
+<line x1="230" y1="779" x2="266" y2="779" stroke="#64748B" stroke-width="2.5" marker-end="url(#arr)"></line>
+<rect x="274" y="731" width="184" height="176" rx="18" fill="#FFFFFF" fill-opacity="0.045" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1.5"></rect>
+<rect x="340.0" y="753" width="52" height="52" rx="15" fill="#6EE7B7" fill-opacity="0.18000000000000002"></rect>
+<rect x="340.0" y="753" width="52" height="52" rx="15" fill="none" stroke="#6EE7B7" stroke-opacity="0.35"></rect>
+<use href="#i-chip" x="351.44" y="764.44" width="29.12" height="29.12" stroke="#6EE7B7" stroke-width="2"></use>
+<text x="444" y="757" font-size="12" fill="#7C8BA1" font-weight="700" text-anchor="end" font-family="'JetBrains Mono', 'SFMono-Regular', Menlo, monospace">02</text>
+<text x="366.0" y="837" font-size="17" fill="#F1F5F9" font-weight="800" text-anchor="middle">The chip signs</text>
+<text x="366.0" y="863" font-size="15" fill="#6EE7B7" font-weight="500" text-anchor="middle">inside the hardware;</text>
+<text x="366.0" y="885" font-size="15" fill="#6EE7B7" font-weight="500" text-anchor="middle">no key in memory</text>
+<line x1="464" y1="779" x2="500" y2="779" stroke="#64748B" stroke-width="2.5" marker-end="url(#arr)"></line>
+<rect x="508" y="731" width="184" height="176" rx="18" fill="#FFFFFF" fill-opacity="0.045" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1.5"></rect>
+<rect x="574.0" y="753" width="52" height="52" rx="15" fill="#7DD3FC" fill-opacity="0.18000000000000002"></rect>
+<rect x="574.0" y="753" width="52" height="52" rx="15" fill="none" stroke="#7DD3FC" stroke-opacity="0.35"></rect>
+<use href="#i-account" x="585.44" y="764.44" width="29.12" height="29.12" stroke="#7DD3FC" stroke-width="2"></use>
+<text x="678" y="757" font-size="12" fill="#7C8BA1" font-weight="700" text-anchor="end" font-family="'JetBrains Mono', 'SFMono-Regular', Menlo, monospace">03</text>
+<text x="600.0" y="837" font-size="17" fill="#F1F5F9" font-weight="800" text-anchor="middle">Smart account</text>
+<text x="600.0" y="863" font-size="15" fill="#7DD3FC" font-weight="500" text-anchor="middle">ERC-4337 Kernel</text>
+<text x="600.0" y="885" font-size="15" fill="#7DD3FC" font-weight="500" text-anchor="middle">checks the signature</text>
+<line x1="698" y1="779" x2="734" y2="779" stroke="#64748B" stroke-width="2.5" marker-end="url(#arr)"></line>
+<rect x="742" y="731" width="184" height="176" rx="18" fill="#FFFFFF" fill-opacity="0.045" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1.5"></rect>
+<rect x="808.0" y="753" width="52" height="52" rx="15" fill="#FCD34D" fill-opacity="0.18000000000000002"></rect>
+<rect x="808.0" y="753" width="52" height="52" rx="15" fill="none" stroke="#FCD34D" stroke-opacity="0.35"></rect>
+<use href="#i-mandate" x="819.44" y="764.44" width="29.12" height="29.12" stroke="#FCD34D" stroke-width="2"></use>
+<text x="912" y="757" font-size="12" fill="#7C8BA1" font-weight="700" text-anchor="end" font-family="'JetBrains Mono', 'SFMono-Regular', Menlo, monospace">04</text>
+<text x="834.0" y="837" font-size="17" fill="#F1F5F9" font-weight="800" text-anchor="middle">The mandate</text>
+<text x="834.0" y="863" font-size="15" fill="#FCD34D" font-weight="500" text-anchor="middle">AgentPolicy checks</text>
+<text x="834.0" y="885" font-size="15" fill="#FCD34D" font-weight="500" text-anchor="middle">every call on-chain</text>
+<line x1="932" y1="779" x2="968" y2="779" stroke="#64748B" stroke-width="2.5" marker-end="url(#arr)"></line>
+<rect x="976" y="731" width="184" height="176" rx="18" fill="#FFFFFF" fill-opacity="0.045" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1.5"></rect>
+<rect x="1042.0" y="753" width="52" height="52" rx="15" fill="#86EFAC" fill-opacity="0.18000000000000002"></rect>
+<rect x="1042.0" y="753" width="52" height="52" rx="15" fill="none" stroke="#86EFAC" stroke-opacity="0.35"></rect>
+<use href="#i-result" x="1053.44" y="764.44" width="29.12" height="29.12" stroke="#86EFAC" stroke-width="2"></use>
+<text x="1146" y="757" font-size="12" fill="#7C8BA1" font-weight="700" text-anchor="end" font-family="'JetBrains Mono', 'SFMono-Regular', Menlo, monospace">05</text>
+<text x="1068.0" y="837" font-size="17" fill="#F1F5F9" font-weight="800" text-anchor="middle">Executed</text>
+<text x="1068.0" y="863" font-size="15" fill="#86EFAC" font-weight="500" text-anchor="middle">or refused —</text>
+<text x="1068.0" y="885" font-size="15" fill="#86EFAC" font-weight="500" text-anchor="middle">by the chain</text>
+<rect x="40" y="945" width="545" height="340" rx="20" fill="#FFFFFF" fill-opacity="0.045" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1.5"></rect>
+<rect x="68" y="945" width="48" height="3" rx="1.5" fill="#FCD34D"></rect>
+<use href="#i-mandate" x="70" y="971" width="28" height="28" stroke="#FCD34D" stroke-width="2"></use>
+<text x="108" y="993" font-size="24" fill="#F1F5F9" font-weight="800">The mandate</text>
+<text x="70" y="1025" font-size="16" fill="#94A3B8">Set by the owner. Enforced by the chain, not by the agent.</text>
+<rect x="70" y="1049" width="235" height="44" rx="22" fill="#FCD34D" fill-opacity="0.14" stroke="#FCD34D" stroke-opacity="0.3"></rect>
+<use href="#i-target" x="86" y="1060" width="22" height="22" stroke="#FCD34D" stroke-width="2"></use>
+<text x="118" y="1077" font-size="16" fill="#F1F5F9" font-weight="600">Allowed contracts</text>
+<rect x="320" y="1049" width="235" height="44" rx="22" fill="#FCD34D" fill-opacity="0.14" stroke="#FCD34D" stroke-opacity="0.3"></rect>
+<use href="#i-cap" x="336" y="1060" width="22" height="22" stroke="#FCD34D" stroke-width="2"></use>
+<text x="368" y="1077" font-size="16" fill="#F1F5F9" font-weight="600">Max per action</text>
+<rect x="70" y="1105" width="235" height="44" rx="22" fill="#FCD34D" fill-opacity="0.14" stroke="#FCD34D" stroke-opacity="0.3"></rect>
+<use href="#i-account" x="86" y="1116" width="22" height="22" stroke="#FCD34D" stroke-width="2"></use>
+<text x="118" y="1133" font-size="16" fill="#F1F5F9" font-weight="600">Total budget</text>
+<rect x="320" y="1105" width="235" height="44" rx="22" fill="#FCD34D" fill-opacity="0.14" stroke="#FCD34D" stroke-opacity="0.3"></rect>
+<use href="#i-clock" x="336" y="1116" width="22" height="22" stroke="#FCD34D" stroke-width="2"></use>
+<text x="368" y="1133" font-size="16" fill="#F1F5F9" font-weight="600">Time window</text>
+<rect x="70" y="1161" width="235" height="44" rx="22" fill="#FCD34D" fill-opacity="0.14" stroke="#FCD34D" stroke-opacity="0.3"></rect>
+<use href="#i-token" x="86" y="1172" width="22" height="22" stroke="#FCD34D" stroke-width="2"></use>
+<text x="118" y="1189" font-size="16" fill="#F1F5F9" font-weight="600">Token limits (USDC)</text>
+<rect x="320" y="1161" width="235" height="44" rx="22" fill="#FCD34D" fill-opacity="0.14" stroke="#FCD34D" stroke-opacity="0.3"></rect>
+<use href="#i-noblank" x="336" y="1172" width="22" height="22" stroke="#FCD34D" stroke-width="2"></use>
+<text x="368" y="1189" font-size="16" fill="#F1F5F9" font-weight="600">No blank checks</text>
+<text x="70" y="1247" font-size="15" fill="#94A3B8">“No blank checks”: no permits or off-chain signatures for the</text>
+<text x="70" y="1267" font-size="15" fill="#94A3B8">account — except x402 payments registered within the budget.</text>
+<rect x="615" y="945" width="545" height="340" rx="20" fill="#FFFFFF" fill-opacity="0.045" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1.5"></rect>
+<rect x="643" y="945" width="48" height="3" rx="1.5" fill="#A5B4FC"></rect>
+<use href="#i-shield" x="645" y="971" width="28" height="28" stroke="#A5B4FC" stroke-width="2"></use>
+<text x="683" y="993" font-size="24" fill="#F1F5F9" font-weight="800">If the worst happens</text>
+<rect x="1006" y="1005" width="138" height="268" rx="12" fill="#6EE7B7" fill-opacity="0.11200000000000002"></rect>
+<text x="645" y="1029" font-size="14" fill="#94A3B8" font-weight="700">What happens</text>
+<text x="890" y="1029" font-size="14" fill="#FDA4AF" font-weight="800">Key file</text>
+<text x="1020" y="1029" font-size="14" fill="#6EE7B7" font-weight="800">agent-keys</text>
+<line x1="645" y1="1041" x2="1135" y2="1041" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1"></line>
+<text x="645" y="1073.0" font-size="15" fill="#F1F5F9">Malware reads the disk</text>
+<text x="890" y="1073.0" font-size="15" fill="#FDA4AF">all funds</text>
+<text x="1020" y="1073.0" font-size="15" fill="#6EE7B7" font-weight="600">nothing</text>
+<text x="645" y="1109.5" font-size="15" fill="#F1F5F9">Prompt injection:</text>
+<text x="645" y="1128.5" font-size="15" fill="#F1F5F9">“send all to 0xdead”</text>
+<text x="890" y="1119.0" font-size="15" fill="#FDA4AF">sent</text>
+<text x="1020" y="1119.0" font-size="15" fill="#6EE7B7" font-weight="600">refused</text>
+<text x="645" y="1171.0" font-size="15" fill="#F1F5F9">Malware drives the agent</text>
+<text x="890" y="1171.0" font-size="15" fill="#FDA4AF">all funds</text>
+<text x="1020" y="1161.5" font-size="15" fill="#6EE7B7" font-weight="600">≤ the budget,</text>
+<text x="1020" y="1180.5" font-size="15" fill="#6EE7B7" font-weight="600">then revoked</text>
+<text x="645" y="1235.0" font-size="15" fill="#F1F5F9">Laptop stolen</text>
+<text x="890" y="1235.0" font-size="15" fill="#FDA4AF">key copied</text>
+<text x="1020" y="1216.0" font-size="15" fill="#6EE7B7" font-weight="600">key not copied;</text>
+<text x="1020" y="1235.0" font-size="15" fill="#6EE7B7" font-weight="600">≤ the mandate,</text>
+<text x="1020" y="1254.0" font-size="15" fill="#6EE7B7" font-weight="600">then revoked</text>
+<line x1="645" y1="1094" x2="1135" y2="1094" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1"></line>
+<line x1="645" y1="1144" x2="1135" y2="1144" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1"></line>
+<line x1="645" y1="1198" x2="1135" y2="1198" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1"></line>
+<text x="40" y="1345" font-size="26" fill="#F1F5F9" font-weight="800" letter-spacing="-0.4">Three keys, three jobs</text>
+<rect x="40" y="1369" width="360" height="196" rx="20" fill="#FFFFFF" fill-opacity="0.045" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1.5"></rect>
+<rect x="68" y="1369" width="48" height="3" rx="1.5" fill="#6EE7B7"></rect>
+<rect x="64" y="1395" width="44" height="44" rx="12" fill="#6EE7B7" fill-opacity="0.18000000000000002"></rect>
+<rect x="64" y="1395" width="44" height="44" rx="12" fill="none" stroke="#6EE7B7" stroke-opacity="0.35"></rect>
+<use href="#i-agent" x="73.68" y="1404.68" width="24.64" height="24.64" stroke="#6EE7B7" stroke-width="2"></use>
+<text x="122" y="1424" font-size="21" fill="#F1F5F9" font-weight="800">The agent key</text>
+<text x="64" y="1471" font-size="15" fill="#6EE7B7" font-weight="700">In the chip of the agent's machine</text>
+<text x="64" y="1497" font-size="15" fill="#CBD5E1">Signs the agent's actions; each one is</text>
+<text x="64" y="1517" font-size="15" fill="#CBD5E1">checked against the mandate</text>
+<line x1="64" y1="1531" x2="376" y2="1531" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1"></line>
+<text x="64" y="1553" font-size="14" fill="#94A3B8" font-weight="500">Works unattended: no PIN, no touch</text>
+<rect x="420" y="1369" width="360" height="196" rx="20" fill="#FFFFFF" fill-opacity="0.045" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1.5"></rect>
+<rect x="448" y="1369" width="48" height="3" rx="1.5" fill="#C4B5FD"></rect>
+<rect x="444" y="1395" width="44" height="44" rx="12" fill="#C4B5FD" fill-opacity="0.18000000000000002"></rect>
+<rect x="444" y="1395" width="44" height="44" rx="12" fill="none" stroke="#C4B5FD" stroke-opacity="0.35"></rect>
+<use href="#i-user" x="453.68" y="1404.68" width="24.64" height="24.64" stroke="#C4B5FD" stroke-width="2"></use>
+<text x="502" y="1424" font-size="21" fill="#F1F5F9" font-weight="800">The owner key</text>
+<text x="444" y="1471" font-size="15" fill="#C4B5FD" font-weight="700">A separate device: YubiKey, phone, others*</text>
+<text x="444" y="1497" font-size="15" fill="#CBD5E1">Sets, rotates and revokes the mandate;</text>
+<text x="444" y="1517" font-size="15" fill="#CBD5E1">it is the account's root</text>
+<line x1="444" y1="1531" x2="756" y2="1531" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1"></line>
+<text x="444" y="1553" font-size="14" fill="#94A3B8" font-weight="500">Needs you: PIN and touch, or a biometric</text>
+<rect x="800" y="1369" width="360" height="196" rx="20" fill="#FFFFFF" fill-opacity="0.045" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1.5"></rect>
+<rect x="828" y="1369" width="48" height="3" rx="1.5" fill="#FCD34D"></rect>
+<rect x="824" y="1395" width="44" height="44" rx="12" fill="#FCD34D" fill-opacity="0.18000000000000002"></rect>
+<rect x="824" y="1395" width="44" height="44" rx="12" fill="none" stroke="#FCD34D" stroke-opacity="0.35"></rect>
+<use href="#i-recovery" x="833.68" y="1404.68" width="24.64" height="24.64" stroke="#FCD34D" stroke-width="2"></use>
+<text x="882" y="1424" font-size="21" fill="#F1F5F9" font-weight="800">The recovery key</text>
+<text x="824" y="1471" font-size="15" fill="#FCD34D" font-weight="700">A cold encrypted file, kept off line</text>
+<text x="824" y="1497" font-size="15" fill="#CBD5E1">Replaces a lost or stolen owner key,</text>
+<text x="824" y="1517" font-size="15" fill="#CBD5E1">and does nothing else</text>
+<line x1="824" y1="1531" x2="1136" y2="1531" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1"></line>
+<text x="824" y="1553" font-size="14" fill="#94A3B8" font-weight="500">Needs its passphrase · no delay today</text>
+<text x="40" y="1601" font-size="16" fill="#94A3B8">The agent's machine never holds the owner key: whoever controls the agent cannot widen its own limits.</text>
+<rect x="40" y="1635" width="1120" height="380" rx="20" fill="#FFFFFF" fill-opacity="0.045" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1.5"></rect>
+<rect x="68" y="1635" width="48" height="3" rx="1.5" fill="#FDA4AF"></rect>
+<use href="#i-alert" x="70" y="1661" width="28" height="28" stroke="#FDA4AF" stroke-width="2"></use>
+<text x="108" y="1683" font-size="24" fill="#F1F5F9" font-weight="800">If a device is stolen</text>
+<text x="70" y="1721" font-size="14" fill="#94A3B8" font-weight="800">The thief has</text>
+<text x="262" y="1721" font-size="14" fill="#FDA4AF" font-weight="800">What they can do</text>
+<text x="572" y="1721" font-size="14" fill="#94A3B8" font-weight="800">What stands in the way</text>
+<text x="872" y="1721" font-size="14" fill="#6EE7B7" font-weight="800">The owner's move</text>
+<line x1="70" y1="1733" x2="1130" y2="1733" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1"></line>
+<text x="70" y="1763" font-size="15" fill="#F1F5F9" font-weight="700">the agent's machine</text>
+<text x="262" y="1763" font-size="15" fill="#FDA4AF">sign as the agent once it runs;</text>
+<text x="262" y="1783" font-size="15" fill="#FDA4AF">not copy the key, not widen its limits</text>
+<text x="572" y="1763" font-size="15" fill="#CBD5E1">the machine's lock, then the mandate:</text>
+<text x="572" y="1783" font-size="15" fill="#CBD5E1">allowed calls, caps, budget, expiry</text>
+<text x="872" y="1763" font-size="15" fill="#6EE7B7">revoke or rotate the agent</text>
+<text x="872" y="1783" font-size="15" fill="#6EE7B7">with the owner key</text>
+<line x1="70" y1="1801" x2="1130" y2="1801" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1"></line>
+<text x="70" y="1821" font-size="15" fill="#F1F5F9" font-weight="700">the owner device</text>
+<text x="262" y="1821" font-size="15" fill="#FDA4AF">nothing without its PIN or biometric;</text>
+<text x="262" y="1841" font-size="15" fill="#FDA4AF">with it, everything: it is the root</text>
+<text x="572" y="1821" font-size="15" fill="#CBD5E1">only that lock: a YubiKey blocks after</text>
+<text x="572" y="1841" font-size="15" fill="#CBD5E1">three wrong PINs; a phone needs you</text>
+<text x="872" y="1821" font-size="15" fill="#6EE7B7">take root with the recovery key,</text>
+<text x="872" y="1841" font-size="15" fill="#6EE7B7">retire the stolen key</text>
+<line x1="70" y1="1859" x2="1130" y2="1859" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1"></line>
+<text x="70" y="1879" font-size="15" fill="#F1F5F9" font-weight="700">both</text>
+<text x="262" y="1879" font-size="15" fill="#FDA4AF">the agent's limits now; everything</text>
+<text x="262" y="1899" font-size="15" fill="#FDA4AF">if the owner device's lock gives way</text>
+<text x="572" y="1879" font-size="15" fill="#CBD5E1">the devices' own locks only: the chain</text>
+<text x="572" y="1899" font-size="15" fill="#CBD5E1">cannot tell a thief from the owner</text>
+<text x="872" y="1879" font-size="15" fill="#6EE7B7">recover fast: a new owner key,</text>
+<text x="872" y="1899" font-size="15" fill="#6EE7B7">then a new agent. It is a race</text>
+<line x1="70" y1="1917" x2="1130" y2="1917" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1"></line>
+<text x="70" y="1937" font-size="15" fill="#F1F5F9" font-weight="700">the recovery file</text>
+<text x="70" y="1957" font-size="15" fill="#F1F5F9" font-weight="700">and its passphrase</text>
+<text x="262" y="1937" font-size="15" fill="#FDA4AF">take root at once:</text>
+<text x="262" y="1957" font-size="15" fill="#FDA4AF">recovery has no delay today</text>
+<text x="572" y="1937" font-size="15" fill="#CBD5E1">the passphrase</text>
+<text x="872" y="1937" font-size="15" fill="#6EE7B7">replace the recovery key</text>
+<text x="872" y="1957" font-size="15" fill="#6EE7B7">if you notice in time</text>
+<text x="70" y="1995" font-size="13.5" fill="#7C8BA1">With both devices gone, only their own locks and the speed of the recovery stand between a thief and the account. Without a recovery key there is no such move.</text>
+<text x="40" y="2065" font-size="22" fill="#F1F5F9" font-weight="800" letter-spacing="-0.3">Tested hardware* · agent frameworks</text>
+<text x="40" y="2111" font-size="14" fill="#94A3B8" font-weight="700">agent key</text>
+<rect x="150" y="2087" width="140" height="36" rx="18" fill="#5EEAD4" fill-opacity="0.16" stroke="#5EEAD4" stroke-opacity="0.4"></rect>
+<text x="220.0" y="2110" font-size="14" fill="#F1F5F9" font-weight="600" text-anchor="middle">Linux TPM</text>
+<rect x="298" y="2087" width="150" height="36" rx="18" fill="#5EEAD4" fill-opacity="0.16" stroke="#5EEAD4" stroke-opacity="0.4"></rect>
+<text x="373.0" y="2110" font-size="14" fill="#F1F5F9" font-weight="600" text-anchor="middle">Windows TPM</text>
+<rect x="456" y="2087" width="200" height="36" rx="18" fill="#5EEAD4" fill-opacity="0.16" stroke="#5EEAD4" stroke-opacity="0.4"></rect>
+<text x="556.0" y="2110" font-size="14" fill="#F1F5F9" font-weight="600" text-anchor="middle">Apple Secure Enclave</text>
+<rect x="664" y="2087" width="120" height="36" rx="18" fill="#5EEAD4" fill-opacity="0.16" stroke="#5EEAD4" stroke-opacity="0.4"></rect>
+<text x="724.0" y="2110" font-size="14" fill="#F1F5F9" font-weight="600" text-anchor="middle">TROPIC01</text>
+<text x="40" y="2157" font-size="14" fill="#94A3B8" font-weight="700">owner key</text>
+<rect x="150" y="2133" width="160" height="36" rx="18" fill="#C4B5FD" fill-opacity="0.16" stroke="#C4B5FD" stroke-opacity="0.4"></rect>
+<text x="230.0" y="2156" font-size="14" fill="#F1F5F9" font-weight="600" text-anchor="middle">YubiKey 5 (PIV)</text>
+<rect x="318" y="2133" width="145" height="36" rx="18" fill="#C4B5FD" fill-opacity="0.16" stroke="#C4B5FD" stroke-opacity="0.4"></rect>
+<text x="390.5" y="2156" font-size="14" fill="#F1F5F9" font-weight="600" text-anchor="middle">Android phone</text>
+<rect x="471" y="2133" width="90" height="36" rx="18" fill="#C4B5FD" fill-opacity="0.16" stroke="#C4B5FD" stroke-opacity="0.4"></rect>
+<text x="516.0" y="2156" font-size="14" fill="#F1F5F9" font-weight="600" text-anchor="middle">iPhone</text>
+<rect x="569" y="2133" width="70" height="36" rx="18" fill="#C4B5FD" fill-opacity="0.16" stroke="#C4B5FD" stroke-opacity="0.4"></rect>
+<text x="604.0" y="2156" font-size="14" fill="#F1F5F9" font-weight="600" text-anchor="middle">TPM</text>
+<rect x="647" y="2133" width="150" height="36" rx="18" fill="#C4B5FD" fill-opacity="0.16" stroke="#C4B5FD" stroke-opacity="0.4"></rect>
+<text x="722.0" y="2156" font-size="14" fill="#F1F5F9" font-weight="600" text-anchor="middle">Secure Enclave</text>
+<text x="40" y="2203" font-size="14" fill="#94A3B8" font-weight="700">frameworks</text>
+<rect x="150" y="2179" width="175" height="36" rx="18" fill="#A5B4FC" fill-opacity="0.16" stroke="#A5B4FC" stroke-opacity="0.4"></rect>
+<text x="237.5" y="2202" font-size="14" fill="#F1F5F9" font-weight="600" text-anchor="middle">Coinbase AgentKit</text>
+<rect x="333" y="2179" width="100" height="36" rx="18" fill="#A5B4FC" fill-opacity="0.16" stroke="#A5B4FC" stroke-opacity="0.4"></rect>
+<text x="383.0" y="2202" font-size="14" fill="#F1F5F9" font-weight="600" text-anchor="middle">ElizaOS</text>
+<rect x="441" y="2179" width="70" height="36" rx="18" fill="#A5B4FC" fill-opacity="0.16" stroke="#A5B4FC" stroke-opacity="0.4"></rect>
+<text x="476.0" y="2202" font-size="14" fill="#F1F5F9" font-weight="600" text-anchor="middle">Jinn</text>
+<rect x="519" y="2179" width="70" height="36" rx="18" fill="#A5B4FC" fill-opacity="0.16" stroke="#A5B4FC" stroke-opacity="0.4"></rect>
+<text x="554.0" y="2202" font-size="14" fill="#F1F5F9" font-weight="600" text-anchor="middle">Olas</text>
+<rect x="597" y="2179" width="170" height="36" rx="18" fill="#A5B4FC" fill-opacity="0.16" stroke="#A5B4FC" stroke-opacity="0.4"></rect>
+<text x="682.0" y="2202" font-size="14" fill="#F1F5F9" font-weight="600" text-anchor="middle">Claude Code skill</text>
+<rect x="775" y="2179" width="140" height="36" rx="18" fill="#A5B4FC" fill-opacity="0.16" stroke="#A5B4FC" stroke-opacity="0.4"></rect>
+<text x="845.0" y="2202" font-size="14" fill="#F1F5F9" font-weight="600" text-anchor="middle">x402 payments</text>
+<text x="1160" y="2099" font-size="13" fill="#7C8BA1" text-anchor="end">Linux TPM, Secure Enclave and TROPIC01</text>
+<text x="1160" y="2117" font-size="13" fill="#7C8BA1" text-anchor="end">keys signed live on Base Sepolia</text>
+<text x="1160" y="2145" font-size="13" fill="#7C8BA1" text-anchor="end">YubiKey: root of a Base Sepolia account</text>
+<text x="1160" y="2163" font-size="13" fill="#7C8BA1" text-anchor="end">phones: development builds, local chain</text>
+<text x="40" y="2248" font-size="13" fill="#7C8BA1">* Hardware the project's code has been run with so far. The list grows as more devices are tested; status of each: docs/FAQ.md</text>
+<text x="1160" y="2248" font-size="13" fill="#94A3B8" font-weight="600" text-anchor="end">github.com/postcryptum-research/agent-keys</text>
+</svg>

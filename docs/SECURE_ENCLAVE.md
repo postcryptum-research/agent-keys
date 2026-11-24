@@ -358,7 +358,7 @@ Then, with the account deployed:
 ```
 $ $B op send --agent … --target 0x000000000000000000000000000000000000dEaD --wei 1
 path:           permission (agent key)
-Error: EntryPoint rejected the operation: AA23 reverted (op 0), inner revert 0x3e4983f6…0000
+Error: EntryPoint rejected the operation: AA23 reverted (op 0), inner revert 0x3e4983f60000000000000000000000000000000000000000000000000000000000000000
 ```
 
 1 wei to an outsider is refused in simulation — `PolicyFailed(0)`,

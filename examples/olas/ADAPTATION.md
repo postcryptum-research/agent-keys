@@ -131,7 +131,7 @@ FSM: `RandomnessTransactionSubmissionRound → SelectKeeperTransactionSubmission
 2. **Signature.** `SignatureBehaviour` always calls ECDSA via the DecisionMaker (`behaviours.py:801-815`). For a Kernel a constant `r=Kernel,s=0,v=1` (not a signature) or `approveHash` is needed.
 3. **Transport.** `_get_tx_data → send_raw_transaction` = DecisionMaker `sign_transaction` + `eth_sendRawTransaction` (`behaviours.py:211-217`; `behaviour_utils.py:1518-1623`). A Kernel cannot do EOA txs.
 4. **Nonce/gas.** `mutable_params.nonce` is the **keeper's EOA nonce** (`contract.py:444-449,480`; `behaviours.py:252,268-281`). Repricing via `try_get_gas_pricing(old_price)` (`contract.py:456-465`). INSUFFICIENT_FUNDS leads to blacklisting the keeper (`behaviours.py:231-239`). All of this is EOA semantics. A Kernel's nonce lives in the EntryPoint; gas is userOp fields or a paymaster.
-5. **Verification.** `verify_tx` decodes the **outer** tx as `execTransaction` (`contract.py:583-602`). With 4337 the outer tx is `EntryPoint.handleOps` from the bundler, so `verified=False` **always**. Verified on the real tx `0x451c72…dc16` (Jinn demo, Kernel → Safe v=1): upstream `verify_tx → verified=False, status=1`, event-based check `→ True` **[V run, §6]**.
+5. **Verification.** `verify_tx` decodes the **outer** tx as `execTransaction` (`contract.py:583-602`). With 4337 the outer tx is `EntryPoint.handleOps` from the bundler, so `verified=False` **always**. Verified on the real tx `0x451c7214beb0d43dcacf299eb2828c9daeb253ceef3f2ccfdad683535c18dc16` (Jinn demo, Kernel → Safe v=1): upstream `verify_tx → verified=False, status=1`, event-based check `→ True` **[V run, §6]**.
 6. **History/reverts.** `revert_reason` replays the outer tx `eth_call(from=bundler, to=EntryPoint, data=handleOps)` (`contract.py:631-650`). `handleOps` does not revert when the inner call fails **[I, EntryPoint v0.7 semantics]**, so the function throws `ValueError("…has not been reverted")`, and the GS026 path does not trigger. The failure indicator under 4337 is `UserOperationEvent.success=false` or the absence of `ExecutionSuccess(safeTxHash)`.
 7. **Retries — the main danger, see §3.1.** v=1 with `msg.sender == owner` is **not bound to safeTxHash and nonce**, so the same calldata will execute at any subsequent nonce. Yet the Olas retry logic (keeper retry on PENDING `behaviours.py:412-421`, late messages `:699-769`) assumes that a retry either replaces the EOA tx at the same nonce or fails with GS026.
 8. **Other:** `get_amount_spent` computes `tx.gasPrice × gasUsed` of the outer tx (`contract.py:727-750`). For a bundle this is meaningless (the bundle includes other parties' userOps, gas is paid by the paymaster).
@@ -312,18 +312,18 @@ Contracts are loaded via `Contract.from_dir`, as the AEA runtime does. First `gn
 **Already run (read-only, public RPC `https://sepolia.base.org`, 2026-10-20) [V]:**
 ```
 Safe 0xd0b972a8ee7D8AB91a2e3381Eb6F10550B80E52A owners=('0xEdB645B14e2f952C5784e34949b58F0826fBc9E9',) threshold=1 nonce=4
-1. safeTxHash (Olas encode_typed_data) 0x9ac3fcfc…9a95
-   Safe.getTransactionHash(nonce=4)   0x9ac3fcfc…9a95  match=True
-2. hash_payload_to_hex -> 648 hex chars; decoded to=0xD2Adc331…dbC1 op=0
+1. safeTxHash (Olas encode_typed_data) 0x9ac3fcfccd8c2cb4bc13db18a6844e5e6097dc30c090ccbaf21aa2f46fc89a95
+   Safe.getTransactionHash(nonce=4)   0x9ac3fcfccd8c2cb4bc13db18a6844e5e6097dc30c090ccbaf21aa2f46fc89a95  match=True
+2. hash_payload_to_hex -> 648 hex chars; decoded to=0xD2Adc331B867435b82Ceba1D4f7f715eeF9FdbC1 op=0
 3. participant_to_signature[0xEdB6…] = 000…edb645b1…c9e9 000…000 01
 4. execTransaction calldata 516 bytes, eth_estimateGas from Kernel = 63733 (accepted)
    control: same v=1 signature, sender 0x…dEaD -> gas 0 (0 = estimate reverted, as expected)
-5. keeper send: agent-signer op send --agent … --target 0xd0b9…E52A --wei 0 --data 0x… --sponsored --json
+5. keeper send: agent-signer op send --agent … --target 0xd0b972a8ee7D8AB91a2e3381Eb6F10550B80E52A --wei 0 --data 0x… --sponsored --json
 ```
 Verifier check on an existing Jinn demo tx (Kernel → Safe, v=1):
 ```
-$ python olas_kernel_safe_demo.py --check-tx 0x451c7214…dc16
-  outer tx: from 0x4337…3063 to 0x0000000071727De22E5E9d8BAf0edAc6f37da032
+$ python olas_kernel_safe_demo.py --check-tx 0x451c7214beb0d43dcacf299eb2828c9daeb253ceef3f2ccfdad683535c18dc16
+  outer tx: from 0x43370277eCaAb8cb1F98622138Efc679F9aC3063 to 0x0000000071727De22E5E9d8BAf0edAc6f37da032
   upstream GnosisSafeContract.verify_tx -> verified=False status=1
   event-based verify (proposed)          -> {'verified': True, 'success': True, 'failure': False}
 ```
