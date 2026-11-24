@@ -1921,8 +1921,8 @@ fn phone_owner_real_device() {
 
 /// A minimal x402 server: 402 with PAYMENT-REQUIRED; with PAYMENT-SIGNATURE it
 /// settles through USDC's transferWithAuthorization (as a facilitator would)
-/// when `settle` is on, otherwise refuses.
-fn x402_server(chain_url: String, usdc: String, amount: u64, settle: Arc<AtomicBool>) -> String {
+/// when `settle` is on, otherwise refuses. It allows `max_timeout` seconds.
+fn x402_server(chain_url: String, usdc: String, amount: u64, settle: Arc<AtomicBool>, max_timeout: u64) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/quote", listener.local_addr().unwrap());
     let resource = url.clone();
@@ -1946,7 +1946,7 @@ fn x402_server(chain_url: String, usdc: String, amount: u64, settle: Arc<AtomicB
                 "x402Version": 2,
                 "resource": {"url": resource},
                 "accepts": [{"scheme": "exact", "network": "eip155:31337", "amount": amount.to_string(), "asset": usdc,
-                             "payTo": PAYEE, "maxTimeoutSeconds": 60, "extra": {"name": "USDC", "version": "2"}}],
+                             "payTo": PAYEE, "maxTimeoutSeconds": max_timeout, "extra": {"name": "USDC", "version": "2"}}],
             });
             let refuse = |s: &mut TcpStream| {
                 let h = B64.encode(required.to_string());
@@ -2029,7 +2029,7 @@ fn x402_pay_and_reclaim() {
         || U256::from_be_slice(&chain.call(&usdc, balanceOfCall { account: PAYEE.parse::<Address>().unwrap() }.abi_encode()));
 
     let settle = Arc::new(AtomicBool::new(true));
-    let url = x402_server(chain.url.clone(), usdc.clone(), 250_000, settle.clone());
+    let url = x402_server(chain.url.clone(), usdc.clone(), 250_000, settle.clone(), 60);
     let paid = chain.ok(&["x402", "fetch", "--agent", &cfg, &url]);
     assert!(paid.contains("paid content"), "{paid}");
     assert_eq!(payee_balance(), U256::from(250_000));
@@ -2048,6 +2048,16 @@ fn x402_pay_and_reclaim() {
     assert!(again.contains("reclaimed 0 expired") && again.contains("the last 50000; an older registration needs --from-block"), "{again}");
     assert!(chain.ok(&["permission", "show", "--agent", &cfg]).contains("(spent 250000)"));
     assert_eq!(payee_balance(), U256::from(250_000));
+
+    // a server allowing u64::MAX seconds (issue #151): no overflow, an hour, said, and paid
+    settle.store(true, Ordering::SeqCst);
+    let lavish = x402_server(chain.url.clone(), usdc.clone(), 250_000, settle.clone(), u64::MAX);
+    let paid = chain.ok(&["x402", "fetch", "--agent", &cfg, &lavish]);
+    let local_now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    assert!(paid.contains("paid content") && paid.contains("the authorization lives 3600 s"), "{paid}");
+    let valid_until: u64 = paid.split("valid until ").nth(1).and_then(|r| r.split_whitespace().next()).unwrap().parse().unwrap();
+    assert!(valid_until <= local_now + 3600, "{paid}");
+    assert_eq!(payee_balance(), U256::from(500_000));
 }
 
 // ---------------------------------------------------------------- trading
@@ -2508,6 +2518,18 @@ enum FakeBundler {
     /// Publishes no prices and refuses the first submission as underpriced,
     /// naming a floor the way Pimlico does; accepts the repriced resend.
     FeeFloor,
+    /// Hostile (issue #148): asks `preVerificationGas` 50M, the figure the
+    /// review reproduced a 72-fold bill with.
+    InflatedPreVerification,
+    /// Hostile: publishes fees of 10^27 wei (10^18 gwei).
+    Overpriced,
+    /// Hostile: names a fee floor of 10^27 wei when it refuses.
+    OverpricedFloor,
+    /// Broken (issue #150): a gas limit wider than 128 bits.
+    Oversized,
+    /// Broken: includes the operation, then reports its gas used wider than
+    /// 64 bits.
+    OversizedReceipt,
 }
 
 fn fake_bundler(chain_url: String, entry_point: String) -> String {
@@ -2544,14 +2566,32 @@ fn fake_bundler_with(chain_url: String, entry_point: String, mode: FakeBundler) 
             };
             let result: Result<Value, String> = match req["method"].as_str().unwrap() {
                 "eth_supportedEntryPoints" => Ok(json!([entry_point])),
-                "pimlico_getUserOperationGasPrice" => match mode {
-                    FakeBundler::Plain => Ok(json!({
-                        "slow": {"maxFeePerGas": "0x3b9aca00", "maxPriorityFeePerGas": "0xf4240"},
-                        "standard": {"maxFeePerGas": "0x77359400", "maxPriorityFeePerGas": "0x1e8480"},
-                        "fast": {"maxFeePerGas": "0xb2d05e00", "maxPriorityFeePerGas": "0x2dc6c0"},
-                    })),
-                    FakeBundler::FeeFloor => Err("unsupported method pimlico_getUserOperationGasPrice".into()),
-                },
+                "pimlico_getUserOperationGasPrice" => {
+                    // priced from the chain's base fee, as a bundler does
+                    let base = u128::from_str_radix(
+                        rpc("eth_getBlockByNumber", json!(["latest", false]))["result"]["baseFeePerGas"]
+                            .as_str()
+                            .unwrap()
+                            .trim_start_matches("0x"),
+                        16,
+                    )
+                    .unwrap();
+                    let tier = |priority: u128, max_fee: u128| {
+                        json!({"maxFeePerGas": format!("{max_fee:#x}"), "maxPriorityFeePerGas": format!("{priority:#x}")})
+                    };
+                    let priority = base / 4 + 1;
+                    match mode {
+                        FakeBundler::FeeFloor | FakeBundler::OverpricedFloor => {
+                            Err("unsupported method pimlico_getUserOperationGasPrice".into())
+                        }
+                        FakeBundler::Overpriced => Ok(json!({"standard": tier(10u128.pow(27), 10u128.pow(27))})),
+                        _ => Ok(json!({
+                            "slow": tier(priority, base + priority),
+                            "standard": tier(priority, base * 3 / 2 + priority),
+                            "fast": tier(priority * 2, base * 2 + priority * 2),
+                        })),
+                    }
+                }
                 "eth_estimateUserOperationGas" => {
                     // the client estimates with a placeholder of the real signature's
                     // length: 64 bytes on the root path, 65 under a permission
@@ -2559,13 +2599,23 @@ fn fake_bundler_with(chain_url: String, entry_point: String, mode: FakeBundler) 
                     if sig_len != 64 && sig_len != 65 {
                         Err(format!("estimate expects a 64- or 65-byte placeholder signature, got {sig_len} bytes"))
                     } else {
-                        Ok(json!({
-                            "preVerificationGas": "0x186a0", "verificationGasLimit": "0x16e360", "callGasLimit": "0x7a120",
-                            "paymasterVerificationGasLimit": "0x186a0", "paymasterPostOpGasLimit": "0x0",
-                        }))
+                        // what the CLI sets for a deployed account and Pimlico's
+                        // postOp answer for a paymaster without one
+                        let mut est = json!({
+                            "preVerificationGas": "0xc350", "verificationGasLimit": "0x493e0", "callGasLimit": "0x249f0",
+                            "paymasterVerificationGasLimit": "0x186a0", "paymasterPostOpGasLimit": "0x1",
+                        });
+                        match mode {
+                            FakeBundler::InflatedPreVerification => est["preVerificationGas"] = json!("0x2faf080"),
+                            FakeBundler::Oversized => est["verificationGasLimit"] = json!("0x100000000000000000000000000000000"),
+                            _ => {}
+                        }
+                        Ok(est)
                     }
                 }
-                "eth_sendUserOperation" if mode == FakeBundler::FeeFloor && !refused_once => {
+                "eth_sendUserOperation"
+                    if matches!(mode, FakeBundler::FeeFloor | FakeBundler::OverpricedFloor) && !refused_once =>
+                {
                     refused_once = true;
                     let current = req["params"][0]["maxPriorityFeePerGas"]
                         .as_str()
@@ -2574,7 +2624,7 @@ fn fake_bundler_with(chain_url: String, entry_point: String, mode: FakeBundler) 
                     Err(format!(
                         "error code -32602: maxPriorityFeePerGas must be at least {} (current maxPriorityFeePerGas: {current}) - \
                          use pimlico_getUserOperationGasPrice to get the current gas price",
-                        current + 1
+                        if mode == FakeBundler::FeeFloor { current + 1 } else { 10u128.pow(27) }
                     ))
                 }
                 "eth_sendUserOperation" => {
@@ -2630,7 +2680,11 @@ fn fake_bundler_with(chain_url: String, entry_point: String, mode: FakeBundler) 
                                     let data = hex::decode(log["data"].as_str().unwrap().trim_start_matches("0x")).unwrap();
                                     receipts.insert(hash.as_str().unwrap().to_string(), json!({
                                         "success": data[63] == 1,
-                                        "actualGasUsed": format!("0x{}", hex::encode(&data[96..128])),
+                                        "actualGasUsed": if mode == FakeBundler::OversizedReceipt {
+                                            "0x10000000000000000".to_string()
+                                        } else {
+                                            format!("0x{}", hex::encode(&data[96..128]))
+                                        },
                                         "receipt": {"transactionHash": tx, "blockNumber": receipt["blockNumber"]},
                                     }));
                                     Ok(hash)
@@ -2717,6 +2771,28 @@ fn sponsored_and_bundled() {
     // a refused operation through the bundler is reported, not swallowed
     let refused = chain.fails(&["op", "send", "--agent", &cfg, "--bundler", &bundler, "--target", "0x000000000000000000000000000000000000dEaD", "--wei", "1"]);
     assert!(!refused.is_empty());
+
+    // A hostile or broken bundler (issues #148, #150): a figure past the
+    // CLI's bound is refused before anything is signed or sent, and a value
+    // wider than 128 bits is an error, not a panic.
+    for (mode, expected) in [
+        (FakeBundler::InflatedPreVerification, "the bundler's preVerificationGas 50000000 is above"),
+        (FakeBundler::Overpriced, "the bundler's maxPriorityFeePerGas"),
+        (FakeBundler::OverpricedFloor, "the bundler's maxFeePerGas after its fee floor"),
+        (FakeBundler::Oversized, "the bundler's verificationGasLimit 340282366920938463463374607431768211456 is above"),
+    ] {
+        let hostile = fake_bundler_with(chain.url.clone(), chain.addr("entryPoint"), mode);
+        let said = chain.fails(&["demo", "--agent", &cfg, "--bundler", &hostile]);
+        assert!(said.contains(expected) && said.contains("refusing to sign it"), "{said}");
+        assert!(!said.contains("panicked") && !said.contains("bundler accepted"), "{said}");
+    }
+    assert_eq!(chain.counter(), before + U256::from(4));
+    // a receipt it cannot have given: an error naming the transaction, not a panic
+    let broken = fake_bundler_with(chain.url.clone(), chain.addr("entryPoint"), FakeBundler::OversizedReceipt);
+    let said = chain.fails(&["demo", "--agent", &cfg, "--bundler", &broken]);
+    assert!(said.contains("gives actualGasUsed 18446744073709551616, wider than 64 bits"), "{said}");
+    assert!(!said.contains("panicked"), "{said}");
+    assert_eq!(chain.counter(), before + U256::from(5));
 
     // the owner delists the account: no more sponsorship
     chain.ok(&["paymaster", "sponsor", "--agent", &cfg, "--revoke"]);

@@ -19,6 +19,8 @@ arithmetic_side_effects = "deny"
 cast_possible_truncation = "deny"
 cast_possible_wrap = "deny"
 cast_sign_loss = "deny"
+# clippy.toml names them: `Uint::to` and `Uint::wrapping_to`
+disallowed_methods = "deny"
 
 # The phone libraries are built from here in release: an overflow the lints
 # cannot see stops the review instead of showing a wrapped number.

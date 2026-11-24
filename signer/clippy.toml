@@ -1,0 +1,6 @@
+# House rule 10: a 256-bit value is narrowed with `try_from`, which answers
+# with an error; `Uint::to` panics on a value that does not fit.
+disallowed-methods = [
+    { path = "ruint::Uint::to", reason = "panics when the value does not fit: use `T::try_from` and refuse (house rule 10)" },
+    { path = "ruint::Uint::wrapping_to", reason = "drops the high bits silently: use `T::try_from` and refuse (house rule 10)" },
+]

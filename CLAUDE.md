@@ -105,9 +105,9 @@ scripts/source-record.sh                          # every contract's bytecode an
     never `.to::<T>()` on a 256-bit value. Clippy holds the operators and
     the casts (`arithmetic_side_effects` and the three `cast_*` lints,
     denied in the `Cargo.toml` files): `cargo clippy` fails on a violation
-    and CI runs it on every pull request. No `#[allow]` of these lints. A
-    shift by a variable and `.to::<T>()` it does not see: those stay with
-    the review. Release builds keep `overflow-checks` on as the second
+    and CI runs it on every pull request; `clippy.toml` adds `.to::<T>()`
+    to what it refuses. No `#[allow]` of these lints. A shift by a variable
+    it does not see: that stays with the review. Release builds keep `overflow-checks` on as the second
     line.
 
 ## Never in the repository, a pull request or an issue

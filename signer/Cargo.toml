@@ -22,6 +22,8 @@ arithmetic_side_effects = "deny"
 cast_possible_truncation = "deny"
 cast_possible_wrap = "deny"
 cast_sign_loss = "deny"
+# clippy.toml names them: `Uint::to` and `Uint::wrapping_to`
+disallowed_methods = "deny"
 
 # scrypt at the strength KEY_POLICY.md requires (N = 2^18) takes minutes
 # unoptimized; build the key-derivation crates optimized even in dev builds.

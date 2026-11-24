@@ -3,7 +3,14 @@
 //! A bundler takes the signed UserOperation over JSON-RPC, submits
 //! `handleOps` from its own wallet and is paid from the account's (or the
 //! paymaster's) EntryPoint deposit. It is untrusted infrastructure in our
-//! model: it can delay or drop an operation, it cannot forge or redirect one.
+//! model: it can delay or drop an operation, and it cannot change what the
+//! operation calls or where its value goes, since the signature covers every
+//! field. It does propose the gas figures the hardware signs, and
+//! `preVerificationGas` and the fees are what pays it: a hostile bundler
+//! would turn the account's gas budget into its own revenue (issue #148). So
+//! its estimate is taken only up to [`FACTOR`] times the CLI's own, its fees
+//! only up to [`FACTOR`] times the node's `maxFeePerGas`, and anything beyond
+//! is refused before the hardware signs.
 //!
 //! The RPC carries the operation *unpacked*: `initCode` as `factory` +
 //! `factoryData`, `accountGasLimits` as two limits, `paymasterAndData` as
@@ -13,6 +20,7 @@ use std::time::Duration;
 
 use alloy::primitives::{Address, Bytes, B256, U256};
 use alloy::providers::{DynProvider, Provider};
+use alloy::sol_types::SolValue;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -31,6 +39,90 @@ pub fn split_gas(word: B256) -> (u128, u128) {
 
 fn hi_lo(word: B256) -> (u128, u128) {
     split_gas(word)
+}
+
+/// How far a bundler's figures may go: each gas figure at most twice the
+/// CLI's own, each fee at most twice the node's `maxFeePerGas` (which already
+/// holds twice the base fee). Honest bundlers sit well inside: Pimlico's
+/// estimates on Base Sepolia were under the CLI's own (`docs/SECURE_ENCLAVE.md`
+/// §13), and its fees on Base Sepolia, Base, Ethereum and Arbitrum were
+/// 0.67 to 0.82 times the node's `maxFeePerGas` (2026-11-25). Twice bounds what
+/// a hostile one can take to a small multiple of an honest bill, where the
+/// review measured 72 times with no bound.
+pub const FACTOR: u128 = 2;
+
+/// `theirs` if it is at most `ceiling`, refused otherwise. A value too wide
+/// for 128 bits is above any ceiling: a refusal, never a panic (issue #150).
+pub fn bounded(name: &str, theirs: U256, ceiling: u128, of: &str) -> Result<u128> {
+    match u128::try_from(theirs) {
+        Ok(v) if v <= ceiling => Ok(v),
+        _ => bail!(
+            "the bundler's {name} {theirs} is above {ceiling}, {FACTOR} times {of}: refusing to sign it \
+             (docs/FAQ.md, \"Do I need a bundler or a gas wallet?\")"
+        ),
+    }
+}
+
+/// The most a bundler's `preVerificationGas` may be: [`FACTOR`] times the
+/// larger of ours and what the operation's bytes cost a bundler on L1 — the
+/// reference bundler's overheads (21000 per bundle, 18300 per operation, 4 per
+/// word) with each byte at EIP-7623's floor rate (10 gas zero, 40 other), the
+/// dearer of the two calldata schedules — so a large first operation is not
+/// refused.
+pub fn pre_verification_ceiling(op: &PackedUserOperation, ours: u128) -> u128 {
+    // saturating: these are ceilings from our own figures, and the largest value is a right bound (rule 10)
+    let packed = op.abi_encode();
+    let bytes = packed.iter().fold(0u128, |sum, &b| sum.saturating_add(if b == 0 { 10 } else { 40 }));
+    let words = u128::try_from(packed.len().div_ceil(32)).unwrap_or(u128::MAX);
+    let l1 = 39_300u128.saturating_add(words.saturating_mul(4)).saturating_add(bytes); // 21000 + 18300
+    FACTOR.saturating_mul(ours.max(l1))
+}
+
+/// Write a bundler's estimate into `op`, whose gas fields still hold the
+/// CLI's own figures: each one is the bound for the bundler's. Refused, and
+/// `op` left as it was, if any figure goes beyond its bound.
+pub fn apply_estimate(op: &mut PackedUserOperation, est: &GasEstimate) -> Result<()> {
+    const OURS: &str = "the CLI's own estimate";
+    let (our_verification, our_call) = split_gas(op.accountGasLimits);
+    let our_pre_verification = op.preVerificationGas.saturating_to::<u128>();
+    let pre_verification = bounded(
+        "preVerificationGas",
+        est.pre_verification_gas,
+        pre_verification_ceiling(op, our_pre_verification),
+        "the larger of the CLI's own figure and the operation's calldata cost",
+    )?;
+    let verification =
+        bounded("verificationGasLimit", est.verification_gas_limit, FACTOR.saturating_mul(our_verification), OURS)?;
+    let call = bounded("callGasLimit", est.call_gas_limit, FACTOR.saturating_mul(our_call), OURS)?;
+    let paymaster_and_data = if op.paymasterAndData.len() >= 52 {
+        let pm = &op.paymasterAndData;
+        let our_verification = u128::from_be_bytes(pm[20..36].try_into().expect("16 bytes"));
+        let our_post_op = u128::from_be_bytes(pm[36..52].try_into().expect("16 bytes"));
+        // Our paymaster runs no postOp (ours is 0, a bundler may say 1): its
+        // two limits share one bound, twice the paymaster gas we set.
+        let ceiling = FACTOR.saturating_mul(our_verification.saturating_add(our_post_op));
+        let paymaster = |name, theirs: Option<U256>, ours| match theirs {
+            Some(v) => bounded(name, v, ceiling, "the paymaster gas the CLI sets"),
+            None => Ok(ours),
+        };
+        let verification =
+            paymaster("paymasterVerificationGasLimit", est.paymaster_verification_gas_limit, our_verification)?;
+        let post_op = paymaster("paymasterPostOpGasLimit", est.paymaster_post_op_gas_limit, our_post_op)?;
+        let mut repacked = Vec::with_capacity(pm.len());
+        repacked.extend_from_slice(&pm[..20]);
+        repacked.extend_from_slice(&verification.to_be_bytes());
+        repacked.extend_from_slice(&post_op.to_be_bytes());
+        repacked.extend_from_slice(&pm[52..]);
+        Some(Bytes::from(repacked))
+    } else {
+        None
+    };
+    op.accountGasLimits = crate::kernel::pack_gas(verification, call);
+    op.preVerificationGas = U256::from(pre_verification);
+    if let Some(pm) = paymaster_and_data {
+        op.paymasterAndData = pm;
+    }
+    Ok(())
 }
 
 /// The floor a bundler names when it refuses an operation as underpriced,
@@ -153,34 +245,17 @@ impl Bundler {
         tiers.ok().map(|t| t.standard)
     }
 
-    /// Apply the bundler's gas estimate to `op`. The operation carries a
-    /// placeholder signature of the real one's length: bundlers simulate
-    /// without checking it, and the hash covers the gas fields, so the
-    /// hardware signs once, after this.
+    /// Apply the bundler's gas estimate to `op`, within the bounds of
+    /// [`apply_estimate`]. The operation carries a placeholder signature of
+    /// the real one's length: bundlers simulate without checking it, and the
+    /// hash covers the gas fields, so the hardware signs once, after this.
     pub async fn estimate(&self, op: &mut PackedUserOperation) -> Result<GasEstimate> {
         let est: GasEstimate = self
             .rpc
             .raw_request("eth_estimateUserOperationGas".into(), (to_rpc(op), self.entry_point))
             .await
             .context("eth_estimateUserOperationGas")?;
-        op.accountGasLimits =
-            crate::kernel::pack_gas(est.verification_gas_limit.to::<u128>(), est.call_gas_limit.to::<u128>());
-        op.preVerificationGas = est.pre_verification_gas;
-        if op.paymasterAndData.len() >= 52 {
-            let pm = op.paymasterAndData.to_vec();
-            let verification = est.paymaster_verification_gas_limit.map(|v| v.to::<u128>()).unwrap_or_else(|| {
-                u128::from_be_bytes(pm[20..36].try_into().expect("16 bytes"))
-            });
-            let post_op = est.paymaster_post_op_gas_limit.map(|v| v.to::<u128>()).unwrap_or_else(|| {
-                u128::from_be_bytes(pm[36..52].try_into().expect("16 bytes"))
-            });
-            let mut repacked = Vec::with_capacity(pm.len());
-            repacked.extend_from_slice(&pm[..20]);
-            repacked.extend_from_slice(&verification.to_be_bytes());
-            repacked.extend_from_slice(&post_op.to_be_bytes());
-            repacked.extend_from_slice(&pm[52..]);
-            op.paymasterAndData = Bytes::from(repacked);
-        }
+        apply_estimate(op, &est)?;
         Ok(est)
     }
 
@@ -242,5 +317,126 @@ mod tests {
         .unwrap();
         assert_eq!(v.standard.max_priority_fee_per_gas, U256::from(1_000_000u64));
         assert_eq!(v.standard.max_fee_per_gas, U256::from(0x88d36a75u64));
+    }
+
+    /// A sponsored operation for a deployed account as the CLI builds it:
+    /// verification 300000, call 150000, preVerification 100000, paymaster
+    /// verification 100000 and no postOp, a 65-byte placeholder signature.
+    fn ours(init_code: usize) -> PackedUserOperation {
+        let mut pm = vec![0x05u8; 20];
+        pm.extend_from_slice(&100_000u128.to_be_bytes());
+        pm.extend_from_slice(&0u128.to_be_bytes());
+        PackedUserOperation {
+            sender: Address::repeat_byte(0xd6),
+            nonce: U256::from(7u64),
+            initCode: Bytes::from(vec![0xabu8; init_code]),
+            callData: Bytes::from(vec![0xe9u8; 228]),
+            accountGasLimits: crate::kernel::pack_gas(300_000, 150_000),
+            preVerificationGas: U256::from(100_000u64),
+            gasFees: crate::kernel::pack_gas(1_000_000, 11_000_000),
+            paymasterAndData: Bytes::from(pm),
+            signature: Bytes::from(vec![0xffu8; 65]),
+        }
+    }
+
+    /// Pimlico's answer for such an operation on Base Sepolia (the sponsored
+    /// run of `docs/SECURE_ENCLAVE.md` §13, read back from its transaction).
+    fn honest() -> GasEstimate {
+        GasEstimate {
+            pre_verification_gas: U256::from(49_175u64),
+            verification_gas_limit: U256::from(109_000u64),
+            call_gas_limit: U256::from(17_955u64),
+            paymaster_verification_gas_limit: Some(U256::from(24_484u64)),
+            paymaster_post_op_gas_limit: Some(U256::from(1u64)),
+        }
+    }
+
+    fn paymaster_limits(op: &PackedUserOperation) -> (u128, u128) {
+        let pm = &op.paymasterAndData;
+        (u128::from_be_bytes(pm[20..36].try_into().unwrap()), u128::from_be_bytes(pm[36..52].try_into().unwrap()))
+    }
+
+    #[test]
+    fn an_honest_estimate_is_taken_as_given() {
+        let mut op = ours(0);
+        apply_estimate(&mut op, &honest()).unwrap();
+        assert_eq!(split_gas(op.accountGasLimits), (109_000, 17_955));
+        assert_eq!(op.preVerificationGas, U256::from(49_175u64));
+        assert_eq!(paymaster_limits(&op), (24_484, 1));
+        assert_eq!(op.paymasterAndData[..20], [0x05u8; 20]);
+
+        // up to twice ours, each figure, is still taken
+        let mut op = ours(0);
+        let est = GasEstimate {
+            pre_verification_gas: U256::from(200_000u64),
+            verification_gas_limit: U256::from(600_000u64),
+            call_gas_limit: U256::from(300_000u64),
+            paymaster_verification_gas_limit: Some(U256::from(200_000u64)),
+            paymaster_post_op_gas_limit: None,
+        };
+        apply_estimate(&mut op, &est).unwrap();
+        assert_eq!(split_gas(op.accountGasLimits), (600_000, 300_000));
+        assert_eq!(paymaster_limits(&op), (200_000, 0));
+    }
+
+    #[test]
+    fn a_figure_beyond_twice_ours_is_refused_and_nothing_changes() {
+        let inflate: [(&str, fn(&mut GasEstimate)); 5] = [
+            // the review's figure: a 72-fold bill
+            ("preVerificationGas 50000000", |e| e.pre_verification_gas = U256::from(50_000_000u64)),
+            ("preVerificationGas 200001", |e| e.pre_verification_gas = U256::from(200_001u64)),
+            ("verificationGasLimit 600001", |e| e.verification_gas_limit = U256::from(600_001u64)),
+            ("callGasLimit 300001", |e| e.call_gas_limit = U256::from(300_001u64)),
+            ("paymasterPostOpGasLimit 200001", |e| e.paymaster_post_op_gas_limit = Some(U256::from(200_001u64))),
+        ];
+        for (named, f) in inflate {
+            let mut est = honest();
+            f(&mut est);
+            let mut op = ours(0);
+            let before = op.clone();
+            let err = apply_estimate(&mut op, &est).unwrap_err().to_string();
+            assert!(err.contains(&format!("the bundler's {named} is above")), "{err}");
+            assert!(err.contains("refusing to sign it"), "{err}");
+            assert_eq!(op.abi_encode(), before.abi_encode());
+        }
+    }
+
+    #[test]
+    fn a_quantity_wider_than_128_bits_is_refused_not_a_panic() {
+        let wide = U256::from(1u8) << 128;
+        let oversize: [fn(&mut GasEstimate, U256); 5] = [
+            |e, v| e.pre_verification_gas = v,
+            |e, v| e.verification_gas_limit = v,
+            |e, v| e.call_gas_limit = v,
+            |e, v| e.paymaster_verification_gas_limit = Some(v),
+            |e, v| e.paymaster_post_op_gas_limit = Some(v),
+        ];
+        for f in oversize {
+            for v in [wide, U256::MAX] {
+                let mut est = honest();
+                f(&mut est, v);
+                let err = apply_estimate(&mut ours(0), &est).unwrap_err().to_string();
+                assert!(err.contains(&v.to_string()), "{err}");
+            }
+        }
+        // the same check bounds the fees against the node's
+        let fee = |v| bounded("maxFeePerGas", v, 2 * 11_000_000, "the node's maxFeePerGas");
+        assert_eq!(fee(U256::from(7_350_000u64)).unwrap(), 7_350_000); // Pimlico's on Base Sepolia
+        assert!(fee(U256::from(22_000_001u64)).is_err());
+        assert!(fee(wide).is_err());
+    }
+
+    #[test]
+    fn a_large_first_operation_raises_the_pre_verification_ceiling() {
+        // a small operation: our own figure is the larger one
+        assert_eq!(pre_verification_ceiling(&ours(0), 100_000), 200_000);
+        // 8 KiB of factory data costs a bundler more than 100000 on L1
+        let big = ours(8192);
+        let ceiling = pre_verification_ceiling(&big, 100_000);
+        assert!(ceiling > 2 * (39_300 + 40 * 8192), "{ceiling}");
+        let mut est = honest();
+        est.pre_verification_gas = U256::from(400_000u64);
+        apply_estimate(&mut big.clone(), &est).unwrap();
+        assert!(apply_estimate(&mut ours(0), &est).is_err());
     }
 }
