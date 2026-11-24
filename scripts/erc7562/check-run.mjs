@@ -17,13 +17,9 @@
 // directory should hold one run's traces only.
 import fs from "node:fs";
 import path from "node:path";
-import { decodeFunctionData, parseAbi, size, slice, toHex } from "viem";
-import { ENTRY_POINT, verdict as ask } from "./checker.mjs";
+import { toHex } from "viem";
+import { ENTRY_POINT, operations, verdict as ask } from "./checker.mjs";
 
-const handleOps = parseAbi([
-  "struct PackedUserOperation { address sender; uint256 nonce; bytes initCode; bytes callData; bytes32 accountGasLimits; uint256 preVerificationGas; bytes32 gasFees; bytes paymasterAndData; bytes signature; }",
-  "function handleOps(PackedUserOperation[] ops, address beneficiary)",
-]);
 // Kernel v3: the second byte of the nonce says who validates
 const PATHS = { "00": "root", "01": "validator", "02": "permission" };
 
@@ -40,22 +36,15 @@ if (!dir) {
 const rows = [];
 for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".json")).sort()) {
   const run = JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"));
-  const { args: [ops] } = decodeFunctionData({ abi: handleOps, data: run.input });
+  const ops = operations(run.input);
   const name = file.replace(/\.json$/, "");
   if (ops.length !== 1) {
     rows.push({ name, path: "?", note: `a bundle of ${ops.length} operations: not checked` });
     continue;
   }
   const entryPoint = (run.entryPoint ?? ENTRY_POINT).toLowerCase();
-  const packed = ops[0];
-  const op = {
-    sender: packed.sender.toLowerCase(),
-    nonce: packed.nonce,
-    callData: packed.callData,
-    factory: size(packed.initCode) >= 20 ? slice(packed.initCode, 0, 20).toLowerCase() : undefined,
-    paymaster: size(packed.paymasterAndData) >= 20 ? slice(packed.paymasterAndData, 0, 20).toLowerCase() : undefined,
-  };
-  const kind = PATHS[toHex(packed.nonce, { size: 32 }).slice(4, 6)] ?? "?";
+  const op = ops[0];
+  const kind = PATHS[toHex(op.nonce, { size: 32 }).slice(4, 6)] ?? "?";
   rows.push({
     name,
     path: kind,

@@ -12,7 +12,7 @@ use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
 use alloy::sol_types::{SolCall, SolEvent};
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 
 use crate::abi::{
     IDemoCounter, IEntryPoint, IKernel, IKernelFactory, IP256ValidatorView, ISafeNonceAssert, IWhitelistPaymaster,
@@ -1480,20 +1480,24 @@ impl Session {
         eprintln!("nonce:          {nonce:#x}");
         // Gas prices: the bundler's own when it publishes them (it enforces a
         // floor at submission that the node's estimate can fall under),
-        // otherwise the node's.
+        // otherwise the node's. The node's maxFeePerGas bounds the bundler's
+        // fees, here and when it names a higher floor below.
         let bundler_price = match &self.bundler {
             Some(b) => b.gas_price().await,
             None => None,
         };
+        let fees = self.provider.estimate_eip1559_fees().await?;
+        let fee_ceiling = fees.max_fee_per_gas.saturating_mul(crate::bundler::FACTOR);
+        const NODE_FEE: &str = "the node's maxFeePerGas";
         let (max_priority_fee, max_fee) = match bundler_price {
             Some(p) => {
                 eprintln!("gas prices:     from the bundler");
-                (p.max_priority_fee_per_gas.to::<u128>(), p.max_fee_per_gas.to::<u128>())
+                (
+                    crate::bundler::bounded("maxPriorityFeePerGas", p.max_priority_fee_per_gas, fee_ceiling, NODE_FEE)?,
+                    crate::bundler::bounded("maxFeePerGas", p.max_fee_per_gas, fee_ceiling, NODE_FEE)?,
+                )
             }
-            None => {
-                let fees = self.provider.estimate_eip1559_fees().await?;
-                (fees.max_priority_fee_per_gas, fees.max_fee_per_gas)
-            }
+            None => (fees.max_priority_fee_per_gas, fees.max_fee_per_gas),
         };
         let verification_gas: u128 = if deployed { 300_000 } else { 1_500_000 };
         let call_gas = self.estimate_call_gas(&call_data, deployed).await?;
@@ -1591,7 +1595,13 @@ impl Session {
                     Some(floor) => {
                         let (priority, max_fee) = crate::bundler::split_gas(op.gasFees);
                         let bump = floor.saturating_sub(priority);
-                        op.gasFees = kernel::pack_gas(floor, max_fee.saturating_add(bump));
+                        let max_fee = crate::bundler::bounded(
+                            "maxFeePerGas after its fee floor",
+                            U256::from(max_fee.saturating_add(bump)),
+                            fee_ceiling,
+                            NODE_FEE,
+                        )?;
+                        op.gasFees = kernel::pack_gas(floor, max_fee);
                         eprintln!("bundler wants maxPriorityFeePerGas ≥ {floor} wei: repricing and signing once more");
                         if signer.needs_request() {
                             eprintln!("the owner will see a second QR: the same operation with the higher fee, a new userOpHash");
@@ -1616,12 +1626,16 @@ impl Session {
                     receipt.reason.unwrap_or_default()
                 );
             }
+            let tx = receipt.receipt.transaction_hash;
+            let narrow = |name, v: U256| {
+                u64::try_from(v).map_err(|_| anyhow!("the bundler's receipt for tx {tx} gives {name} {v}, wider than 64 bits"))
+            };
             return Ok(Included {
                 user_op_hash,
                 nonce,
-                tx: receipt.receipt.transaction_hash,
-                block: receipt.receipt.block_number.to::<u64>(),
-                gas_used: receipt.actual_gas_used.to::<u64>(),
+                tx,
+                block: narrow("block number", receipt.receipt.block_number)?,
+                gas_used: narrow("actualGasUsed", receipt.actual_gas_used)?,
             });
         }
         eprintln!("userOpHash:     {user_op_hash}");

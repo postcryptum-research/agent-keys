@@ -40,7 +40,10 @@ general-purpose machines, and the "device" is an AI agent.
   the recovery key only, an encrypted key file on removable media
   (`docs/KEY_POLICY.md`). No MPC, no custodial gateway. The
   bundler and paymaster are untrusted infrastructure: they can delay or drop
-  a request, they cannot forge one or move funds.
+  a request, they cannot forge one or move funds. A bundler does propose the
+  gas figures the hardware signs, and is paid from them; the CLI takes them
+  only up to twice its own estimate and twice the node's `maxFeePerGas`, and
+  refuses anything beyond before signing ([#148](https://github.com/postcryptum-research/agent-keys/issues/148)).
 - Cross-platform. One account, one trait, one backend per platform.
 
 ## Threat model for an agent
@@ -337,7 +340,8 @@ Lessons that cost real debugging time:
     `0x59b2814afc86bd161cd0ebf8abb96824a881746375881fabc686bb17c4c2539f`):
     the chip signs, the paymaster pays, the bundler relays — no gas wallet
     anywhere in the path. Trust does not change: a bundler can delay or
-    drop, not forge or redirect. Pimlico's public testnet endpoint relayed
+    drop, not forge or redirect; the gas figures it proposes are bounded
+    (see the first section). Pimlico's public testnet endpoint relayed
     from an unstaked paymaster; bundlers with default ERC-7562 reputation
     rules require a staked one (`paymaster stake`).
   - **TROPIC01 backend — done.** `hw-signer/src/tropic01.rs`; the owner

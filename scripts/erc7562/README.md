@@ -3,7 +3,8 @@
 What a bundler that enforces the ERC-7562 validation rules makes of an agent
 operation, and a way to ask again after a change. Everything here is from runs
 on Base Sepolia and on a local fork of it on 2026-11-20 (UTC); traces 7 and 8
-are from 2026-11-21, after the policy's storage was changed (#87).
+are from 2026-11-21, after the policy's storage was changed (#87); traces 9
+and 10 are from a run of the CI job below on 2026-11-24.
 
 ## The result in two tables
 
@@ -45,12 +46,29 @@ traces in `traces/`:
 | 6 test policy: transient write at `keccak(sender ‖ 1)` | storage passes; stops at the P-256 precompile, see below |
 | 7 `AgentPolicy` as deployed on 2026-11-21 (`0x12b7E79974CC4F4181a40Aa11f9d3170018ae0E2`), an operation without a token call | storage passes: 6 slots of the policy, all the sender's; stops at the P-256 precompile |
 | 8 the same instance, an `x402Authorize` under a token limit | storage passes: 11 slots of the policy, all the sender's; stops at the P-256 precompile |
+| 9 the CLI's first operation of an account, sponsored: a factory and a paymaster | refused: the factory unstaked reads its own slot `0xc971c53e8faacbe9398308973b81e1992106aec7dde936e40d53f88839fe60a4`; passes with the factory staked, the paymaster not |
+| 10 the same account's next operation, sponsored: a paymaster | stops at the P-256 precompile; passes with it allowed, the paymaster unstaked |
 
 The exact messages are in `expected.json`, each trace twice: the checker as it
-is, and with the P-256 precompile allowed (below). The checker's message says
-"read from" also where the slot is written; the branch it comes from is the
-one for written slots.
+is, and with the P-256 precompile allowed (below); trace 9 a third time, with
+that and its factory staked. The checker's message says "read from" also
+where the slot is written; the branch it comes from is the one for written
+slots.
 
+- **Traces 9 and 10** come from CI and not from the bundler:
+  `bundled-0007-0.json` and `bundled-0008-0.json` of the `erc7562-traces`
+  artifact of the `cli-and-erc7562` job (below), run 45485209513 on master
+  at commit `b9e9b3e96403f987629a948e9c73f9be968c0c5e`, copied unchanged. They
+  are the `sponsored_and_bundled` test's account, deployed and run on the
+  paymaster's deposit, and carry the `handleOps` call they are of, so the
+  factory and the paymaster are read from it. The factory is the
+  FactoryStaker `0xd703aaE79538628d27099B8c4f621bE4CCd142d5`, staked at the
+  EntryPoint on chain (`docs/DEPLOYMENTS.md`, #102): for trace 9 the verdict
+  that counts is the third. The paymaster is the test chain's
+  `WhitelistPaymaster`, `0x5FbDB2315678afecb367f032d93F642f64180aa3`.
+- **Test policy 5** (a persistent write at `keccak(sender ‖ 1)`) has no trace
+  here: one would take a run of the bundler or of its tracer on a fork, and
+  none was made for it.
 - **Traces 7 and 8** are the policy after #87, whose every slot is
   `keccak(account ‖ x) + n`: operations of an account whose permission was
   rotated onto the instance on chain, traced on a fork at block 61724385
@@ -67,9 +85,10 @@ one for written slots.
   is disabled in the checker's source. Validation writes these slots, and a
   write to a slot that is not the sender's is refused, staked or not.
 - **Trace 6 and the precompile:** this build of the checker calls the P-256
-  precompile at `0x…0100` an un-deployed contract. ERC-7562 allows the
-  RIP-7212 precompile on networks that have it, so that is the bundler's
-  configuration for the network and not the policy. `check-traces.mjs`
+  precompile at `0x0000000000000000000000000000000000000100` an un-deployed
+  contract. ERC-7562 allows the RIP-7212 precompile on networks that have
+  it, so that is the bundler's configuration for the network and not the
+  policy. `check-traces.mjs`
   therefore gives a second verdict with that one address left out of the
   trace's list of code sizes, which is what a bundler set up for such a
   network sees: trace 6 then passes, traces 1 to 5 are refused as before.
@@ -81,9 +100,38 @@ one for written slots.
 ```sh
 cd scripts/erc7562
 npm install          # the checker comes with the bundler's package, pinned in package.json
-npm run check        # the eight recorded traces against expected.json; exit 1 on a difference
-node check-traces.mjs my-trace.json     # both verdicts for a trace of your own
+npm run check        # the ten recorded traces against expected.json, then test.mjs; exit 1 on a difference
+node check-traces.mjs my-trace.json     # the verdicts for a trace of your own
 ```
+
+What `check-traces.mjs` takes, and how (`checker.mjs`, shared with
+`check-run.mjs`):
+
+- **A trace** as the bundler logs it, or a file of `check-run.mjs`'s, which
+  also carries the `handleOps` call the trace is of and its EntryPoint.
+- **Case.** Every hex string of the trace, keys and values (addresses,
+  slots, selectors, keccak inputs), the EntryPoint and the operation's
+  addresses are put in lower case before the checker sees them. The checker
+  compares them as text: an address in checksum case would slip past the
+  rules that name the EntryPoint (OP-052, OP-054) or the account (OP-041)
+  (#152). A trace that names one address in two cases is refused.
+- **The account, the factory and the paymaster** come from the operation
+  when the file has it: the first 20 bytes of `initCode` and of
+  `paymasterAndData`. A trace without it names them by the EntryPoint's
+  calls: the account is the one called with `validateUserOp`, the paymaster
+  the one called with `validatePaymasterUserOp`, the factory the one the
+  SenderCreator calls. A first operation is so judged against its factory,
+  and gets the third verdict, with the factory staked (#153).
+- **A file that is not a trace** (empty, not JSON, without
+  `callsFromEntryPoint`, `calls` and `keccak`, or with a level that lacks
+  `opcodes`, `access`, `contractSize` or `extCodeAccessInfo`) gets one line
+  on stderr and exit 1 (#154).
+
+`test.mjs` holds the checker to that: every recorded trace with its
+addresses in checksum case gives the recorded verdicts; a call into the
+EntryPoint put into trace 7 is refused in either case; trace 9 without its
+operation is read as with it; a file that is not a trace gets one line and
+exit 1.
 
 A trace of your own, with nothing spent:
 
@@ -139,12 +187,14 @@ that is not the account's or use a banned opcode.
 The last row is a finding and not a property of the test chain: creating the
 account installs the validator and the agent's permission, which writes their
 slots for the account, and ERC-7562 allows that during a first operation only
-to a staked factory. The CLI names Kernel's factory itself in `initCode`, and
+to a staked factory. The CLI then named Kernel's factory itself in `initCode`, and
 that contract holds no stake at the EntryPoint; ZeroDev's staked
 meta-factory, which deploys through it, is what a rule-enforcing bundler
-expects there ([#102](https://github.com/postcryptum-research/agent-keys/issues/102)). Until the CLI goes through it, an account's first
-operation would be refused by such a bundler, and the gate holds these
-operations to exactly that refusal.
+expects there ([#102](https://github.com/postcryptum-research/agent-keys/issues/102)). Since #127 the CLI goes through it: an account's
+first operation names `0xd703aaE79538628d27099B8c4f621bE4CCd142d5` in
+`initCode` (recorded trace 9). The gate still takes a first operation's
+factory as unstaked in its first verdicts, so these operations show the
+factory's refusal there and pass once it is staked.
 
 **Limits of this check:** the local chain runs the runtime code of the
 deployed contracts (`tests/fixtures/chain-code.json`), so a change to a

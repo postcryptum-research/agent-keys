@@ -511,7 +511,9 @@ fn top_level(call_data: &[u8], account: Address) -> Result<Vec<(Address, U256, B
 }
 
 /// Keys installed in this batch by validator id, so a `changeRootValidator`
-/// to a validator installed in the same batch can name the key (§2.2).
+/// to a validator installed in the same batch can name the key (§2.2). The
+/// last install wins, as on chain: `P256Validator` refuses a second install
+/// without an uninstall between.
 fn keys_installed_in(calls: &[(Address, U256, Bytes)], account: Address) -> BTreeMap<FixedBytes<21>, PublicKey> {
     let mut keys = BTreeMap::new();
     for (target, _, data) in calls {
@@ -639,13 +641,21 @@ fn self_call(
         if c.hook != no_hook || !c.hookData.is_empty() {
             return Err("changeRootValidator with a hook; refused".into());
         }
-        if !c.validatorData.is_empty() && decode_pubkey(&c.validatorData).is_none() {
-            return Err("changeRootValidator: validator data is not a P-256 key; refused".into());
+        // Kernel installs validatorData only when the validator is not installed yet, and ignores it
+        // otherwise, an install earlier in this batch included (issue #147): the key the call carries
+        // may not be the one that takes control, so the screen names only a key installed in the batch
+        if !c.validatorData.is_empty() {
+            return Err("changeRootValidator carries a key, which Kernel ignores when the validator is installed; refused".into());
         }
         let v = Address::from_slice(&c.rootValidator.0[1..21]);
-        let key = decode_pubkey(&c.validatorData).or_else(|| installed_keys.get(&c.rootValidator).copied());
-        match key {
-            Some(pk) => b.bold(s, "Hand control of this account to key", fingerprint(&pk)),
+        // a key is named only for a validator whose install this build knows to keep the key it is given
+        // (this phone's validator, a known recovery validator, a P256Validator by name); a contract the
+        // laptop picked may ignore it, so it is named by its address alone
+        let known_p256 = acct.validator == Some(v)
+            || b.facts.recovery_validators.contains(&v)
+            || b.facts.names.get(&v).is_some_and(|n| n.starts_with("P256Validator"));
+        match installed_keys.get(&c.rootValidator).filter(|_| known_p256) {
+            Some(pk) => b.bold(s, "Hand control of this account to key", fingerprint(pk)),
             None => b.bold(s, "Hand control of this account to validator", b.name(v)),
         }
         b.row(s, "Root validator", b.name(v));
@@ -1919,6 +1929,55 @@ mod tests {
         assert!(r.text().contains("Remove permission: 0x74657331"));
     }
 
+    /// A root operation whose calls are all self-calls, in one batch.
+    fn open_self_calls(calls: Vec<Bytes>) -> Review {
+        let mut o = op(kernel::execute_batch_calldata(calls.into_iter().map(|c| (ACCOUNT, U256::ZERO, c)).collect()));
+        o.gas_fees = kernel::pack_gas(1, 1);
+        open(&o)
+    }
+
+    /// Kernel installs `changeRootValidator`'s validator data only when the
+    /// validator is not installed yet, and ignores it otherwise, an install
+    /// earlier in the same batch included (issue #147). A key carried there
+    /// would be shown as the one taking control while another one does.
+    #[test]
+    fn a_root_change_that_carries_a_key_is_refused() {
+        let (laptops, owners) = (key(11), key(12));
+        // the issue's batch: root goes to the key of call 1, and call 2 names the owner's
+        let r = open_self_calls(vec![
+            kernel::install_validator_call(kernel::validator_id(RECOVERY), &laptops, 2),
+            kernel::change_root_calldata(RECOVERY, Some(&owners)),
+        ]);
+        assert!(!r.text().contains(&fingerprint(&owners)) && !r.text().contains("Hand control"), "{}", r.text());
+        assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("carries a key")), "{:?}", r.verdict);
+        // alone, for a validator installed or not, and whatever the bytes are
+        let mut garbage = IKernel::changeRootValidatorCall::abi_decode(&kernel::change_root_calldata(VALIDATOR, None)).unwrap();
+        garbage.validatorData = Bytes::from(vec![1]);
+        for data in [kernel::change_root_calldata(RECOVERY, Some(&owners)), kernel::change_root_calldata(VALIDATOR, Some(&owners)), garbage.abi_encode().into()] {
+            let r = open_self_calls(vec![data]);
+            assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("carries a key")), "{:?}", r.verdict);
+            assert!(!r.text().contains("Hand control"), "{}", r.text());
+        }
+    }
+
+    /// What the screen says of the new root is what Kernel does with a root
+    /// change without validator data: the key installed in the batch, or the
+    /// validator alone when its key was installed before.
+    #[test]
+    fn a_root_change_names_the_key_installed_in_the_batch() {
+        let k = key(11);
+        let r = open_self_calls(vec![
+            kernel::install_validator_call(kernel::validator_id(RECOVERY), &k, 2),
+            kernel::change_root_calldata(RECOVERY, None),
+        ]);
+        assert_eq!(r.verdict, Verdict::Sign, "{}", r.text());
+        assert!(r.text().contains(&format!("! Hand control of this account to key: {}", fingerprint(&k))), "{}", r.text());
+        let r = open_self_calls(vec![kernel::change_root_calldata(RECOVERY, None)]);
+        let t = r.text();
+        assert_eq!(r.verdict, Verdict::Sign, "{t}");
+        assert!(t.contains("! Hand control of this account to validator: 0x3000000000000000000000000000000000000003") && !t.contains("to key"), "{t}");
+    }
+
     #[test]
     fn what_is_never_signed_6_5() {
         let me = ACCOUNT;
@@ -2164,7 +2223,9 @@ mod tests {
         assert_eq!(r.verdict, Verdict::Sign, "{t}");
         assert!(t.contains("! Remove validator: 0x2000000000000000000000000000000000000002 — this may be the validator holding this phone's key"), "{t}");
         assert!(t.contains("! Install a key on a validator this build cannot classify"), "{t}");
-        assert!(t.contains("! Hand control of this account to key"), "{t}");
+        // a validator the build cannot classify may ignore the key it is given: named by address only (#147)
+        assert!(t.contains("! Hand control of this account to validator: 0x2000000000000000000000000000000000000002"), "{t}");
+        assert!(!t.contains(&format!("Hand control of this account to key: {}", fingerprint(&key(9)))), "{t}");
         // add-recovery: the install is bold even without knowing the recovery validator
         let r = open_bare(&quiet(kernel::add_recovery_calldata(me, RECOVERY, &key(4), 2)));
         assert!(r.text().contains("! Install a key on a validator this build cannot classify") && r.text().contains("may take over this account"), "{}", r.text());
