@@ -156,7 +156,7 @@ and how it maps to what the contracts enforce.
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design and
 [`docs/BENCHMARK.md`](docs/BENCHMARK.md) for what each authorization method
 costs — P-256 through RIP-7212 is as cheap as `ecrecover`, and the whole
-agent path adds about 77k gas per operation.
+agent path adds about 79k gas per operation.
 How this compares with what else exists — old-phone signers such as Cake
 Wallet's Cupcake, hosted agent-wallet platforms, passkey accounts and the
 nearest open-source projects: [`docs/related/`](docs/related/README.md).
