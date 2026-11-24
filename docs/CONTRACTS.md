@@ -26,7 +26,7 @@ listed predate it. `AgentPolicy`'s section follows with its next instance.
 
 The addresses are the file's current entries [V `contracts/deployments/84532.json`].
 The code at the first three addresses and at `SafeNonceAssert`'s equals what
-commit `175acbf` compiles to, byte for byte; the paymaster's differs only in its
+commit `175acbf3a3127e804a45a3e4dd097165f0a4c922` compiles to, byte for byte; the paymaster's differs only in its
 immutable EntryPoint address [V `cast code` against `forge inspect <Name>
 deployedBytecode`, 2026-11-24].
 
@@ -364,5 +364,5 @@ the getter.
 **Base Sepolia.** `0xD2Adc331B867435b82Ceba1D4f7f715eeF9FdbC1`
 (`demoCounter`) [V `contracts/deployments/84532.json`]. Its code there ends
 in the compiler metadata of an earlier build (solc 0.8.34), so it is not
-byte-equal to what commit `175acbf` compiles to; its source did not change
+byte-equal to what commit `175acbf3a3127e804a45a3e4dd097165f0a4c922` compiles to; its source did not change
 from 2026-10-20 until `VERSION` was added [V `cast code`, `git log`, 2026-11-24].

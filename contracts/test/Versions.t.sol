@@ -10,6 +10,7 @@ import {SafeNonceAssert} from "../src/SafeNonceAssert.sol";
 import {WhitelistPaymaster} from "../src/WhitelistPaymaster.sol";
 import {CowSwapDecoder} from "../src/venues/CowSwapDecoder.sol";
 import {DemoCounter} from "../src/demo/DemoCounter.sol";
+import {Logger} from "../src/demo/Logger.sol";
 import {IEntryPoint as IAAEntryPoint} from "account-abstraction/interfaces/IEntryPoint.sol";
 import {EntryPointLib} from "kernel/test/base/erc4337Util.sol";
 
@@ -33,6 +34,7 @@ contract VersionsTest is Test {
         assertEq(new P256Signer().VERSION(), FIRST, "P256Signer");
         assertEq(new SafeNonceAssert().VERSION(), FIRST, "SafeNonceAssert");
         assertEq(new DemoCounter().VERSION(), FIRST, "DemoCounter");
+        assertEq(new Logger(address(this), address(this), bytes32(0), bytes32(0)).VERSION(), FIRST, "Logger");
         // Contracts with constructor arguments, given stand-ins
         assertEq(new AgentPolicy(address(new SafeNonceAssert())).VERSION(), FIRST, "AgentPolicy");
         assertEq(new CowSwapDecoder(address(new SettlementForVersion())).VERSION(), FIRST, "CowSwapDecoder");

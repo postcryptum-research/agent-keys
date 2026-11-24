@@ -243,7 +243,7 @@ Lessons that cost real debugging time:
   unversioned names were built, so that their code can be rebuilt and
   compared (issue #123; `test/DeploymentsRecord.t.sol` holds the script,
   `foundry.toml` and each chain's file equal). [V] Compared on chain for Base
-  Sepolia on 2026-11-24, against a build of commit `175acbf` with solc 0.8.38
+  Sepolia on 2026-11-24, against a build of commit `175acbf3a3127e804a45a3e4dd097165f0a4c922` with solc 0.8.38
   and `cancun` (master has moved ahead since, `VERSION` among the changes):
   - `P256Validator`, `P256RecoveryValidator`, `P256Signer` and
     `SafeNonceAssert` equal byte for byte;
