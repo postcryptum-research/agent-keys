@@ -116,5 +116,5 @@ $B key create --tropic01 /dev/ttyACM0 --slot 1         # a key inside a TROPIC01
 # x402: a permission that may pay in USDC ("x402": true in policy.tokens), then
 $B permission add --agent agent.x402.base-sepolia.json --env-file $E          # owner, once
 $B x402 fetch --agent agent.x402.base-sepolia.json --env-file $E <url>        # agent: pays on 402
-$B x402 reclaim --agent agent.x402.base-sepolia.json --env-file $E            # expired unused -> budget
+$B x402 reclaim --agent agent.x402.base-sepolia.json --env-file $E --from-block <N>  # expired unused -> budget; N: the block x402 fetch printed
 ```

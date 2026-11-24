@@ -218,7 +218,8 @@ enum X402Cmd {
     Reclaim {
         #[command(flatten)]
         agent: AgentArgs,
-        /// Look for registrations from this block (default: the last 50,000).
+        /// Look for registrations from this block, the one `x402 fetch` printed
+        /// (default: the last 50,000 blocks).
         #[arg(long)]
         from_block: Option<u64>,
         #[arg(long)]
@@ -1617,8 +1618,14 @@ async fn main() -> Result<()> {
             }
             X402Cmd::Reclaim { agent, from_block, sponsored } => {
                 let s = session(&agent).await?;
-                let done = s.x402_reclaim(from_block, sponsored).await?;
-                println!("reclaimed {} expired authorization(s)", done.len());
+                let (done, (from, to)) = s.x402_reclaim(from_block, sponsored).await?;
+                // the blocks looked at, so that 0 is not read as "nothing is booked" (issue #116)
+                let older = if from_block.is_none() {
+                    format!(" (the last {}; an older registration needs --from-block, the block `x402 fetch` printed)", x402::RECLAIM_WINDOW)
+                } else {
+                    String::new()
+                };
+                println!("reclaimed {} expired authorization(s), looking at blocks {from} to {to}{older}", done.len());
             }
         },
         Cmd::Order { cmd } => match cmd {
