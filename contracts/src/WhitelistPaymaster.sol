@@ -24,6 +24,10 @@ import {PackedUserOperation} from "account-abstraction/interfaces/PackedUserOper
 /// `deposit` is open to anyone, `withdrawTo`, `addStake`, `unlockStake` and
 /// `withdrawStake` are the owner's.
 contract WhitelistPaymaster is BasePaymaster {
+    /// @dev The version of this contract's code (semantic versioning), raised with
+    /// any change to its bytecode. A release tag names the versions it carries.
+    string public constant VERSION = "0.1.0";
+
     // An account's sponsorship, one storage slot
     struct Sponsorship {
         // 2^128 - 1 wei is about 3.4e20 ETH, more than will ever exist

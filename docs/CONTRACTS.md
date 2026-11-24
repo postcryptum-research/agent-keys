@@ -8,7 +8,9 @@ account's validation touch, `keccak256(account ‖ x) + n` (rule 4 in
 `CLAUDE.md`). The paymaster is the one contract with an owner. Addresses
 are those of Base Sepolia (chain 84532), from
 `contracts/deployments/84532.json`, which keeps earlier instances under
-versioned names. `AgentPolicy`'s section follows with its next instance.
+versioned names. Each contract answers `VERSION()`, 0.1.0 until the first
+audited release, raised with any change to its bytecode; the instances
+listed predate it. `AgentPolicy`'s section follows with its next instance.
 
 | Contract | What it is | Who calls it | Base Sepolia |
 |---|---|---|---|
@@ -24,7 +26,7 @@ versioned names. `AgentPolicy`'s section follows with its next instance.
 
 The addresses are the file's current entries [V `contracts/deployments/84532.json`].
 The code at the first three addresses and at `SafeNonceAssert`'s equals what
-this source compiles to, byte for byte; the paymaster's differs only in its
+commit `175acbf` compiles to, byte for byte; the paymaster's differs only in its
 immutable EntryPoint address [V `cast code` against `forge inspect <Name>
 deployedBytecode`, 2026-11-24].
 
@@ -362,5 +364,5 @@ the getter.
 **Base Sepolia.** `0xD2Adc331B867435b82Ceba1D4f7f715eeF9FdbC1`
 (`demoCounter`) [V `contracts/deployments/84532.json`]. Its code there ends
 in the compiler metadata of an earlier build (solc 0.8.34), so it is not
-byte-equal to what this source compiles to now; the source has not changed
-since 2026-10-20 [V `cast code`, `git log`, 2026-11-24].
+byte-equal to what commit `175acbf` compiles to; its source did not change
+from 2026-10-20 until `VERSION` was added [V `cast code`, `git log`, 2026-11-24].

@@ -40,6 +40,10 @@ interface IGPv2Settlement {
 /// EIP-712 implementation. A decoder built for the wrong settlement fails
 /// safe: its digests are ones that settlement never asks for.
 contract CowSwapDecoder is IVenueDecoder {
+    /// @dev The version of this contract's code (semantic versioning), raised with
+    /// any change to its bytecode. A release tag names the versions it carries.
+    string public constant VERSION = "0.1.0";
+
     /// The owner's choice for this venue. `config` is `abi.encode(Config)`.
     struct Config {
         /// The one `appData` orders must carry.

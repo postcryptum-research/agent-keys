@@ -30,6 +30,12 @@ import {P256Point} from "./P256Point.sol";
 /// account and nothing else, which is also the storage ERC-7562 lets the
 /// validation of that account read.
 contract P256Validator is IValidator {
+    /// @dev The version of this contract's code (semantic versioning), raised with
+    /// any change to its bytecode. A release tag names the versions it carries.
+    /// `P256RecoveryValidator` inherits it (a constant cannot be redeclared), so
+    /// a change to either contract raises it.
+    string public constant VERSION = "0.1.0";
+
     // A P-256 public key in affine coordinates, each below the field prime p
     struct PublicKey {
         // The x coordinate, big-endian

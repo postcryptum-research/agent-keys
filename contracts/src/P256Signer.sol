@@ -31,6 +31,10 @@ import {P256Point} from "./P256Point.sol";
 /// keeps has the account as the innermost mapping key, which is the storage
 /// ERC-7562 lets the validation of that account read and write.
 contract P256Signer is ISigner {
+    /// @dev The version of this contract's code (semantic versioning), raised with
+    /// any change to its bytecode. A release tag names the versions it carries.
+    string public constant VERSION = "0.1.0";
+
     // A P-256 public key in affine coordinates, each below the field prime p
     struct PublicKey {
         // The x coordinate, big-endian

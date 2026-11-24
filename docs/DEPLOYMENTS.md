@@ -22,16 +22,20 @@ missing from this page.
   a constructor argument, so each sponsor's instance has its own address.
 - **No metadata in the bytecode.** `bytecode_hash = "none"` and
   `cbor_metadata = false`, so comments and paths do not move an address. Each
-  file records the compiler settings that build its current instances:
+  file records the compiler settings its current instances were built with:
   `solc` 0.8.38 and `evmVersion` cancun [V `contracts/foundry.toml`].
+- **Master moves ahead of the instances.** Every contract carries
+  `string public constant VERSION`, 0.1.0 until the first audited release.
+  The instances listed here predate it: master's source no longer builds
+  them, the commit named with each table does.
 - **Earlier instances stay recorded** under versioned names (`agentPolicyV1`,
   …). A permission installed with one keeps pointing there until the owner
   rotates it.
 
-To check an instance against the source:
+To check an instance against the commit it was built from:
 
 ```sh
-cd contracts
+git checkout <commit> && cd contracts
 forge inspect AgentPolicy deployedBytecode     # the build
 cast code <address> --rpc-url <chain's RPC>   # the chain
 ```
@@ -53,12 +57,12 @@ the `SafeNonceAssert` address, `WhitelistPaymaster`'s the EntryPoint.
 | `WhitelistPaymaster` | [`0x50Ab706dA586895D5775a1e51DcF1a66eAaAE001`](https://sepolia.basescan.org/address/0x50Ab706dA586895D5775a1e51DcF1a66eAaAE001) | a gas sponsor with a budget per account; owner [`0xDf52800CfeBc64951816F958c4E12fD68E4dCC22`](https://sepolia.basescan.org/address/0xDf52800CfeBc64951816F958c4E12fD68E4dCC22) |
 | `DemoCounter` | [`0xD2Adc331B867435b82Ceba1D4f7f715eeF9FdbC1`](https://sepolia.basescan.org/address/0xD2Adc331B867435b82Ceba1D4f7f715eeF9FdbC1) | a demo target, with no rights over anything |
 
-[V] Compared on chain on 2026-11-24 against a build of this source
-(`docs/ARCHITECTURE.md`, Phase 1). Four contracts are equal byte for byte:
+[V] Built from commit `175acbf`: compared on chain on 2026-11-24 against a
+build of it (`docs/ARCHITECTURE.md`, Phase 1). Four contracts are equal byte for byte:
 `P256Validator`, `P256RecoveryValidator`, `P256Signer` and `SafeNonceAssert`.
 `AgentPolicy` and `WhitelistPaymaster` are equal outside their immutable
 slots. `DemoCounter` was deployed before metadata was turned off: its code is
-this build's followed by solc's metadata.
+that build's followed by solc's metadata.
 
 ### Earlier instances, still recorded
 
@@ -110,8 +114,8 @@ The chain the trading mandate is tried on. The tables are written from
 [V] `AgentPolicy` was read from the chain on 2026-11-24: 20,133 bytes with
 the keccak hash
 `0xb7badf47dd8d0015de6128859c35990184d114aef0f790bc31d954e25f69a72a`, which is
-this source's runtime code with the `SafeNonceAssert` address in its
-immutable slots. It was deployed in transaction
+the runtime code of commit `8904478693c020e40f676b5161c67a1faa39105f` with the
+`SafeNonceAssert` address in its immutable slots. It was deployed in transaction
 `0x8316c81d2fc68015872cb11d1291fc81bb3d76f15266358565475cb79936f49a`. The
 other rows are the file's record and were not compared again for this page.
 
