@@ -12,6 +12,10 @@ import {P256} from "solady/utils/P256.sol";
 ///  - k1:          an independent secp256k1 signature over the payload
 ///  - r1:          an independent P-256 signature over the payload (RIP-7212)
 contract Logger {
+    /// @dev The version of this contract's code (semantic versioning), raised with
+    /// any change to its bytecode. A release tag names the versions it carries.
+    string public constant VERSION = "0.1.0";
+
     event Logged(address indexed by, bytes payload);
 
     error NotAllowed();

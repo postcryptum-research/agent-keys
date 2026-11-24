@@ -239,19 +239,20 @@ Lessons that cost real debugging time:
   are ZeroDev's and eth-infinitism's canonical deployments. Today the script
   also deploys `P256RecoveryValidator`, `SafeNonceAssert` and
   `WhitelistPaymaster`. The file also records `solc` and `evmVersion`: the
-  compiler settings of `foundry.toml` with which this source builds the
-  instances under the unversioned names, so that their code can be rebuilt
-  and compared (issue #123; `test/DeploymentsRecord.t.sol` holds the script,
+  compiler settings of `foundry.toml` with which the instances under the
+  unversioned names were built, so that their code can be rebuilt and
+  compared (issue #123; `test/DeploymentsRecord.t.sol` holds the script,
   `foundry.toml` and each chain's file equal). [V] Compared on chain for Base
-  Sepolia on 2026-11-24, against a build with solc 0.8.38 and `cancun`:
+  Sepolia on 2026-11-24, against a build of commit `175acbf3a3127e804a45a3e4dd097165f0a4c922` with solc 0.8.38
+  and `cancun` (master has moved ahead since, `VERSION` among the changes):
   - `P256Validator`, `P256RecoveryValidator`, `P256Signer` and
     `SafeNonceAssert` equal byte for byte;
   - `AgentPolicy` and `WhitelistPaymaster` equal outside their immutable
     slots, which hold `0xC14AbFF54D40f4DAf665391E0B7079bd53EB8279` and the
     EntryPoint `0x0000000071727De22E5E9d8BAf0edAc6f37da032`;
   - `DemoCounter` was deployed before metadata was turned off. Its code is
-    this build's followed by solc's metadata (solc 0.8.34): the same code,
-    at another address than a fresh CREATE2 of this build.
+    that build's followed by solc's metadata (solc 0.8.34): the same code,
+    at another address than a fresh CREATE2 of that build.
 - **Phase 2 — off-chain. Done (2026-10-20).** `agent-signer` derives the
   account from the two hardware public keys and the mandate (`agent.*.json`),
   builds the `PackedUserOperation` with `alloy`, fetches `userOpHash` from the

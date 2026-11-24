@@ -20,6 +20,10 @@ interface ISafeNonce {
 /// execution phase, as a call of the account's batch, so reading the Safe's
 /// storage is outside the validation rules of ERC-7562.
 contract SafeNonceAssert {
+    /// @dev The version of this contract's code (semantic versioning), raised with
+    /// any change to its bytecode. A release tag names the versions it carries.
+    string public constant VERSION = "0.1.0";
+
     /// @dev The Safe's nonce is not the one the transaction was meant for.
     /// @param safe The Safe.
     /// @param expected The nonce the transaction was meant for.

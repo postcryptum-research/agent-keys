@@ -6,6 +6,10 @@ pragma solidity ^0.8.24;
 /// called — which is the agent's smart account, never the bundler.
 /// @dev No owner and no access control: anyone may call it.
 contract DemoCounter {
+    /// @dev The version of this contract's code (semantic versioning), raised with
+    /// any change to its bytecode. A release tag names the versions it carries.
+    string public constant VERSION = "0.1.0";
+
     // Number of increments so far
     uint256 public count;
 
