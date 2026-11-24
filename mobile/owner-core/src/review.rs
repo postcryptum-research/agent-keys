@@ -343,7 +343,7 @@ fn open_with(
     // cost and sponsorship (§6.4)
     let (verification_gas, call_gas) = split(op.account_gas_limits);
     let (max_priority, max_fee) = split(op.gas_fees);
-    let mut pm_gas: u128 = 0;
+    let mut pm_gas = U256::ZERO;
     let s = b.section("Cost");
     if !op.paymaster_and_data.is_empty() {
         if op.paymaster_and_data.len() < 52 {
@@ -359,12 +359,19 @@ fn open_with(
                 format!("paymaster {} is not one this build knows to charge nothing (T20)", pm.to_checksum(None)),
             );
         }
-        pm_gas = pm_verification + pm_post_op;
+        // two 128-bit limits: their sum does not fit the type they come in
+        pm_gas = U256::from(pm_verification) + U256::from(pm_post_op);
         b.row(s, "Gas", format!("sponsored by {}", b.name(pm)));
         b.row(s, "Paymaster gas limits", format!("verification {pm_verification}, postOp {pm_post_op}"));
     }
-    let total_gas = U256::from(verification_gas) + U256::from(call_gas) + op.pre_verification_gas + U256::from(pm_gas);
-    let max_cost = total_gas * U256::from(max_fee);
+    // preVerificationGas is a full word: the sum and the product are checked, and a
+    // request whose cost does not fit a word is refused rather than shown wrapped
+    let max_cost = (U256::from(verification_gas) + U256::from(call_gas) + pm_gas)
+        .checked_add(op.pre_verification_gas)
+        .and_then(|gas| gas.checked_mul(U256::from(max_fee)));
+    let Some(max_cost) = max_cost else {
+        return Review::refused(c, b.sections, "the gas limits of this operation give a cost beyond 2^256 wei; refused");
+    };
     b.row(s, "Maximum gas cost", format!("{} ETH", format_ether(max_cost)));
     if op.paymaster_and_data.is_empty() && max_cost > U256::from(acct.gas_cap_wei) {
         return Review::refused(
@@ -1203,6 +1210,20 @@ mod tests {
         let r = open(&sponsored);
         assert_eq!(r.verdict, Verdict::Sign, "{}", r.text());
         assert!(r.text().contains("sponsored by"), "{}", r.text());
+        // limits at the top of their 128 bits are summed without wrapping: with the fee
+        // of 20 gwei the cost shown is far above what a wrapped sum would give
+        let mut wide = sponsored.clone();
+        let mut pm = PAYMASTER.to_vec();
+        pm.extend_from_slice(&u128::MAX.to_be_bytes());
+        pm.extend_from_slice(&u128::MAX.to_be_bytes());
+        wide.paymaster_and_data = pm.into();
+        let r = open(&wide);
+        let cost = (U256::from(u128::MAX) * U256::from(2) + U256::from(510_000u64)) * U256::from(20_000_000_000u64);
+        assert!(r.text().contains(&format!("{} ETH", format_ether(cost))), "{}", r.text());
+        // a preVerificationGas that takes the cost past a word is refused, not wrapped
+        let mut vast = sponsored.clone();
+        vast.pre_verification_gas = U256::MAX;
+        assert!(matches!(open(&vast).verdict, Verdict::Refuse(ref m) if m.contains("beyond 2^256")), "{:?}", open(&vast).verdict);
         // any other paymaster is refused
         let mut other = sponsored.clone();
         let mut pm = SIGNER.to_vec();
