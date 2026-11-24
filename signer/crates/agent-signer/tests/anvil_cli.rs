@@ -2041,6 +2041,11 @@ fn x402_pay_and_reclaim() {
     chain.advance(300);
     let reclaimed = chain.ok(&["x402", "reclaim", "--agent", &cfg, "--from-block", "0"]);
     assert!(reclaimed.contains("reclaimed 1 expired"), "{reclaimed}");
+    // the blocks looked at are said, so that a 0 is not read as "nothing is booked" (issue #116)
+    assert!(reclaimed.contains("looking at blocks 0 to "), "{reclaimed}");
+    // without --from-block: the default window, and how to reach further back
+    let again = chain.ok(&["x402", "reclaim", "--agent", &cfg]);
+    assert!(again.contains("reclaimed 0 expired") && again.contains("the last 50000; an older registration needs --from-block"), "{again}");
     assert!(chain.ok(&["permission", "show", "--agent", &cfg]).contains("(spent 250000)"));
     assert_eq!(payee_balance(), U256::from(250_000));
 }
