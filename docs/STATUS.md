@@ -61,6 +61,6 @@ tx [`0x785332105fd8085d50e542ff9f677eba964399bbc0d71333ddd71fed03e669bb`](https:
 | `tpm` | Linux, TPM 2.0 (tss-esapi) | on-chain since phase 0; PCR-sealed keys |
 | `windows-tpm` | Windows, TPM 2.0 via CNG | run on Windows 11; vector in the tests ([`docs/WINDOWS.md`](WINDOWS.md)) |
 | `tropic01` | any, TROPIC01 USB DevKit | on-chain agent key ([`docs/TROPIC01.md`](TROPIC01.md)) |
-| `yubikey-piv` | any, YubiKey 5 over PC/SC | owner key with PIN + touch per signature; attestation verified to Yubico's root; root of the Base Sepolia account since 2026-11-02 ([`docs/YUBIKEY.md`](YUBIKEY.md)) |
+| `yubikey-piv` | any, YubiKey 5 over PC/SC | owner key with PIN + touch per signature; attestation certificate written by the CLI, its chain to Yubico's root checked off-device by hand; root of the Base Sepolia account since 2026-11-02 ([`docs/YUBIKEY.md`](YUBIKEY.md)) |
 | `secure-enclave` | macOS, Secure Enclave via CryptoKit | run on an Apple M1 Mac: hardware test, vector in the tests, owner + agent keys on-chain — sponsored, via a bundler, x402, recovery drill ([`docs/SECURE_ENCLAVE.md`](SECURE_ENCLAVE.md)) |
 | `software` | any | dev/CI only |
