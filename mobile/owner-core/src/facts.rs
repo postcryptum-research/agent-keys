@@ -48,15 +48,17 @@ const TOKENS: &[(u64, Address, &str, u8, B256)] = &[
 /// instance deployed to Base Sepolia on 2026-11-20 was the first; the one of
 /// 2026-11-21 (the storage layout of issue #83) is the current one, and the
 /// anvil harness runs Base Sepolia's deployed code and follows this list too.
-/// On Sepolia: the instance of 2026-11-24.
+/// On Sepolia: the current instance, the second of 2026-11-24.
 const PAYEE_POLICIES: &[Address] =
-    &[address!("12b7E79974CC4F4181a40Aa11f9d3170018ae0E2"), address!("b15700E18D058BF83f5d9D38b5407f214df5E410")];
+    &[address!("12b7E79974CC4F4181a40Aa11f9d3170018ae0E2"), address!("2511FF556aa1534676A34F9B715232917e04FE5e")];
 
 /// `AgentPolicy` instances that hold a budget per period and venues (issue
-/// #80), with a registration held to its period. Sepolia's instance of
-/// 2026-11-24 is the first; the one of 2026-11-21 there let a registration
-/// outlive its period and is not listed.
-const TRADING_POLICIES: &[Address] = &[address!("b15700E18D058BF83f5d9D38b5407f214df5E410")];
+/// #80), with a registration held to its period and no refund for an order.
+/// Sepolia's second instance of 2026-11-24 is the only one. The two before
+/// it there are not listed: the one of 2026-11-21 let a registration outlive
+/// its period, and the first of 2026-11-24 refunded an order on the venue's
+/// word that it was unfilled, which a filled order's record can be made to say.
+const TRADING_POLICIES: &[Address] = &[address!("2511FF556aa1534676A34F9B715232917e04FE5e")];
 
 /// `(chain, decoder, venue name, the decoder's code hash, the venue's own
 /// contract, who takes the sold tokens, that address's name)`. CoW Swap on
@@ -237,18 +239,21 @@ mod tests {
     }
 
     /// Sepolia: the trading policy, CoW's venue and the two tokens of the
-    /// first orders. The first policy instance there is named as superseded
-    /// and reads no mandate.
+    /// first orders. The two earlier policy instances there are named as
+    /// superseded and read no mandate.
     #[test]
     fn sepolia() {
         let f = for_chain(11155111);
         assert!(chains().contains(&11155111));
-        let policy = address!("b15700E18D058BF83f5d9D38b5407f214df5E410");
+        let policy = address!("2511FF556aa1534676A34F9B715232917e04FE5e");
         assert_eq!(f.names[&policy], "AgentPolicy");
         assert_eq!((&f.policy_modules, &f.payee_policy_modules, &f.trading_policy_modules), (&vec![policy], &vec![policy], &vec![policy]));
         let first = address!("5Cfa68d42e4245c9Ba71e6103D4E2D99F3E40b42");
         assert_eq!(f.names[&first], "AgentPolicy v1 (superseded)");
         assert!(!f.policy_modules.contains(&first) && !f.trading_policy_modules.contains(&first));
+        let second = address!("b15700E18D058BF83f5d9D38b5407f214df5E410");
+        assert_eq!(f.names[&second], "AgentPolicy v2 (superseded)");
+        assert!(!f.policy_modules.contains(&second) && !f.trading_policy_modules.contains(&second) && !f.payee_policy_modules.contains(&second));
         assert_eq!(f.signer_modules, vec![address!("a19e6061b1C193573e5fe46c39363FfDd5CCA22E")]);
         assert_eq!(f.entry_point, Some(address!("0000000071727De22E5E9d8BAf0edAc6f37da032")));
 
