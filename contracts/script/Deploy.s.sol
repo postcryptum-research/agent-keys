@@ -31,6 +31,10 @@ contract Deploy is Script {
     address internal constant ENTRY_POINT = 0x0000000071727De22E5E9d8BAf0edAc6f37da032;
     address internal constant KERNEL = 0xd6CEDDe84be40893d153Be9d467CD6aD37875b28;
     address internal constant KERNEL_FACTORY = 0x2577507b78c2008Ff367261CB6285d44ba5eF2E9;
+    // ZeroDev's FactoryStaker: staked at the EntryPoint, it creates accounts
+    // through Kernel's factory, so that an account's first operation names a
+    // staked factory (ERC-7562 STO-022, issue #102). Recorded where it has code.
+    address internal constant KERNEL_FACTORY_STAKER = 0xd703aaE79538628d27099B8c4f621bE4CCd142d5;
 
     // CoW Protocol's settlement (GPv2Settlement), the same address on every
     // chain CoW runs on. The decoder is deployed only where it has code.
@@ -86,6 +90,9 @@ contract Deploy is Script {
         vm.serializeAddress(json, "entryPoint", ENTRY_POINT);
         vm.serializeAddress(json, "kernel", KERNEL);
         vm.serializeAddress(json, "kernelFactory", KERNEL_FACTORY);
+        if (KERNEL_FACTORY_STAKER.code.length > 0) {
+            vm.serializeAddress(json, "kernelFactoryStaker", KERNEL_FACTORY_STAKER);
+        }
         vm.serializeAddress(json, "p256Validator", validator);
         vm.serializeAddress(json, "p256RecoveryValidator", recoveryValidator);
         vm.serializeAddress(json, "p256Signer", signer);

@@ -214,7 +214,7 @@ mod tests {
     /// chain id; an EOA; and the Kernel implementation and factory, which no
     /// owner operation addresses — a name would only make value sent there
     /// look like a parameter instead of a payment.
-    const NOT_FACTS: &[&str] = &["chainId", "paymasterOwner", "kernel", "kernelFactory"];
+    const NOT_FACTS: &[&str] = &["chainId", "paymasterOwner", "kernel", "kernelFactory", "kernelFactoryStaker"];
 
     /// The table cannot lag the file silently: every key is either named or
     /// listed as not a fact, so a new kind of contract fails here until it

@@ -52,6 +52,18 @@ sol! {
         function getAddress(bytes calldata data, bytes32 salt) external view returns (address);
     }
 
+    /// ZeroDev's `FactoryStaker` (issue #102).
+    #[sol(rpc)]
+    interface IFactoryStaker {
+        function approved(address factory) external view returns (bool);
+        function deployWithFactory(address factory, bytes calldata createData, bytes32 salt) external payable returns (address);
+    }
+
+    #[sol(rpc)]
+    interface IEntryPointStake {
+        function getDepositInfo(address account) external view returns (uint256 deposit, bool staked, uint112 stake, uint32 unstakeDelaySec, uint48 withdrawTime);
+    }
+
     #[sol(rpc)]
     interface IKernel {
         struct ValidationConfig {

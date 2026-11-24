@@ -1,0 +1,51 @@
+name: kontrol
+# The budget proof of contracts/test/BudgetProof.t.sol under Kontrol (KEVM),
+# issue #130. It takes about ten minutes, so it does not run on every pull
+# request: by hand, once a week, and on a pull request that changes the
+# policy, the harness, the compiler settings or this file.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+  pull_request:
+    paths:
+      - contracts/src/AgentPolicy.sol
+      - contracts/test/BudgetProof.t.sol
+      - contracts/foundry.toml
+      - .github/workflows/kontrol.yml
+permissions:
+  contents: read
+concurrency:
+  group: kontrol-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+env:
+  # The release the proof first passed with (issue #124), pinned by digest.
+  KONTROL_IMAGE: runtimeverificationinc/kontrol:ubuntu-jammy-1.0.255@sha256:858f004144d61b005997f56bb8b7cd15673850286c96e0e5ec0502d9c9a9e204
+jobs:
+  prove:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      # Kontrol builds a K definition of every contract it compiles; with the
+      # harness as the only test the build takes minutes, not the whole suite.
+      - name: The policy and the harness alone
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/proof"
+          mkdir -p "$dir/test"
+          cp -R contracts/src contracts/lib contracts/foundry.toml "$dir/"
+          cp contracts/test/BudgetProof.t.sol "$dir/test/"
+          # the image runs as its own user, which must write out/ and kout/
+          chmod -R a+rwX "$dir"
+      - name: kontrol build and kontrol prove
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -e KPROFILE_TELEMETRY_DISABLED=true \
+            -v "$RUNNER_TEMP/proof:/home/user/workspace" -w /home/user/workspace \
+            "$KONTROL_IMAGE" \
+            bash -c 'kontrol version && time kontrol build && time kontrol prove --match-test "BudgetProof.check_" --workers 3'

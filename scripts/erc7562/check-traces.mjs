@@ -15,31 +15,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { verdict as ask } from "./checker.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-// the package's "exports" do not name the checker, so it is taken by path
-const { tracerResultParserV07 } = await import(
-  path.join(here, "node_modules/@pimlico/alto/esm/rpc/validation/TracerResultParserV07.js")
-);
-// lower case, as the traces have it: the checker compares addresses as text
-const ENTRY_POINT = "0x0000000071727de22e5e9d8baf0edac6f37da032";
 
-const P256_PRECOMPILE = "0x0000000000000000000000000000000000000100";
-
-function verdict(recorded, precompileAllowed) {
-  const trace = structuredClone(recorded);
-  if (precompileAllowed) for (const level of trace.callsFromEntryPoint) delete level.contractSize?.[P256_PRECOMPILE];
-  const sender = trace.callsFromEntryPoint[0].topLevelTargetAddress;
-  // an account that is not being deployed, with no stake and no paymaster
-  const userOp = { sender, nonce: 0n, callData: "0x", signature: "0x" };
-  const validation = { returnInfo: {}, senderInfo: { addr: sender, stake: 0n, unstakeDelaySec: 0n } };
-  try {
-    tracerResultParserV07(userOp, trace, validation, ENTRY_POINT);
-    return "PASSES";
-  } catch (e) {
-    return "REFUSED: " + String(e.message);
-  }
-}
+// an account that is not being deployed, with no stake and no paymaster
+const verdict = (trace, precompileAllowed) => ask(trace, { precompileAllowed });
 
 const given = process.argv.slice(2);
 if (given.length > 0) {

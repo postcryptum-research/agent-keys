@@ -20,6 +20,11 @@ pub struct Deployments {
     pub entry_point: Address,
     pub kernel: Address,
     pub kernel_factory: Address,
+    /// ZeroDev's staked `FactoryStaker`, through which an account's first
+    /// operation creates it (issue #102). Absent: Kernel's factory is named
+    /// directly, which a bundler that enforces ERC-7562 refuses.
+    #[serde(default)]
+    pub kernel_factory_staker: Option<Address>,
     pub p256_validator: Address,
     pub p256_signer: Address,
     pub agent_policy: Address,

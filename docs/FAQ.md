@@ -404,7 +404,17 @@ run makes them available to all.
 
 What each user gets is their **account**: a Kernel proxy created by ZeroDev's
 factory, automatically, by the user's first operation (it carries the
-`initCode`) — no separate step.
+`initCode`) — no separate step. The `initCode` names ZeroDev's
+`FactoryStaker` (`kernelFactoryStaker` in the deployments file), which
+holds a stake at the EntryPoint and creates the account through Kernel's
+factory: a bundler that enforces ERC-7562 accepts an account's first
+operation only from a staked factory, because creating the account writes
+the modules' slots for it
+([#102](https://github.com/postcryptum-research/agent-keys/issues/102)).
+The account and its address are the same as through Kernel's factory
+itself. The staker is ZeroDev's: if its owner withdrew the approval of
+Kernel's factory, the CLI says so and names the factory itself, which
+bundlers that do not enforce the rule still take.
 
 The exception is the gas sponsor: a `WhitelistPaymaster` has an owner who
 decides whom it pays for and how much, so each sponsor deploys their own (its
@@ -425,6 +435,16 @@ Plan for **the user paying** — that always works. The variants:
 3. **Someone else's sponsor** — a service's paymaster, or an ERC-20 paymaster
    that takes gas in USDC. Works with any ERC-4337 paymaster; the CLI only
    speaks to the project's own paymaster today.
+   **A paymaster that charges the account is outside the mandate's
+   count.** With any paymaster named, `AgentPolicy` charges no gas to the
+   budget: it takes the paymaster to pay. A token paymaster does not: it
+   takes the account's tokens for the gas, through an allowance the owner
+   gave it, and neither the native budget nor that token's budget counts
+   what it takes. The agent cannot give such an allowance itself beyond
+   its token limits (`approve` is counted), so this needs the owner's own
+   standing approval to the paymaster; an owner who gives one should keep
+   it small, since it bounds what gas can cost the account beside the
+   mandate. `WhitelistPaymaster` takes nothing from the account.
 
 How the operation reaches the chain (next question) is a separate choice.
 
