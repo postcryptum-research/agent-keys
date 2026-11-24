@@ -150,6 +150,12 @@ pub struct LaptopHints {
     pub labels: BTreeMap<Address, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_version: Option<String>,
+    /// The configs of the venues a mandate in this operation names (issue
+    /// #80). The mandate holds only each config's hash; the phone finds the
+    /// config here by that hash and shows what it says. Not trusted: bytes
+    /// that hash to nothing in the operation are ignored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub venue_configs: Vec<Bytes>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -167,6 +173,12 @@ pub struct SignRequest {
 }
 
 impl SignRequest {
+    /// With the configs of the venues the operation's mandates name.
+    pub fn with_venue_configs(mut self, configs: Vec<Bytes>) -> Self {
+        self.laptop.venue_configs = configs;
+        self
+    }
+
     pub fn new(
         op: &PackedUserOp,
         entry_point: Address,
@@ -183,7 +195,13 @@ impl SignRequest {
             chain_id: chain_id.to_string(),
             entry_point,
             user_op: UserOpJson::from_packed(op),
-            laptop: LaptopHints { user_op_hash: user_op_hash(op, entry_point, chain_id), command, labels, agent_version },
+            laptop: LaptopHints {
+                user_op_hash: user_op_hash(op, entry_point, chain_id),
+                command,
+                labels,
+                agent_version,
+                venue_configs: Vec::new(),
+            },
         }
     }
 

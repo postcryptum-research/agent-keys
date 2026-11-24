@@ -218,6 +218,21 @@ Lessons that cost real debugging time:
   passes calls through an owned Safe, refuses the account, its EntryPoint
   and itself as targets, and makes one ERC-1271 exception: registered x402
   authorizations (`docs/ERC1271.md`).
+  In the source, not deployed
+  ([#80](https://github.com/postcryptum-research/agent-keys/issues/80)):
+  a budget per period, and trading. The agent does not call a venue. It
+  registers an order with the policy; the policy asks the venue's decoder
+  (`contracts/src/venues/`, a contract with no storage, read by `STATICCALL`
+  and pinned by its code hash) whether the order is within the owner's
+  terms, charges what it sells to the token's limits, and the account then
+  vouches for exactly that order when the venue asks, until the order ends.
+  The venue takes the tokens through an allowance the owner gives with the
+  mandate. A new venue is a new decoder; the policy does not change. The
+  policy may not read the clock during validation, so an operation names
+  its period and the policy answers with that period's window, which the
+  EntryPoint enforces; across a renewal up to two budgets can be spent in a
+  short time, and the phone says so (`docs/AGENT_CONFIG.md`,
+  `docs/FUZZING.md`).
   *1c done:* `script/Deploy.s.sol` deploys the three modules and a demo
   target through the canonical CREATE2 deployer (salt 0) and records them in
   `deployments/<chainid>.json`; Kernel v3.3, its factory and EntryPoint v0.7

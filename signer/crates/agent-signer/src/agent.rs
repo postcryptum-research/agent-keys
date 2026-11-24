@@ -29,6 +29,9 @@ pub struct Deployments {
     pub p256_signer: Address,
     pub agent_policy: Address,
     pub demo_counter: Address,
+    /// The chain's CoW Swap decoder, where CoW Protocol runs.
+    #[serde(default)]
+    pub cow_swap_decoder: Option<Address>,
     /// Present once `Deploy.s.sol` has deployed the paymaster for this chain.
     #[serde(default)]
     pub whitelist_paymaster: Option<Address>,
@@ -170,6 +173,71 @@ pub struct PolicyConfig {
     /// `increaseAllowance`; an allow-listed token selector needs one.
     #[serde(default)]
     pub tokens: Vec<TokenEntry>,
+    /// Seconds after which every budget starts afresh (86400: each UTC
+    /// day); 0 or absent, a budget is for the mandate's whole life. Needs an
+    /// `AgentPolicy` that knows periods.
+    #[serde(default)]
+    pub period: u32,
+    /// Where the agent may place orders (issue #80), and on what terms.
+    #[serde(default)]
+    pub venues: Vec<VenueEntry>,
+}
+
+/// A trading venue of the mandate: its decoder contract and the terms the
+/// decoder holds every order to.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VenueEntry {
+    pub kind: VenueKind,
+    /// The venue's decoder (`CowSwapDecoder`), as deployed.
+    pub decoder: Address,
+    /// The decoder's code hash. Absent, the CLI pins what the chain has
+    /// there now; present, the chain must agree.
+    #[serde(default)]
+    pub code_hash: Option<alloy::primitives::B256>,
+    /// The only `appData` an order may carry.
+    pub app_data: alloy::primitives::B256,
+    /// The longest an order may live, seconds.
+    pub max_life: u32,
+    pub pairs: Vec<PairEntry>,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum VenueKind {
+    Cowswap,
+}
+
+/// A pair the agent may trade one way, and its lowest price: never less
+/// than `minBuy` of the buy token for each `perSell` of the sell token.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PairEntry {
+    pub sell_token: Address,
+    pub buy_token: Address,
+    /// base units, decimal string
+    pub min_buy: String,
+    /// base units, decimal string
+    pub per_sell: String,
+}
+
+impl VenueEntry {
+    /// The config as the decoder reads it; the mandate pins its hash.
+    pub fn config(&self) -> Result<alloy::primitives::Bytes> {
+        let pairs = self
+            .pairs
+            .iter()
+            .map(|p| -> Result<_> {
+                Ok((
+                    p.sell_token,
+                    p.buy_token,
+                    p.min_buy.parse::<U256>().context("venues.pairs.minBuy")?,
+                    p.per_sell.parse::<U256>().context("venues.pairs.perSell")?,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(owner_core::kernel::cow_config(self.app_data, self.max_life, &pairs))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -281,6 +349,37 @@ impl AgentConfig {
                 Ok(B256::from(n.to_be_bytes::<32>()))
             }
         }
+    }
+
+    /// The period and the venues as the policy takes them. `codes` holds
+    /// each decoder's code hash, read from the chain by the caller.
+    pub fn trading(&self, codes: &std::collections::HashMap<Address, alloy::primitives::B256>) -> Result<owner_core::kernel::Trading> {
+        if self.policy.period == 0 && !self.policy.venues.is_empty() {
+            anyhow::bail!(
+                "the config names venues and no budget period (`policy.period`): the policy refuses such a mandate. \
+                 An order's charge is not given back, so the period is what returns an unfilled order's part of the budget"
+            );
+        }
+        let venues = self
+            .policy
+            .venues
+            .iter()
+            .map(|v| -> Result<_> {
+                let code = *codes.get(&v.decoder).with_context(|| format!("no code hash read for the venue decoder {}", v.decoder))?;
+                Ok((v.decoder, code, alloy::primitives::keccak256(v.config()?)))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(owner_core::kernel::Trading { period: self.policy.period, venues })
+    }
+
+    /// The venues' configs, for the phone: the mandate carries their hashes.
+    pub fn venue_configs(&self) -> Result<Vec<alloy::primitives::Bytes>> {
+        self.policy.venues.iter().map(|v| v.config()).collect()
+    }
+
+    /// The token budget the config gives `token`, if it limits it.
+    pub fn token_budget(&self, token: Address) -> Result<Option<U256>> {
+        self.policy.tokens.iter().find(|t| t.token == token).map(|t| t.budget.parse::<U256>().context("tokens.budget")).transpose()
     }
 
     /// Tokens whose x402 payments this mandate allows.

@@ -32,6 +32,7 @@ use crate::kernel::{self, PermissionId};
 pub const PERMIT2: Address = alloy::primitives::address!("000000000022D473030F116dDEE9F6B43aC78BA3");
 
 pub fn forbidden_target(dep: &Deployments, account: Address, target: Address, selector: [u8; 4]) -> Option<String> {
+    use crate::abi::IAgentPolicyTrading::orderRegisterCall;
     use crate::abi::IAgentPolicyX402::{x402AuthorizeCall, x402ReclaimCall};
     let modules: [(Option<Address>, &str); 8] = [
         (Some(dep.p256_validator), "the root validator: the agent could replace the owner key"),
@@ -53,8 +54,10 @@ pub fn forbidden_target(dep: &Deployments, account: Address, target: Address, se
         return Some("Permit2: through its own `approve` the agent could hand a token's allowance to any address, past the token's limits and payee list; the policy does not meter Permit2 yet".into());
     }
     if target == dep.agent_policy {
-        let x402 = selector == x402AuthorizeCall::SELECTOR || selector == x402ReclaimCall::SELECTOR;
-        return (!x402).then(|| "the policy itself, outside its x402 entry points".to_string());
+        let own = selector == x402AuthorizeCall::SELECTOR
+            || selector == x402ReclaimCall::SELECTOR
+            || selector == orderRegisterCall::SELECTOR;
+        return (!own).then(|| "the policy itself, outside its x402 and order entry points".to_string());
     }
     modules.iter().find(|(a, _)| *a == Some(target)).map(|(_, why)| why.to_string())
 }
@@ -110,14 +113,20 @@ pub fn account_material(
     cfg: &AgentConfig,
     dep: &Deployments,
     domains: &std::collections::HashMap<Address, B256>,
+    trading: &kernel::Trading,
 ) -> Result<(Bytes, Option<Bytes>)> {
     let agent_key = match &cfg.agent_public_key {
         Some(pk) => pk.parse()?,
         None => open_signer(&cfg.agent, Role::Agent)?.public_key()?,
     };
     let perm = cfg.permission_id()?;
-    let permission_data =
-        kernel::permission_data(dep.agent_policy, &cfg.policy_params(domains)?, dep.p256_signer, &agent_key);
+    let permission_data = kernel::permission_data_with_trading(
+        dep.agent_policy,
+        &cfg.policy_params(domains)?,
+        trading,
+        dep.p256_signer,
+        &agent_key,
+    );
     let init_data = match &cfg.owner_public_key {
         Some(pk) => Some(kernel::init_data(dep.p256_validator, &pk.parse()?, perm, permission_data.clone())),
         None => None,
@@ -168,6 +177,20 @@ pub struct Session {
     pub pinned: bool,
     /// EIP-712 domain separators of the mandate's x402 tokens.
     pub token_domains: std::collections::HashMap<Address, B256>,
+    /// What the chain says of the config's venue decoders.
+    pub venues: std::collections::HashMap<Address, VenueOnChain>,
+}
+
+/// A venue decoder as read from the chain when the session opens.
+#[derive(Clone, Debug)]
+pub struct VenueOnChain {
+    pub code_hash: B256,
+    /// The venue's own contract (CoW: the settlement).
+    pub place: Address,
+    /// Who takes the sell token (CoW: the vault relayer).
+    pub spender: Address,
+    /// The EIP-712 domain the venue's orders are signed in.
+    pub domain: B256,
 }
 
 /// A public key as every command shows it: the fingerprint, then `x` and
@@ -232,7 +255,57 @@ impl Session {
                 );
             }
         }
-        let (permission_data, init_data) = account_material(&cfg, &dep, &token_domains)?;
+        // The venues: the mandate pins each decoder's code as it is now, and
+        // the decoder says where the venue is and who takes the tokens.
+        let mut venues = std::collections::HashMap::new();
+        for v in &cfg.policy.venues {
+            let code = provider.get_code_at(v.decoder).await?;
+            if code.is_empty() {
+                bail!("the config names the venue decoder {}, and nothing is deployed there", v.decoder);
+            }
+            let code_hash = alloy::primitives::keccak256(&code);
+            match v.code_hash {
+                Some(stated) if stated != code_hash => {
+                    bail!("the venue decoder {} has code {code_hash} on this chain; the config states {stated}", v.decoder)
+                }
+                Some(_) => {}
+                // The mandate pins the decoder's code and the owner approves a
+                // budget to whatever spender that code names: a decoder the
+                // deployments file does not list is taken only with its code
+                // hash stated, so that somebody has looked at it.
+                None if dep.cow_swap_decoder != Some(v.decoder) => bail!(
+                    "the venue decoder {} is not the one the deployments file names for this chain (cowSwapDecoder): state its `codeHash` in the config ({code_hash} is at that address now) once you have checked that code",
+                    v.decoder
+                ),
+                None => {}
+            }
+            let d = crate::abi::IVenueDecoder::new(v.decoder, provider.clone());
+            let ctx = |what: &str| format!("reading {what}() of the venue decoder {}", v.decoder);
+            venues.insert(
+                v.decoder,
+                VenueOnChain {
+                    code_hash,
+                    place: d.venue().call().await.with_context(|| ctx("venue"))?,
+                    spender: d.spender().call().await.with_context(|| ctx("spender"))?,
+                    domain: d.domainSeparator().call().await.with_context(|| ctx("domainSeparator"))?,
+                },
+            );
+        }
+        let trading = cfg.trading(&venues.iter().map(|(a, v)| (*a, v.code_hash)).collect())?;
+        if !trading.is_none() {
+            // an earlier AgentPolicy refuses such a mandate at install; say so before any signature
+            let view = crate::abi::IAgentPolicyTrading::new(dep.agent_policy, provider.clone());
+            if let Err(e) = view.period(Address::ZERO, B256::ZERO).call().await {
+                bail!(
+                    "the config sets a budget period or venues, and the AgentPolicy at {} (deployments.agentPolicy) did not answer `period`: either it predates them or the call itself failed ({e})",
+                    dep.agent_policy
+                );
+            }
+            if !cfg.policy.venues.is_empty() && cfg.account.is_none() {
+                bail!("a mandate with venues goes to an existing account (`permission add` or `rotate`, with \"account\" pinned in the config): the owner's allowance to the venue is given in the same operation");
+            }
+        }
+        let (permission_data, init_data) = account_material(&cfg, &dep, &token_domains, &trading)?;
 
         let (account, pinned) = match cfg.account {
             Some(pinned) => {
@@ -250,7 +323,7 @@ impl Session {
             }
         };
 
-        Ok(Self { provider, gas_wallet, bundler, cfg, dep, init_data, permission_data, account, pinned, token_domains })
+        Ok(Self { provider, gas_wallet, bundler, cfg, dep, init_data, permission_data, account, pinned, token_domains, venues })
     }
 
     /// Kernel `initialize` data for this account (needs `ownerPublicKey`).
@@ -540,6 +613,8 @@ impl Session {
             labels,
             Some(env!("CARGO_PKG_VERSION").to_string()),
         )
+        // a mandate holds only the hash of each venue's config: the phone needs the config
+        .with_venue_configs(self.cfg.venue_configs().unwrap_or_default())
         .to_bytes();
         self.preview_review(&request);
         debug_assert_eq!(owner_core::user_op::user_op_hash(&packed, self.dep.entry_point, self.dep.chain_id), user_op_hash);
@@ -811,6 +886,29 @@ impl Session {
                     Err(_) => println!("DIFF token           {token}: this policy version has no token limits"),
                 }
             }
+            // the period and the venues, on a policy that has them
+            let trading = crate::abi::IAgentPolicyTrading::new(policy, self.provider.clone());
+            match trading.period(self.account, id32).call().await {
+                Ok(on) => {
+                    println!("{}period          chain {} s / config {} s", mark(on.seconds_ == p.period), on.seconds_, p.period);
+                    for v in &p.venues {
+                        let pin = trading.venue(self.account, id32, v.decoder).call().await?;
+                        let ours = self.venues.get(&v.decoder).map(|o| o.code_hash).unwrap_or_default();
+                        let config = alloy::primitives::keccak256(v.config()?);
+                        println!(
+                            "{}venue           {} code {} config {}",
+                            mark(pin.codeHash == ours && pin.configHash == config),
+                            v.decoder,
+                            if pin.codeHash == ours { "as on chain now" } else { "NOT the pinned code" },
+                            if pin.configHash == config { "as in the config" } else { "NOT the config's" },
+                        );
+                    }
+                }
+                Err(_) if p.period != 0 || !p.venues.is_empty() => {
+                    println!("DIFF period/venues  this policy version has neither")
+                }
+                Err(_) => {}
+            }
             // payees: each listed one must be allowed, and an address nobody listed must not be
             let probe = Address::from_slice(&alloy::primitives::keccak256(b"agent-keys: not a payee")[12..]);
             for (token, ..) in &params.tokens {
@@ -984,15 +1082,73 @@ impl Session {
     /// Root operation signed by the owner key: remove the agent permission.
     /// Its signer key and policy entries are uninstalled; its nonce space
     /// stays burned.
-    pub async fn revoke_permission(&self, perm: PermissionId, sponsored: bool) -> Result<Included> {
-        self.send_raw(kernel::uninstall_permission_calldata(perm), true, sponsored).await
+    pub async fn revoke_permission(&self, perm: PermissionId, old: Option<&AgentConfig>, sponsored: bool) -> Result<Included> {
+        // with a permission go the allowances its venues were given; those the
+        // config's own permission needs stay, when it is another one
+        let keep = if perm == self.cfg.permission_id()? { Vec::new() } else { self.venue_legs()? };
+        // a revocation is never held up: it is the owner's move when the agent's
+        // machine is lost, made from wherever the owner is
+        let clear = self.stale_allowances(perm, old, &keep, false).await?;
+        if clear.is_empty() {
+            return self.send_raw(kernel::uninstall_permission_calldata(perm), true, sponsored).await;
+        }
+        let mut calls = vec![(self.account, U256::ZERO, kernel::uninstall_permission_calldata(perm))];
+        calls.extend(clear);
+        self.send_raw(kernel::execute_batch_calldata(calls), true, sponsored).await
+    }
+
+    /// The period an agent operation built now is to name. An operation is
+    /// good in the period it names and in no other, so one built in a
+    /// period's last seconds and included just after them fails, at the cost
+    /// of its gas. Within `PERIOD_EDGE_SECS` of the end this waits for the
+    /// next period and names that one.
+    async fn period_to_name(&self) -> Result<u64> {
+        const PERIOD_EDGE_SECS: u64 = 20;
+        let period = self.cfg.policy.period as u64;
+        let now = self.chain_time().await?;
+        let left = period - now % period;
+        if left > PERIOD_EDGE_SECS || period <= 2 * PERIOD_EDGE_SECS {
+            return Ok(now / period);
+        }
+        eprintln!("period:         this budget period ends in {left} s; waiting for the next one");
+        let waited = std::time::Instant::now();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let t = self.chain_time().await?;
+            // a chain that stands still (a local one) is not waited for past the edge
+            if t / period > now / period || waited.elapsed().as_secs() > left + 30 {
+                return Ok(t / period);
+            }
+        }
+    }
+
+    /// The first second of the next budget period, when the mandate has one:
+    /// what the agent registers (an order, an x402 authorization) must end
+    /// with the period it is charged in.
+    pub async fn period_next(&self) -> Result<Option<u64>> {
+        let period = self.cfg.policy.period as u64;
+        if period == 0 {
+            return Ok(None);
+        }
+        Ok(Some((self.chain_time().await? / period + 1) * period))
+    }
+
+    /// The latest block's timestamp: the clock the contracts judge by.
+    pub async fn chain_time(&self) -> Result<u64> {
+        Ok(self
+            .provider
+            .get_block_by_number(alloy::eips::BlockNumberOrTag::Latest)
+            .await?
+            .context("no latest block")?
+            .header
+            .timestamp)
     }
 
     /// Root operation signed by the owner key: replace permission `old` with
     /// the one the config describes (new agent key and/or mandate) in a
     /// single batch — uninstall, install, grant `execute`.
-    pub async fn rotate_permission(&self, old: PermissionId, sponsored: bool) -> Result<Included> {
-        let call_data = self.rotate_calldata(old).await?;
+    pub async fn rotate_permission(&self, old: PermissionId, old_cfg: Option<&AgentConfig>, sponsored: bool) -> Result<Included> {
+        let call_data = self.rotate_calldata(old, old_cfg).await?;
         self.send_raw(call_data, true, sponsored).await
     }
 
@@ -1014,8 +1170,146 @@ impl Session {
             if let Some(why) = forbidden_target(&self.dep, self.account, *target, selector.0) {
                 bail!("allow-list entry {target} {selector} is never a valid target for the agent: {why}");
             }
+            if let Some((decoder, v)) = self.venues.iter().find(|(d, v)| *d == target || v.place == *target) {
+                bail!("allow-list entry {target} {selector} is the venue of decoder {decoder} itself ({}): there the agent could sign any order, past the decoder; it places orders through the policy's `orderRegister` only", v.place);
+            }
         }
+        self.venue_allowances(false)?;
         Ok(())
+    }
+
+    /// The owner's allowance of each sold token to each venue's spender, as
+    /// calls of the account: given with the mandate, taken back with it
+    /// (`clear`). The policy bounds what the agent can register; this bounds
+    /// what the venue's spender can ever take, whatever the policy does, and
+    /// that taking does not pass through the policy. So it is one budget and
+    /// no more, also when the mandate has a period: the owner gives the next
+    /// one (`permission allowance`) when this one is used.
+    pub fn venue_allowances(&self, clear: bool) -> Result<Vec<(Address, U256, Bytes)>> {
+        Ok(self.venue_legs()?.into_iter().map(|(token, spender, budget)| approve_call(token, spender, if clear { U256::ZERO } else { budget })).collect())
+    }
+
+    /// The allowances a permission being removed leaves behind: for each
+    /// venue the chain pins for it, each sold token's allowance to that
+    /// venue's spender, set to zero, unless `keep` still needs it. An
+    /// allowance is what a fault at the venue could take without passing
+    /// through any mandate, so it does not outlive the mandate it came with.
+    ///
+    /// The chain keeps only the hash of a venue's terms. The sold tokens are
+    /// read from the config whose terms have that hash: this one, or the one
+    /// the permission was installed from (`old`). When neither has them, a
+    /// rotation (`strict`) is refused rather than done with the allowance
+    /// left standing. A revocation is not: it removes the permission, zeroes
+    /// what the chain shows for the tokens the configs at hand name, and
+    /// says which venue's allowances it could not determine.
+    /// Looked for: the decoders of both configs and the deployments file's;
+    /// a venue under another decoder is not found here.
+    async fn stale_allowances(
+        &self,
+        perm: PermissionId,
+        old: Option<&AgentConfig>,
+        keep: &[(Address, Address, U256)],
+        strict: bool,
+    ) -> Result<Vec<(Address, U256, Bytes)>> {
+        // the policy the permission being removed was installed with; one that is
+        // not installed has left nothing
+        let pc = IKernel::new(self.account, self.provider.clone()).permissionConfig(perm).call().await?;
+        let Some(data) = pc.policyData.first().filter(|d| d.len() >= 22) else { return Ok(Vec::new()) };
+        let policy = crate::abi::IAgentPolicyTrading::new(Address::from_slice(&data[2..22]), self.provider.clone());
+        let id32 = B256::right_padding_from(perm.as_slice());
+        let mut known: Vec<&crate::agent::VenueEntry> = self.cfg.policy.venues.iter().collect();
+        known.extend(old.iter().flat_map(|c| c.policy.venues.iter()));
+        let mut decoders: Vec<Address> = known.iter().map(|v| v.decoder).collect();
+        decoders.extend(self.dep.cow_swap_decoder);
+        decoders.sort();
+        decoders.dedup();
+        let mut calls = Vec::new();
+        for decoder in decoders {
+            // a policy from before venues answers nothing: it pins none
+            let Ok(pin) = policy.venue(self.account, id32, decoder).call().await else { continue };
+            if pin.configHash.is_zero() {
+                continue;
+            }
+            let mut terms = None;
+            for v in known.iter().filter(|v| v.decoder == decoder) {
+                if alloy::primitives::keccak256(v.config()?) == pin.configHash {
+                    terms = Some(*v);
+                }
+            }
+            let spender = match self.venues.get(&decoder) {
+                Some(on) => on.spender,
+                None => crate::abi::IVenueDecoder::new(decoder, self.provider.clone()).spender().call().await.context("reading the old venue's spender")?,
+            };
+            let taken = |calls: &Vec<(Address, U256, Bytes)>, token: Address| {
+                keep.iter().any(|k| k.0 == token && k.1 == spender) || calls.iter().any(|c| c.0 == token && c.2[16..36] == *spender.as_slice())
+            };
+            if terms.is_none() && !strict {
+                // The terms are not at hand, so the tokens sold there are not known. The
+                // removal goes ahead all the same; of the tokens the configs at hand name,
+                // those with an allowance to the venue's spender on the chain are zeroed,
+                // and the owner is told what could not be looked at.
+                let mut tokens: Vec<Address> = self.cfg.policy.tokens.iter().map(|t| t.token).collect();
+                tokens.extend(old.iter().flat_map(|c| c.policy.tokens.iter().map(|t| t.token)));
+                tokens.extend(known.iter().flat_map(|v| v.pairs.iter().map(|p| p.sell_token)));
+                tokens.sort();
+                tokens.dedup();
+                for token in &tokens {
+                    let left = crate::abi::IERC20Allowance::new(*token, self.provider.clone()).allowance(self.account, spender).call().await;
+                    if matches!(left, Ok(a) if !a.is_zero()) && !taken(&calls, *token) {
+                        calls.push(approve_call(*token, spender, U256::ZERO));
+                    }
+                }
+                eprintln!(
+                    "allowances:     permission {perm} trades at the venue of decoder {decoder} under terms no config at hand holds, so the tokens it sold there are not known. \
+                     Checked for an allowance to its spender {spender}: {}. An allowance of any other token to {spender} is left standing: \
+                     clear it with the owner key (`approve({spender}, 0)` on that token), or give the config the permission was installed from with --old-config",
+                    if tokens.is_empty() { "no token (the configs at hand name none)".to_string() } else { tokens.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(", ") }
+                );
+                continue;
+            }
+            let Some(terms) = terms else {
+                bail!(
+                    "permission {perm} trades at the venue of decoder {decoder} under terms this config does not hold (the chain pins their hash {}), so the tokens it sells there, and with them the allowances to take back, are not known: pass the config it was installed from with --old-config",
+                    pin.configHash
+                );
+            };
+            for pair in &terms.pairs {
+                if taken(&calls, pair.sell_token) {
+                    continue;
+                }
+                calls.push(approve_call(pair.sell_token, spender, U256::ZERO));
+            }
+        }
+        Ok(calls)
+    }
+
+    /// `(token, spender, one budget)` for each token each venue of the config sells.
+    fn venue_legs(&self) -> Result<Vec<(Address, Address, U256)>> {
+        let mut legs: Vec<(Address, Address, U256)> = Vec::new();
+        let p = &self.cfg.policy;
+        for v in &p.venues {
+            let spender = self.venues.get(&v.decoder).context("venue not read from the chain")?.spender;
+            for pair in &v.pairs {
+                if legs.iter().any(|l| l.0 == pair.sell_token && l.1 == spender) {
+                    continue;
+                }
+                let budget = self.cfg.token_budget(pair.sell_token)?.with_context(|| {
+                    format!("the venue sells {}, and `tokens` gives it no limit: the policy registers no order for it", pair.sell_token)
+                })?;
+                legs.push((pair.sell_token, spender, budget));
+            }
+        }
+        Ok(legs)
+    }
+
+    /// Root operation signed by the owner key: set each venue's allowance
+    /// back to one budget of the token it sells.
+    pub async fn renew_venue_allowances(&self, sponsored: bool) -> Result<Included> {
+        let calls = self.venue_allowances(false)?;
+        if calls.is_empty() {
+            bail!("the config's mandate has no `venues`: there is no allowance to give");
+        }
+        self.send_raw(kernel::execute_batch_calldata(calls), true, sponsored).await
     }
 
     pub async fn add_calldata(&self) -> Result<Bytes> {
@@ -1026,22 +1320,27 @@ impl Session {
             bail!("permission {new} is already installed: give the new window its own permissionId");
         }
         let nonce = self.install_nonce(new).await?;
-        let calls = vec![
+        let mut calls = vec![
             (self.account, U256::ZERO, kernel::install_permission_calldata(new, self.permission_data.clone(), nonce)),
             (self.account, U256::ZERO, kernel::grant_execute_calldata(new)),
         ];
+        calls.extend(self.venue_allowances(false)?);
         Ok(kernel::execute_batch_calldata(calls))
     }
 
-    pub async fn rotate_calldata(&self, old: PermissionId) -> Result<Bytes> {
+    pub async fn rotate_calldata(&self, old: PermissionId, old_cfg: Option<&AgentConfig>) -> Result<Bytes> {
         self.check_mandate_targets()?;
+        // what the permission being replaced leaves behind and the new one does not take over
+        let stale = self.stale_allowances(old, old_cfg, &self.venue_legs()?, true).await?;
         let new = self.cfg.permission_id()?;
         let nonce = self.install_nonce(new).await?;
-        let calls = vec![
+        let mut calls = vec![
             (self.account, U256::ZERO, kernel::uninstall_permission_calldata(old)),
             (self.account, U256::ZERO, kernel::install_permission_calldata(new, self.permission_data.clone(), nonce)),
             (self.account, U256::ZERO, kernel::grant_execute_calldata(new)),
         ];
+        calls.extend(stale);
+        calls.extend(self.venue_allowances(false)?);
         Ok(kernel::execute_batch_calldata(calls))
     }
 
@@ -1227,8 +1526,15 @@ impl Session {
                 _ => {}
             }
         }
-        let frame = |sig: &hw_signer::Signature| match sign_as {
-            SignAs::Agent => kernel::permission_signature(sig),
+        // Under a mandate with a budget period the agent says which period
+        // the operation is for; the policy holds it to that period's window.
+        let period = match sign_as {
+            SignAs::Agent if self.cfg.policy.period != 0 => Some(self.period_to_name().await?),
+            _ => None,
+        };
+        let frame = |sig: &hw_signer::Signature| match (sign_as, period) {
+            (SignAs::Agent, Some(index)) => kernel::permission_signature_in_period(index, sig),
+            (SignAs::Agent, None) => kernel::permission_signature(sig),
             _ => kernel::root_signature(sig),
         };
         if let Some(bundler) = &self.bundler {
@@ -1418,14 +1724,14 @@ mod tests {
         let owner = r#"{"software": "0x0000000000000000000000000000000000000000000000000000000000000001"}"#;
         let cfg = config(owner, &format!(r#""ownerPublicKey": {{"x": "{X}", "y": "{Y}"}},"#));
         let none = std::collections::HashMap::new();
-        let (_, init_data) = account_material(&cfg, &dep, &none).unwrap();
+        let (_, init_data) = account_material(&cfg, &dep, &none, &kernel::Trading::default()).unwrap();
         assert!(init_data.is_some(), "the owner's public key from the config derives initData");
         assert_eq!(open_signer(&cfg.owner, Role::Owner).is_err(), !cfg!(feature = "insecure-software-keys"));
 
         // without the owner's public key there is simply no initData — not a
         // fallback to opening the owner's key
         let cfg = config(owner, "");
-        let (_, init_data) = account_material(&cfg, &dep, &none).unwrap();
+        let (_, init_data) = account_material(&cfg, &dep, &none, &kernel::Trading::default()).unwrap();
         assert!(init_data.is_none());
     }
 
@@ -1507,4 +1813,10 @@ mod forbidden_target_tests {
         // an ordinary contract is fine
         assert!(forbidden_target(&dep, account, dep.demo_counter, any).is_none());
     }
+}
+
+/// `approve(spender, amount)` on `token`, as a call of the account.
+fn approve_call(token: Address, spender: Address, amount: U256) -> (Address, U256, Bytes) {
+    use alloy::sol_types::SolValue;
+    (token, U256::ZERO, Bytes::from([&[0x09u8, 0x5e, 0xa7, 0xb3][..], &(spender, amount).abi_encode()].concat()))
 }

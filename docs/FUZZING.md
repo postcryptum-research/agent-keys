@@ -65,6 +65,79 @@ and gives the listed token an x402 domain.
 - A generator finds what it can reach. These reach the limits by aiming at
   them; a rule nobody aimed at may go unvisited.
 
+## Contracts: trading
+
+`contracts/test/TradingFuzz.t.sol`, for the budget per period and the
+orders of [#80](https://github.com/postcryptum-research/agent-keys/issues/80).
+A mandate with a period and one venue (CoW's decoder over a stand-in for
+the settlement, whose fills the test decides) is driven at the policy's own
+interface while the clock moves: to a period's last second, its first one
+and the one after, among others. An operation names its period, the right
+one or a neighbour, and carries transfers, order registrations and plain
+calls; between operations the venue fills an order or the account asks for
+one back. The account in the test does the EntryPoint's part: the policy
+answers with a window and may not read the clock, so an operation counts
+as accepted only if the clock is inside that window.
+
+| Test | What must hold |
+|---|---|
+| `testFuzz_trading_modelDecisionsCountersAndOutflow` | the model and the policy decide every operation alike (an order that would outlive the period it is charged in is refused by both), the policy gives no order's charge back when asked, 40 steps per seed, and count alike (native spent, token spent, the period seen); the account vouches for an order exactly while it is not past its end; and, without leaning on the model's counters, in no period does more of the token leave than its budget, counting the transfers of that period and every order charged to it that the venue filled |
+| `testFuzz_trading_noMoreThanTwoBudgetsAcrossARenewal` | the number the owner is shown: what is transferred in two neighbouring periods together is never more than two budgets |
+
+```sh
+cd contracts
+forge test --evm-version osaka --match-contract TradingFuzz                        # 256 runs each, seconds
+FOUNDRY_FUZZ_RUNS=10000 forge test --evm-version osaka --match-contract TradingFuzz    # under two minutes
+```
+
+10,000 runs of each find nothing.
+
+**What it found while it was written.** The policy cut an operation's
+window to its period with a lower bound one second early: it took the
+EntryPoint to read `validAfter` as exclusive, and EntryPoint v0.7 reads it
+as inclusive. In a period's last second an operation naming the next period
+was accepted. Nothing more could be spent than the two budgets across a
+renewal that the owner is told of, and no earlier test held that second.
+The bound is corrected and the model holds it.
+
+**What it did not find, and a review did.** An order or an x402
+authorization was charged in the period it was registered in and stayed
+good after that period: with a lifetime longer than a period, several
+periods' registrations could be taken together, past the "twice a budget
+and no more" the owner is shown. The model missed it for two reasons a
+generator should be checked for: its orders lived 600 seconds against a
+period of 1,000 and were filled within the step that made them, and it has
+no x402 at all. The policy now refuses a registration that ends after its
+period; the model holds the rule for orders and aims at the period's last
+second and the one after it, and `Trading.t.sol` holds it for x402
+(`test_period_anAuthorizationEndsWithThePeriodItIsChargedIn`: three days'
+authorizations, of which only the last can still be used). Breaking the new
+rule five ways (no check for x402, none for orders, each bound off by one,
+the period's end not noted) is found every time.
+
+**That it bites.** Eighteen rules were broken in the source one at a time:
+the period's first second, the reset of the native and of the token counter,
+the period's end, a refund across periods, a reclaim at `validTo` and of a
+filled order, the record left after a refund, an order's end and its
+"not before", the same order twice, an order past the cap, the budget off
+by one, an order with value attached, an order not charged, a window of a
+single second; these sixteen are found at 256 runs. (Four of them were
+rules of an order's refund, which the policy had then. The refund was
+removed on 2026-11-24: a filled order could be made to read as untouched
+at the venue after its end. The model now asks for the refund of orders
+it registered, throughout a run, and holds that none is given.) Two are not, and cannot
+be while the EntryPoint holds the window: accepting a period earlier than
+one already seen (to have seen a later one, an operation must have been
+accepted outside its window), and accepting a period index of fewer than
+six bytes (it reads as an index 256 times larger or more, a window far
+from now). Both checks stay in the policy; they do not rest on the clock.
+
+**What it does not cover.** One venue, one pair, one token with a limit;
+the decoder is the real one, the settlement is not. The mandate's own
+window (`validAfter`, `validUntil`) is wide open here and is held by the
+earlier tests. The Safe paths and x402 are not mixed in: x402 under a
+period is held by examples in `Trading.t.sol`, not by the model.
+
 ## Rust
 
 Coverage-guided fuzzing with `cargo-fuzz` (libFuzzer, a nightly toolchain)
@@ -147,10 +220,12 @@ the long run.
 **Found in CI (2026-11-24).** The `operation` target panicked on a sponsored
 operation whose two paymaster gas limits were near 2^128: the review added
 them as u128, which panics in a build with overflow checks and wraps in one
-without, showing a small maximum cost. The cost line now sums and
-multiplies saturating, `preVerificationGas` and the fee cap included;
-`review::tests::the_largest_gas_numbers_neither_panic_nor_wrap` holds it, and
-the input is kept as the seed `fuzz/seeds/operation/paymaster-gas-overflow`.
+without, showing a small maximum cost. The cost line now sums the gas
+limits in 256 bits and adds `preVerificationGas` and multiplies by the fee
+cap checked: the cost shown is exact, and one that does not fit 256 bits is
+refused. `review::tests::the_largest_gas_numbers_neither_panic_nor_wrap`
+holds the sum and the product each on its own, and the input is kept as the
+seed `fuzz/seeds/operation/paymaster-gas-overflow`.
 
 **Limits.**
 

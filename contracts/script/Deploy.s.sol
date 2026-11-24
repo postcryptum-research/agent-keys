@@ -8,11 +8,13 @@ import {P256RecoveryValidator} from "../src/P256RecoveryValidator.sol";
 import {P256Signer} from "../src/P256Signer.sol";
 import {AgentPolicy} from "../src/AgentPolicy.sol";
 import {SafeNonceAssert} from "../src/SafeNonceAssert.sol";
+import {CowSwapDecoder} from "../src/venues/CowSwapDecoder.sol";
 import {WhitelistPaymaster} from "../src/WhitelistPaymaster.sol";
 import {DemoCounter} from "../src/demo/DemoCounter.sol";
 import {IEntryPoint} from "account-abstraction/interfaces/IEntryPoint.sol";
 
-/// Deploys the three modules and the demo target deterministically through
+/// Deploys the modules, the demo target and, where CoW Protocol runs, its
+/// order decoder deterministically through
 /// the canonical CREATE2 deployer (salt 0), so addresses match on every
 /// chain. Kernel v3.3 itself is ZeroDev's canonical deployment. Re-running
 /// is a no-op for anything already deployed.
@@ -33,6 +35,10 @@ contract Deploy is Script {
     // through Kernel's factory, so that an account's first operation names a
     // staked factory (ERC-7562 STO-022, issue #102). Recorded where it has code.
     address internal constant KERNEL_FACTORY_STAKER = 0xd703aaE79538628d27099B8c4f621bE4CCd142d5;
+
+    // CoW Protocol's settlement (GPv2Settlement), the same address on every
+    // chain CoW runs on. The decoder is deployed only where it has code.
+    address internal constant COW_SETTLEMENT = 0x9008D19f58AAbD9eD0D60971565AA8510560ab41;
 
     // The compiler settings this script is built with, as foundry.toml sets
     // them, recorded in the deployments file so that the code of an instance
@@ -73,6 +79,17 @@ contract Deploy is Script {
             "WhitelistPaymaster",
             abi.encodePacked(type(WhitelistPaymaster).creationCode, abi.encode(IEntryPoint(ENTRY_POINT), sponsor))
         );
+        // The decoder reads the settlement's domain separator and spender when
+        // it is created, so on each chain it is that chain's venue and no other.
+        address cowDecoder;
+        if (COW_SETTLEMENT.code.length > 0) {
+            cowDecoder = _reuseOrDeploy(
+                recorded,
+                "cowSwapDecoder",
+                "CowSwapDecoder",
+                abi.encodePacked(type(CowSwapDecoder).creationCode, abi.encode(COW_SETTLEMENT))
+            );
+        }
         vm.stopBroadcast();
 
         string memory json = "deployment";
@@ -92,6 +109,7 @@ contract Deploy is Script {
         vm.serializeAddress(json, "safeNonceAssert", nonceAssert);
         vm.serializeAddress(json, "whitelistPaymaster", paymaster);
         vm.serializeAddress(json, "paymasterOwner", sponsor);
+        if (cowDecoder != address(0)) vm.serializeAddress(json, "cowSwapDecoder", cowDecoder);
         // Superseded module versions stay recorded: live permissions installed
         // with them keep pointing there until the owner rotates them.
         _keepSuperseded(json, recorded);
