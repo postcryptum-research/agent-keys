@@ -67,21 +67,97 @@ and gives the listed token an x402 domain.
 
 ## Rust
 
-Not built yet. The code that reads input it has no reason to trust, most
-important first:
+Coverage-guided fuzzing with `cargo-fuzz` (libFuzzer, a nightly toolchain)
+of the code that reads bytes it has no reason to trust. The targets are in
+`mobile/owner-core/fuzz/`, a package of its own; the seeds they start from
+are in `fuzz/seeds/`.
 
-- `mobile/owner-core/src/review.rs`: what the phone shows the owner, from
-  bytes a laptop sent. Also as a differential target: what the review says
-  a mandate installs against what `AgentPolicy` does install from the same
-  bytes;
-- `signer/crates/hw-signer/src/enclave_blob.rs`: a DER reader in front of
-  CryptoKit;
-- `signer/crates/agent-signer/src/der.rs`, `attestation.rs`, `x402.rs` (a
-  server's answers) and `mobile/owner-core/src/request.rs`.
+| Target | Input | What must hold |
+|---|---|---|
+| `sign_request` | the whole request a laptop serves to the phone, any bytes | no panic; a phone enrolled for nothing refuses; the rules of a review, below |
+| `operation` | every field of an operation (nonce, gas, `initCode`, `paymasterAndData`, the laptop's label, the callData) inside a request whose hash is right, for an enrolled account | the rules of a review. The whole-request target cannot get here: a change to the operation breaks the hash and ends in the first refusal |
+| `call_data` | the callData alone, the rest fixed | the same; all of the fuzzer's effort on the decoders of what the owner is shown |
+| `enroll` | an enrollment request, and a response | an accepted request survives its own encoding and its label and pins are plain text; no panic on any response |
+| `qr_uri` | the text of a scanned QR code | an accepted payload names a host in the local ranges, written out a second time by hand, carries no userinfo, and reads back as itself |
+| `der` | bytes for the DER reader in front of key attestation | whatever is accepted is the one canonical encoding of what was read, by an encoder written a second time in the target; a number read is its own shortest form; children add up to their parent |
+| `enclave_blob` | bytes as a Secure Enclave key file ([#78](https://github.com/postcryptum-research/agent-keys/issues/78)) | an accepted file is one element from the first byte to the last with a key on the curve; the same bytes with one more are refused |
 
-The tool for these is `cargo-fuzz` (libFuzzer; it needs a nightly
-toolchain), with the same two kinds of rule: no panic and no hang on any
-bytes, and agreement with a second implementation where there is one.
+**The rules of a review** (`fuzz_targets/common.rs`), for any bytes:
+
+- every title, label, value, warning and reason of a refusal is printable ASCII or one of the
+  four marks the review writes itself: nothing a laptop sends can put a line
+  break, a control or a direction mark, or a letter of another script on the
+  owner's screen;
+- a refusal has no digest to sign;
+- a review that can be signed is of a request that parses, its digest is the
+  hash this code computed from the operation, the account is one the phone
+  is enrolled for, the operation has no `initCode`, its nonce key is the
+  root's, and its paymaster, if any, is one the build knows to charge
+  nothing;
+- the screen's text has one line per row and no more.
+
+```sh
+cd mobile/owner-core
+cargo +nightly fuzz list
+cargo +nightly fuzz run operation fuzz/corpus/operation fuzz/seeds/operation -- -max_total_time=1200 -max_len=8192
+```
+
+**The seeds.** `operation`, `call_data` and `sign_request` start from the 19
+distinct root operations the CLI's local-chain tests send (the tests of
+the agent's lifecycle, the schedule, recovery, the hand-over of root, the
+phone as owner, x402 and the Safe path), taken from the traces the CI job of
+`scripts/erc7562/README.md` leaves; `der` from the two public root
+certificates in the tree; `enclave_blob` from a file built by hand around the
+curve's base point. The corpus a run grows is not kept in the repository.
+
+**Results (2026-11-21).** Twenty minutes of each target on one core, from
+the seeds: no panic and no broken rule.
+
+| Target | Runs |
+|---|---|
+| `enclave_blob` | 156.3 million |
+| `qr_uri` | 92.3 million |
+| `enroll` | 21.1 million |
+| `sign_request` | 10.8 million |
+| `call_data` | 1.1 million |
+| `operation` | 1.8 million |
+| `der` | 0.55 million |
+
+The first minutes did stop twice, in `sign_request` and `call_data`, and both
+times the rule was wrong and not the code: it took the four marks the review
+writes itself (`—`, `·`, `→`, `‖`) for a laptop's text.
+
+**That they bite.** Seven rules were broken in the source, one at a time; each
+is found by its target from the seeds within two minutes:
+
+| Broken rule | Found by | With |
+|---|---|---|
+| any bytes pass as a laptop's label | `operation` | "a row value carries a character that is not plain text" |
+| an operation with `initCode` is reviewed | `operation` | "a review to sign of an operation with initCode" |
+| any nonce key is taken | `operation` | "…under a nonce key that is not the root's" |
+| any paymaster is taken | `operation` | "…with a paymaster the build does not know" |
+| a DER length that is not minimal is read | `der` | "accepted, but not the canonical encoding" |
+| a key file may have bytes after its end | `enclave_blob` | "accepted with a byte after the end" |
+| any IPv4 host counts as local | `qr_uri` | "…host is outside the local ranges" |
+
+**In CI:** the `fuzz` job runs every target for a minute from the seeds. That
+shows the targets build and that nothing near a seed breaks a rule; it is not
+the long run.
+
+**Limits.**
+
+- Not yet a target: `attestation.rs` and `x402.rs` in `agent-signer`, which
+  is a binary and offers no library to link (the `der` target takes its file
+  by path, which works for a file with no dependencies); and the response a
+  laptop reads from the phone beyond enrollment.
+- No differential target yet for the review against the chain: what the
+  review says a mandate installs against what `AgentPolicy` does install
+  from the same bytes. It needs an EVM beside the fuzzer.
+- The whole-request target cannot make a second valid request of its own:
+  the hash stops it. `operation` is the answer to that, and it frames the
+  fields itself, so what it explores is bounded by that framing.
+- Minutes of fuzzing, not days. No sanitizer finding is expected in safe
+  Rust; what is looked for is a panic or a broken rule.
 
 ## Third-party fuzzing tools
 
