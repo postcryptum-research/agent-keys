@@ -51,10 +51,12 @@ remappings = [
 
 # Tests read JSON vectors produced by `agent-signer vector ...`; the deploy
 # script records addresses under deployments/; DeploymentsRecord.t.sol reads
-# this file for the compiler settings it records (issue #123).
+# this file for the compiler settings it records (issue #123), and the
+# deployments page, which must name every recorded address.
 fs_permissions = [
     { access = "read", path = "./test/vectors" },
     { access = "read", path = "./foundry.toml" },
+    { access = "read", path = "../docs/DEPLOYMENTS.md" },
     { access = "read-write", path = "./deployments" },
     { access = "read-write", path = "./benchmarks" },
 ]
