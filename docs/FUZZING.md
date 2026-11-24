@@ -217,6 +217,14 @@ is found by its target from the seeds within two minutes:
 shows the targets build and that nothing near a seed breaks a rule; it is not
 the long run.
 
+**Found in CI (2026-11-24).** The `operation` target panicked on a sponsored
+operation whose two paymaster gas limits were near 2^128: the review added
+them as u128, which panics in a build with overflow checks and wraps in one
+without, showing a small maximum cost. The cost line now sums and
+multiplies saturating, `preVerificationGas` and the fee cap included;
+`review::tests::the_largest_gas_numbers_neither_panic_nor_wrap` holds it, and
+the input is kept as the seed `fuzz/seeds/operation/paymaster-gas-overflow`.
+
 **Limits.**
 
 - Not yet a target: `attestation.rs` and `x402.rs` in `agent-signer`, which
