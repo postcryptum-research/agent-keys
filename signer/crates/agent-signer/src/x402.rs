@@ -132,16 +132,19 @@ impl Session {
         // Under a budget per period an authorization ends with the period it
         // is charged in: the policy refuses one usable later. It is usable
         // before `validBefore`, so that is the next period's first second at most.
-        let mut valid_before = now() + timeout.max(MIN_LIFETIME_SECS);
+        let mut valid_before =
+            now().checked_add(timeout.max(MIN_LIFETIME_SECS)).context("the server's `maxTimeoutSeconds` does not fit a timestamp")?;
         if let Some(next) = self.period_next().await? {
             let chain_now = self.chain_time().await?;
             const LEAST_LIFE_SECS: u64 = 60;
-            if next - chain_now <= LEAST_LIFE_SECS {
-                bail!("this budget period ends in {} s, and a payment authorization ends with the period it is charged in: pay after the renewal", next - chain_now);
+            // the period's seconds left; none if it turned between the two reads of the chain's time
+            let left = next.saturating_sub(chain_now);
+            if left <= LEAST_LIFE_SECS {
+                bail!("this budget period ends in {left} s, and a payment authorization ends with the period it is charged in: pay after the renewal");
             }
             if valid_before > next {
                 valid_before = next;
-                eprintln!("x402:           the authorization ends with this budget period, in {} s", next - chain_now);
+                eprintln!("x402:           the authorization ends with this budget period, in {left} s");
             }
         }
         let auth = Authorization {
@@ -347,11 +350,14 @@ where
     let mut chunk = FIRST_CHUNK;
     let mut lo = start;
     while lo <= end {
-        let hi = (lo + chunk - 1).min(end);
+        // `chunk` blocks from `lo`; the range's last block is never below its first
+        let hi = lo.saturating_add(chunk.saturating_sub(1)).min(end);
         match fetch(lo, hi).await {
             Ok(mut logs) => {
                 out.append(&mut logs);
-                lo = hi + 1;
+                // the last block there can be: nothing after it to read
+                let Some(next) = hi.checked_add(1) else { break };
+                lo = next;
             }
             // a node's range limit: narrow and retry; its error text is not printed each time
             Err(_) if chunk > MIN_CHUNK => chunk = (chunk / 2).max(MIN_CHUNK),
@@ -411,5 +417,8 @@ mod tests {
         assert_eq!((found.len(), *calls.borrow()), (3, 3));
         // nothing narrowed, nothing to say
         assert_eq!(narrowed, None);
+        // the last block a chain can have: read once, and the scan ends
+        let (found, _) = block_on(scan_in_chunks(u64::MAX - 1, u64::MAX, |lo, hi| async move { Ok(vec![(lo, hi)]) })).unwrap();
+        assert_eq!(found, vec![(u64::MAX - 1, u64::MAX)]);
     }
 }

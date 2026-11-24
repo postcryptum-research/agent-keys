@@ -85,7 +85,7 @@ fn entries(mut bytes: &[u8], depth: usize, in_rk: bool) -> Result<Option<PublicK
         }
         match tag {
             SET => {
-                let inside = entries(content, depth + 1, depth == 0 && name == b"rk")?;
+                let inside = entries(content, depth.saturating_add(1), depth == 0 && name == b"rk")?;
                 if depth == 0 && name == b"rk" {
                     let key = inside.ok_or("its `rk` entry has no public key (`pub`)")?;
                     if found.replace(key).is_some() {

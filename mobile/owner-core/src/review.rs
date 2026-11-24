@@ -238,7 +238,7 @@ impl Builder<'_> {
     }
     fn section(&mut self, title: impl Into<String>) -> usize {
         self.sections.push(Section { title: title.into(), rows: Vec::new() });
-        self.sections.len() - 1
+        self.sections.len().saturating_sub(1)
     }
     fn row(&mut self, s: usize, label: impl Into<String>, value: impl Into<String>) {
         self.sections[s].rows.push(Row { label: label.into(), value: value.into(), emphasis: false });
@@ -306,7 +306,7 @@ fn open_with(
     if !op.init_code.is_empty() {
         return refused(c, vec![], "the operation carries initCode; v1 signs for existing accounts only".into());
     }
-    if op.nonce >> 64 != U256::ZERO {
+    if op.nonce.wrapping_shr(64) != U256::ZERO {
         return Review::refused(c, vec![], "the nonce key is not the root key; this phone signs root operations only");
     }
     // 6: SignRequest::parse refused a hint that differs; the digest is still the recomputed value
@@ -358,7 +358,7 @@ fn open_with(
     };
     let installed_keys = keys_installed_in(&calls, op.sender);
     for (i, (target, value, data)) in calls.iter().enumerate() {
-        let title = if calls.len() == 1 { "Call".to_string() } else { format!("Call {} of {}", i + 1, calls.len()) };
+        let title = if calls.len() == 1 { "Call".to_string() } else { format!("Call {} of {}", i.saturating_add(1), calls.len()) };
         let s = b.section(title);
         let outcome = if *target == op.sender {
             if !value.is_zero() {
@@ -402,10 +402,10 @@ fn open_with(
     // cost and sponsorship (§6.4)
     let (verification_gas, call_gas) = split(op.account_gas_limits);
     let (max_priority, max_fee) = split(op.gas_fees);
-    // the laptop's numbers: the four gas limits fit 130 bits summed in 256;
-    // `preVerificationGas` and the fee cap are added and multiplied checked,
-    // and a cost that does not fit a word is refused rather than shown wrong
-    let mut pm_gas = U256::ZERO;
+    // the laptop's numbers: every sum and the product with the fee cap are
+    // checked, and a cost that does not fit a word is refused rather than
+    // shown wrong
+    let mut pm_gas = Some(U256::ZERO);
     let s = b.section("Cost");
     if !op.paymaster_and_data.is_empty() {
         if op.paymaster_and_data.len() < 52 {
@@ -421,12 +421,14 @@ fn open_with(
                 format!("paymaster {} is not one this build knows to charge nothing (T20)", pm.to_checksum(None)),
             );
         }
-        pm_gas = U256::from(pm_verification) + U256::from(pm_post_op);
+        pm_gas = U256::from(pm_verification).checked_add(U256::from(pm_post_op));
         b.row(s, "Gas", format!("sponsored by {}", b.name(pm)));
         b.row(s, "Paymaster gas limits", format!("verification {pm_verification}, postOp {pm_post_op}"));
     }
-    let max_cost = (U256::from(verification_gas) + U256::from(call_gas) + pm_gas)
-        .checked_add(op.pre_verification_gas)
+    let max_cost = U256::from(verification_gas)
+        .checked_add(U256::from(call_gas))
+        .and_then(|gas| gas.checked_add(pm_gas?))
+        .and_then(|gas| gas.checked_add(op.pre_verification_gas))
         .and_then(|total_gas| total_gas.checked_mul(U256::from(max_fee)));
     let Some(max_cost) = max_cost else {
         return Review::refused(c, b.sections, "the operation's gas limits and fee cap give a maximum cost beyond 2^256 wei; refused");
@@ -1019,7 +1021,7 @@ fn period_text(period: u32) -> String {
         604_800 => "every 7 days, counted from 1970-01-01 (a Thursday) 00:00 UTC".to_string(),
         p if p % 86_400 == 0 => format!("every {} days, counted from 1970-01-01 00:00 UTC", p / 86_400),
         // whole hours start at the same times each day only when they divide a day
-        p if p % 3_600 == 0 && 86_400 % p == 0 => format!("every {} hours, counted from 00:00 UTC", p / 3_600),
+        p if p % 3_600 == 0 && 86_400u32.checked_rem(p) == Some(0) => format!("every {} hours, counted from 00:00 UTC", p / 3_600),
         p if p % 3_600 == 0 => format!("every {} hours, counted from 1970-01-01 00:00 UTC", p / 3_600),
         p => format!("every {p} seconds, counted from 1970-01-01 00:00 UTC"),
     };
@@ -1291,8 +1293,8 @@ fn format_ether(wei: U256) -> String {
 fn format_units(amount: U256, decimals: u8) -> String {
     let d = decimals as usize;
     let digits = amount.to_string();
-    let digits = if digits.len() <= d { format!("{}{digits}", "0".repeat(d + 1 - digits.len())) } else { digits };
-    let (int, frac) = digits.split_at(digits.len() - d);
+    let digits = if digits.len() <= d { format!("{}{digits}", "0".repeat(d.saturating_add(1).saturating_sub(digits.len()))) } else { digits };
+    let (int, frac) = digits.split_at(digits.len().saturating_sub(d));
     let frac = frac.trim_end_matches('0');
     if frac.is_empty() { int.to_string() } else { format!("{int}.{frac}") }
 }
@@ -1307,20 +1309,27 @@ fn hex(b: &[u8]) -> String {
 
 /// `YYYY-MM-DD HH:MM:SS` from unix seconds (proleptic Gregorian, no leap seconds).
 fn utc(t: u64) -> String {
-    let days = (t / 86_400) as i64;
     let secs = t % 86_400;
-    // Howard Hinnant's civil_from_days
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}", secs / 3600, secs % 3600 / 60, secs % 60)
+    // Howard Hinnant's civil_from_days, every step checked
+    let civil = || -> Option<(i64, i64, i64)> {
+        let days = i64::try_from(t / 86_400).ok()?;
+        let z = days.checked_add(719_468)?;
+        let era = z.div_euclid(146_097);
+        let doe = z.rem_euclid(146_097);
+        let yoe = doe.checked_sub(doe / 1460)?.checked_add(doe / 36_524)?.checked_sub(doe / 146_096)? / 365;
+        let y = era.checked_mul(400)?.checked_add(yoe)?;
+        let doy = doe.checked_sub(yoe.checked_mul(365)?.checked_add(yoe / 4)?.checked_sub(yoe / 100)?)?;
+        let mp = doy.checked_mul(5)?.checked_add(2)? / 153;
+        let d = doy.checked_sub(mp.checked_mul(153)?.checked_add(2)? / 5)?.checked_add(1)?;
+        let m = if mp < 10 { mp.checked_add(3)? } else { mp.checked_sub(9)? };
+        let y = if m <= 2 { y.checked_add(1)? } else { y };
+        Some((y, m, d))
+    };
+    match civil() {
+        Some((y, m, d)) => format!("{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}", secs / 3600, secs % 3600 / 60, secs % 60),
+        // no u64 of seconds gets here; a date is never shown wrong
+        None => format!("second {t} of the unix era"),
+    }
 }
 
 #[cfg(test)]

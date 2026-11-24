@@ -46,6 +46,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      # House rule 10: no unchecked arithmetic and no narrowing cast in the
+      # code that ships. The lints are in the Cargo.toml files; a hardware
+      # backend behind a feature is linted on the machine that builds it.
+      - name: checked arithmetic, signer
+        working-directory: signer
+        run: |
+          cargo clippy --locked -p hw-signer -p agent-signer
+          cargo clippy --locked -p hw-signer -p agent-signer --features insecure-software-keys
+      - name: checked arithmetic, owner-core
+        working-directory: mobile/owner-core
+        run: |
+          cargo clippy --locked --features ffi
+          cargo clippy --locked --features ffi,test-chains
       - name: hw-signer
         working-directory: signer
         run: cargo test --locked -p hw-signer

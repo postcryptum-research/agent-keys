@@ -126,15 +126,18 @@ impl Session {
         // Under a budget per period an order ends with the period it is
         // charged in: the policy refuses one that could be filled later.
         let now = self.chain_time().await?;
-        let mut until = now + valid_for as u64;
+        let mut until = now.checked_add(u64::from(valid_for)).context("the order's last second does not fit a timestamp")?;
         if let Some(next) = self.period_next().await? {
             const LEAST_LIFE_SECS: u64 = 60;
-            if next - now <= LEAST_LIFE_SECS {
-                bail!("this budget period ends in {} s, and an order ends with the period it is charged in: place it after the renewal", next - now);
+            // the period's seconds left; none if the chain's clock is already past its end
+            let left = next.saturating_sub(now);
+            if left <= LEAST_LIFE_SECS {
+                bail!("this budget period ends in {left} s, and an order ends with the period it is charged in: place it after the renewal");
             }
-            if until > next - 1 {
-                until = next - 1;
-                eprintln!("order:          lives {} s, to the end of this budget period, not the {valid_for} s asked for", until - now);
+            let last = next.saturating_sub(1);
+            if until > last {
+                until = last;
+                eprintln!("order:          lives {} s, to the end of this budget period, not the {valid_for} s asked for", until.saturating_sub(now));
             }
         }
         let valid_to = u32::try_from(until).context("validTo")?;

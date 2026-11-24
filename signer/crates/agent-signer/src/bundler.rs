@@ -38,7 +38,7 @@ fn hi_lo(word: B256) -> (u128, u128) {
 /// maxPriorityFeePerGas: 100000)`. Returns the floor in wei.
 pub fn min_priority_fee_from_error(message: &str) -> Option<u128> {
     let idx = message.find("maxPriorityFeePerGas must be at least")?;
-    let rest = &message[idx + "maxPriorityFeePerGas must be at least".len()..];
+    let rest = message.get(idx.checked_add("maxPriorityFeePerGas must be at least".len())?..)?;
     let digits: String = rest.trim_start().chars().take_while(|c| c.is_ascii_digit()).collect();
     digits.parse().ok()
 }

@@ -29,6 +29,7 @@ cd contracts && forge test --evm-version osaka    # forge 1.8 or later: the P-25
 cd signer && cargo test                           # software backend, no hardware
 cargo test -p agent-signer --features insecure-software-keys --test anvil_cli   # the CLI end to end on a local anvil
 cd mobile/owner-core && cargo test                # add --features ffi,test-chains for the phone's side
+cargo clippy                                      # in signer/ and in mobile/owner-core/: unchecked arithmetic fails (house rule 10); add a backend's --features to lint it
 cd scripts/erc7562 && npm install && npm run check
 gitleaks git . --redact --log-opts="--all" --exit-code 1    # what CI runs, over the whole history
 scripts/source-record.sh                          # every contract's bytecode and VERSION against origin/master (house rules 3 and 9)
@@ -88,6 +89,20 @@ scripts/source-record.sh                          # every contract's bytecode an
    `vX.Y.Z-post-external-audit` (after the fix review), and `vX.Y.Z` (the
    commit deployed). Audit reports are kept in the repository with the tag
    they cover.
+10. **Arithmetic in Rust is checked.** In the code that ships (everything
+    outside tests) an integer is never added, subtracted, multiplied,
+    divided by a variable or shifted by a variable with a bare operator:
+    `a = b + x` is forbidden. Write `checked_add` and its kin and handle
+    `None` as a refusal with a reason; `saturating_*` only where the
+    clamped value is the right answer (a counter, a number of seconds
+    left). A conversion that can lose bits is `try_from`, never `as`, and
+    never `.to::<T>()` on a 256-bit value. Clippy holds the operators and
+    the casts (`arithmetic_side_effects` and the three `cast_*` lints,
+    denied in the `Cargo.toml` files): `cargo clippy` fails on a violation
+    and CI runs it on every pull request. No `#[allow]` of these lints. A
+    shift by a variable and `.to::<T>()` it does not see: those stay with
+    the review. Release builds keep `overflow-checks` on as the second
+    line.
 
 ## Never in the repository, a pull request or an issue
 

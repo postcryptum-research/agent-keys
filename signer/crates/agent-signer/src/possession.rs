@@ -174,7 +174,7 @@ impl Challenge {
             );
         }
         if at > self.expires {
-            bail!("the proof arrived {} s after the challenge expired: run the command again", at - self.expires);
+            bail!("the proof arrived {} s after the challenge expired: run the command again", at.saturating_sub(self.expires));
         }
         Ok(())
     }

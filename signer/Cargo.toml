@@ -10,6 +10,18 @@ repository = "https://github.com/postcryptum-research/agent-keys"
 [profile.release]
 lto = true
 codegen-units = 1
+# what the lints below cannot see (a dependency, a path the lint allows)
+# stops the program instead of wrapping
+overflow-checks = true
+
+# Arithmetic is checked (CLAUDE.md, house rule 10): `a + b` on integers and a
+# narrowing or sign-changing `as` do not pass `cargo clippy`, which CI runs
+# on every pull request.
+[workspace.lints.clippy]
+arithmetic_side_effects = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"
 
 # scrypt at the strength KEY_POLICY.md requires (N = 2^18) takes minutes
 # unoptimized; build the key-derivation crates optimized even in dev builds.

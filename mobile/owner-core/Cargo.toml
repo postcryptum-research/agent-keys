@@ -11,6 +11,20 @@ publish = false
 # cdylib for the phone apps (uniffi); rlib for agent-signer.
 crate-type = ["lib", "cdylib"]
 
+# Arithmetic is checked (CLAUDE.md, house rule 10): `a + b` on integers and a
+# narrowing or sign-changing `as` do not pass `cargo clippy`, which CI runs
+# on every pull request.
+[lints.clippy]
+arithmetic_side_effects = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"
+
+# The phone libraries are built from here in release: an overflow the lints
+# cannot see stops the review instead of showing a wrapped number.
+[profile.release]
+overflow-checks = true
+
 [features]
 # The uniffi surface for the phone apps (src/ffi.rs); off for the CLI's build.
 ffi = ["dep:uniffi", "dep:getrandom"]

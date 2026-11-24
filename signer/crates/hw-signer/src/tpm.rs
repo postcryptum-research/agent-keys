@@ -90,7 +90,8 @@ fn pad32(bytes: &[u8]) -> Result<[u8; 32], SignerError> {
         return Err(SignerError::Backend(format!("field element of {} bytes", bytes.len())));
     }
     let mut out = [0u8; 32];
-    out[32 - bytes.len()..].copy_from_slice(bytes);
+    // the length was checked above: the start is within the word
+    out[32usize.saturating_sub(bytes.len())..].copy_from_slice(bytes);
     Ok(out)
 }
 
@@ -229,7 +230,7 @@ fn current_pcr_digest(ctx: &mut Context, selection: &PcrSelectionList, pcrs: &[u
             values.len()
         )));
     }
-    let mut concat = Vec::with_capacity(32 * values.len());
+    let mut concat = Vec::with_capacity(values.len().saturating_mul(32));
     for value in values {
         concat.extend_from_slice(value.value());
     }
