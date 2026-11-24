@@ -688,6 +688,189 @@ fn self_call(
     }
 }
 
+/// A mandate as the review reads it from a policy's install parameters:
+/// what the owner is shown, and so what `AgentPolicy` has to enforce from
+/// the same bytes (held together by the differential test
+/// `the_phone_reads_a_mandate_as_the_policy_installs_it`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MandateTerms {
+    pub allow: Vec<(Address, FixedBytes<4>)>,
+    pub max_value: U256,
+    pub budget: U256,
+    pub valid_until: u64,
+    pub valid_after: u64,
+    /// `(token, maxPerOp, budget, x402 domain separator or zero)`
+    pub tokens: Vec<(Address, U256, U256, B256)>,
+    /// `(token, the only addresses it may be paid to)`
+    pub payees: Vec<(Address, Vec<Address>)>,
+    /// In the ten-word form: the budget period in seconds, never zero, and
+    /// the venues as `(decoder, code hash, hash of the venue's terms)`.
+    pub trading: Option<(u32, Vec<(Address, B256, B256)>)>,
+}
+
+/// Where a mandate is being installed: what `mandate_terms` needs to refuse
+/// what the policy refuses there.
+#[derive(Debug, Clone, Copy)]
+pub struct MandatePlace {
+    pub account: Address,
+    pub entry_point: Address,
+    /// The policy module the mandate goes to.
+    pub policy: Address,
+    /// That module is known to enforce payee lists.
+    pub payees_enforced: bool,
+    /// That module is known to hold a budget period and venues.
+    pub trading_enforced: bool,
+}
+
+/// Reads `init`, a policy entry's bytes behind `flag ‖ module`, or says why
+/// the mandate is refused. `name` names an address in a refusal.
+///
+/// It refuses everything `AgentPolicy.onInstall` refuses, so that a mandate
+/// the owner is shown is one that installs: an install that fails on chain
+/// grants nothing, but the owner would have signed for a screen that did
+/// not come true.
+pub fn mandate_terms(init: &[u8], place: &MandatePlace, name: &dyn Fn(Address) -> String) -> Result<MandateTerms, String> {
+    let payees_enforced = place.payees_enforced;
+    type PolicyInit = (Vec<Address>, Vec<FixedBytes<4>>, U256, U256, U256, Vec<(Address, U256, U256, B256)>, U256);
+    type PolicyInitPayees =
+        (Vec<Address>, Vec<FixedBytes<4>>, U256, U256, U256, Vec<(Address, U256, U256, B256)>, U256, Vec<(Address, Vec<Address>)>);
+    type Venues = Vec<(Address, B256, B256)>;
+    type PolicyInitTrading = (
+        Vec<Address>,
+        Vec<FixedBytes<4>>,
+        U256,
+        U256,
+        U256,
+        Vec<(Address, U256, U256, B256)>,
+        U256,
+        Vec<(Address, Vec<Address>)>,
+        u32,
+        Venues,
+    );
+    // Three forms, told apart as the policy tells them: by the first head
+    // word, the offset of `targets` behind seven, eight or ten head words.
+    let head = init.get(..32).map(U256::from_be_slice).ok_or("policy parameters shorter than a word; refused")?;
+    let mut trading: Option<(u32, Venues)> = None;
+    let (targets, selectors, max_value, budget, until, tokens, after, payees) = if head == U256::from(10 * 32) {
+        let d = PolicyInitTrading::abi_decode_params_validate(init).map_err(|e| format!("policy parameters: {e}"))?;
+        if d.abi_encode_params() != init {
+            return Err("policy parameters are not canonical; refused".into());
+        }
+        // an earlier policy refuses these parameters at install; a module this build
+        // does not know to hold a period and venues is not shown as holding them
+        if !place.trading_enforced {
+            return Err("this mandate carries a budget period or trading venues, and the policy module it goes to is not known to enforce them; refused".into());
+        }
+        // the policy installs this form only with a period: with venues, because an
+        // order's charge is never given back and the period is what returns it
+        if d.8 == 0 {
+            return Err(if d.9.is_empty() {
+                "policy parameters in the trading form with neither a period nor a venue; refused".into()
+            } else {
+                "this mandate names trading venues and no budget period: an order's charge would never come back, and the policy does not install it; refused".into()
+            });
+        }
+        // this form may carry payee lists or none; an older module would ignore them
+        if !d.7.is_empty() && !payees_enforced {
+            return Err("this mandate carries payee lists, and the policy module it goes to is not known to enforce them; refused".into());
+        }
+        trading = Some((d.8, d.9));
+        (d.0, d.1, d.2, d.3, d.4, d.5, d.6, d.7)
+    } else if head == U256::from(8 * 32) {
+        let d = PolicyInitPayees::abi_decode_params_validate(init).map_err(|e| format!("policy parameters: {e}"))?;
+        if d.abi_encode_params() != init {
+            return Err("policy parameters are not canonical; refused".into());
+        }
+        d
+    } else {
+        let d = PolicyInit::abi_decode_params_validate(init).map_err(|e| format!("policy parameters: {e}"))?;
+        if d.abi_encode_params() != init {
+            return Err("policy parameters are not canonical; refused".into());
+        }
+        (d.0, d.1, d.2, d.3, d.4, d.5, d.6, Vec::new())
+    };
+    if head == U256::from(8 * 32) {
+        // an older policy would decode the first seven and ignore the lists:
+        // the owner would see payees that nothing enforces
+        if !payees_enforced {
+            return Err("this mandate carries payee lists, and the policy module it goes to is not known to enforce them; refused".into());
+        }
+        if payees.is_empty() {
+            return Err("policy parameters in the payee form without a payee list; refused".into());
+        }
+    }
+    for (i, (token, list)) in payees.iter().enumerate() {
+        if list.is_empty() || !tokens.iter().any(|t| t.0 == *token) || payees[..i].iter().any(|p| p.0 == *token) {
+            return Err("a payee list that is empty, repeated or for a token without a cap; refused".into());
+        }
+        if list.iter().any(|a| a.is_zero()) || (1..list.len()).any(|j| list[..j].contains(&list[j])) {
+            return Err("a payee list with the zero address or the same address twice; refused".into());
+        }
+    }
+    if targets.len() != selectors.len() {
+        return Err("policy targets and selectors differ in length; refused".into());
+    }
+    // A token with a limit is callable through the four functions the
+    // limit is checked on. Any other entry on it would move the token
+    // past its caps and its payee list: AgentPolicy refuses such a
+    // mandate at install, and an earlier AgentPolicy would let the
+    // entry through unmetered, so it is refused here for either.
+    const METERED: [[u8; 4]; 4] = [[0xa9, 0x05, 0x9c, 0xbb], [0x09, 0x5e, 0xa7, 0xb3], [0x39, 0x50, 0x93, 0x51], [0x23, 0xb8, 0x72, 0xdd]];
+    for (t, sel) in targets.iter().zip(&selectors) {
+        // Permit2 at its usual address (the constant AgentPolicy carries): its own
+        // `approve` names who may pull a token, and no policy reads that call
+        if *t == alloy_primitives::address!("000000000022D473030F116dDEE9F6B43aC78BA3") {
+            return Err("this mandate lets the agent call Permit2, through which a token's allowance can be handed to any address, past its limits and payee list; refused".into());
+        }
+        if tokens.iter().any(|token| token.0 == *t) && !METERED.contains(&sel.0) {
+            return Err(format!(
+                "this mandate limits the token {} and also allows {} on it; a limited token may only be called through transfer, transferFrom, approve and increaseAllowance, anything else would move it past its limits; refused",
+                name(*t),
+                selector_name(sel.0)
+            ));
+        }
+    }
+    // The policy keeps a time in 48 bits and an amount in 128; a larger word does not install.
+    let secs = |v: U256, what: &str| {
+        u64::try_from(v).ok().filter(|t| *t < 1 << 48).ok_or_else(|| format!("{what} does not fit a timestamp; refused"))
+    };
+    let (until, after) = (secs(until, "validUntil")?, secs(after, "validAfter")?);
+    if until == 0 || after >= until {
+        return Err("a mandate that is never valid (validUntil is zero, or not after validAfter); refused".into());
+    }
+    let fits = |v: &U256| *v <= U256::from(u128::MAX);
+    if !fits(&max_value) || !fits(&budget) || tokens.iter().any(|t| !fits(&t.1) || !fits(&t.2)) {
+        return Err("a limit larger than the policy can hold (128 bits); refused".into());
+    }
+    if targets.is_empty() {
+        return Err("a mandate that allows no call; refused".into());
+    }
+    for (i, token) in tokens.iter().enumerate() {
+        if token.0.is_zero() || tokens[..i].iter().any(|t| t.0 == token.0) {
+            return Err("a token limit for the zero address, or two for one token; refused".into());
+        }
+    }
+    // What the agent must never reach: the account (it could grant itself access or act as
+    // root), its EntryPoint (the account's deposit), and the policy beyond its own entries:
+    // the two of x402, and `orderRegister` on a policy that holds venues.
+    let mut x402 = vec![
+        alloy_primitives::keccak256("x402Authorize(address,address,address,uint256,uint256,uint256,bytes32)"),
+        alloy_primitives::keccak256("x402Reclaim(bytes32,address,address,uint256,uint256,uint256,bytes32)"),
+    ];
+    if place.trading_enforced {
+        x402.push(alloy_primitives::keccak256("orderRegister(address,bytes,bytes)"));
+    }
+    for (t, sel) in targets.iter().zip(&selectors) {
+        if *t == place.account || *t == place.entry_point {
+            return Err("this mandate lets the agent call the account itself or its EntryPoint; refused".into());
+        }
+        if *t == place.policy && !x402.iter().any(|s| s[..4] == sel.0) {
+            return Err("this mandate lets the agent call the policy outside its x402 and order entries; refused".into());
+        }
+    }
+    Ok(MandateTerms { allow: targets.into_iter().zip(selectors).collect(), max_value, budget, valid_until: until, valid_after: after, tokens, payees, trading })
+}
+
 /// Kernel's `PermissionEnableDataFormat` as `permission_data` builds it:
 /// policies first, the signer last; each entry `flag(2) ‖ module(20) ‖ init`.
 fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledAccount) -> Result<(), String> {
@@ -716,6 +899,7 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
         b.warnings.push(format!("{what} module {} is not known to this build", module.to_checksum(None)));
         Ok(())
     };
+    let mut seen_modules: Vec<Address> = Vec::new();
     for p in policies {
         if p.len() < 22 {
             return Err("a policy entry shorter than flag ‖ module; refused".into());
@@ -725,106 +909,28 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
             return Err(format!("a policy entry with flag 0x{}; a permission that skips its policy is refused", hex(&p[..2])));
         }
         let module = Address::from_slice(&p[2..22]);
+        // Kernel installs each entry under the one permission id, and a policy holds one
+        // mandate per id: the second install of the same module reverts, and with it the
+        // whole operation. Two mandates on the screen would be a screen that does not come true.
+        if seen_modules.contains(&module) {
+            return Err(format!("the policy module {} appears twice in one permission, which does not install; refused", module.to_checksum(None)));
+        }
+        seen_modules.push(module);
         b.row(s, "Policy module", b.name(module));
         module_known(b, "policy", module)?;
-        type PolicyInit = (Vec<Address>, Vec<FixedBytes<4>>, U256, U256, U256, Vec<(Address, U256, U256, B256)>, U256);
-        type PolicyInitPayees =
-            (Vec<Address>, Vec<FixedBytes<4>>, U256, U256, U256, Vec<(Address, U256, U256, B256)>, U256, Vec<(Address, Vec<Address>)>);
-        type Venues = Vec<(Address, B256, B256)>;
-        type PolicyInitTrading = (
-            Vec<Address>,
-            Vec<FixedBytes<4>>,
-            U256,
-            U256,
-            U256,
-            Vec<(Address, U256, U256, B256)>,
-            U256,
-            Vec<(Address, Vec<Address>)>,
-            u32,
-            Venues,
-        );
-        // Three forms, told apart as the policy tells them: by the first head
-        // word, the offset of `targets` behind seven, eight or ten head words.
-        let init = &p[22..];
-        let head = init.get(..32).map(U256::from_be_slice).ok_or("policy parameters shorter than a word; refused")?;
-        let mut trading: Option<(u32, Venues)> = None;
-        let (targets, selectors, max_value, budget, until, tokens, after, payees) = if head == U256::from(10 * 32) {
-            let d = PolicyInitTrading::abi_decode_params_validate(init).map_err(|e| format!("policy parameters: {e}"))?;
-            if d.abi_encode_params() != init {
-                return Err("policy parameters are not canonical; refused".into());
-            }
-            // an earlier policy refuses these parameters at install; a module this build
-            // does not know to hold a period and venues is not shown as holding them
-            if !b.facts.trading_policy_modules.contains(&module) {
-                return Err("this mandate carries a budget period or trading venues, and the policy module it goes to is not known to enforce them; refused".into());
-            }
-            // the policy installs this form only with a period: with venues, because an
-            // order's charge is never given back and the period is what returns it
-            if d.8 == 0 {
-                return Err(if d.9.is_empty() {
-                    "policy parameters in the trading form with neither a period nor a venue; refused".into()
-                } else {
-                    "this mandate names trading venues and no budget period: an order's charge would never come back, and the policy does not install it; refused".into()
-                });
-            }
-            trading = Some((d.8, d.9));
-            (d.0, d.1, d.2, d.3, d.4, d.5, d.6, d.7)
-        } else if head == U256::from(8 * 32) {
-            let d = PolicyInitPayees::abi_decode_params_validate(init).map_err(|e| format!("policy parameters: {e}"))?;
-            if d.abi_encode_params() != init {
-                return Err("policy parameters are not canonical; refused".into());
-            }
-            d
-        } else {
-            let d = PolicyInit::abi_decode_params_validate(init).map_err(|e| format!("policy parameters: {e}"))?;
-            if d.abi_encode_params() != init {
-                return Err("policy parameters are not canonical; refused".into());
-            }
-            (d.0, d.1, d.2, d.3, d.4, d.5, d.6, Vec::new())
+        let terms = {
+            let place = MandatePlace {
+                account: acct.account,
+                entry_point: acct.entry_point,
+                policy: module,
+                payees_enforced: b.facts.payee_policy_modules.contains(&module),
+                trading_enforced: b.facts.trading_policy_modules.contains(&module),
+            };
+            let b = &*b;
+            mandate_terms(&p[22..], &place, &|a| b.name(a))?
         };
-        if head == U256::from(8 * 32) {
-            // an older policy would decode the first seven and ignore the lists:
-            // the owner would see payees that nothing enforces
-            if !b.facts.payee_policy_modules.contains(&module) {
-                return Err("this mandate carries payee lists, and the policy module it goes to is not known to enforce them; refused".into());
-            }
-            if payees.is_empty() {
-                return Err("policy parameters in the payee form without a payee list; refused".into());
-            }
-        }
-        for (i, (token, list)) in payees.iter().enumerate() {
-            if list.is_empty() || !tokens.iter().any(|t| t.0 == *token) || payees[..i].iter().any(|p| p.0 == *token) {
-                return Err("a payee list that is empty, repeated or for a token without a cap; refused".into());
-            }
-            if list.iter().any(|a| a.is_zero()) || (1..list.len()).any(|j| list[..j].contains(&list[j])) {
-                return Err("a payee list with the zero address or the same address twice; refused".into());
-            }
-        }
-        if targets.len() != selectors.len() {
-            return Err("policy targets and selectors differ in length; refused".into());
-        }
-        // A token with a limit is callable through the four functions the
-        // limit is checked on. Any other entry on it would move the token
-        // past its caps and its payee list: AgentPolicy refuses such a
-        // mandate at install, and an earlier AgentPolicy would let the
-        // entry through unmetered, so it is refused here for either.
-        const METERED: [[u8; 4]; 4] = [[0xa9, 0x05, 0x9c, 0xbb], [0x09, 0x5e, 0xa7, 0xb3], [0x39, 0x50, 0x93, 0x51], [0x23, 0xb8, 0x72, 0xdd]];
-        for (t, sel) in targets.iter().zip(&selectors) {
-            // Permit2 at its usual address (the constant AgentPolicy carries): its own
-            // `approve` names who may pull a token, and no policy reads that call
-            if *t == alloy_primitives::address!("000000000022D473030F116dDEE9F6B43aC78BA3") {
-                return Err("this mandate lets the agent call Permit2, through which a token's allowance can be handed to any address, past its limits and payee list; refused".into());
-            }
-            if tokens.iter().any(|token| token.0 == *t) && !METERED.contains(&sel.0) {
-                return Err(format!(
-                    "this mandate limits the token {} and also allows {} on it; a limited token may only be called through transfer, transferFrom, approve and increaseAllowance, anything else would move it past its limits; refused",
-                    b.name(*t),
-                    selector_name(sel.0)
-                ));
-            }
-        }
-        let secs = |v: U256, what: &str| u64::try_from(v).map_err(|_| format!("{what} does not fit a timestamp; refused"));
-        let (until, after) = (secs(until, "validUntil")?, secs(after, "validAfter")?);
+        let MandateTerms { allow, max_value, budget, valid_until: until, valid_after: after, tokens, payees, trading } = terms;
+        let (targets, selectors): (Vec<Address>, Vec<FixedBytes<4>>) = allow.into_iter().unzip();
         for (t, sel) in targets.iter().zip(&selectors) {
             b.row(s, "Allow", format!("{} · {}", b.name(*t), selector_name(sel.0)));
         }
@@ -1912,6 +2018,10 @@ mod tests {
         };
         assert!(matches!(open(&install(flip_flag(0, [0, 1]))).verdict, Verdict::Refuse(ref m) if m.contains("skips its policy")));
         assert!(matches!(open(&install(flip_flag(1, [0, 2]))).verdict, Verdict::Refuse(ref m) if m.contains("skips its signature")));
+        // the same policy module twice: Kernel installs both under the one id, the second
+        // install reverts, and two mandates on the screen would not come true
+        let twice = Bytes::from(vec![entries[0].clone(), entries[0].clone(), entries[1].clone()].abi_encode());
+        assert!(matches!(open(&install(twice)).verdict, Verdict::Refuse(ref m) if m.contains("appears twice in one permission")));
         // a hook on an install
         let mut c = IKernel::installValidationsCall::abi_decode(&kernel::install_permission_calldata(perm, pdata.clone(), 1)).unwrap();
         c.configs[0].hook = PAYMASTER;
@@ -2171,8 +2281,63 @@ mod tests {
         assert!(matches!(show(84532, base.policy_modules[0], venue.code_hash).verdict, Verdict::Refuse(_)));
     }
 
-    /// The phone's path: the facts embedded for the request's chain. On Base
-    /// Sepolia the project's own contracts are known, a variant's paymaster is not.
+    /// What `AgentPolicy.onInstall` refuses, the review refuses first: a
+    /// mandate the owner is shown is one that installs. One case for each
+    /// rule; the differential test of the CLI's local-chain tests holds the
+    /// two sides together over mandates from a seed.
+    #[test]
+    fn a_mandate_the_policy_would_not_install_is_not_shown() {
+        let place = MandatePlace { account: ACCOUNT, entry_point: ENTRY, policy: POLICY, payees_enforced: true, trading_enforced: false };
+        let token = address!("a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1");
+        let transfer = FixedBytes::from([0xa9, 0x05, 0x9c, 0xbb]);
+        type Init = (Vec<Address>, Vec<FixedBytes<4>>, U256, U256, U256, Vec<(Address, U256, U256, B256)>, U256);
+        let good = || -> Init { (vec![COUNTER], vec![FixedBytes::from(SELECTOR_INCREMENT)], U256::from(1), U256::from(2), U256::from(NOW + 3600), vec![], U256::ZERO) };
+        let read = |m: Init| mandate_terms(&m.abi_encode_params(), &place, &|a| a.to_string());
+        let t = read(good()).unwrap();
+        assert_eq!((t.allow.len(), t.max_value, t.budget, t.valid_until, t.valid_after), (1, U256::from(1), U256::from(2), NOW + 3600, 0));
+        let over = U256::from(u128::MAX) + U256::from(1);
+        let x402 = |name: &str| FixedBytes::<4>::from_slice(&alloy_primitives::keccak256(name)[..4]);
+        let cases: Vec<(&str, Box<dyn Fn(&mut Init)>, &str)> = vec![
+            ("no call", Box::new(|m| (m.0.clear(), m.1.clear()).0), "allows no call"),
+            ("validUntil zero", Box::new(|m| m.4 = U256::ZERO), "never valid"),
+            ("validAfter at validUntil", Box::new(|m| m.6 = m.4), "never valid"),
+            ("validUntil past 48 bits", Box::new(|m| m.4 = U256::from(1u64 << 48)), "does not fit a timestamp"),
+            ("a value cap past 128 bits", Box::new(move |m| m.2 = over), "128 bits"),
+            ("a budget past 128 bits", Box::new(move |m| m.3 = over), "128 bits"),
+            ("a token cap past 128 bits", Box::new(move |m| m.5.push((token, over, U256::from(1), B256::ZERO))), "128 bits"),
+            ("a token budget past 128 bits", Box::new(move |m| m.5.push((token, U256::from(1), over, B256::ZERO))), "128 bits"),
+            ("a token at the zero address", Box::new(|m| m.5.push((Address::ZERO, U256::from(1), U256::from(1), B256::ZERO))), "zero address"),
+            ("a token twice", Box::new(move |m| m.5.extend([(token, U256::from(1), U256::from(1), B256::ZERO); 2])), "two for one token"),
+            ("the account as a target", Box::new(|m| (m.0.push(ACCOUNT), m.1.push(FixedBytes::ZERO)).0), "the account itself"),
+            ("the EntryPoint as a target", Box::new(|m| (m.0.push(ENTRY), m.1.push(FixedBytes::ZERO)).0), "EntryPoint"),
+            ("the policy outside x402", Box::new(move |m| (m.0.push(POLICY), m.1.push(transfer)).0), "outside its x402 and order entries"),
+        ];
+        for (what, change, why) in cases {
+            let mut m = good();
+            change(&mut m);
+            let refused = read(m).expect_err(what);
+            assert!(refused.contains(why), "{what}: {refused}");
+        }
+        // the policy's two x402 entries are the calls a mandate may make on it
+        for name in ["x402Authorize(address,address,address,uint256,uint256,uint256,bytes32)", "x402Reclaim(bytes32,address,address,uint256,uint256,uint256,bytes32)"] {
+            let mut m = good();
+            m.0.push(POLICY);
+            m.1.push(x402(name));
+            assert!(read(m).is_ok(), "{name}");
+        }
+        // `orderRegister` is an entry of a policy that holds venues, and of no other
+        let mut m = good();
+        m.0.push(POLICY);
+        m.1.push(x402("orderRegister(address,bytes,bytes)"));
+        assert!(read(m.clone()).unwrap_err().contains("outside its x402 and order entries"));
+        let trading = MandatePlace { trading_enforced: true, ..place };
+        assert!(mandate_terms(&m.abi_encode_params(), &trading, &|a| a.to_string()).is_ok());
+        // the largest values the policy holds are read
+        let mut m = good();
+        (m.2, m.3, m.4) = (U256::from(u128::MAX), U256::from(u128::MAX), U256::from((1u64 << 48) - 1));
+        assert!(read(m).is_ok());
+    }
+
     /// A refusal's reason is on the screen too: a request whose field name
     /// carries a line break and a right-to-left override is refused, and the
     /// reason shows neither.
@@ -2185,6 +2350,8 @@ mod tests {
         assert!(why.contains("SIGNED OK") && why.contains('?'), "{why:?}");
     }
 
+    /// The phone's path: the facts embedded for the request's chain. On Base
+    /// Sepolia the project's own contracts are known, a variant's paymaster is not.
     #[test]
     fn build_facts_drive_the_review() {
         let me = ACCOUNT;
