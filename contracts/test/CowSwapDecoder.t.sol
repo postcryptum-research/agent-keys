@@ -197,6 +197,53 @@ contract CowSwapDecoderTest is Test {
         _refused(o, abi.encodeWithSelector(CowSwapDecoder.FeeNotZero.selector));
     }
 
+    /// The borrow of the 512-bit product. For (2^256 - 1) * 1 against
+    /// 2^255 * 2 = 2^256 the low words are 2^256 - 1 and 0 and the high words
+    /// 0 and 1: one unit under the lowest price, refused. A product whose high
+    /// word forgets the borrow reads the first as larger and accepts it.
+    function test_judge_theLowestPriceCarriesTheBorrow() public {
+        CowSwapDecoder.Config memory c = _config();
+        c.pairs[1] = CowSwapDecoder.Pair(USDC, USDT, 2, 1);
+        CowSwapDecoder.Order memory o = _order();
+        o.buyToken = USDT;
+        o.sellAmount = 1 << 255;
+        o.buyAmount = type(uint256).max;
+        vm.expectRevert(abi.encodeWithSelector(CowSwapDecoder.BelowTheLowestPrice.selector));
+        decoder.judge(account, abi.encode(c), abi.encode(o));
+        // at the price exactly: 2^256 - 2 bought for 2^255 - 1 sold
+        o.sellAmount = (1 << 255) - 1;
+        o.buyAmount = type(uint256).max - 1;
+        decoder.judge(account, abi.encode(c), abi.encode(o));
+    }
+
+    /// The price rule against a product computed another way, in 128-bit
+    /// limbs, over the whole range.
+    function testFuzz_judge_theLowestPriceAgainstAReference(uint256 buy, uint256 sell, uint256 minBuy, uint256 perSell) public {
+        vm.assume(sell != 0 && minBuy != 0 && perSell != 0);
+        CowSwapDecoder.Config memory c = _config();
+        c.pairs[1] = CowSwapDecoder.Pair(USDC, USDT, minBuy, perSell);
+        CowSwapDecoder.Order memory o = _order();
+        o.buyToken = USDT;
+        o.sellAmount = sell;
+        o.buyAmount = buy;
+        (uint256 h1, uint256 l1) = _mulByLimbs(buy, perSell);
+        (uint256 h2, uint256 l2) = _mulByLimbs(sell, minBuy);
+        if (h1 < h2 || (h1 == h2 && l1 < l2)) vm.expectRevert(abi.encodeWithSelector(CowSwapDecoder.BelowTheLowestPrice.selector));
+        decoder.judge(account, abi.encode(c), abi.encode(o));
+    }
+
+    /// Schoolbook multiplication on 128-bit halves.
+    function _mulByLimbs(uint256 a, uint256 b) internal pure returns (uint256 hi, uint256 lo) {
+        uint256 m = type(uint128).max;
+        (uint256 a1, uint256 a0, uint256 b1, uint256 b0) = (a >> 128, a & m, b >> 128, b & m);
+        uint256 p00 = a0 * b0;
+        uint256 p01 = a0 * b1;
+        uint256 p10 = a1 * b0;
+        uint256 mid = (p00 >> 128) + (p01 & m) + (p10 & m);
+        lo = (p00 & m) | (mid << 128);
+        hi = a1 * b1 + (p01 >> 128) + (p10 >> 128) + (mid >> 128);
+    }
+
     /// `judge` on a config `checkConfig` would have refused: a pair twice
     /// (the first with a lax price) allows nothing, and neither do too many pairs.
     function test_judge_doesNotRestOnCheckConfig() public {
@@ -208,6 +255,14 @@ contract CowSwapDecoderTest is Test {
         (c.pairs[0], c.pairs[1]) = (c.pairs[1], c.pairs[0]);
         vm.expectRevert(abi.encodeWithSelector(CowSwapDecoder.PairListedTwice.selector));
         decoder.judge(account, abi.encode(c), order);
+
+        // a token paired with itself, with a price: no pair
+        c = _config();
+        c.pairs[1] = CowSwapDecoder.Pair(USDC, USDC, 1, 1);
+        CowSwapDecoder.Order memory same = _order();
+        same.buyToken = USDC;
+        vm.expectRevert(abi.encodeWithSelector(CowSwapDecoder.PairNotListed.selector, USDC, USDC));
+        decoder.judge(account, abi.encode(c), abi.encode(same));
 
         c = _config();
         CowSwapDecoder.Pair[] memory many = new CowSwapDecoder.Pair[](17);

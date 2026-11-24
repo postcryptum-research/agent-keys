@@ -134,6 +134,12 @@ contract CowSwapDecoder is IVenueDecoder {
     }
 
     /// @inheritdoc IVenueDecoder
+    /// @dev True means only that the settlement's `filledAmount` of the
+    /// order reads zero now. It does not mean the order was never filled:
+    /// after `validTo` an allowlisted solver may reset that word inside a
+    /// settlement (`freeFilledAmountStorage`, made for a gas refund), and a
+    /// filled order then reads as untouched. A caller that gives a charge
+    /// back on this answer alone can give back what was spent.
     function untouched(address account, bytes calldata order) external view override returns (bool) {
         Order memory o = _order(order);
         bytes memory uid = abi.encodePacked(_digest(order), account, o.validTo);
