@@ -89,13 +89,83 @@ struct Chain {
     url: String,
     dir: PathBuf,
     code: Value,
+    test: String,
+}
+
+/// Two contracts that pass their calldata on, the first to the second and
+/// the second to the EntryPoint: the validation tracer of a rule-enforcing
+/// bundler looks for the EntryPoint three calls deep, where the bundler's own
+/// simulation has it.
+const TRACE_VIA: [&str; 2] = ["0x00000000000000000000000000000000000a7562", "0x00000000000000000000000000000000000b7562"];
+
+fn forwarder(to: &str) -> String {
+    format!("0x363d3d373d3d363d3d73{}5af100", to.trim_start_matches("0x"))
+}
+
+impl Chain {
+    /// For the ERC-7562 check (`scripts/erc7562`, issue #83). With
+    /// `ERC7562_TRACER` naming a file with the bundler's validation tracer and
+    /// `ERC7562_TRACE_DIR` a directory, every `handleOps` this test got
+    /// included and that did not revert is run again on the state before its
+    /// block, under that tracer, and the trace is written there with the
+    /// operation's transaction. anvil mines a block per transaction here, so
+    /// the state before the block is the state the operation met, unless a
+    /// test changed the chain in between without a transaction
+    /// (`anvil_setCode` and the like); the same call is therefore made
+    /// plainly first and must succeed, or the trace would be of an operation
+    /// that failed half-way. Without the two variables this does nothing.
+    /// Needs an anvil that runs JavaScript tracers, and an empty directory:
+    /// files of an earlier run are not removed.
+    fn write_validation_traces(&self) {
+        let (Ok(tracer), Ok(out)) = (std::env::var("ERC7562_TRACER"), std::env::var("ERC7562_TRACE_DIR")) else { return };
+        let tracer = std::fs::read_to_string(tracer).expect("ERC7562_TRACER");
+        std::fs::create_dir_all(&out).unwrap();
+        let entry_point = self.addr("entryPoint").to_lowercase();
+        let latest = u64::from_str_radix(self.rpc("eth_blockNumber", json!([])).as_str().unwrap().trim_start_matches("0x"), 16).unwrap();
+        for n in 1..=latest {
+            let block = self.rpc("eth_getBlockByNumber", json!([format!("0x{n:x}"), true]));
+            let txs = block["transactions"].as_array().unwrap();
+            for (i, tx) in txs.iter().enumerate() {
+                let input = tx["input"].as_str().unwrap();
+                // handleOps(PackedUserOperation[],address)
+                if tx["to"].as_str().map(str::to_lowercase).as_deref() != Some(&entry_point) || !input.starts_with("0x765e827f") {
+                    continue;
+                }
+                // a `handleOps` that reverted on chain (a test of a refusal) included no operation
+                if self.rpc("eth_getTransactionReceipt", json!([tx["hash"]]))["status"] != "0x1" {
+                    continue;
+                }
+                assert_eq!(txs.len(), 1, "block {n} has more than one transaction: the state before it is not the state the operation met");
+                let before = format!("0x{:x}", n - 1);
+                // the forwarders do not pass a revert on, so the replay is asked directly first
+                let replay: Value = serde_json::from_str(&http_post(
+                    &self.url,
+                    &json!({"jsonrpc": "2.0", "id": 1, "method": "eth_call", "params": [{"from": tx["from"], "to": tx["to"], "data": input, "gas": "0x1c9c380"}, before]}).to_string(),
+                ))
+                .unwrap();
+                assert!(replay.get("error").is_none(), "{}: the handleOps of block {n} does not succeed on the state before it: {replay}", self.test);
+                let trace = self.rpc(
+                    "debug_traceCall",
+                    json!([{"from": tx["from"], "to": TRACE_VIA[0], "data": input, "gas": "0x1c9c380"}, before, {"tracer": tracer}]),
+                );
+                let file = Path::new(&out).join(format!("{}-{n:04}-{i}.json", self.test));
+                std::fs::write(file, json!({"test": self.test, "block": n, "from": tx["from"], "entryPoint": entry_point, "input": input, "trace": trace}).to_string()).unwrap();
+            }
+        }
+    }
 }
 
 impl Drop for Chain {
     fn drop(&mut self) {
+        // the traces need the chain; the chain and its directory (with a key file) must go whatever happens to them
+        let traced = (!std::thread::panicking())
+            .then(|| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.write_validation_traces())));
         let _ = self.anvil.kill();
         let _ = self.anvil.wait();
         let _ = std::fs::remove_dir_all(&self.dir);
+        if let Some(Err(panic)) = traced {
+            std::panic::resume_unwind(panic);
+        }
     }
 }
 
@@ -171,7 +241,7 @@ impl Chain {
             &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/chain-code.json")).unwrap(),
         )
         .unwrap();
-        let chain = Chain { anvil, url: format!("http://127.0.0.1:{port}"), dir, code };
+        let chain = Chain { anvil, url: format!("http://127.0.0.1:{port}"), dir, code, test: test.to_string() };
         let started = Instant::now();
         while TcpStream::connect(format!("127.0.0.1:{port}")).is_err() {
             assert!(started.elapsed() < Duration::from_secs(20), "anvil did not start");
@@ -194,18 +264,56 @@ impl Chain {
         self.code["contracts"][name]["address"].as_str().unwrap().to_string()
     }
 
+    /// ZeroDev's FactoryStaker as it stands on the chains the project runs on
+    /// (issue #102): it approves Kernel's factory and holds 0.1 ETH of stake
+    /// at the EntryPoint with a day's unstake delay. Its code is installed
+    /// without its storage, so an owner is written into Solady's owner slot
+    /// and does the two things the real owner did.
+    fn stake_the_factory_staker(&self) {
+        let staker = self.addr("kernelFactoryStaker");
+        let owner: Address = FACILITATOR.parse().unwrap();
+        // Solady Ownable: _OWNER_SLOT
+        let slot = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffff74873927";
+        self.rpc("anvil_setStorageAt", json!([staker, slot, B256::left_padding_from(owner.as_slice()).to_string()]));
+        let factory: Address = self.addr("kernelFactory").parse().unwrap();
+        let entry: Address = self.addr("entryPoint").parse().unwrap();
+        let call = |signature: &str, args: Vec<u8>, value: &str| {
+            let data = [&alloy::primitives::keccak256(signature)[..4], &args[..]].concat();
+            let tx = json!({"from": FACILITATOR, "to": staker, "data": Bytes::from(data).to_string(), "value": value, "gas": "0x989680"});
+            let hash = self.rpc("eth_sendTransaction", json!([tx]));
+            let started = Instant::now();
+            loop {
+                let r = self.rpc("eth_getTransactionReceipt", json!([hash]));
+                if !r.is_null() {
+                    assert_eq!(r["status"], "0x1", "{signature} reverted: {r}");
+                    break;
+                }
+                assert!(started.elapsed() < Duration::from_secs(10), "{signature}: no receipt");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        };
+        call("approveFactory(address,bool)", (factory, true).abi_encode(), "0x0");
+        call("stake(address,uint32)", (entry, 86_400u32).abi_encode(), "0x16345785d8a0000");
+    }
+
     fn install(&self) {
         for (_, c) in self.code["contracts"].as_object().unwrap() {
             self.rpc("anvil_setCode", json!([c["address"], c["code"]]));
         }
+        if std::env::var("ERC7562_TRACE_DIR").is_ok() {
+            self.rpc("anvil_setCode", json!([TRACE_VIA[1], forwarder(&self.addr("entryPoint"))]));
+            self.rpc("anvil_setCode", json!([TRACE_VIA[0], forwarder(TRACE_VIA[1])]));
+        }
         let deployments = json!({
             "chainId": 31337,
             "entryPoint": self.addr("entryPoint"), "kernel": self.addr("kernel"), "kernelFactory": self.addr("kernelFactory"),
+            "kernelFactoryStaker": self.addr("kernelFactoryStaker"),
             "p256Validator": self.addr("p256Validator"), "p256RecoveryValidator": self.addr("p256RecoveryValidator"),
             "p256Signer": self.addr("p256Signer"), "agentPolicy": self.addr("agentPolicy"),
             "safeNonceAssert": self.addr("safeNonceAssert"), "demoCounter": self.addr("demoCounter"),
         });
         std::fs::write(self.dir.join("deployments.json"), deployments.to_string()).unwrap();
+        self.stake_the_factory_staker();
         std::fs::write(self.dir.join("gas.key"), GAS_KEY).unwrap();
         std::fs::write(
             self.dir.join(".env"),
@@ -401,10 +509,16 @@ impl Chain {
     fn deploy(&self, cfg: &str) -> String {
         let init = self.ok(&["account", "init-data", "--agent", cfg]);
         let account = init.lines().find_map(|l| l.strip_prefix("account:")).unwrap().trim().to_string();
+        // the first operation names the staked factory, not Kernel's own (issue #102)
+        let init_code = init.lines().find_map(|l| l.strip_prefix("initCode:")).unwrap().trim().to_lowercase();
+        let staker = self.addr("kernelFactoryStaker").to_lowercase();
+        assert!(init_code.starts_with(&staker), "initCode names {}", &init_code[..42]);
         self.ok(&["account", "fund", "--agent", cfg, "--wei", "1000000000000000000"]);
         let before = self.counter();
         self.ok(&["demo", "--agent", cfg]);
         assert_eq!(self.counter(), before + U256::from(1), "the first operation deploys the account and runs");
+        // ... and the account is where Kernel's factory puts it, with code
+        assert!(self.rpc("eth_getCode", json!([account, "latest"])).as_str().unwrap().len() > 2, "no code at {account}");
         account
     }
 }
@@ -525,6 +639,24 @@ fn agent_lifecycle() {
     let pinned = chain.config("pinned.json", &Cfg { account: Some(account.clone()), ..base });
     let shown = chain.ok(&["permission", "show", "--agent", &pinned]);
     assert!(shown.contains("ok agent key") && !shown.contains("DIFF"), "{shown}");
+    // the key is shown whole, with its fingerprint: nothing is cut (issue #115)
+    let whole = |k: &Key| vec![format!("fingerprint {}", fingerprint_of(k)), format!("x = {}", k.x), format!("y = {}", k.y)];
+    for part in whole(&agent) {
+        assert!(shown.contains(&part), "{part}\n{shown}");
+    }
+    assert!(!shown.contains('…'), "{shown}");
+    // the sample output in docs/AGENT_CONFIG.md is this key's
+    assert_eq!(fingerprint_of(&agent), "BPQBJ-WZ7L7-7AHTA-QCCMZ");
+    assert_eq!(agent.x, "0x2f23ebb1c38db28363df39984086922a0585f3fa7fd315d8925ebd1663548c9f");
+    // a config that names another agent key: both keys can be read and told apart
+    let other = key(7);
+    let differs = chain.config("other-key.json", &Cfg { agent: &other, account: Some(account.clone()), ..base_cfg(&owner, &other, &counter, until) });
+    let shown = chain.ok(&["permission", "show", "--agent", &differs]);
+    assert!(shown.contains("DIFF agent key       chain:") && shown.contains("config: fingerprint"), "{shown}");
+    for part in whole(&agent).into_iter().chain(whole(&other)) {
+        assert!(shown.contains(&part), "{part}\n{shown}");
+    }
+    assert!(!shown.contains('…'), "{shown}");
 
     // rotate to a new agent key under a new id: the old permission is gone
     let rotated = chain.config(
@@ -600,7 +732,14 @@ fn recovery_drill() {
     let old_cfg = with("old-owner.json", &owner);
 
     chain.ok(&["owner", "add-recovery", "--agent", &old_cfg]);
-    assert!(chain.ok(&["owner", "status", "--agent", &old_cfg]).contains("installed = true"));
+    let status = chain.ok(&["owner", "status", "--agent", &old_cfg]);
+    assert!(status.contains("installed = true"), "{status}");
+    // both keys whole, each with its fingerprint: the root key and the recovery key (issue #115)
+    for (line, k) in [("root key:       ", &owner), ("recovery key:   ", &recovery)] {
+        let text = format!("{line}fingerprint {}\n                x = {}\n                y = {}", fingerprint_of(k), k.x, k.y);
+        assert!(status.contains(&text), "{text}\n{status}");
+    }
+    assert!(!status.contains('…'), "{status}");
     // a different recovery key is refused by the CLI's check against the
     // chain, before anything is signed
     let wrong = key(6);
@@ -610,6 +749,8 @@ fn recovery_drill() {
     );
     let refused = chain.fails(&["owner", "recover", "--agent", &wrong_cfg]);
     assert!(refused.contains("not the one installed on the account"), "{refused}");
+    // the refusal names both keys whole
+    assert!(refused.contains(&format!("x = {}", wrong.x)) && refused.contains(&format!("x = {}", recovery.x)) && !refused.contains('…'), "{refused}");
     chain.ok(&["owner", "recover", "--agent", &old_cfg]);
     let validator = chain.addr("p256Validator");
     let public_key = format!("{},{}", new_owner.x, new_owner.y);
@@ -1885,6 +2026,57 @@ fn x402_pay_and_reclaim() {
     assert!(reclaimed.contains("reclaimed 1 expired"), "{reclaimed}");
     assert!(chain.ok(&["permission", "show", "--agent", &cfg]).contains("(spent 250000)"));
     assert_eq!(payee_balance(), U256::from(250_000));
+}
+
+/// An account is created through ZeroDev's staked FactoryStaker when the
+/// deployments file names it and it still approves Kernel's factory, and
+/// through Kernel's factory itself otherwise (issue #102). The account is
+/// the same one at the same address either way: Kernel's factory derives
+/// it from the same data and salt, whoever calls it.
+#[test]
+fn an_account_is_created_through_the_staked_factory() {
+    let chain = chain_or_skip!("staker");
+    let (owner, agent) = (key(1), key(2));
+    let counter = chain.addr("demoCounter");
+    let cfg = chain.config("agent.json", &base_cfg(&owner, &agent, &counter, far_future(&chain)));
+    let (staker, factory) = (chain.addr("kernelFactoryStaker").to_lowercase(), chain.addr("kernelFactory").to_lowercase());
+    let field = |out: &str, name: &str| out.lines().find_map(|l| l.strip_prefix(name)).unwrap_or_else(|| panic!("no {name} in {out}")).trim().to_lowercase();
+
+    // the staker holds its stake at the EntryPoint, as on the real chains; Kernel's factory holds none
+    let stake = |who: &str| {
+        let data = [&alloy::primitives::keccak256("getDepositInfo(address)")[..4], &who.parse::<Address>().unwrap().abi_encode()[..]].concat();
+        let out = chain.call(&chain.addr("entryPoint"), data);
+        (U256::from_be_slice(&out[32..64]) == U256::from(1), U256::from_be_slice(&out[64..96]), U256::from_be_slice(&out[96..128]))
+    };
+    assert_eq!(stake(&staker), (true, U256::from(10u64).pow(U256::from(17)), U256::from(86_400)));
+    assert!(!stake(&factory).0);
+
+    let with = chain.ok(&["account", "init-data", "--agent", &cfg]);
+    assert!(field(&with, "initCode:").starts_with(&staker) && field(&with, "staker:") == staker, "{with}");
+
+    // a deployments file without the staker: Kernel's factory by name, the same account
+    let dep_path = chain.dir.join("deployments.json");
+    let mut dep: Value = serde_json::from_str(&std::fs::read_to_string(&dep_path).unwrap()).unwrap();
+    dep.as_object_mut().unwrap().remove("kernelFactoryStaker");
+    std::fs::write(chain.dir.join("deployments-plain.json"), dep.to_string()).unwrap();
+    let mut plain: Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    plain["deployments"] = json!(chain.dir.join("deployments-plain.json"));
+    let plain_cfg = chain.dir.join("agent-plain.json");
+    std::fs::write(&plain_cfg, plain.to_string()).unwrap();
+    let without = chain.ok(&["account", "init-data", "--agent", plain_cfg.to_str().unwrap()]);
+    assert!(field(&without, "initCode:").starts_with(&factory) && !without.contains("staker:"), "{without}");
+    assert_eq!(field(&with, "account:"), field(&without, "account:"));
+
+    // the staker's owner withdraws the approval: the CLI says so and names the factory itself
+    let revoke = [&alloy::primitives::keccak256("approveFactory(address,bool)")[..4], &(factory.parse::<Address>().unwrap(), false).abi_encode()[..]].concat();
+    chain.send_from(FACILITATOR, Some(&staker), revoke);
+    let fallen = chain.ok(&["account", "init-data", "--agent", &cfg]);
+    assert!(fallen.contains("no longer approves") && field(&fallen, "initCode:").starts_with(&factory), "{fallen}");
+    let approve = [&alloy::primitives::keccak256("approveFactory(address,bool)")[..4], &(factory.parse::<Address>().unwrap(), true).abi_encode()[..]].concat();
+    chain.send_from(FACILITATOR, Some(&staker), approve);
+
+    // created through the staker, the account is at that address and works
+    assert_eq!(chain.deploy(&cfg).to_lowercase(), field(&with, "account:"));
 }
 
 // ---------------------------------------------------------------- bundler and paymaster
