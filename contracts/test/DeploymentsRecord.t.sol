@@ -37,4 +37,31 @@ contract DeploymentsRecordTest is Test {
         // Base Sepolia's file at least: the test is not vacuous
         assertGt(checked, 0, "no deployments file was checked");
     }
+
+    /// @dev Every address a chain's deployments file records is on
+    /// docs/DEPLOYMENTS.md, written as the file writes it (checksummed), so
+    /// the page cannot fall behind a deployment.
+    function test_everyRecordedAddressIsOnTheDeploymentsPage() public {
+        string memory page = vm.readFile("../docs/DEPLOYMENTS.md");
+        uint256 checked;
+        for (uint256 i; i < chains.length; ++i) {
+            string memory path = string.concat("deployments/", vm.toString(chains[i]), ".json");
+            if (!vm.exists(path)) continue;
+            string memory recorded = vm.readFile(path);
+            string[] memory keys = vm.parseJsonKeys(recorded, "$");
+            for (uint256 k; k < keys.length; ++k) {
+                // The keys that are not addresses
+                bytes32 h = keccak256(bytes(keys[k]));
+                if (h == keccak256("chainId") || h == keccak256("solc") || h == keccak256("evmVersion")) continue;
+                address a = vm.parseJsonAddress(recorded, string.concat(".", keys[k]));
+                // A page that does not name the address fails, with the key and the file
+                assertTrue(
+                    vm.indexOf(page, vm.toString(a)) != type(uint256).max,
+                    string.concat(path, ": ", keys[k], " ", vm.toString(a), " is not on docs/DEPLOYMENTS.md")
+                );
+                ++checked;
+            }
+        }
+        assertGt(checked, 0, "no recorded address was checked");
+    }
 }
