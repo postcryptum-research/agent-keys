@@ -1111,6 +1111,13 @@ fn phone_simulator_after(qr_file: std::path::PathBuf, key: Key, mode: &'static s
             assert!(started.elapsed() < Duration::from_secs(30), "the CLI never showed a QR");
             std::thread::sleep(Duration::from_millis(50));
         };
+        // the QR file carries the session secret: written owner-only (#154)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&qr_file).expect("the QR file").permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "the QR file's mode is {mode:o}");
+        }
         let qr = QrPayload::parse(&uri).expect("a valid QR payload");
         let post = |body: Vec<u8>| {
             let body = String::from_utf8(body).unwrap();

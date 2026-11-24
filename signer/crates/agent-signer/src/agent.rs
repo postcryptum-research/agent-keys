@@ -499,6 +499,7 @@ pub fn parse32(s: &str) -> Result<[u8; 32]> {
 /// file that group or others may use is refused: the owner key behind it is
 /// out of the agent's reach only while root alone reads it (docs/KEY_POLICY.md
 /// rule 3, mode 0600).
+#[cfg_attr(not(feature = "tpm"), allow(dead_code))] // its callers are the TPM backend's
 pub fn read_auth_file(path: &Path) -> Result<Vec<u8>> {
     use std::io::Read;
     let mut file = std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;

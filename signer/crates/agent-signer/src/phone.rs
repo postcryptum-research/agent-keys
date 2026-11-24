@@ -431,7 +431,8 @@ fn lan_session<T>(
     eprintln!("{}", uri.replace(&secret, "<in the QR only>"));
     eprintln!("waiting up to {}s for the phone…", opts.timeout.as_secs());
     if let Some(path) = &opts.qr_file {
-        std::fs::write(path, &uri).map_err(|e| SessionError::Backend(format!("writing {}: {e}", path.display())))?;
+        // the URI carries the session secret: owner-only, like the enrollment records (#154)
+        crate::agent::write_private(path, uri.as_bytes()).map_err(|e| SessionError::Backend(format!("writing {}: {e:#}", path.display())))?;
     }
 
     let started = Instant::now();
