@@ -56,8 +56,15 @@ pub struct Deployments {
 /// or `{"handle": "0x81010013", "authFile": "/etc/tpm_sign/owner.auth"}` for a
 /// key protected by an authValue whose secret is that file — for the owner
 /// key on the agent's chip, a file only root can read (docs/KEY_POLICY.md).
+/// Unknown fields are an error: with `pcrs` and `authFile` both given, the
+/// key would otherwise load as sealed and the `authFile` go unread (#154).
 #[derive(Debug, Deserialize)]
-#[serde(untagged)]
+#[serde(
+    untagged,
+    deny_unknown_fields,
+    expecting = "a TPM key: a handle string, {\"handle\", \"pcrs\"} or {\"handle\", \"authFile\"} \
+                 (pcrs and authFile do not combine; no other fields)"
+)]
 pub enum TpmKey {
     Handle(String),
     Sealed { handle: String, pcrs: Vec<u8> },
