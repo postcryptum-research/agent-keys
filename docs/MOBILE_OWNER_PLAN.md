@@ -264,6 +264,12 @@ lets the core build the response (DER → r‖s, low-s, self-verified). Blind
 signing is gone. Where the build has no facts the phone's review emphasises
 what it cannot classify (a key on an unknown validator, every validator
 removal) and refuses a permission whose modules it cannot read.
+Sepolia (2026-11-24): the build knows a second chain, 11155111, from
+`contracts/deployments/11155111.json`: the policy that holds a budget per
+period and venues, CoW Swap's venue by its decoder's address and code hash
+(with the settlement and the vault relayer named), and USDC and WETH there.
+A trading mandate is readable on that chain only; an app has to be rebuilt
+to know it.
 Slice 3 (2026-11-13): the build knows the project's contracts.
 `owner-core/src/facts.rs` embeds the canonical
 `contracts/deployments/84532.json` (parsed in `build.rs`, so a broken file

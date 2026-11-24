@@ -2054,6 +2054,76 @@ mod tests {
         assert!(t.contains("demo counter (verified in this build)") && !t.contains("not the counter"), "{t}");
     }
 
+    /// On Sepolia the build knows the trading policy, CoW's venue by its
+    /// decoder's address and code, and the two tokens: a trading mandate there
+    /// is shown in full and can be signed, with its allowance; the same
+    /// mandate on the first policy instance, on Base Sepolia, or with another
+    /// decoder code is refused.
+    #[test]
+    fn a_trading_mandate_on_sepolia_is_read_from_the_build_facts() {
+        let f = crate::facts::for_chain(11155111);
+        let policy = f.trading_policy_modules[0];
+        let signer = f.signer_modules[0];
+        let (decoder, venue) = f.venues.iter().next().map(|(d, v)| (*d, v.clone())).unwrap();
+        let usdc = address!("1c7D4B196Cb0C7B01d743Fbc6116a902379C7238");
+        let weth = address!("fFf9976782d46CC05630D1f6eBAb18b2324d6B14");
+        // never under 0.0002 WETH for a USDC, orders of 30 minutes at most
+        let config = kernel::cow_config(B256::ZERO, 1800, &[(usdc, weth, U256::from(200_000_000_000_000u64), U256::from(1_000_000))]);
+        let params = |policy: Address| kernel::PolicyParams {
+            targets: vec![policy, policy],
+            selectors: vec![FixedBytes::from([0x27, 0xdd, 0xae, 0x76]), FixedBytes::from([0x43, 0x44, 0xb7, 0x33])],
+            max_value_per_op: 0,
+            budget: 10u128.pow(16),
+            valid_until: NOW + 30 * 86_400,
+            tokens: vec![(usdc, 20_000_000, 50_000_000, B256::ZERO)],
+            valid_after: 0,
+            payees: vec![],
+        };
+        let show = |chain: u64, policy: Address, code_hash: B256| {
+            let trading = kernel::Trading { period: 86_400, venues: vec![(decoder, code_hash, alloy_primitives::keccak256(&config))] };
+            let perm = FixedBytes::from([0x74, 0x72, 0x64, 0x31]);
+            let pdata = kernel::permission_data_with_trading(policy, &params(policy), &trading, signer, &key(2));
+            let mut approve = SELECTOR_ERC20_APPROVE.to_vec();
+            approve.extend_from_slice(&[0u8; 12]);
+            approve.extend_from_slice(venue.spender.as_slice());
+            approve.extend_from_slice(&U256::from(50_000_000u64).to_be_bytes::<32>());
+            let mut o = op(kernel::execute_batch_calldata(vec![
+                (ACCOUNT, U256::ZERO, kernel::install_permission_calldata(perm, pdata, 1)),
+                (ACCOUNT, U256::ZERO, kernel::grant_execute_calldata(perm)),
+                (usdc, U256::ZERO, approve.into()),
+            ]));
+            o.gas_fees = kernel::pack_gas(1, 1);
+            let bytes = SignRequest::new(&o, ENTRY, chain, NOW + 120, None, BTreeMap::new(), None)
+                .with_venue_configs(vec![config.clone()])
+                .to_bytes();
+            open_request_with_build_facts(&bytes, &commitment(&bytes), NOW, &[EnrolledAccount::new(chain, ENTRY, ACCOUNT)])
+        };
+
+        let r = show(11155111, policy, venue.code_hash);
+        let t = r.text();
+        assert_eq!(r.verdict, Verdict::Sign, "{t}");
+        for needed in [
+            "Trading on: CoW Swap (decoder 0x085883DD35e12d32de2F4f9d8CeFBE663ffa7cB0 verified in this build)",
+            "never for less than 0.0002 WETH per 1 USDC",
+            "Orders live: at most 30 minutes",
+            "Tokens are taken by: 0xC92E8bdf79f0507f65a392b0ab4667716BFE0110 — CoW Swap vault relayer (verified in this build)",
+            "Budgets renew: every day, from 00:00 UTC",
+            "may take 50 USDC for orders at CoW Swap: at most one budget",
+        ] {
+            assert!(t.contains(needed), "{needed}\n{t}");
+        }
+
+        let refused = |r: Review, why: &str| assert!(matches!(&r.verdict, Verdict::Refuse(m) if m.contains(why)), "{why}: {:?}", r.verdict);
+        // another code than the build knows for the decoder
+        refused(show(11155111, policy, B256::repeat_byte(7)), "pins other code");
+        // the first instance on Sepolia, which let a registration outlive its period
+        let first = address!("5Cfa68d42e4245c9Ba71e6103D4E2D99F3E40b42");
+        assert!(matches!(show(11155111, first, venue.code_hash).verdict, Verdict::Refuse(_)));
+        // Base Sepolia: no policy there knows periods, and the venue is not that chain's
+        let base = crate::facts::for_chain(84532);
+        assert!(matches!(show(84532, base.policy_modules[0], venue.code_hash).verdict, Verdict::Refuse(_)));
+    }
+
     /// The phone's path: the facts embedded for the request's chain. On Base
     /// Sepolia the project's own contracts are known, a variant's paymaster is not.
     #[test]
