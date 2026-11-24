@@ -226,7 +226,10 @@ contract TradingFuzzModel is Test {
             receiver: address(0),
             sellAmount: sell,
             buyAmount: sell * MIN_BUY + _below(3),
-            validTo: uint32(block.timestamp + life),
+            // also aimed at the period's last second and the first one after it
+            validTo: lifetimes == 4
+                ? uint32((block.timestamp / PERIOD + 1) * PERIOD - 1)
+                : lifetimes == 5 ? uint32((block.timestamp / PERIOD + 1) * PERIOD) : uint32(block.timestamp + life),
             appData: bytes32(0),
             feeAmount: 0,
             kind: KIND_SELL,
@@ -360,6 +363,8 @@ contract TradingFuzzModel is Test {
             uint256 amount;
             if (leg.isOrder) {
                 if (leg.value != 0 || !_withinTerms(leg.order)) return false;
+                // an order ends with the period it is charged in
+                if (leg.order.validTo > index * PERIOD + PERIOD - 1) return false;
                 amount = leg.order.sellAmount;
             } else {
                 (, amount) = abi.decode(_tail(leg.data), (address, uint256));

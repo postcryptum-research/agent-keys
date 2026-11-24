@@ -64,8 +64,9 @@ contract P256Validator is IValidator {
         override
         returns (uint256)
     {
-        return
-            _verify(msg.sender, userOpHash, userOp.signature) ? SIG_VALIDATION_SUCCESS_UINT : SIG_VALIDATION_FAILED_UINT;
+        return _verify(msg.sender, userOpHash, userOp.signature)
+            ? SIG_VALIDATION_SUCCESS_UINT
+            : SIG_VALIDATION_FAILED_UINT;
     }
 
     function isValidSignatureWithSender(address, bytes32 hash, bytes calldata signature)
@@ -82,7 +83,11 @@ contract P256Validator is IValidator {
         return publicKeys[account].x != 0;
     }
 
-    function _verify(address account, bytes32 hash, bytes calldata signature) internal view returns (bool) {
+    function _verify(address account, bytes32 hash, bytes calldata signature)
+        internal
+        view
+        returns (bool)
+    {
         if (signature.length != 64) return false;
         PublicKey memory key = publicKeys[account];
         if (key.x == 0) return false;

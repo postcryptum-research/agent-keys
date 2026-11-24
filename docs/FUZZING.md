@@ -81,7 +81,7 @@ as accepted only if the clock is inside that window.
 
 | Test | What must hold |
 |---|---|
-| `testFuzz_trading_modelDecisionsCountersAndOutflow` | the model and the policy decide every operation and every reclaim alike, 40 steps per seed, and count alike (native spent, token spent, the period seen); the account vouches for an order exactly while it is registered and not past its end; and, without leaning on the model's counters, in no period does more of the token leave than its budget, counting the transfers of that period and every order charged to it that the venue filled |
+| `testFuzz_trading_modelDecisionsCountersAndOutflow` | the model and the policy decide every operation and every reclaim alike (an order that would outlive the period it is charged in is refused by both), 40 steps per seed, and count alike (native spent, token spent, the period seen); the account vouches for an order exactly while it is registered and not past its end; and, without leaning on the model's counters, in no period does more of the token leave than its budget, counting the transfers of that period and every order charged to it that the venue filled |
 | `testFuzz_trading_noMoreThanTwoBudgetsAcrossARenewal` | the number the owner is shown: what is transferred in two neighbouring periods together is never more than two budgets |
 
 ```sh
@@ -100,6 +100,21 @@ was accepted. Nothing more could be spent than the two budgets across a
 renewal that the owner is told of, and no earlier test held that second.
 The bound is corrected and the model holds it.
 
+**What it did not find, and a review did.** An order or an x402
+authorization was charged in the period it was registered in and stayed
+good after that period: with a lifetime longer than a period, several
+periods' registrations could be taken together, past the "twice a budget
+and no more" the owner is shown. The model missed it for two reasons a
+generator should be checked for: its orders lived 600 seconds against a
+period of 1,000 and were filled within the step that made them, and it has
+no x402 at all. The policy now refuses a registration that ends after its
+period; the model holds the rule for orders and aims at the period's last
+second and the one after it, and `Trading.t.sol` holds it for x402
+(`test_period_anAuthorizationEndsWithThePeriodItIsChargedIn`: three days'
+authorizations, of which only the last can still be used). Breaking the new
+rule five ways (no check for x402, none for orders, each bound off by one,
+the period's end not noted) is found every time.
+
 **That it bites.** Eighteen rules were broken in the source one at a time:
 the period's first second, the reset of the native and of the token counter,
 the period's end, a refund across periods, a reclaim at `validTo` and of a
@@ -116,7 +131,8 @@ from now). Both checks stay in the policy; they do not rest on the clock.
 **What it does not cover.** One venue, one pair, one token with a limit;
 the decoder is the real one, the settlement is not. The mandate's own
 window (`validAfter`, `validUntil`) is wide open here and is held by the
-earlier tests. The Safe paths and x402 are not mixed in.
+earlier tests. The Safe paths and x402 are not mixed in: x402 under a
+period is held by examples in `Trading.t.sol`, not by the model.
 
 ## Rust
 

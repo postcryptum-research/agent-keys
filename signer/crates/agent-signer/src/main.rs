@@ -245,6 +245,10 @@ enum PermissionCmd {
         /// 4-byte hex permission id to remove.
         #[arg(long)]
         id: String,
+        /// The config the permission was installed from, when this one no
+        /// longer holds its venue's terms: its allowances are taken back.
+        #[arg(long)]
+        old_config: Option<PathBuf>,
         #[arg(long)]
         sponsored: bool,
     },
@@ -285,6 +289,11 @@ enum PermissionCmd {
         agent: AgentArgs,
         #[arg(long)]
         old_id: String,
+        /// The config the old permission was installed from, when this one
+        /// no longer holds its venue's terms: the allowances the new
+        /// mandate does not take over are taken back in the same operation.
+        #[arg(long)]
+        old_config: Option<PathBuf>,
         #[arg(long)]
         sponsored: bool,
         /// Print the batch calldata instead of sending it.
@@ -1455,9 +1464,10 @@ async fn main() -> Result<()> {
             }
         },
         Cmd::Permission { cmd } => match cmd {
-            PermissionCmd::Revoke { agent, id, sponsored } => {
+            PermissionCmd::Revoke { agent, id, old_config, sponsored } => {
                 let s = session(&agent).await?;
-                let inc = s.revoke_permission(parse_permission_id(&id)?, sponsored).await?;
+                let old = old_config.as_deref().map(AgentConfig::load).transpose()?.map(|c| c.0);
+                let inc = s.revoke_permission(parse_permission_id(&id)?, old.as_ref(), sponsored).await?;
                 println!("revoked permission {id}: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
             }
             PermissionCmd::Show { agent } => session(&agent).await?.permission_show().await?,
@@ -1487,17 +1497,18 @@ async fn main() -> Result<()> {
                 let inc = s.renew_venue_allowances(sponsored).await?;
                 println!("venue allowances set to one budget: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
             }
-            PermissionCmd::Rotate { agent, old_id, sponsored, dry_run } => {
+            PermissionCmd::Rotate { agent, old_id, old_config, sponsored, dry_run } => {
+                let old = old_config.as_deref().map(AgentConfig::load).transpose()?.map(|c| c.0);
                 let s = session(&agent).await?;
                 if !s.pinned {
                     bail!("pin the deployed account in the config (\"account\": \"0x…\") before rotating");
                 }
                 if dry_run {
                     println!("account:  {}", s.account);
-                    println!("callData: {}", s.rotate_calldata(parse_permission_id(&old_id)?).await?);
+                    println!("callData: {}", s.rotate_calldata(parse_permission_id(&old_id)?, old.as_ref()).await?);
                     return Ok(());
                 }
-                let inc = s.rotate_permission(parse_permission_id(&old_id)?, sponsored).await?;
+                let inc = s.rotate_permission(parse_permission_id(&old_id)?, old.as_ref(), sponsored).await?;
                 println!(
                     "rotated {old_id} -> {}: tx {} (block {}, {} gas)",
                     s.cfg.permission_id, inc.tx, inc.block, inc.gas_used

@@ -24,6 +24,9 @@ pub struct Deployments {
     pub p256_signer: Address,
     pub agent_policy: Address,
     pub demo_counter: Address,
+    /// The chain's CoW Swap decoder, where CoW Protocol runs.
+    #[serde(default)]
+    pub cow_swap_decoder: Option<Address>,
     /// Present once `Deploy.s.sol` has deployed the paymaster for this chain.
     #[serde(default)]
     pub whitelist_paymaster: Option<Address>,

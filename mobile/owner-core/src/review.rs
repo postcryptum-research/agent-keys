@@ -201,6 +201,11 @@ struct Builder<'a> {
     venue_configs: &'a [Bytes],
     sections: Vec<Section>,
     warnings: Vec<String>,
+    /// What the mandates installed in this operation sell at a venue:
+    /// `(token, the venue's spender, the token's budget, the venue's name)`.
+    sold: Vec<(Address, Address, U256, String)>,
+    /// Every ERC-20 `approve` of this operation: `(token, spender, amount)`.
+    approvals: Vec<(Address, Address, U256)>,
 }
 
 impl Builder<'_> {
@@ -313,6 +318,8 @@ fn open_with(
         venue_configs: &req.laptop.venue_configs,
         sections: Vec::new(),
         warnings: Vec::new(),
+        sold: Vec::new(),
+        approvals: Vec::new(),
     };
     let s = b.section("Operation");
     b.row(s, "Account", op.sender.to_checksum(None));
@@ -352,6 +359,31 @@ fn open_with(
             external_call(&mut b, s, *target, *value, data, acct, &labels)
         };
         if let Err(why) = outcome {
+            return Review::refused(c, b.sections, why);
+        }
+    }
+    // An operation that installs a trading mandate carries the allowance the
+    // venue takes the sold tokens through. That allowance is spent past the
+    // mandate, so it is held to the mandate here, wherever in the batch it
+    // stands: of a token the mandate sells, only to that venue's spender, and
+    // one budget at most. A laptop that put another spender there would get a
+    // budget of the token outright.
+    for (token, who, amount) in &b.approvals {
+        let venues: Vec<&(Address, Address, U256, String)> = b.sold.iter().filter(|v| v.0 == *token).collect();
+        if venues.is_empty() {
+            continue;
+        }
+        let Some(v) = venues.iter().find(|v| v.1 == *who) else {
+            let why = format!(
+                "this operation installs a mandate that sells {} at {}, and gives an allowance of that token to {}, which is not the venue's spender; refused",
+                b.name(*token),
+                venues[0].3,
+                who.to_checksum(None)
+            );
+            return Review::refused(c, b.sections, why);
+        };
+        if *amount > v.2 {
+            let why = format!("the allowance of {} to {} is {}, more than the token's budget; refused", b.name(*token), v.3, b.token_amount(*token, *amount));
             return Review::refused(c, b.sections, why);
         }
     }
@@ -821,7 +853,7 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
             }
         }
         if let Some((_, venues)) = &trading {
-            let capped: Vec<Address> = tokens.iter().map(|t| t.0).collect();
+            let capped: Vec<(Address, U256)> = tokens.iter().map(|t| (t.0, t.2)).collect();
             let listed: Vec<Address> = payees.iter().map(|p| p.0).collect();
             venue_rows(b, s, venues, &targets, &capped, &listed)?;
         }
@@ -851,10 +883,12 @@ fn period_text(period: u32) -> String {
         3_600 => "every hour".to_string(),
         604_800 => "every 7 days, counted from 1970-01-01 (a Thursday) 00:00 UTC".to_string(),
         p if p % 86_400 == 0 => format!("every {} days, counted from 1970-01-01 00:00 UTC", p / 86_400),
-        p if p % 3_600 == 0 => format!("every {} hours, counted from 00:00 UTC", p / 3_600),
+        // whole hours start at the same times each day only when they divide a day
+        p if p % 3_600 == 0 && 86_400 % p == 0 => format!("every {} hours, counted from 00:00 UTC", p / 3_600),
+        p if p % 3_600 == 0 => format!("every {} hours, counted from 1970-01-01 00:00 UTC", p / 3_600),
         p => format!("every {p} seconds, counted from 1970-01-01 00:00 UTC"),
     };
-    format!("{every}. Each budget above is per period; across a renewal up to twice a budget can be spent in a short time")
+    format!("{every}. Each budget above is per period; across a renewal up to twice a budget can be spent in a short time, and no more: a payment or an order the agent registers ends with its period")
 }
 
 /// A CoW Swap venue's terms as the phone reads them from the config bytes.
@@ -906,7 +940,7 @@ fn venue_rows(
     s: usize,
     venues: &[(Address, B256, B256)],
     targets: &[Address],
-    capped: &[Address],
+    capped: &[(Address, U256)],
     listed: &[Address],
 ) -> Result<(), String> {
     for (i, (decoder, code_hash, config_hash)) in venues.iter().enumerate() {
@@ -932,9 +966,10 @@ fn venue_rows(
         for (sell, buy, min_buy, per_sell) in pairs.iter() {
             // the policy registers an order only for a token it limits, and not for one
             // with a payee list: a pair it would never let through is not shown as allowed
-            if !capped.contains(sell) {
+            let Some((_, budget)) = capped.iter().find(|c| c.0 == *sell) else {
                 return Err(format!("the config for {} sells a token this mandate does not limit; refused", venue.name));
-            }
+            };
+            b.sold.push((*sell, venue.spender, *budget, venue.name.clone()));
             if listed.contains(sell) {
                 return Err(format!("the config for {} sells a token whose payees this mandate lists; what is sold goes to whoever fills the order; refused", venue.name));
             }
@@ -1010,11 +1045,11 @@ fn external_call(
             return Err("an ERC-20 call with a non-canonical address word; refused".into());
         }
         let who = Address::from_slice(&data[16..36]);
-        let amount = U256::from_be_slice(&data[36..68]);
-        let amount = match (amount == U256::MAX, b.facts.tokens.get(&target)) {
+        let raw = U256::from_be_slice(&data[36..68]);
+        let amount = match (raw == U256::MAX, b.facts.tokens.get(&target)) {
             (true, Some(t)) => format!("unlimited {}", t.symbol),
             (true, None) => "unlimited".to_string(),
-            (false, _) => b.token_amount(target, amount),
+            (false, _) => b.token_amount(target, raw),
         };
         if selector == SELECTOR_ERC20_TRANSFER {
             // tokens are payments too: plain only to a contract the build knows
@@ -1024,8 +1059,20 @@ fn external_call(
                 b.bold(s, "ERC-20 transfer", format!("{amount} to {}, an address this build does not know", who.to_checksum(None)));
             }
         } else {
-            // an approval hands spending rights to a third party
-            b.bold(s, "ERC-20 approve", format!("{} may spend {amount} of this token", who.to_checksum(None)));
+            b.approvals.push((target, who, raw));
+            match b.sold.iter().find(|v| v.0 == target && v.1 == who && raw <= v.2) {
+                // the allowance that goes with a trading mandate of this operation
+                Some(v) => {
+                    let text = if raw.is_zero() {
+                        format!("{} — taken back", b.name(who))
+                    } else {
+                        format!("{} may take {amount} for orders at {}: at most one budget of this token", b.name(who), v.3)
+                    };
+                    b.row(s, "Allowance to the venue", text)
+                }
+                // an approval hands spending rights to a third party
+                None => b.bold(s, "ERC-20 approve", format!("{} may spend {amount} of this token", b.name(who))),
+            }
         }
         return Ok(());
     }
@@ -1309,6 +1356,69 @@ mod tests {
         assert!(r.text().contains("this build does not know what it stands for"), "{}", r.text());
         assert!(matches!(&r.verdict, Verdict::SignWithWarnings(w) if w.iter().any(|w| w.contains("appData"))), "{:?}", r.verdict);
         assert!(r.needs_second_confirmation());
+    }
+
+    /// The allowance that goes with a trading install is spent past the
+    /// mandate, so the review holds it to the mandate: only the venue's
+    /// spender, one budget at most, wherever in the batch it stands. A
+    /// laptop that swapped the spender would otherwise get a budget of the
+    /// token behind a screen that differs in one address.
+    #[test]
+    fn the_allowance_of_a_trading_install_goes_to_the_venue_and_is_one_budget() {
+        let (p, f, c) = (trading_params(), trading_facts(), cow());
+        let other = address!("d00000000000000000000000000000000000000d");
+        let show = |token: Address, spender: Address, amount: u64, first: bool| {
+            let perm = FixedBytes::from([0x74, 0x72, 0x61, 0x64]);
+            let pdata = kernel::permission_data_with_trading(POLICY, &p, &one_venue(&c), SIGNER, &key(2));
+            let mut approve = SELECTOR_ERC20_APPROVE.to_vec();
+            approve.extend_from_slice(&[0u8; 12]);
+            approve.extend_from_slice(spender.as_slice());
+            approve.extend_from_slice(&U256::from(amount).to_be_bytes::<32>());
+            let mut calls = vec![
+                (ACCOUNT, U256::ZERO, kernel::install_permission_calldata(perm, pdata, 1)),
+                (ACCOUNT, U256::ZERO, kernel::grant_execute_calldata(perm)),
+            ];
+            calls.insert(if first { 0 } else { 2 }, (token, U256::ZERO, approve.into()));
+            let mut o = op(kernel::execute_batch_calldata(calls));
+            o.gas_fees = kernel::pack_gas(1, 1);
+            let bytes = SignRequest::new(&o, ENTRY, 31337, NOW + 120, None, BTreeMap::new(), None)
+                .with_venue_configs(vec![c.clone()])
+                .to_bytes();
+            open_request(&bytes, &commitment(&bytes), NOW, &enrolled(), &f)
+        };
+        let refused = |r: Review, why: &str| match r.verdict {
+            Verdict::Refuse(w) => assert!(w.contains(why), "{w}"),
+            v => panic!("not refused: {v:?}"),
+        };
+
+        // to the venue's spender, one budget: a plain row that names it
+        let r = show(USD, RELAYER, 1_000_000_000, false);
+        assert_eq!(r.verdict, Verdict::Sign, "{}", r.text());
+        let t = r.text();
+        assert!(t.contains("Allowance to the venue") && t.contains("CoW Swap vault relayer (verified in this build) may take 1000 USDC for orders at CoW Swap: at most one budget"), "{t}");
+        assert!(!t.contains("ERC-20 approve"), "{t}");
+        // less than a budget, and none at all
+        assert_eq!(show(USD, RELAYER, 5, false).verdict, Verdict::Sign);
+        assert!(show(USD, RELAYER, 0, false).text().contains("taken back"));
+
+        // to anyone else: refused, after the install or before it
+        refused(show(USD, other, 1_000_000_000, false), "not the venue's spender");
+        refused(show(USD, other, 1_000_000_000, true), "not the venue's spender");
+        refused(show(USD, other, 1, false), "not the venue's spender");
+        // more than one budget: refused
+        refused(show(USD, RELAYER, 1_000_000_001, false), "more than the token's budget");
+        refused(show(USD, RELAYER, 1_000_000_001, true), "more than the token's budget");
+        // a token the mandate does not sell is not this rule's: the bold row, as before
+        let r = show(COUNTER, other, 7, false);
+        assert!(r.text().contains("ERC-20 approve"), "{}", r.text());
+    }
+
+    #[test]
+    fn a_period_reads_as_it_is_counted() {
+        assert!(period_text(6 * 3_600).starts_with("every 6 hours, counted from 00:00 UTC"));
+        // five hours do not divide a day: the windows start at other hours each day
+        assert!(period_text(5 * 3_600).starts_with("every 5 hours, counted from 1970-01-01 00:00 UTC"));
+        assert!(period_text(86_400).contains("a payment or an order the agent registers ends with its period"));
     }
 
     #[test]

@@ -114,7 +114,7 @@ impl Session {
         let allowed = token.allowance(self.account, on.spender).call().await.context("reading the venue's allowance")?;
         if allowed < sell_amount {
             bail!(
-                "the account lets the venue's spender {} take {allowed} of {sell_token}, less than this order sells: the owner gives the allowance with the mandate (`permission add` / `rotate`)",
+                "the account lets the venue's spender {} take {allowed} of {sell_token}, less than this order sells: the owner gives the allowance with the mandate and renews it with `permission allowance`",
                 on.spender
             );
         }
@@ -123,12 +123,25 @@ impl Session {
             bail!("the account holds {balance} of {sell_token}, less than this order sells");
         }
 
-        let valid_to = u32::try_from(self.chain_time().await? + valid_for as u64).context("validTo")?;
+        // Under a budget per period an order ends with the period it is
+        // charged in: the policy refuses one that could be filled later.
+        let now = self.chain_time().await?;
+        let mut until = now + valid_for as u64;
+        if let Some(next) = self.period_next().await? {
+            const LEAST_LIFE_SECS: u64 = 60;
+            if next - now <= LEAST_LIFE_SECS {
+                bail!("this budget period ends in {} s, and an order ends with the period it is charged in: place it after the renewal", next - now);
+            }
+            if until > next - 1 {
+                until = next - 1;
+                eprintln!("order:          lives {} s, to the end of this budget period, not the {valid_for} s asked for", until - now);
+            }
+        }
+        let valid_to = u32::try_from(until).context("validTo")?;
         let order = CowSellOrder { sell_token, buy_token, sell_amount, buy_amount, valid_to, app_data: v.app_data };
         let digest = order.digest(on.domain);
         eprintln!("order:          sell {sell_amount} of {sell_token} for at least {buy_amount} of {buy_token}, until {valid_to}");
 
-        // 1. register: the mandate judges it like any other operation
         let policy = self.installed_policy().await?;
         // An order is its digest: the same amounts until the same second are
         // the same order, and the policy registers one once.
@@ -140,21 +153,25 @@ impl Session {
         if pending.len() >= 32 && !U256::from_be_slice(&pending[..32]).is_zero() {
             bail!("this order (the same tokens and amounts, until {valid_to}) is already registered under the mandate: an order differs by an amount or by its lifetime (--valid-for)");
         }
+        // 1. sign it under the permission first: the signature does not depend on
+        // the registration, and a signer that fails then has charged nothing
+        let wrapped = kernel::kernel_wrapped_hash(self.account, self.dep.chain_id, digest);
+        let sig = open_signer(&self.cfg.agent, Role::Agent)?.sign_digest(&wrapped.0)?;
+        let signature = kernel::permission_1271_signature(self.cfg.permission_id()?, &sig);
+
+        // 2. register: the mandate judges it like any other operation
         let call = kernel::order_register_calldata(v.decoder, &config, &order.encode());
         let inc = self.send_op(policy, U256::ZERO, call, false, sponsored, None).await?;
         eprintln!("registered:     tx {} (block {})", inc.tx, inc.block);
 
-        // 2. sign it under the permission, and ask the account the way the venue will
-        let wrapped = kernel::kernel_wrapped_hash(self.account, self.dep.chain_id, digest);
-        let sig = open_signer(&self.cfg.agent, Role::Agent)?.sign_digest(&wrapped.0)?;
-        let signature = kernel::permission_1271_signature(self.cfg.permission_id()?, &sig);
+        // 3. ask the account the way the venue will
         let magic = IErc1271::new(self.account, self.provider.clone())
             .isValidSignature(digest, signature.clone())
             .call()
             .await
             .context("isValidSignature reverted")?;
         if magic.0 != ERC1271_MAGIC {
-            bail!("the account does not vouch for this order (isValidSignature = {magic}); was it registered?");
+            bail!("the account does not vouch for this order (isValidSignature = {magic}), although it is registered (tx {}) and charged to the budget: it comes back with `order reclaim` after its end ({valid_to})", inc.tx);
         }
         let uid = [digest.as_slice(), self.account.as_slice(), &valid_to.to_be_bytes()].concat().into();
         Ok(Placed { order, digest, uid, signature, tx: inc.tx, account: self.account })
@@ -169,6 +186,10 @@ impl Session {
         let id32 = B256::right_padding_from(self.cfg.permission_id()?.as_slice());
         let latest = self.provider.get_block_number().await?;
         let start = from_block.unwrap_or(latest.saturating_sub(50_000));
+        eprintln!(
+            "reclaim:        looking at blocks {start} to {latest}{}",
+            if from_block.is_none() { "; an order registered before that is not found: pass --from-block" } else { "" }
+        );
         let now = self.chain_time().await?;
         let base = Filter::new()
             .address(policy)

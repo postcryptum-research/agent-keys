@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {AgentPermissionTest, MockToken, Counter} from "./AgentPermission.t.sol";
+import {AgentPermissionTest, MockToken, MockUSDC, Counter} from "./AgentPermission.t.sol";
 import {AgentPolicy} from "../src/AgentPolicy.sol";
 import {CowSwapDecoder} from "../src/venues/CowSwapDecoder.sol";
 import {IVenueDecoder} from "../src/venues/IVenueDecoder.sol";
@@ -233,6 +233,11 @@ contract TradingTest is AgentPermissionTest {
             sellTokenBalance: keccak256("erc20"),
             buyTokenBalance: keccak256("erc20")
         });
+    }
+
+    /// The last second of the period the clock is in.
+    function _periodEnd() internal view returns (uint32) {
+        return uint32((uint256(_today()) + 1) * DAY - 1);
     }
 
     function _soon() internal view returns (uint32) {
@@ -721,9 +726,10 @@ contract TradingTest is AgentPermissionTest {
     function test_period_twiceTheBudgetAcrossABoundaryAndNoMore() public {
         _with(DAY);
         vm.warp((uint256(_today()) + 1) * DAY - 5 minutes);
-        _register(_order(200e6, _soon()));
-        _register(_order(200e6, _soon() + 1));
-        _register(_order(100e6, _soon() + 2));
+        // an order ends with its period: these live for its last minutes
+        _register(_order(200e6, _periodEnd()));
+        _register(_order(200e6, _periodEnd() - 1));
+        _register(_order(100e6, _periodEnd() - 2));
         vm.warp(block.timestamp + 6 minutes); // the next period
         _register(_order(200e6, _soon()));
         _register(_order(200e6, _soon() + 1));
@@ -735,10 +741,71 @@ contract TradingTest is AgentPermissionTest {
 
     /// A refund belongs to the period of its charge: an order of yesterday,
     /// reclaimed today, gives today's budget nothing.
+    /// What is registered under a period ends with that period. An order
+    /// may be filled up to and at its `validTo`, so that is the period's last
+    /// second at the latest; one second more and it could be taken in the
+    /// next period, beside that period's own budget.
+    function test_period_anOrderEndsWithThePeriodItIsChargedIn() public {
+        _with(DAY);
+        vm.warp((uint256(_today()) + 1) * DAY - 5 minutes);
+        _expectRefused(_tradeOp(_today(), address(policy), 0, _registerCall(_order(100e6, _periodEnd() + 1))));
+        _expectRefused(_tradeOp(_today(), address(policy), 0, _registerCall(_order(100e6, _soon()))));
+        _register(_order(100e6, _periodEnd()));
+        assertEq(_usdSpent(), 100e6);
+    }
+
+    /// The same for x402: an authorization can be used before its
+    /// `validBefore`, so that is the next period's first second at the
+    /// latest. With a budget of one unit a day, a unit registered on each of
+    /// three days cannot be taken together on the third: the earlier ones
+    /// are over.
+    function test_period_anAuthorizationEndsWithThePeriodItIsChargedIn() public {
+        _world();
+        usdc = new MockUSDC();
+        usdc.mint(acct, 100e6);
+        address[] memory targets = new address[](2);
+        bytes4[] memory selectors = new bytes4[](2);
+        (targets[0], selectors[0]) = (address(policy), AgentPolicy.x402Authorize.selector);
+        (targets[1], selectors[1]) = (address(counter), Counter.increment.selector);
+        AgentPolicy.TokenCap[] memory caps = new AgentPolicy.TokenCap[](1);
+        caps[0] = AgentPolicy.TokenCap(address(usdc), 1e6, 1e6, usdc.DOMAIN_SEPARATOR());
+        AgentPolicy.TokenPayees[] memory none = new AgentPolicy.TokenPayees[](0);
+        AgentPolicy.Venue[] memory noVenues = new AgentPolicy.Venue[](0);
+        _install(
+            TRD_ID, abi.encode(targets, selectors, MAX_VALUE, BUDGET, tradingExpiry, caps, uint48(0), none, DAY, noVenues)
+        );
+
+        uint256 next = (uint256(_today()) + 1) * DAY;
+        // past the period: refused, by a second and by ten days
+        _expectRefused(_tradeOp(_today(), address(policy), 0, _authorizeCall(1e6, next + 1, bytes32(uint256(90)))));
+        _expectRefused(_tradeOp(_today(), address(policy), 0, _authorizeCall(1e6, T0 + 10 days, bytes32(uint256(91)))));
+
+        bytes32[3] memory digests;
+        uint256[3] memory befores;
+        for (uint256 day; day < 3; day++) {
+            befores[day] = (uint256(_today()) + 1) * DAY; // usable to the period's last second
+            digests[day] = usdc.digestOf(acct, PAYEE, 1e6, 0, befores[day], bytes32(day + 1));
+            _send(_tradeOp(_today(), address(policy), 0, _authorizeCall(1e6, befores[day], bytes32(day + 1))));
+            assertEq(policy.tokenLimit(acct, TRD, address(usdc)).spent, 1e6, "the day's budget is used up");
+            if (day < 2) vm.warp(block.timestamp + 1 days);
+        }
+        uint256 taken;
+        for (uint256 day; day < 3; day++) {
+            bytes memory signature = abi.encodePacked(
+                bytes1(0x02), PermissionId.unwrap(TRD_ID), bytes1(0xff), _sign(AGENT, _kernelWrapped(digests[day]))
+            );
+            try usdc.transferWithAuthorization(acct, PAYEE, 1e6, 0, befores[day], bytes32(day + 1), signature) {
+                taken++;
+            } catch {}
+        }
+        assertEq(taken, 1, "only the third day's authorization can still be used");
+        assertEq(usdc.balanceOf(PAYEE), 1e6, "one day's budget left the account");
+    }
+
     function test_period_aRefundDoesNotCrossIntoTheNextPeriod() public {
         _with(DAY);
         vm.warp((uint256(_today()) + 1) * DAY - 5 minutes);
-        CowSwapDecoder.Order memory old = _order(150e6, _soon());
+        CowSwapDecoder.Order memory old = _order(150e6, _periodEnd());
         _register(old);
         vm.warp(block.timestamp + 1 hours);
         _register(_order(200e6, _soon()));

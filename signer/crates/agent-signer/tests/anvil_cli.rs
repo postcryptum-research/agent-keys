@@ -1879,7 +1879,9 @@ fn trading_orders_under_a_mandate() {
     let account = chain.deploy(&chain.config("agent.json", &base_cfg(&owner, &agent, &counter, until)));
     // the trading mandate: 200 a time, 300 a period, never under 0.0002 WETH for a USD
     const PERIOD: u64 = 30 * 86_400;
-    let trading = |name: &str, permission: &'static str| {
+    let decoder_code = chain.rpc("eth_getCode", json!([decoder, "latest"]));
+    let decoder_hash = alloy::primitives::keccak256(hex::decode(decoder_code.as_str().unwrap().trim_start_matches("0x")).unwrap());
+    let trading = |name: &str, permission: &'static str, code_hash: Option<String>| {
         let path = chain.config(
             name,
             &Cfg {
@@ -1896,10 +1898,23 @@ fn trading_orders_under_a_mandate() {
             "kind": "cowswap", "decoder": decoder, "appData": format!("0x{}", "00".repeat(32)), "maxLife": 1800,
             "pairs": [{"sellToken": usd, "buyToken": weth, "minBuy": "200000000000000", "perSell": "1000000"}],
         }]);
+        if let Some(h) = code_hash {
+            v["policy"]["venues"][0]["codeHash"] = json!(h);
+        }
         std::fs::write(&path, v.to_string()).unwrap();
         path
     };
-    let cfg = trading("trading.json", "0x74726431");
+    // a decoder the deployments file does not name is taken only with its code hash stated
+    let unnamed = trading("unnamed.json", "0x74726431", None);
+    let out = chain.cli(&["permission", "show", "--agent", &unnamed]);
+    assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("state its `codeHash`"), "{}", String::from_utf8_lossy(&out.stderr));
+    let cfg = trading("trading.json", "0x74726431", Some(decoder_hash.to_string()));
+    // from here on the deployments file names it, as `script/Deploy.s.sol` writes it on a chain CoW runs on
+    let dep_path = chain.dir.join("deployments.json");
+    let mut dep: Value = serde_json::from_str(&std::fs::read_to_string(&dep_path).unwrap()).unwrap();
+    dep["cowSwapDecoder"] = json!(decoder);
+    std::fs::write(&dep_path, dep.to_string()).unwrap();
+    chain.ok(&["permission", "show", "--agent", &unnamed]);
     let acct: Address = account.parse().unwrap();
     let balance = |token: &str, who: Address| U256::from_be_slice(&chain.call(token, balanceOfCall { account: who }.abi_encode()));
     let allowance = || {
@@ -2013,10 +2028,38 @@ fn trading_orders_under_a_mandate() {
     chain.send_from(FACILITATOR, Some(&settlement), settle(&o));
     assert_eq!(balance(&usd, acct), U256::from(10_000_000_000u64 - 350_000_000));
 
-    // revoking takes the venue's allowance back with the mandate
-    chain.ok(&["permission", "revoke", "--agent", &cfg, "--id", "0x74726431"]);
+    // An allowance does not outlive the mandate it came with. A config that no
+    // longer holds the venue's terms cannot say which tokens were sold there, so
+    // removing the trading permission with it is refused until the old config is
+    // given, by `revoke` and by `rotate` alike; nothing is sent.
+    assert_eq!(allowance(), U256::from(100_000_000u64));
+    let plain = chain.config(
+        "plain.json",
+        &Cfg { permission: "0x706c6e31", account: Some(account.clone()), ..base_cfg(&owner, &agent, &counter, until) },
+    );
+    for args in [
+        vec!["permission", "revoke", "--agent", &plain, "--id", "0x74726431"],
+        vec!["permission", "rotate", "--agent", &plain, "--old-id", "0x74726431"],
+    ] {
+        let out = chain.cli(&args);
+        let err = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(!out.status.success() && err.contains("--old-config"), "{err}");
+    }
+    assert_eq!(allowance(), U256::from(100_000_000u64));
+    // with it, the rotation to a mandate without trading takes the allowance back
+    chain.ok(&["permission", "rotate", "--agent", &plain, "--old-id", "0x74726431", "--old-config", &cfg]);
     assert!(allowance().is_zero());
     chain.fails(&["demo", "--agent", &cfg]);
+    let before = chain.counter();
+    chain.ok(&["demo", "--agent", &plain]);
+    assert_eq!(chain.counter(), before + U256::from(1));
+
+    // and a trading mandate given again and revoked with its own config: the same
+    let again = trading("again.json", "0x74726433", Some(decoder_hash.to_string()));
+    chain.ok(&["permission", "add", "--agent", &again]);
+    assert_eq!(allowance(), U256::from(300_000_000u64));
+    chain.ok(&["permission", "revoke", "--agent", &again, "--id", "0x74726433"]);
+    assert!(allowance().is_zero());
 }
 
 /// What the phone reads from a venue's config and what the decoder on chain

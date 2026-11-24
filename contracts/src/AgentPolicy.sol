@@ -306,14 +306,7 @@ contract AgentPolicy is IPolicy {
     function configs(address account, bytes32 id)
         external
         view
-        returns (
-            uint48 validUntil,
-            uint32 epoch,
-            uint128 maxValuePerOp,
-            uint128 budget,
-            uint128 spent,
-            uint48 validAfter
-        )
+        returns (uint48 validUntil, uint32 epoch, uint128 maxValuePerOp, uint128 budget, uint128 spent, uint48 validAfter)
     {
         Config storage c = _configs[id][account];
         return (c.validUntil, c.epoch, c.maxValuePerOp, c.budget, c.spent, c.validAfter);
@@ -565,7 +558,11 @@ contract AgentPolicy is IPolicy {
     ///
     /// Across a boundary an agent can spend one period's budget just before
     /// it and the next one's just after: up to twice the budget in a short
-    /// time. That is the number an owner is to be shown.
+    /// time. That is the number an owner is to be shown, and it holds for
+    /// what is registered as it does for what is transferred: under a period
+    /// an x402 authorization or an order must end with the period it is
+    /// charged in (`_endsWithThePeriod`), so nothing registered in one
+    /// period can still be taken in a later one.
     ///
     /// Both ends are inclusive, as EntryPoint v0.7 reads them: an operation
     /// is in time from `validAfter` up to and at `validUntil`.
@@ -589,6 +586,9 @@ contract AgentPolicy is IPolicy {
             }
             if (start > from) from = uint48(start);
             if (end < until) until = uint48(end);
+            _setPerOperation(PERIOD_NEXT, end + 1);
+        } else {
+            _setPerOperation(PERIOD_NEXT, 0);
         }
         _setPerOperation(PERIOD_NOW, seen);
         _setPerOperation(NOT_BEFORE, 0);
@@ -738,6 +738,7 @@ contract AgentPolicy is IPolicy {
         if (!ok) return false;
         Judged memory j = _askDecoder(m, decoder, config, order);
         if (!j.ok || j.mostSold == 0) return false;
+        if (!_endsWithThePeriod(uint256(j.validTo) + 1)) return false; // fillable up to and at `validTo`
         TokenLimit storage t = _token(msg.sender, m, j.token);
         if (!t.set || t.payeesOnly) return false;
         if (_movedThisOperation(j.token, j.mostSold) > t.maxPerOp) return false;
@@ -790,8 +791,9 @@ contract AgentPolicy is IPolicy {
         uint256 validBefore,
         bytes32 nonce
     ) internal pure returns (bytes32) {
-        bytes32 structHash =
-            keccak256(abi.encode(TRANSFER_WITH_AUTHORIZATION_TYPEHASH, from, to, value, validAfter, validBefore, nonce));
+        bytes32 structHash = keccak256(
+            abi.encode(TRANSFER_WITH_AUTHORIZATION_TYPEHASH, from, to, value, validAfter, validBefore, nonce)
+        );
         return keccak256(abi.encodePacked(hex"1901", domainSeparator, structHash));
     }
 
@@ -799,12 +801,13 @@ contract AgentPolicy is IPolicy {
     /// token (per-op cap, shared budget), then the digest is recorded.
     function _registerX402(bytes32 m, bytes calldata d) internal returns (bool) {
         if (d.length != 4 + 7 * 32) return false;
-        (address token, address from, address to, uint256 value, uint256 validAfter, uint256 validBefore, bytes32 nonce)
-        = abi.decode(d[4:], (address, address, address, uint256, uint256, uint256, bytes32));
+        (address token, address from, address to, uint256 value, uint256 validAfter, uint256 validBefore, bytes32 nonce) =
+            abi.decode(d[4:], (address, address, address, uint256, uint256, uint256, bytes32));
         if (from != msg.sender) return false; // the account checkUserOpPolicy runs for
         TokenLimit storage t = _token(msg.sender, m, token);
         if (!t.set || t.domainSeparator == bytes32(0)) return false;
         if (value == 0 || validBefore > type(uint48).max) return false;
+        if (!_endsWithThePeriod(validBefore)) return false; // usable before `validBefore`
         if (_movedThisOperation(token, value) > t.maxPerOp) return false;
         if (t.payeesOnly && !_payees[_payeeKey(m, token, to)][msg.sender]) return false;
         uint256 spent = _tokenSpent(m, token, t) + value;
@@ -813,6 +816,14 @@ contract AgentPolicy is IPolicy {
         if (!_recordX402(m, digest, value, validBefore, token)) return false;
         t.spent = uint128(spent);
         return true;
+    }
+
+    /// @dev Under a budget per period, whether a registration that can be
+    /// used before `notAfter` (exclusive) is over when the period it is
+    /// charged in is. Without a period, always.
+    function _endsWithThePeriod(uint256 notAfter) internal view returns (bool) {
+        uint256 next = _perOperation(PERIOD_NEXT);
+        return next == 0 || notAfter <= next;
     }
 
     /// @dev Records a registered authorization; false when its digest is
@@ -849,6 +860,8 @@ contract AgentPolicy is IPolicy {
     /// operation is in (plus one; 0 without periods), and the latest "not
     /// before" of the orders it registers.
     bytes32 internal constant PERIOD_NOW = keccak256("agent-keys.AgentPolicy.periodNow");
+    /// The first second after that period; 0 without periods.
+    bytes32 internal constant PERIOD_NEXT = keccak256("agent-keys.AgentPolicy.periodNext");
     bytes32 internal constant NOT_BEFORE = keccak256("agent-keys.AgentPolicy.notBefore");
     /// The earliest `validTo` of the orders it registers, plus one; 0 = none.
     bytes32 internal constant NOT_AFTER = keccak256("agent-keys.AgentPolicy.notAfter");
@@ -1040,10 +1053,7 @@ contract AgentPolicy is IPolicy {
         if (!decoded) return (false, 0);
         if (operation == 0) {
             (ok, moved) = _judge(m, to, innerValue, inner, FROM_SAFE);
-        } else if (
-            operation == 1 && innerValue == 0 && _selector(inner) == MULTI_SEND
-                && _allowed[_allowedKey(m, to, MULTI_SEND)][msg.sender]
-        ) {
+        } else if (operation == 1 && innerValue == 0 && _selector(inner) == MULTI_SEND && _allowed[_allowedKey(m, to, MULTI_SEND)][msg.sender]) {
             (ok, moved) = _judgeBatch(m, inner);
         }
         return ok ? (true, value + moved) : (false, 0);
@@ -1058,7 +1068,10 @@ contract AgentPolicy is IPolicy {
     /// a vault's `withdraw` or anything else allow-listed on it cannot move
     /// it past its caps or pay an address its payee list does not name.
     /// Install refuses such a mandate; this is the same rule at validation.
-    function _chargeToken(bytes32 m, address token, bytes4 selector, bytes calldata data) internal returns (bool) {
+    function _chargeToken(bytes32 m, address token, bytes4 selector, bytes calldata data)
+        internal
+        returns (bool)
+    {
         uint256 arg;
         if (selector == ERC20_TRANSFER || selector == ERC20_APPROVE || selector == ERC20_INCREASE_ALLOWANCE) arg = 1;
         else if (selector == ERC20_TRANSFER_FROM) arg = 2;
