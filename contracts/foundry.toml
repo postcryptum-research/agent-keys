@@ -5,7 +5,11 @@ libs = ["lib"]
 test = "test"
 optimizer = true
 optimizer_runs = 200
-evm_version = "prague"
+solc = "0.8.38"
+# Pinned so bytecode and CREATE2 addresses are reproducible across machines and
+# chains (with bytecode_hash = none the address depends on source + solc). >= 0.8.34
+# avoids the 0.8.28-0.8.33 transient-storage codegen bug; see issue #123.
+evm_version = "cancun"  # lowest common denominator with transient storage, for multi-chain; see #123
 # No metadata in bytecode: solc's metadata hash embeds compiler settings
 # (remappings included), so with it any config change would move every
 # CREATE2 address. Without it, addresses depend on source and solc only.
