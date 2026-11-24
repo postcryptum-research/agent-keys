@@ -211,10 +211,12 @@ mod tests {
     use super::*;
 
     /// Keys of the deployments file that are deliberately not facts: the
-    /// chain id; an EOA; and the Kernel implementation and factory, which no
+    /// chain id; an EOA; the Kernel implementation and factory, which no
     /// owner operation addresses — a name would only make value sent there
-    /// look like a parameter instead of a payment.
-    const NOT_FACTS: &[&str] = &["chainId", "paymasterOwner", "kernel", "kernelFactory", "kernelFactoryStaker"];
+    /// look like a parameter instead of a payment; and the compiler settings
+    /// the instances were built with, which are no addresses (issue #123).
+    const NOT_FACTS: &[&str] =
+        &["chainId", "paymasterOwner", "kernel", "kernelFactory", "kernelFactoryStaker", "solc", "evmVersion"];
 
     /// The table cannot lag the file silently: every key is either named or
     /// listed as not a fact, so a new kind of contract fails here until it

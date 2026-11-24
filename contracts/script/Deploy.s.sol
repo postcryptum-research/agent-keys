@@ -40,6 +40,13 @@ contract Deploy is Script {
     // chain CoW runs on. The decoder is deployed only where it has code.
     address internal constant COW_SETTLEMENT = 0x9008D19f58AAbD9eD0D60971565AA8510560ab41;
 
+    // The compiler settings this script is built with, as foundry.toml sets
+    // them, recorded in the deployments file so that the code of an instance
+    // can be rebuilt and compared (issue #123). `DeploymentsRecord.t.sol`
+    // holds them equal to foundry.toml and to the recorded files.
+    string public constant SOLC = "0.8.38";
+    string public constant EVM_VERSION = "cancun";
+
     function run() external {
         require(ENTRY_POINT.code.length > 0, "EntryPoint v0.7 missing on this chain");
         require(KERNEL_FACTORY.code.length > 0, "Kernel v3.3 factory missing on this chain");
@@ -87,6 +94,8 @@ contract Deploy is Script {
 
         string memory json = "deployment";
         vm.serializeUint(json, "chainId", block.chainid);
+        vm.serializeString(json, "solc", SOLC);
+        vm.serializeString(json, "evmVersion", EVM_VERSION);
         vm.serializeAddress(json, "entryPoint", ENTRY_POINT);
         vm.serializeAddress(json, "kernel", KERNEL);
         vm.serializeAddress(json, "kernelFactory", KERNEL_FACTORY);
