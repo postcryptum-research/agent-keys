@@ -31,6 +31,7 @@ cargo test -p agent-signer --features insecure-software-keys --test anvil_cli   
 cd mobile/owner-core && cargo test                # add --features ffi,test-chains for the phone's side
 cd scripts/erc7562 && npm install && npm run check
 gitleaks git . --redact --log-opts="--all" --exit-code 1    # what CI runs, over the whole history
+scripts/source-record.sh                          # every contract's bytecode and VERSION against origin/master (house rules 3 and 9)
 ```
 
 - Rust 1.94.1 or newer.
@@ -51,11 +52,15 @@ gitleaks git . --redact --log-opts="--all" --exit-code 1    # what CI runs, over
    or to the phone's review is broken once on purpose, to see a test catch it
    (`docs/FUZZING.md` shows how). Docs change in the same pull request; where
    a doc has a Russian original (`*_ru.md`), both do.
-3. **A deployed contract's source is the record of what is on chain.**
-   Instances are listed in `contracts/deployments/<chainId>.json`, earlier
-   ones kept under a versioned name. Change a contract's source only in a
-   change that redeploys it, and leave the other contracts' files alone,
-   formatting included.
+3. **A deployed contract's source is the release it was built from.**
+   Nothing is deployed to a mainnet but an audited release tag. Instances
+   on test networks are pre-audit and are recorded with the commit they
+   were built from: `contracts/deployments/<chainId>.json` lists them,
+   earlier ones under a versioned name, and `docs/DEPLOYMENTS.md` names the
+   tag or commit. Master may differ from every deployment. A tagged
+   release's source never changes, comments included.
+   `scripts/source-record.sh <tag or commit>` compares a build with
+   another's, contract by contract.
 4. **Validation runs under ERC-7562.** No clock and no storage but the
    account's (`keccak(account ‖ x) + n`) in validator, signer and policy
    code. `scripts/erc7562/` checks a trace.
@@ -73,6 +78,16 @@ gitleaks git . --redact --log-opts="--all" --exit-code 1    # what CI runs, over
    pull requests and issues; never cut with an ellipsis. A cut value cannot
    be searched for or checked against the chain. Text moved or quoted from
    elsewhere gets its cut values restored from the link target or the chain.
+9. **Versions and releases.** Every deployable contract carries
+   `string public constant VERSION = "x.y.z"` (semantic versioning, per
+   contract, from `0.1.0`), and a change to a contract's bytecode raises
+   its version: CI's `source-record` job fails a pull request where a
+   contract's bytecode differs from the base's and its version does not. A
+   release is tagged at each stage: `vX.Y.Z-pre-internal-audit`,
+   `vX.Y.Z-pre-external-audit` (the commit given to the auditors),
+   `vX.Y.Z-post-external-audit` (after the fix review), and `vX.Y.Z` (the
+   commit deployed). Audit reports are kept in the repository with the tag
+   they cover.
 
 ## Never in the repository, a pull request or an issue
 
