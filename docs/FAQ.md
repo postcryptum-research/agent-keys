@@ -404,7 +404,17 @@ run makes them available to all.
 
 What each user gets is their **account**: a Kernel proxy created by ZeroDev's
 factory, automatically, by the user's first operation (it carries the
-`initCode`) — no separate step.
+`initCode`) — no separate step. The `initCode` names ZeroDev's
+`FactoryStaker` (`kernelFactoryStaker` in the deployments file), which
+holds a stake at the EntryPoint and creates the account through Kernel's
+factory: a bundler that enforces ERC-7562 accepts an account's first
+operation only from a staked factory, because creating the account writes
+the modules' slots for it
+([#102](https://github.com/postcryptum-research/agent-keys/issues/102)).
+The account and its address are the same as through Kernel's factory
+itself. The staker is ZeroDev's: if its owner withdrew the approval of
+Kernel's factory, the CLI says so and names the factory itself, which
+bundlers that do not enforce the rule still take.
 
 The exception is the gas sponsor: a `WhitelistPaymaster` has an owner who
 decides whom it pays for and how much, so each sponsor deploys their own (its

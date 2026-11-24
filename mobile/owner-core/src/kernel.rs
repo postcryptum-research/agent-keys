@@ -8,7 +8,7 @@ use alloy_primitives::{aliases::U192, Address, Bytes, FixedBytes, B256, U256};
 use alloy_sol_types::{SolCall, SolValue};
 use hw_signer::{PublicKey, Signature};
 
-use crate::abi::{IKernel, IKernelFactory};
+use crate::abi::{IFactoryStaker, IKernel, IKernelFactory};
 
 pub type ValidationId = FixedBytes<21>;
 pub type PermissionId = FixedBytes<4>;
@@ -274,6 +274,20 @@ pub fn init_code(factory: Address, init_data: &Bytes, salt: B256) -> Bytes {
     [factory.as_slice(), &call].concat().into()
 }
 
+/// ERC-4337 `initCode` through a staked factory:
+/// `staker ‖ deployWithFactory(factory, initData, salt)`.
+///
+/// Creating an account writes the modules' slots for it, and during an
+/// operation with `initCode` ERC-7562 allows those only when the factory
+/// the operation names is staked (STO-022). Kernel's factory holds no
+/// stake; ZeroDev's `FactoryStaker` does, and calls `createAccount` on the
+/// factory with the same data and salt, so the account is the same one at
+/// the same address.
+pub fn init_code_staked(staker: Address, factory: Address, init_data: &Bytes, salt: B256) -> Bytes {
+    let call = IFactoryStaker::deployWithFactoryCall { factory, createData: init_data.clone(), salt }.abi_encode();
+    [staker.as_slice(), &call].concat().into()
+}
+
 /// `execute(single/default, target ‖ value ‖ data)`.
 pub fn execute_calldata(target: Address, value: U256, data: &[u8]) -> Bytes {
     let exec = [target.as_slice(), &value.to_be_bytes::<32>(), data].concat();
@@ -397,6 +411,23 @@ mod tests {
             kernel_wrapped_hash(A, 84532, N),
             b256!("a0c4e2fb6da7cfeb16f6f22278e127d1577af46d75234d79702d760db9922994")
         );
+    }
+
+    /// `cast calldata 'deployWithFactory(address,bytes,bytes32)'` for the
+    /// same arguments, behind the staker's address.
+    #[test]
+    fn init_code_through_the_staker_matches_cast() {
+        let staker = address!("d703aaE79538628d27099B8c4f621bE4CCd142d5");
+        let factory = address!("2577507b78c2008Ff367261CB6285d44ba5eF2E9");
+        let data = Bytes::from(vec![1u8, 2, 3, 4, 5]);
+        let mut salt = [0u8; 32];
+        salt[31] = 0xaa;
+        let got = init_code_staked(staker, factory, &data, B256::from(salt));
+        let cast = "c5265d5d0000000000000000000000002577507b78c2008ff367261cb6285d44ba5ef2e9000000000000000000000000000000000000000000000000000000000000006000000000000000000000000000000000000000000000000000000000000000aa00000000000000000000000000000000000000000000000000000000000000050102030405000000000000000000000000000000000000000000000000000000";
+        assert_eq!(&got[..20], staker.as_slice());
+        assert_eq!(Bytes::from(got[20..].to_vec()).to_string(), format!("0x{cast}"));
+        // and the direct form still names the factory
+        assert_eq!(&init_code(factory, &data, B256::from(salt))[..20], factory.as_slice());
     }
 
     #[test]

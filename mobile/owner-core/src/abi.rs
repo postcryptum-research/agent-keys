@@ -14,6 +14,12 @@ sol! {
         function createAccount(bytes calldata data, bytes32 salt) external payable returns (address);
     }
 
+    /// ZeroDev's `FactoryStaker`: holds a stake at the EntryPoint and
+    /// creates accounts through the Kernel factories its owner approved.
+    interface IFactoryStaker {
+        function deployWithFactory(address factory, bytes calldata createData, bytes32 salt) external payable returns (address);
+    }
+
     interface IKernel {
         struct ValidationConfig {
             uint32 nonce;

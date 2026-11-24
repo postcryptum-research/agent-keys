@@ -170,8 +170,19 @@ impl Review {
         out
     }
 
+    /// A refusal. Its reason is shown on the owner's screen and can quote the
+    /// laptop's bytes (a parser's error names the field it met), so it is
+    /// held to the rule of everything else there: what is not printable
+    /// ASCII or one of the marks the review writes itself becomes `?`. A
+    /// line break or a direction mark in it could make the screen read as
+    /// something else after "REFUSED".
     fn refused(request_commitment: String, sections: Vec<Section>, why: impl Into<String>) -> Self {
-        Self { verdict: Verdict::Refuse(why.into()), sections, request_commitment, account: Address::ZERO, chain_id: 0, digest: None }
+        let why: String = why
+            .into()
+            .chars()
+            .map(|c| if (' '..='~').contains(&c) || ['\u{2014}', '\u{b7}', '\u{2192}', '\u{2016}'].contains(&c) { c } else { '?' })
+            .collect();
+        Self { verdict: Verdict::Refuse(why), sections, request_commitment, account: Address::ZERO, chain_id: 0, digest: None }
     }
 }
 
@@ -1701,6 +1712,18 @@ mod tests {
         let mut m = good();
         (m.2, m.3, m.4) = (U256::from(u128::MAX), U256::from(u128::MAX), U256::from((1u64 << 48) - 1));
         assert!(read(m).is_ok());
+    }
+
+    /// A refusal's reason is on the screen too: a request whose field name
+    /// carries a line break and a right-to-left override is refused, and the
+    /// reason shows neither.
+    #[test]
+    fn a_refusal_does_not_carry_the_laptops_control_characters() {
+        let bytes = "{\"userOp\":{\"zz\\n\u{202e}SIGNED OK\":1}}".as_bytes();
+        let r = open_request_with_build_facts(bytes, &commitment(bytes), NOW, &[]);
+        let Verdict::Refuse(why) = &r.verdict else { panic!("{:?}", r.verdict) };
+        assert!(why.chars().all(|c| (' '..='~').contains(&c)), "{why:?}");
+        assert!(why.contains("SIGNED OK") && why.contains('?'), "{why:?}");
     }
 
     #[test]

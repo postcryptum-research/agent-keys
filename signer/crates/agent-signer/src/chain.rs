@@ -33,7 +33,7 @@ pub const PERMIT2: Address = alloy::primitives::address!("000000000022D473030F11
 
 pub fn forbidden_target(dep: &Deployments, account: Address, target: Address, selector: [u8; 4]) -> Option<String> {
     use crate::abi::IAgentPolicyX402::{x402AuthorizeCall, x402ReclaimCall};
-    let modules: [(Option<Address>, &str); 7] = [
+    let modules: [(Option<Address>, &str); 8] = [
         (Some(dep.p256_validator), "the root validator: the agent could replace the owner key"),
         (dep.p256_validator_v1, "a root validator: the agent could replace the owner key"),
         (dep.p256_recovery_validator, "the recovery validator: the agent could replace the recovery key"),
@@ -41,6 +41,7 @@ pub fn forbidden_target(dep: &Deployments, account: Address, target: Address, se
         (Some(dep.p256_signer), "the permission signer: the agent could swap its own key"),
         (Some(dep.kernel), "the Kernel implementation"),
         (Some(dep.kernel_factory), "the account factory"),
+        (dep.kernel_factory_staker, "the account factory's staker"),
     ];
     if target == account {
         return Some("the account itself: the agent could grant itself access, replace the root key or execute as root".into());
@@ -167,6 +168,18 @@ pub struct Session {
     pub pinned: bool,
     /// EIP-712 domain separators of the mandate's x402 tokens.
     pub token_domains: std::collections::HashMap<Address, B256>,
+}
+
+/// A public key as every command shows it: the fingerprint, then `x` and
+/// `y` in full on their own lines behind `indent`. Never cut: eight digits
+/// of `x` can be neither looked up nor told from another key's (issue #115).
+pub fn key_text(key: &hw_signer::PublicKey, indent: &str) -> String {
+    format!(
+        "fingerprint {}\n{indent}x = 0x{}\n{indent}y = 0x{}",
+        owner_core::fingerprint::fingerprint(key),
+        hex::encode(key.x),
+        hex::encode(key.y)
+    )
 }
 
 impl Session {
@@ -343,6 +356,51 @@ impl Session {
         bail!("no replica served block {block} within 15s")
     }
 
+    /// The staked factory an account is created through (issue #102): the
+    /// deployments file's `kernelFactoryStaker`, when it has code and still
+    /// approves Kernel's factory. Otherwise `None`, with a line saying why:
+    /// the staker is ZeroDev's, and its owner can withdraw the approval.
+    pub async fn factory_staker(&self) -> Result<Option<Address>> {
+        let Some(staker) = self.dep.kernel_factory_staker else { return Ok(None) };
+        if self.provider.get_code_at(staker).await?.is_empty() {
+            eprintln!("factory:        no code at kernelFactoryStaker {staker}; naming Kernel's factory itself");
+            return Ok(None);
+        }
+        let approved = crate::abi::IFactoryStaker::new(staker, self.provider.clone())
+            .approved(self.dep.kernel_factory)
+            .call()
+            .await
+            .context("reading the factory staker's approval")?;
+        if !approved {
+            eprintln!(
+                "factory:        the staker {staker} no longer approves Kernel's factory {}; naming the factory itself",
+                self.dep.kernel_factory
+            );
+            return Ok(None);
+        }
+        Ok(Some(staker))
+    }
+
+    /// The `initCode` of the account's first operation. Through the staker
+    /// it names a staked factory, as ERC-7562 asks of an operation that
+    /// creates an account whose modules write their slots (STO-022); the
+    /// account and its address are the same either way.
+    pub async fn init_code(&self) -> Result<Bytes> {
+        let (data, salt) = (self.init_data()?, self.cfg.salt()?);
+        let Some(staker) = self.factory_staker().await? else {
+            return Ok(kernel::init_code(self.dep.kernel_factory, data, salt));
+        };
+        let info = crate::abi::IEntryPointStake::new(self.dep.entry_point, self.provider.clone())
+            .getDepositInfo(staker)
+            .call()
+            .await
+            .context("reading the factory staker's stake")?;
+        if !info.staked {
+            eprintln!("factory:        the staker {staker} holds no stake at the EntryPoint now: a bundler that enforces ERC-7562 will refuse this first operation");
+        }
+        Ok(kernel::init_code_staked(staker, self.dep.kernel_factory, data, salt))
+    }
+
     /// Send ETH from the gas wallet to the (possibly counterfactual) account.
     /// Before funding an undeployed address, simulate `createAccount` with
     /// our init data: ETH sent to an address that can never be deployed is
@@ -350,14 +408,21 @@ impl Session {
     pub async fn fund(&self, amount: U256) -> Result<B256> {
         self.require_gas_wallet("account fund")?;
         if !self.is_deployed().await? {
-            let factory = IKernelFactory::new(self.dep.kernel_factory, self.provider.clone());
-            let simulated = factory
-                .createAccount(self.init_data()?.clone(), self.cfg.salt()?)
-                .call()
-                .await
-                .context("createAccount simulation reverted; refusing to fund an address that cannot be deployed")?;
+            // the way the first operation will create it: through the staker when there is one
+            let simulated = match self.factory_staker().await? {
+                Some(staker) => crate::abi::IFactoryStaker::new(staker, self.provider.clone())
+                    .deployWithFactory(self.dep.kernel_factory, self.init_data()?.clone(), self.cfg.salt()?)
+                    .call()
+                    .await
+                    .context("deployWithFactory simulation reverted; refusing to fund an address that cannot be deployed")?,
+                None => IKernelFactory::new(self.dep.kernel_factory, self.provider.clone())
+                    .createAccount(self.init_data()?.clone(), self.cfg.salt()?)
+                    .call()
+                    .await
+                    .context("createAccount simulation reverted; refusing to fund an address that cannot be deployed")?,
+            };
             if simulated != self.account {
-                bail!("createAccount simulation returned {simulated}, expected {}", self.account);
+                bail!("the account-creation simulation returned {simulated}, expected {}", self.account);
             }
         }
         let tx = TransactionRequest::default().with_to(self.account).with_value(amount);
@@ -613,7 +678,14 @@ impl Session {
             None => open_signer(&self.cfg.agent, Role::Agent)?.public_key()?,
         };
         let same_key = on_key.x.0 == cfg_key.x && on_key.y.0 == cfg_key.y;
-        println!("{}agent key       chain 0x{}… / config 0x{}…", mark(same_key), hex::encode(&on_key.x[..4]), hex::encode(&cfg_key.x[..4]));
+        // in full, with the fingerprint: a cut key can be neither looked up nor told from another (issue #115)
+        let on_key = hw_signer::PublicKey { x: on_key.x.0, y: on_key.y.0 };
+        if same_key {
+            println!("{}agent key       chain and config: {}", mark(true), key_text(&on_key, "                  "));
+        } else {
+            println!("{}agent key       chain:  {}", mark(false), key_text(&on_key, "                  "));
+            println!("                  config: {}", key_text(&cfg_key, "                  "));
+        }
         // policies
         for data in &pc.policyData {
             let policy = Address::from_slice(&data[2..]);
@@ -724,11 +796,12 @@ impl Session {
         let on_chain = IP256ValidatorView::new(validator, self.provider.clone()).publicKeys(self.account).call().await?;
         let ours = signer.public_key()?;
         if on_chain.x.0 != ours.x || on_chain.y.0 != ours.y {
+            let on_chain = hw_signer::PublicKey { x: on_chain.x.0, y: on_chain.y.0 };
             bail!(
-                "the key about to sign (0x{}…) is not the account's root key (0x{}… in validator {validator}); \
-                 after a handover, point the config's owner at the new device — `owner status` shows the root validator",
-                hex::encode(&ours.x[..4]),
-                hex::encode(&on_chain.x[..4])
+                "the key about to sign is not the account's root key; after a handover, point the config's owner \
+                 at the new device — `owner status` shows the root validator\n  about to sign: {}\n  root key in validator {validator}: {}",
+                key_text(&ours, "    "),
+                key_text(&on_chain, "    ")
             );
         }
         Ok(())
@@ -772,11 +845,12 @@ impl Session {
             bail!("no recovery key is installed on this account ({validator}): `owner add-recovery` first");
         }
         if on_chain.x.0 != ours.x || on_chain.y.0 != ours.y {
+            let on_chain = hw_signer::PublicKey { x: on_chain.x.0, y: on_chain.y.0 };
             bail!(
-                "the recovery key about to sign (0x{}…) is not the one installed on the account (0x{}… in {validator}); \
-                 check the config's `recovery` entry",
-                hex::encode(&ours.x[..4]),
-                hex::encode(&on_chain.x[..4])
+                "the recovery key about to sign is not the one installed on the account; check the config's `recovery` entry\n  \
+                 about to sign: {}\n  installed in {validator}: {}",
+                key_text(ours, "    "),
+                key_text(&on_chain, "    ")
             );
         }
         Ok(())
@@ -794,7 +868,7 @@ impl Session {
         if root[0] == 0x01 && self.known_validators().contains(&validator) {
             let k = IP256ValidatorView::new(validator, self.provider.clone()).publicKeys(self.account).call().await?;
             let key = hw_signer::PublicKey { x: k.x.0, y: k.y.0 };
-            println!("root key:       fingerprint {} (x = 0x{}…)", owner_core::fingerprint::fingerprint(&key), hex::encode(&key.x[..4]));
+            println!("root key:       {}", key_text(&key, "                "));
         } else {
             println!("root key:       not readable here (the root validator is not one of this repository's P-256 validators)");
         }
@@ -810,6 +884,12 @@ impl Session {
                 println!(
                     "recovery:       {v} (installed = {installed}, may take root = {may_take_root}, is root now = {is_root})"
                 );
+                // which key that is, to compare with `key show --keyfile <the recovery file>` (issue #115)
+                let k = IP256ValidatorView::new(v, self.provider.clone()).publicKeys(self.account).call().await?;
+                if !k.x.is_zero() || !k.y.is_zero() {
+                    let key = hw_signer::PublicKey { x: k.x.0, y: k.y.0 };
+                    println!("recovery key:   {}", key_text(&key, "                "));
+                }
             }
             None => println!("recovery:       (no p256RecoveryValidator in deployments)"),
         }
@@ -977,7 +1057,7 @@ impl Session {
         } else {
             // the first operation installs the mandate: same rule as `permission add`
             self.check_mandate_targets()?;
-            kernel::init_code(self.dep.kernel_factory, self.init_data()?, self.cfg.salt()?)
+            self.init_code().await?
         };
 
         let key = match sign_as {
