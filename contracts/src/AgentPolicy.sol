@@ -186,10 +186,6 @@ contract AgentPolicy is IPolicy {
     error X402NotRegistered();
     error X402StillLive();
     error X402Settled();
-    error OrderNotRegistered();
-    error OrderStillLive();
-    error OrderTouched();
-    error NotTheVenue();
 
     event X402Authorized(
         address indexed account,
@@ -202,7 +198,6 @@ contract AgentPolicy is IPolicy {
     );
     event X402Reclaimed(address indexed account, bytes32 indexed id, bytes32 digest, uint256 value);
     event OrderRegistered(address indexed account, address indexed decoder, bytes order);
-    event OrderReclaimed(address indexed account, bytes32 indexed id, bytes32 digest, uint256 value);
 
     event AgentPolicySet(
         address indexed account, bytes32 indexed id, uint48 validUntil, uint128 maxValuePerOp, uint128 budget
@@ -343,7 +338,8 @@ contract AgentPolicy is IPolicy {
     uint256 internal constant HEAD_WITH_PAYEES = 8 * 32;
     /// Ten words: `payees` (which may then be empty), `uint32 period` and
     /// `Venue[] venues`. For a mandate with a budget per period, with
-    /// venues, or both; one with neither is encoded in a shorter form.
+    /// venues or without; one without a period is encoded in a shorter form
+    /// and has no venues.
     uint256 internal constant HEAD_WITH_TRADING = 10 * 32;
 
     /// @param data `bytes32 id ++ abi.encode(address[] targets, bytes4[] selectors,
@@ -454,8 +450,10 @@ contract AgentPolicy is IPolicy {
         (,,,,,,,, period_, venues) = abi.decode(
             params, (address[], bytes4[], uint128, uint128, uint48, TokenCap[], uint48, TokenPayees[], uint32, Venue[])
         );
-        // the ten-word form exists to carry one of the two
-        if (period_ == 0 && venues.length == 0) revert InvalidConfig();
+        // The ten-word form carries a period, with venues or without. A mandate
+        // with venues needs one: an order's charge is never given back, so the
+        // period is what returns an unfilled order's part of the budget.
+        if (period_ == 0) revert InvalidConfig();
         for (uint256 i; i < venues.length; i++) {
             address decoder = venues[i].decoder;
             VenuePin storage v = _venue(msg.sender, m, decoder);
@@ -672,7 +670,9 @@ contract AgentPolicy is IPolicy {
         TokenLimit storage t = _token(msg.sender, m, token);
         bytes32 digest = _x402Digest(t.domainSeparator, msg.sender, to, value, validAfter, validBefore, nonce);
         Pending storage p = _pending(msg.sender, m, digest);
-        if (p.value == 0) revert X402NotRegistered();
+        // The digest names the token only through its domain separator; two
+        // tokens that share one must not stand in for each other here.
+        if (p.value == 0 || p.token != token) revert X402NotRegistered();
         if (block.timestamp < validBefore) revert X402StillLive();
         if (IERC3009State(token).authorizationState(msg.sender, nonce)) revert X402Settled();
         emit X402Reclaimed(msg.sender, id, digest, p.value);
@@ -680,26 +680,13 @@ contract AgentPolicy is IPolicy {
     }
 
     /// @notice Executed after validation registered the order: only leaves
-    /// a record for wallets and `orderReclaim`.
+    /// a record for wallets. An order's charge is not given back: whether a
+    /// venue filled an order cannot be read from the venue for good (CoW's
+    /// settlement lets a solver clear the record of an expired order), so
+    /// the budget rests on this policy's own counters alone. An unfilled
+    /// order's part of the budget returns when the period turns.
     function orderRegister(address decoder, bytes calldata, /* config */ bytes calldata order) external {
         emit OrderRegistered(msg.sender, decoder, order);
-    }
-
-    /// @notice Return to the budget an order that can never be filled any
-    /// more: past its `validTo` and untouched at the venue. Only the account
-    /// can, for its own records. An order the owner cancelled at the venue
-    /// counts there as filled, and its charge does not come back.
-    function orderReclaim(bytes32 id, address decoder, bytes calldata config, bytes calldata order) external {
-        bytes32 m = _mandate(id, _configs[id][msg.sender].epoch);
-        Judged memory j = _askDecoder(m, decoder, config, order);
-        if (!j.ok) revert NotTheVenue();
-        Pending storage p = _pending(msg.sender, m, j.digest);
-        if (p.value == 0 || p.token != j.token) revert OrderNotRegistered();
-        // the venue fills an order up to and at `validTo`
-        if (block.timestamp <= j.validTo) revert OrderStillLive();
-        if (!IVenueDecoder(decoder).untouched{gas: JUDGE_GAS}(msg.sender, order)) revert OrderTouched();
-        emit OrderReclaimed(msg.sender, id, j.digest, p.value);
-        _refund(m, j.digest, j.token, _token(msg.sender, m, j.token), p.value);
     }
 
     /// The most gas a decoder gets to judge an order.
@@ -1027,7 +1014,7 @@ contract AgentPolicy is IPolicy {
         if (_venuePlaces[target][msg.sender]) return false;
         if (target == address(this)) {
             return selector == this.x402Authorize.selector || selector == this.x402Reclaim.selector
-                || selector == this.orderRegister.selector || selector == this.orderReclaim.selector;
+                || selector == this.orderRegister.selector;
         }
         return true;
     }

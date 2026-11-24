@@ -36,10 +36,9 @@ contract TradeAccount {
         if (block.timestamp > until || block.timestamp < from) revert Refused();
     }
 
-    function reclaim(AgentPolicy policy, bytes32 id, address decoder, bytes calldata config, bytes calldata order)
-        external
-    {
-        policy.orderReclaim(id, decoder, config, order);
+    /// Any call on the policy as the account, for what it no longer offers.
+    function ask(AgentPolicy policy, bytes calldata data) external returns (bool ok) {
+        (ok,) = address(policy).call(data);
     }
 
     /// Whether the account would vouch for `digest` now (ERC-1271 through
@@ -137,7 +136,6 @@ contract TradingFuzzModel is Test {
         CowSwapDecoder.Order order;
         bytes32 digest;
         uint256 chargedIn;
-        bool reclaimed;
         bool filled;
     }
 
@@ -167,13 +165,12 @@ contract TradingFuzzModel is Test {
         pairs[0] = CowSwapDecoder.Pair({sellToken: SELL, buyToken: BUY, minBuy: MIN_BUY, perSell: 1});
         config = abi.encode(CowSwapDecoder.Config({appData: bytes32(0), maxLife: LIFE, pairs: pairs}));
 
-        address[] memory targets = new address[](5);
-        bytes4[] memory selectors = new bytes4[](5);
+        address[] memory targets = new address[](4);
+        bytes4[] memory selectors = new bytes4[](4);
         (targets[0], selectors[0]) = (COUNTER, INCREMENT);
         (targets[1], selectors[1]) = (COUNTER, bytes4(0));
         (targets[2], selectors[2]) = (SELL, TRANSFER);
         (targets[3], selectors[3]) = (address(policy), AgentPolicy.orderRegister.selector);
-        (targets[4], selectors[4]) = (address(policy), AgentPolicy.orderReclaim.selector);
         AgentPolicy.TokenCap[] memory tokens = new AgentPolicy.TokenCap[](1);
         tokens[0] = AgentPolicy.TokenCap(SELL, S_MAX, S_BUDGET, bytes32(0));
         AgentPolicy.TokenPayees[] memory payees = new AgentPolicy.TokenPayees[](0);
@@ -413,7 +410,7 @@ contract TradingFuzzModel is Test {
             if (!legs[i].isOrder) continue;
             bytes32 digest = _digest(legs[i].order);
             live[digest] = true;
-            orders.push(Registered(legs[i].order, digest, s, false, false));
+            orders.push(Registered(legs[i].order, digest, s, false));
         }
         return true;
     }
@@ -462,7 +459,8 @@ contract TradingFuzzModel is Test {
     }
 
     /// The venue fills an order while the account vouches for it, or the
-    /// account asks for one back.
+    /// account asks for one back and gets nothing: an order's charge stays
+    /// until its period is over.
     function _orderStep() internal {
         if (orders.length == 0) return;
         Registered storage r = orders[_below(orders.length)];
@@ -470,8 +468,8 @@ contract TradingFuzzModel is Test {
         bool vouched = account.vouches(policy, ID, r.digest);
         assertEq(
             vouched,
-            !r.reclaimed && block.timestamp <= r.order.validTo,
-            "the account vouches for an order exactly while it is registered and not past its end"
+            block.timestamp <= r.order.validTo,
+            "the account vouches for an order exactly while it is not past its end"
         );
 
         if (_below(3) == 0) {
@@ -482,20 +480,15 @@ contract TradingFuzzModel is Test {
             outflow[r.chargedIn] += r.order.sellAmount;
             return;
         }
-        CowSwapDecoder.Order memory o = r.order;
-        bool changed = _below(8) == 0;
-        if (changed) o.buyAmount += 1;
-        bool expected = !changed && !r.reclaimed && !r.filled && block.timestamp > r.order.validTo;
-        bool ok;
-        try account.reclaim(policy, ID, address(decoder), config, abi.encode(o)) {
-            ok = true;
-        } catch {}
-        assertEq(ok, expected, "the policy and the model decide a reclaim differently");
-        if (!ok) return;
-        r.reclaimed = true;
-        live[r.digest] = false;
-        // the charge comes back only to the period it was made in
-        if (r.chargedIn == sPeriod) sSpent -= r.order.sellAmount;
+        uint128 before = policy.tokenLimit(address(account), ID, SELL).spent;
+        bool ok = account.ask(
+            policy,
+            abi.encodeWithSignature(
+                "orderReclaim(bytes32,address,bytes,bytes)", ID, address(decoder), config, abi.encode(r.order)
+            )
+        );
+        assertFalse(ok, "the policy gives an order's charge back");
+        assertEq(policy.tokenLimit(address(account), ID, SELL).spent, before, "a refused refund moved the count");
     }
 
     /// Forty steps per seed. After each, the policy and the model count

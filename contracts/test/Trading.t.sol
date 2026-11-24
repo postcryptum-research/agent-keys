@@ -84,7 +84,8 @@ contract CrookedDecoder {
 }
 
 /// The core's side of trading (issue #80): a budget per period, and orders
-/// registered through a venue's decoder, vouched for, settled and reclaimed.
+/// registered through a venue's decoder, vouched for and settled. An order's
+/// charge is not given back; the period returns it.
 contract TradingTest is AgentPermissionTest {
     PermissionId internal constant TRD_ID = PermissionId.wrap(0x74726164); // "trad"
     bytes32 internal constant TRD = bytes32(PermissionId.unwrap(TRD_ID));
@@ -139,12 +140,11 @@ contract TradingTest is AgentPermissionTest {
     }
 
     function _targets() internal view returns (address[] memory targets, bytes4[] memory selectors) {
-        targets = new address[](4);
-        selectors = new bytes4[](4);
+        targets = new address[](3);
+        selectors = new bytes4[](3);
         (targets[0], selectors[0]) = (address(policy), AgentPolicy.orderRegister.selector);
-        (targets[1], selectors[1]) = (address(policy), AgentPolicy.orderReclaim.selector);
-        (targets[2], selectors[2]) = (address(counter), Counter.increment.selector);
-        (targets[3], selectors[3]) = (address(counter), bytes4(0));
+        (targets[1], selectors[1]) = (address(counter), Counter.increment.selector);
+        (targets[2], selectors[2]) = (address(counter), bytes4(0));
     }
 
     function _params(uint32 period_, AgentPolicy.Venue[] memory venues) internal view returns (bytes memory) {
@@ -212,7 +212,16 @@ contract TradingTest is AgentPermissionTest {
         view
         returns (PackedUserOperation memory op)
     {
-        op = _op(_permissionNonce(TRD_ID), _singleCall(target, value, data));
+        return _periodOp(TRD_ID, periodIndex, target, value, data);
+    }
+
+    /// The same under any permission with a period.
+    function _periodOp(PermissionId id, uint48 periodIndex, address target, uint256 value, bytes memory data)
+        internal
+        view
+        returns (PackedUserOperation memory op)
+    {
+        op = _op(_permissionNonce(id), _singleCall(target, value, data));
         op.signature = abi.encodePacked(
             bytes1(0), bytes8(uint64(6)), bytes6(periodIndex), bytes1(0xff), _sign(AGENT, entryPoint.getUserOpHash(op))
         );
@@ -301,8 +310,11 @@ contract TradingTest is AgentPermissionTest {
         _refusedInstall(_params(DAY, twice));
         // the ten-word form with neither a period nor a venue
         _refusedInstall(_params(0, new AgentPolicy.Venue[](0)));
-        // the control: the same data with a venue installs
-        _install(PermissionId.wrap(0x74726433), _params(0, _venues(address(decoder), code, config)));
+        // a venue without a period: an order's charge is never given back, so
+        // only a period returns an unfilled order's part of the budget
+        _refusedInstall(_params(0, _venues(address(decoder), code, config)));
+        // the control: the same data with a period installs
+        _install(PermissionId.wrap(0x74726433), _params(DAY, _venues(address(decoder), code, config)));
     }
 
     /// The settlement itself is never a target: `setPreSignature` on it
@@ -310,13 +322,13 @@ contract TradingTest is AgentPermissionTest {
     function test_trading_theVenueItselfIsNotATarget() public {
         _with(DAY);
         (address[] memory targets, bytes4[] memory selectors) = _targets();
-        (targets[3], selectors[3]) = (address(settlement), Settlement.setPreSignature.selector);
+        (targets[2], selectors[2]) = (address(settlement), Settlement.setPreSignature.selector);
         _refusedInstall(
             _paramsFor(
                 targets, selectors, DAY, _venues(address(decoder), address(decoder).codehash, keccak256(_cowConfig()))
             )
         );
-        (targets[3], selectors[3]) = (address(decoder), bytes4(0));
+        (targets[2], selectors[2]) = (address(decoder), bytes4(0));
         _refusedInstall(
             _paramsFor(
                 targets, selectors, DAY, _venues(address(decoder), address(decoder).codehash, keccak256(_cowConfig()))
@@ -458,7 +470,7 @@ contract TradingTest is AgentPermissionTest {
 
     /// A decoder's answer is taken only in its exact form.
     function test_order_decoderAnswersAreHeldToTheirForm() public {
-        _with(0);
+        _with(DAY);
         CowSwapDecoder.Order memory o = _order(150e6, _soon());
         bytes32 digest = settlement.digestOf(o);
         bytes[5] memory answers = [
@@ -471,33 +483,31 @@ contract TradingTest is AgentPermissionTest {
         for (uint256 i; i < answers.length; i++) {
             CrookedDecoder crooked = new CrookedDecoder(answers[i]);
             PermissionId id = PermissionId.wrap(bytes4(uint32(0x74720000 + i)));
-            _install(id, _params(0, _venues(address(crooked), address(crooked).codehash, keccak256("config"))));
-            PackedUserOperation memory op = _op(
-                _permissionNonce(id),
-                _singleCall(
+            _install(id, _params(DAY, _venues(address(crooked), address(crooked).codehash, keccak256("config"))));
+            _expectRefused(
+                _periodOp(
+                    id,
+                    _today(),
                     address(policy),
                     0,
                     abi.encodeCall(AgentPolicy.orderRegister, (address(crooked), bytes("config"), abi.encode(o)))
                 )
             );
-            op.signature = abi.encodePacked(bytes1(0xff), _sign(AGENT, entryPoint.getUserOpHash(op)));
-            _expectRefused(op);
         }
         // the control: the same decoder with a well-formed answer registers
         CrookedDecoder plain =
             new CrookedDecoder(abi.encode(address(usd), uint256(150e6), uint256(0), uint256(o.validTo), digest));
         PermissionId ok = PermissionId.wrap(0x74727878);
-        _install(ok, _params(0, _venues(address(plain), address(plain).codehash, keccak256("config"))));
-        PackedUserOperation memory good = _op(
-            _permissionNonce(ok),
-            _singleCall(
+        _install(ok, _params(DAY, _venues(address(plain), address(plain).codehash, keccak256("config"))));
+        _send(
+            _periodOp(
+                ok,
+                _today(),
                 address(policy),
                 0,
                 abi.encodeCall(AgentPolicy.orderRegister, (address(plain), bytes("config"), abi.encode(o)))
             )
         );
-        good.signature = abi.encodePacked(bytes1(0xff), _sign(AGENT, entryPoint.getUserOpHash(good)));
-        _send(good);
         assertEq(policy.tokenLimit(acct, bytes32(PermissionId.unwrap(ok)), address(usd)).spent, 150e6);
     }
 
@@ -510,18 +520,24 @@ contract TradingTest is AgentPermissionTest {
         c.pairs[0] = CowSwapDecoder.Pair(address(weth), address(usd), 1, 1);
         bytes memory config = abi.encode(c);
         PermissionId id = PermissionId.wrap(0x74726434);
-        _install(id, _params(0, _venues(address(decoder), address(decoder).codehash, keccak256(config))));
+        _install(id, _params(DAY, _venues(address(decoder), address(decoder).codehash, keccak256(config))));
         CowSwapDecoder.Order memory o = _order(1 ether, _soon());
         (o.sellToken, o.buyToken, o.buyAmount) = (address(weth), address(usd), 1 ether);
         decoder.judge(acct, config, abi.encode(o)); // the decoder allows it
         _expectRefused(
-            _plainOp(id, abi.encodeCall(AgentPolicy.orderRegister, (address(decoder), config, abi.encode(o))))
+            _periodOp(
+                id,
+                _today(),
+                address(policy),
+                0,
+                abi.encodeCall(AgentPolicy.orderRegister, (address(decoder), config, abi.encode(o)))
+            )
         );
 
         // the dollar token with a payee list
         PermissionId listed = PermissionId.wrap(0x74726435);
         _install(listed, _paramsWithAPayeeList());
-        _expectRefused(_plainOp(listed, _registerCall(_order(150e6, _soon()))));
+        _expectRefused(_periodOp(listed, _today(), address(policy), 0, _registerCall(_order(150e6, _soon()))));
     }
 
     function _paramsWithAPayeeList() internal view returns (bytes memory) {
@@ -533,7 +549,7 @@ contract TradingTest is AgentPermissionTest {
         AgentPolicy.Venue[] memory venues =
             _venues(address(decoder), address(decoder).codehash, keccak256(_cowConfig()));
         return
-            abi.encode(targets, selectors, MAX_VALUE, BUDGET, tradingExpiry, caps, uint48(0), lists, uint32(0), venues);
+            abi.encode(targets, selectors, MAX_VALUE, BUDGET, tradingExpiry, caps, uint48(0), lists, DAY, venues);
     }
 
     /// An agent operation on the policy under a permission without a period.
@@ -606,56 +622,107 @@ contract TradingTest is AgentPermissionTest {
         assertEq(usd.balanceOf(acct), 10_000e6, "nothing left the account");
     }
 
-    // --- the refund ---
+    // --- no refund for an order ---
 
-    function _reclaimCall(CowSwapDecoder.Order memory o) internal view returns (bytes memory) {
-        return abi.encodeCall(AgentPolicy.orderReclaim, (TRD, address(decoder), _cowConfig(), abi.encode(o)));
-    }
-
-    function test_reclaim_anUnfilledOrderAfterItsEnd() public {
+    /// An order's charge is not given back, filled or not: what the venue
+    /// says of an order after its end is not a thing the budget can rest on
+    /// (CoW's settlement lets a solver clear an expired order's record of
+    /// being filled). The charge returns with the next period and not before.
+    function test_order_anUnfilledOrdersChargeReturnsWithThePeriodAndNotBefore() public {
         _with(DAY);
-        CowSwapDecoder.Order memory o = _order(150e6, _soon());
+        CowSwapDecoder.Order memory o = _order(200e6, _soon());
         _register(o);
+        _register(_order(200e6, _soon() + 1));
+        _register(_order(100e6, _soon() + 2));
+        assertEq(_usdSpent(), USD_BUDGET);
 
-        // at validTo the venue can still fill: no refund yet
-        vm.warp(o.validTo);
+        // past its end and never filled: the charge stands, the record too
+        vm.warp(uint256(o.validTo) + 3);
+        assertEq(_today(), uint48(T0 / DAY), "still the period of the charge");
+        assertEq(_usdSpent(), USD_BUDGET);
+        assertEq(policy.x402Pending(acct, TRD, settlement.digestOf(o)).value, 200e6);
+        _expectRefused(_tradeOp(_today(), address(policy), 0, _registerCall(_order(1e6, _soon()))));
+
+        // the policy has no call that gives it back
+        bytes memory reclaim = abi.encodeWithSignature(
+            "orderReclaim(bytes32,address,bytes,bytes)", TRD, address(decoder), _cowConfig(), abi.encode(o)
+        );
+        assertFalse(policy.isAllowed(acct, TRD, address(policy), bytes4(reclaim)));
+        _expectRefused(_tradeOp(_today(), address(policy), 0, reclaim));
         vm.prank(acct);
-        vm.expectRevert(AgentPolicy.OrderStillLive.selector);
-        policy.orderReclaim(TRD, address(decoder), _cowConfig(), abi.encode(o));
+        (bool ok,) = address(policy).call(reclaim);
+        assertFalse(ok, "no such function");
+        assertEq(_usdSpent(), USD_BUDGET);
 
-        vm.warp(uint256(o.validTo) + 1);
-        _send(_tradeOp(_today(), address(policy), 0, _reclaimCall(o)));
-        assertEq(_usdSpent(), 0);
-        assertEq(policy.x402Pending(acct, TRD, settlement.digestOf(o)).value, 0);
-
-        // once
-        vm.prank(acct);
-        vm.expectRevert(AgentPolicy.OrderNotRegistered.selector);
-        policy.orderReclaim(TRD, address(decoder), _cowConfig(), abi.encode(o));
+        // the next period starts from nothing
+        vm.warp((uint256(_today()) + 1) * DAY + 1);
+        _register(_order(200e6, _soon()));
+        assertEq(_usdSpent(), 200e6);
     }
 
-    function test_reclaim_notOfAFilledOrCancelledOrder() public {
+    /// A mandate cannot allow a refund of an order: on the policy only its
+    /// x402 entries and `orderRegister` may be among the targets.
+    function test_order_aRefundCannotBeAmongTheTargets() public {
         _with(DAY);
-        CowSwapDecoder.Order memory o = _order(150e6, _soon());
-        _register(o);
-        settlement.settle(o, acct, _orderSignature(settlement.digestOf(o)));
-        vm.warp(uint256(o.validTo) + 1);
-        vm.prank(acct);
-        vm.expectRevert(AgentPolicy.OrderTouched.selector);
-        policy.orderReclaim(TRD, address(decoder), _cowConfig(), abi.encode(o));
-        assertEq(_usdSpent(), 150e6);
+        (address[] memory targets, bytes4[] memory selectors) = _targets();
+        selectors[0] = bytes4(keccak256("orderReclaim(bytes32,address,bytes,bytes)"));
+        _refusedInstall(
+            _paramsFor(
+                targets, selectors, DAY, _venues(address(decoder), address(decoder).codehash, keccak256(_cowConfig()))
+            )
+        );
     }
 
-    function test_reclaim_onlyOfWhatWasRegistered() public {
-        _with(DAY);
-        CowSwapDecoder.Order memory o = _order(150e6, _soon());
-        vm.warp(uint256(o.validTo) + 1);
-        vm.startPrank(acct);
-        vm.expectRevert(AgentPolicy.OrderNotRegistered.selector);
-        policy.orderReclaim(TRD, address(decoder), _cowConfig(), abi.encode(o));
-        vm.expectRevert(AgentPolicy.NotTheVenue.selector);
-        policy.orderReclaim(TRD, address(settlement), _cowConfig(), abi.encode(o));
-        vm.stopPrank();
+    // --- an x402 refund is of the token the authorization was registered for (#134) ---
+
+    /// Two tokens of a mandate given the same x402 domain produce the same
+    /// digest for the same authorization. One registered for the first must
+    /// not be given back to the second's budget.
+    function test_x402_aRefundIsOfTheTokenRegistered() public {
+        _world();
+        usdc = new MockUSDC();
+        MockUSDC other = new MockUSDC();
+        usdc.mint(acct, 100e6);
+        other.mint(acct, 100e6);
+        address[] memory targets = new address[](4);
+        bytes4[] memory selectors = new bytes4[](4);
+        (targets[0], selectors[0]) = (address(policy), AgentPolicy.x402Authorize.selector);
+        (targets[1], selectors[1]) = (address(policy), AgentPolicy.x402Reclaim.selector);
+        (targets[2], selectors[2]) = (address(other), bytes4(0xa9059cbb));
+        (targets[3], selectors[3]) = (address(counter), Counter.increment.selector);
+        AgentPolicy.TokenCap[] memory caps = new AgentPolicy.TokenCap[](2);
+        caps[0] = AgentPolicy.TokenCap(address(usdc), 1e6, 5e6, usdc.DOMAIN_SEPARATOR());
+        caps[1] = AgentPolicy.TokenCap(address(other), 1e6, 5e6, usdc.DOMAIN_SEPARATOR());
+        PermissionId id = PermissionId.wrap(0x74776f31); // "two1"
+        bytes32 id32 = bytes32(PermissionId.unwrap(id));
+        _install(id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, tradingExpiry, caps, uint48(0)));
+
+        uint256 before = block.timestamp + 1 hours;
+        bytes32 nonce = bytes32(uint256(7));
+        // the second token's budget is used by a transfer; the authorization is the first token's
+        _send(_agentOpWith(AGENT, id, address(other), 0, abi.encodeWithSelector(bytes4(0xa9059cbb), PAYEE, 1e6)));
+        _send(_agentOpWith(AGENT, id, address(policy), 0, _authorizeCall(1e6, before, nonce)));
+        assertEq(policy.tokenLimit(acct, id32, address(usdc)).spent, 1e6);
+        assertEq(policy.tokenLimit(acct, id32, address(other)).spent, 1e6);
+        // settled at the first token: its charge is spent for good
+        bytes memory signature = abi.encodePacked(
+            bytes1(0x02),
+            PermissionId.unwrap(id),
+            bytes1(0xff),
+            _sign(AGENT, _kernelWrapped(usdc.digestOf(acct, PAYEE, 1e6, 0, before, nonce)))
+        );
+        usdc.transferWithAuthorization(acct, PAYEE, 1e6, 0, before, nonce, signature);
+
+        vm.warp(before + 1);
+        // named as the second token's, where the nonce was never used: refused
+        vm.prank(acct);
+        vm.expectRevert(AgentPolicy.X402NotRegistered.selector);
+        policy.x402Reclaim(id32, address(other), PAYEE, 1e6, 0, before, nonce);
+        assertEq(policy.tokenLimit(acct, id32, address(other)).spent, 1e6, "the second token's budget did not grow");
+        // and as the first token's, where it settled: refused as settled
+        vm.prank(acct);
+        vm.expectRevert(AgentPolicy.X402Settled.selector);
+        policy.x402Reclaim(id32, address(usdc), PAYEE, 1e6, 0, before, nonce);
     }
 
     // --- the budget per period ---
@@ -832,40 +899,23 @@ contract TradingTest is AgentPermissionTest {
         );
     }
 
-    /// A refund belongs to the period of its charge: an order of yesterday,
-    /// reclaimed today, gives today's budget nothing.
-    function test_period_aRefundDoesNotCrossIntoTheNextPeriod() public {
-        _with(DAY);
-        vm.warp((uint256(_today()) + 1) * DAY - 5 minutes);
-        CowSwapDecoder.Order memory old = _order(150e6, _periodEnd());
-        _register(old);
-        vm.warp(block.timestamp + 1 hours);
-        _register(_order(200e6, _soon()));
-        assertEq(_usdSpent(), 200e6);
-        _send(_tradeOp(_today(), address(policy), 0, _reclaimCall(old)));
-        assertEq(_usdSpent(), 200e6, "today's count is today's");
-        assertEq(policy.x402Pending(acct, TRD, settlement.digestOf(old)).value, 0, "the record is gone");
-
-        // within one period the refund does come back
-        CowSwapDecoder.Order memory fresh = _order(100e6, _soon());
-        _register(fresh);
-        vm.warp(uint256(fresh.validTo) + 1);
-        _send(_tradeOp(_today(), address(policy), 0, _reclaimCall(fresh)));
-        assertEq(_usdSpent(), 200e6);
-    }
-
-    /// A mandate without a period is as before: one budget for its life, and
-    /// no bytes of the policy's in the signature.
+    /// A mandate without a period is as before: one budget for its life, no
+    /// bytes of the policy's in the signature, and no venue.
     function test_period_noneMeansOneBudgetForLife() public {
-        _with(0);
-        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
-        _send(_agentOpWith(AGENT, TRD_ID, address(counter), 0, inc));
-        PackedUserOperation memory op =
-            _op(_permissionNonce(TRD_ID), _singleCall(address(policy), 0, _registerCall(_order(200e6, _soon()))));
-        op.signature = abi.encodePacked(bytes1(0xff), _sign(AGENT, entryPoint.getUserOpHash(op)));
-        _send(op);
+        _world();
+        address[] memory targets = new address[](2);
+        bytes4[] memory selectors = new bytes4[](2);
+        (targets[0], selectors[0]) = (address(usd), bytes4(0xa9059cbb));
+        (targets[1], selectors[1]) = (address(counter), Counter.increment.selector);
+        AgentPolicy.TokenCap[] memory caps = new AgentPolicy.TokenCap[](1);
+        caps[0] = AgentPolicy.TokenCap(address(usd), USD_MAX, USD_BUDGET, bytes32(0));
+        _install(TRD_ID, abi.encode(targets, selectors, MAX_VALUE, BUDGET, tradingExpiry, caps, uint48(0)));
+        bytes memory pay = abi.encodeWithSelector(bytes4(0xa9059cbb), PAYEE, 200e6);
+        _send(_agentOpWith(AGENT, TRD_ID, address(usd), 0, pay));
         vm.warp(block.timestamp + 3 days);
         assertEq(_usdSpent(), 200e6);
+        _send(_agentOpWith(AGENT, TRD_ID, address(usd), 0, pay));
+        assertEq(_usdSpent(), 400e6, "three days later the count goes on");
         (uint32 seconds_,) = policy.period(acct, TRD);
         assertEq(seconds_, 0);
     }
