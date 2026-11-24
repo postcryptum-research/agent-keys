@@ -32,7 +32,11 @@ pub fn open_and_check(bytes: &[u8], enrolled: &[EnrolledAccount]) -> Review {
         }
     }
     match &review.verdict {
-        Verdict::Refuse(_) => assert!(review.digest_to_sign().is_err(), "a refusal with a digest to sign"),
+        Verdict::Refuse(why) => {
+            // both apps show the reason; a parser's error can quote the request
+            all_shown("a refusal's reason", why);
+            assert!(review.digest_to_sign().is_err(), "a refusal with a digest to sign")
+        }
         verdict => {
             if let Verdict::SignWithWarnings(warnings) = verdict {
                 assert!(!warnings.is_empty(), "warnings without a warning");

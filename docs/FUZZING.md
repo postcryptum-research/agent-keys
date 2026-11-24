@@ -84,7 +84,7 @@ are in `fuzz/seeds/`.
 
 **The rules of a review** (`fuzz_targets/common.rs`), for any bytes:
 
-- every title, label, value and warning is printable ASCII or one of the
+- every title, label, value, warning and reason of a refusal is printable ASCII or one of the
   four marks the review writes itself: nothing a laptop sends can put a line
   break, a control or a direction mark, or a letter of another script on the
   owner's screen;

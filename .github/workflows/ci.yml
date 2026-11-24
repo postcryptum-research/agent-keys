@@ -59,7 +59,10 @@ jobs:
       - name: Each target for a minute
         working-directory: mobile/owner-core
         run: |
-          for target in $(cargo +"$NIGHTLY" fuzz list); do
+          # a list that failed or came short must not pass as "nothing crashed"
+          targets=$(cargo +"$NIGHTLY" fuzz list)
+          test "$(echo "$targets" | wc -w)" -eq 7
+          for target in $targets; do
             echo "::group::$target"
             mkdir -p "fuzz/corpus/$target"
             cargo +"$NIGHTLY" fuzz run "$target" "fuzz/corpus/$target" "fuzz/seeds/$target" -- -max_total_time=60 -max_len=8192 -timeout=10
