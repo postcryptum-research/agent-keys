@@ -739,8 +739,6 @@ contract TradingTest is AgentPermissionTest {
         _expectRefused(_tradeOp(_today() - 1, address(policy), 0, _registerCall(_order(1e6, _soon() + 4))));
     }
 
-    /// A refund belongs to the period of its charge: an order of yesterday,
-    /// reclaimed today, gives today's budget nothing.
     /// What is registered under a period ends with that period. An order
     /// may be filled up to and at its `validTo`, so that is the period's last
     /// second at the latest; one second more and it could be taken in the
@@ -802,6 +800,40 @@ contract TradingTest is AgentPermissionTest {
         assertEq(usdc.balanceOf(PAYEE), 1e6, "one day's budget left the account");
     }
 
+    /// The period's end is noted per operation and does not leak into the
+    /// next one. An operation under a mandate without a period, validated
+    /// after one under a period in the same bundle, is not held to that
+    /// period's end: its authorization may run for ten days.
+    function test_period_theEndOfOneOperationsPeriodIsNotTheNextOperations() public {
+        _world();
+        usdc = new MockUSDC();
+        usdc.mint(acct, 100e6);
+        address[] memory targets = new address[](2);
+        bytes4[] memory selectors = new bytes4[](2);
+        (targets[0], selectors[0]) = (address(policy), AgentPolicy.x402Authorize.selector);
+        (targets[1], selectors[1]) = (address(counter), Counter.increment.selector);
+        AgentPolicy.TokenCap[] memory caps = new AgentPolicy.TokenCap[](1);
+        caps[0] = AgentPolicy.TokenCap(address(usdc), 1e6, 1e6, usdc.DOMAIN_SEPARATOR());
+        AgentPolicy.TokenPayees[] memory none = new AgentPolicy.TokenPayees[](0);
+        AgentPolicy.Venue[] memory noVenues = new AgentPolicy.Venue[](0);
+        _install(
+            TRD_ID, abi.encode(targets, selectors, MAX_VALUE, BUDGET, tradingExpiry, caps, uint48(0), none, DAY, noVenues)
+        );
+        PermissionId plain = PermissionId.wrap(0x706c6e31); // "pln1"
+        _install(plain, abi.encode(targets, selectors, MAX_VALUE, BUDGET, tradingExpiry, caps, uint48(0)));
+
+        uint256 next = (uint256(_today()) + 1) * DAY;
+        _send(_tradeOp(_today(), address(policy), 0, _authorizeCall(1e6, next, bytes32(uint256(1)))));
+        _send(_plainOp(plain, _authorizeCall(1e6, T0 + 10 days, bytes32(uint256(2)))));
+        assertEq(
+            policy.tokenLimit(acct, bytes32(PermissionId.unwrap(plain)), address(usdc)).spent,
+            1e6,
+            "the mandate without a period registered its ten-day authorization"
+        );
+    }
+
+    /// A refund belongs to the period of its charge: an order of yesterday,
+    /// reclaimed today, gives today's budget nothing.
     function test_period_aRefundDoesNotCrossIntoTheNextPeriod() public {
         _with(DAY);
         vm.warp((uint256(_today()) + 1) * DAY - 5 minutes);

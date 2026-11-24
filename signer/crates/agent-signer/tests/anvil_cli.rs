@@ -2029,22 +2029,44 @@ fn trading_orders_under_a_mandate() {
     assert_eq!(balance(&usd, acct), U256::from(10_000_000_000u64 - 350_000_000));
 
     // An allowance does not outlive the mandate it came with. A config that no
-    // longer holds the venue's terms cannot say which tokens were sold there, so
-    // removing the trading permission with it is refused until the old config is
-    // given, by `revoke` and by `rotate` alike; nothing is sent.
+    // longer holds the venue's terms cannot say which tokens were sold there.
     assert_eq!(allowance(), U256::from(100_000_000u64));
     let plain = chain.config(
         "plain.json",
         &Cfg { permission: "0x706c6e31", account: Some(account.clone()), ..base_cfg(&owner, &agent, &counter, until) },
     );
-    for args in [
-        vec!["permission", "revoke", "--agent", &plain, "--id", "0x74726431"],
-        vec!["permission", "rotate", "--agent", &plain, "--old-id", "0x74726431"],
-    ] {
-        let out = chain.cli(&args);
-        let err = String::from_utf8_lossy(&out.stderr).to_string();
-        assert!(!out.status.success() && err.contains("--old-config"), "{err}");
-    }
+    // A rotation with such a config is refused until the old config is given; nothing is sent.
+    let out = chain.cli(&["permission", "rotate", "--agent", &plain, "--old-id", "0x74726431"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(!out.status.success() && err.contains("--old-config"), "{err}");
+    assert_eq!(allowance(), U256::from(100_000_000u64));
+    // A revocation is never held up: it is the owner's move when the agent's machine is
+    // lost. With a config that names no token it removes the permission, leaves the
+    // allowance and says so, naming the spender to clear.
+    let snapshot = chain.rpc("evm_snapshot", json!([]));
+    let out = chain.cli(&["permission", "revoke", "--agent", &plain, "--id", "0x74726431"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    assert!(err.contains("is left standing") && err.to_lowercase().contains(&settlement.to_lowercase()), "{err}");
+    assert_eq!(allowance(), U256::from(100_000_000u64));
+    chain.fails(&["demo", "--agent", &cfg]);
+    assert_eq!(chain.rpc("evm_revert", json!([snapshot])), json!(true));
+    // With a config that names the token, though not the venue's terms, it reads the
+    // allowance on the chain and takes it back in the same operation.
+    let names_the_token = chain.config(
+        "names-the-token.json",
+        &Cfg {
+            permission: "0x706c6e31",
+            account: Some(account.clone()),
+            tokens: json!([{"token": usd, "maxPerOp": "1", "budget": "1", "payees": "anyone"}]),
+            ..base_cfg(&owner, &agent, &counter, until)
+        },
+    );
+    let snapshot = chain.rpc("evm_snapshot", json!([]));
+    chain.ok(&["permission", "revoke", "--agent", &names_the_token, "--id", "0x74726431"]);
+    assert!(allowance().is_zero());
+    chain.fails(&["demo", "--agent", &cfg]);
+    assert_eq!(chain.rpc("evm_revert", json!([snapshot])), json!(true));
     assert_eq!(allowance(), U256::from(100_000_000u64));
     // with it, the rotation to a mandate without trading takes the allowance back
     chain.ok(&["permission", "rotate", "--agent", &plain, "--old-id", "0x74726431", "--old-config", &cfg]);

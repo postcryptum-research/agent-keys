@@ -42,6 +42,11 @@ sol! {
     }
 
     #[sol(rpc)]
+    interface IERC20Allowance {
+        function allowance(address owner, address spender) external view returns (uint256);
+    }
+
+    #[sol(rpc)]
     interface IKernelFactory {
         function createAccount(bytes calldata data, bytes32 salt) external payable returns (address);
         function getAddress(bytes calldata data, bytes32 salt) external view returns (address);

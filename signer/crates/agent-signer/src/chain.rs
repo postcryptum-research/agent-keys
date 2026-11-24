@@ -922,7 +922,9 @@ impl Session {
         // with a permission go the allowances its venues were given; those the
         // config's own permission needs stay, when it is another one
         let keep = if perm == self.cfg.permission_id()? { Vec::new() } else { self.venue_legs()? };
-        let clear = self.stale_allowances(perm, old, &keep).await?;
+        // a revocation is never held up: it is the owner's move when the agent's
+        // machine is lost, made from wherever the owner is
+        let clear = self.stale_allowances(perm, old, &keep, false).await?;
         if clear.is_empty() {
             return self.send_raw(kernel::uninstall_permission_calldata(perm), true, sponsored).await;
         }
@@ -1031,8 +1033,11 @@ impl Session {
     ///
     /// The chain keeps only the hash of a venue's terms. The sold tokens are
     /// read from the config whose terms have that hash: this one, or the one
-    /// the permission was installed from (`old`). When neither has them the
-    /// removal is refused rather than done with the allowance left standing.
+    /// the permission was installed from (`old`). When neither has them, a
+    /// rotation (`strict`) is refused rather than done with the allowance
+    /// left standing. A revocation is not: it removes the permission, zeroes
+    /// what the chain shows for the tokens the configs at hand name, and
+    /// says which venue's allowances it could not determine.
     /// Looked for: the decoders of both configs and the deployments file's;
     /// a venue under another decoder is not found here.
     async fn stale_allowances(
@@ -1040,6 +1045,7 @@ impl Session {
         perm: PermissionId,
         old: Option<&AgentConfig>,
         keep: &[(Address, Address, U256)],
+        strict: bool,
     ) -> Result<Vec<(Address, U256, Bytes)>> {
         // the policy the permission being removed was installed with; one that is
         // not installed has left nothing
@@ -1066,18 +1072,45 @@ impl Session {
                     terms = Some(*v);
                 }
             }
+            let spender = match self.venues.get(&decoder) {
+                Some(on) => on.spender,
+                None => crate::abi::IVenueDecoder::new(decoder, self.provider.clone()).spender().call().await.context("reading the old venue's spender")?,
+            };
+            let taken = |calls: &Vec<(Address, U256, Bytes)>, token: Address| {
+                keep.iter().any(|k| k.0 == token && k.1 == spender) || calls.iter().any(|c| c.0 == token && c.2[16..36] == *spender.as_slice())
+            };
+            if terms.is_none() && !strict {
+                // The terms are not at hand, so the tokens sold there are not known. The
+                // removal goes ahead all the same; of the tokens the configs at hand name,
+                // those with an allowance to the venue's spender on the chain are zeroed,
+                // and the owner is told what could not be looked at.
+                let mut tokens: Vec<Address> = self.cfg.policy.tokens.iter().map(|t| t.token).collect();
+                tokens.extend(old.iter().flat_map(|c| c.policy.tokens.iter().map(|t| t.token)));
+                tokens.extend(known.iter().flat_map(|v| v.pairs.iter().map(|p| p.sell_token)));
+                tokens.sort();
+                tokens.dedup();
+                for token in &tokens {
+                    let left = crate::abi::IERC20Allowance::new(*token, self.provider.clone()).allowance(self.account, spender).call().await;
+                    if matches!(left, Ok(a) if !a.is_zero()) && !taken(&calls, *token) {
+                        calls.push(approve_call(*token, spender, U256::ZERO));
+                    }
+                }
+                eprintln!(
+                    "allowances:     permission {perm} trades at the venue of decoder {decoder} under terms no config at hand holds, so the tokens it sold there are not known. \
+                     Checked for an allowance to its spender {spender}: {}. An allowance of any other token to {spender} is left standing: \
+                     clear it with the owner key (`approve({spender}, 0)` on that token), or give the config the permission was installed from with --old-config",
+                    if tokens.is_empty() { "no token (the configs at hand name none)".to_string() } else { tokens.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(", ") }
+                );
+                continue;
+            }
             let Some(terms) = terms else {
                 bail!(
                     "permission {perm} trades at the venue of decoder {decoder} under terms this config does not hold (the chain pins their hash {}), so the tokens it sells there, and with them the allowances to take back, are not known: pass the config it was installed from with --old-config",
                     pin.configHash
                 );
             };
-            let spender = match self.venues.get(&decoder) {
-                Some(on) => on.spender,
-                None => crate::abi::IVenueDecoder::new(decoder, self.provider.clone()).spender().call().await.context("reading the old venue's spender")?,
-            };
             for pair in &terms.pairs {
-                if keep.iter().any(|k| k.0 == pair.sell_token && k.1 == spender) || calls.iter().any(|c: &(Address, U256, Bytes)| c.0 == pair.sell_token && c.2[16..36] == *spender.as_slice()) {
+                if taken(&calls, pair.sell_token) {
                     continue;
                 }
                 calls.push(approve_call(pair.sell_token, spender, U256::ZERO));
@@ -1134,7 +1167,7 @@ impl Session {
     pub async fn rotate_calldata(&self, old: PermissionId, old_cfg: Option<&AgentConfig>) -> Result<Bytes> {
         self.check_mandate_targets()?;
         // what the permission being replaced leaves behind and the new one does not take over
-        let stale = self.stale_allowances(old, old_cfg, &self.venue_legs()?).await?;
+        let stale = self.stale_allowances(old, old_cfg, &self.venue_legs()?, true).await?;
         let new = self.cfg.permission_id()?;
         let nonce = self.install_nonce(new).await?;
         let mut calls = vec![
