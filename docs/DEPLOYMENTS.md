@@ -6,7 +6,7 @@ are deployed, chain by chain, with every earlier instance that is still
 recorded.
 
 The record itself is `contracts/deployments/<chainId>.json`: the CLI reads
-it, the phone's build embeds Base Sepolia's, and
+it, the phone's build embeds them, and
 `contracts/test/DeploymentsRecord.t.sol` fails when an address in it is
 missing from this page.
 
@@ -89,3 +89,44 @@ this build's followed by solc's metadata.
 | Kernel v3.3 factory | [`0x2577507b78c2008Ff367261CB6285d44ba5eF2E9`](https://sepolia.basescan.org/address/0x2577507b78c2008Ff367261CB6285d44ba5eF2E9) | ZeroDev; derives an account's address from its data and salt |
 | FactoryStaker | [`0xd703aaE79538628d27099B8c4f621bE4CCd142d5`](https://sepolia.basescan.org/address/0xd703aaE79538628d27099B8c4f621bE4CCd142d5) | ZeroDev; staked at the EntryPoint, it creates accounts through Kernel's factory (#102) |
 
+## Sepolia (chain 11155111)
+
+The chain the trading mandate is tried on. The tables are written from
+`contracts/deployments/11155111.json`.
+
+### This project's contracts
+
+| Contract | Address | What it is |
+|---|---|---|
+| `P256Validator` | [`0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2`](https://sepolia.etherscan.io/address/0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2) | the owner key: the account's root validator |
+| `P256RecoveryValidator` | [`0x63dd80Fc5E109A44fd179F85050487E02c5e6958`](https://sepolia.etherscan.io/address/0x63dd80Fc5E109A44fd179F85050487E02c5e6958) | the cold recovery key, granted only `changeRootValidator` |
+| `P256Signer` | [`0xa19e6061b1C193573e5fe46c39363FfDd5CCA22E`](https://sepolia.etherscan.io/address/0xa19e6061b1C193573e5fe46c39363FfDd5CCA22E) | the agent key, as one Kernel permission |
+| `AgentPolicy` | [`0x2511FF556aa1534676A34F9B715232917e04FE5e`](https://sepolia.etherscan.io/address/0x2511FF556aa1534676A34F9B715232917e04FE5e) | the agent's mandate, with a budget per period and orders through a venue's decoder; an order's charge is not refunded |
+| `CowSwapDecoder` | [`0x085883DD35e12d32de2F4f9d8CeFBE663ffa7cB0`](https://sepolia.etherscan.io/address/0x085883DD35e12d32de2F4f9d8CeFBE663ffa7cB0) | reads a CoW Swap order for the policy |
+| `SafeNonceAssert` | [`0xC14AbFF54D40f4DAf665391E0B7079bd53EB8279`](https://sepolia.etherscan.io/address/0xC14AbFF54D40f4DAf665391E0B7079bd53EB8279) | the replay guard of an agent's Safe transaction |
+| `WhitelistPaymaster` | [`0x50Ab706dA586895D5775a1e51DcF1a66eAaAE001`](https://sepolia.etherscan.io/address/0x50Ab706dA586895D5775a1e51DcF1a66eAaAE001) | a gas sponsor with a budget per account; owner [`0xDf52800CfeBc64951816F958c4E12fD68E4dCC22`](https://sepolia.etherscan.io/address/0xDf52800CfeBc64951816F958c4E12fD68E4dCC22) |
+| `DemoCounter` | [`0x0F5912777DFd7E385c1896b68885d1CC229DF559`](https://sepolia.etherscan.io/address/0x0F5912777DFd7E385c1896b68885d1CC229DF559) | a demo target, with no rights over anything |
+
+[V] `AgentPolicy` was read from the chain on 2026-11-24: 20,133 bytes with
+the keccak hash
+`0xb7badf47dd8d0015de6128859c35990184d114aef0f790bc31d954e25f69a72a`, which is
+this source's runtime code with the `SafeNonceAssert` address in its
+immutable slots. It was deployed in transaction
+`0x8316c81d2fc68015872cb11d1291fc81bb3d76f15266358565475cb79936f49a`. The
+other rows are the file's record and were not compared again for this page.
+
+### Earlier instances, still recorded
+
+| Key | Address | Why it was replaced |
+|---|---|---|
+| `agentPolicyV2` | [`0xb15700E18D058BF83f5d9D38b5407f214df5E410`](https://sepolia.etherscan.io/address/0xb15700E18D058BF83f5d9D38b5407f214df5E410) | it refunded an order's charge on the venue's word that the order was unfilled, and the venue lets a filled order's record be cleared |
+| `agentPolicyV1` | [`0x5Cfa68d42e4245c9Ba71e6103D4E2D99F3E40b42`](https://sepolia.etherscan.io/address/0x5Cfa68d42e4245c9Ba71e6103D4E2D99F3E40b42) | a registration could outlive its budget period |
+
+### Contracts of others that the account uses
+
+| Contract | Address |
+|---|---|
+| EntryPoint v0.7 | [`0x0000000071727De22E5E9d8BAf0edAc6f37da032`](https://sepolia.etherscan.io/address/0x0000000071727De22E5E9d8BAf0edAc6f37da032) |
+| Kernel v3.3 | [`0xd6CEDDe84be40893d153Be9d467CD6aD37875b28`](https://sepolia.etherscan.io/address/0xd6CEDDe84be40893d153Be9d467CD6aD37875b28) |
+| Kernel's factory | [`0x2577507b78c2008Ff367261CB6285d44ba5eF2E9`](https://sepolia.etherscan.io/address/0x2577507b78c2008Ff367261CB6285d44ba5eF2E9) |
+| The staked factory in front of it | [`0xd703aaE79538628d27099B8c4f621bE4CCd142d5`](https://sepolia.etherscan.io/address/0xd703aaE79538628d27099B8c4f621bE4CCd142d5) |
