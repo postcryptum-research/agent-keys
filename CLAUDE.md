@@ -89,8 +89,14 @@ scripts/source-record.sh                          # every contract's bytecode an
    `vX.Y.Z-post-external-audit` (after the fix review), and `vX.Y.Z` (the
    commit deployed). Audit reports are kept in the repository with the tag
    they cover.
-10. **Arithmetic in Rust is checked.** In the code that ships (everything
-    outside tests) an integer is never added, subtracted, multiplied,
+10. **Arithmetic in Rust is checked, in product code.** Product code is
+    `signer/crates/hw-signer/src`, `signer/crates/agent-signer/src` and
+    `mobile/owner-core/src`, outside their `#[cfg(test)]` modules. Test
+    harnesses are excluded by name: `tests/` directories, `#[cfg(test)]`
+    modules and `mobile/owner-core/fuzz/`. A harness has to build any
+    value freely (overflowing, false, oversized), that is its work, and it
+    is not in the product. In product code an integer is never added,
+    subtracted, multiplied,
     divided by a variable or shifted by a variable with a bare operator:
     `a = b + x` is forbidden. Write `checked_add` and its kin and handle
     `None` as a refusal with a reason; `saturating_*` only where the
