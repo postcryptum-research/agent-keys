@@ -119,7 +119,7 @@
    - **ERC-1271 обходит выдачу селекторов** (в нашем коде исправлено после
      исследования). Сегодня `P256RecoveryValidator` переопределяет
      `isValidSignatureWithSender` и на любой запрос отвечает
-     `ERC1271_INVALID` [V `contracts/src/P256RecoveryValidator.sol:24–26`];
+     `ERC1271_INVALID` [V `contracts/src/P256RecoveryValidator.sol:30–32`];
      `owner set-root --retire` удаляет старый owner-валидатор в той же
      операции [V `chain.rs` `set_root`]; тесты
      `test_recovery_neverSignsMessages` и `test_recovery_replacesALostOwner`

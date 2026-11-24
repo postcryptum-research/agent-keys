@@ -5,10 +5,9 @@ import {ERC1271_INVALID} from "kernel/src/types/Constants.sol";
 
 import {P256Validator} from "./P256Validator.sol";
 
-/// @title P256RecoveryValidator
+/// @title P256RecoveryValidator - P256Validator under its own address, for a cold recovery key
 /// @notice `P256Validator` under its own address, for a cold recovery key.
-///
-/// Kernel keys a validator's state by (validator contract, account), so a
+/// @dev Kernel keys a validator's state by (validator contract, account), so a
 /// second P-256 key on the same account needs a second contract. The owner
 /// installs this one with the recovery key and grants it a single selector,
 /// `changeRootValidator`: if the owner's device is lost or breaks, the
@@ -20,7 +19,14 @@ import {P256Validator} from "./P256Validator.sol";
 /// validator to verify one without checking the selectors granted to it, so
 /// a recovery key that could sign messages would sign permits for the
 /// account without ever becoming root.
+///
+/// Everything else (install, uninstall, the user operation check, the
+/// storage per account) is `P256Validator`'s, unchanged.
 contract P256RecoveryValidator is P256Validator {
+    /// @dev Refuses every ERC-1271 request, whatever is asked: see the contract's
+    /// notes for why. Its three parameters (the address that asked the account,
+    /// the hash and the signature) are not read.
+    /// @return `ERC1271_INVALID`, always.
     function isValidSignatureWithSender(address, bytes32, bytes calldata) external pure override returns (bytes4) {
         return ERC1271_INVALID;
     }

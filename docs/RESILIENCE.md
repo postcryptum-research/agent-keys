@@ -121,7 +121,7 @@ added [V].
    - **ERC-1271 bypasses the selector grants** (fixed in our code since the
      study). Today `P256RecoveryValidator` overrides
      `isValidSignatureWithSender` and answers `ERC1271_INVALID` to every
-     request [V `contracts/src/P256RecoveryValidator.sol:24–26`];
+     request [V `contracts/src/P256RecoveryValidator.sol:30–32`];
      `owner set-root --retire` uninstalls the old owner validator in the
      same operation [V `chain.rs` `set_root`]; the tests
      `test_recovery_neverSignsMessages` and `test_recovery_replacesALostOwner`
