@@ -520,6 +520,28 @@ pub fn read_auth_file(path: &Path) -> Result<Vec<u8>> {
     Ok(secret)
 }
 
+/// Write a record that names a device (an enrollment, an attestation
+/// certificate with its serial number) readable by its owner only: mode 0600
+/// on Unix, a file already there included.
+pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts.open(path).with_context(|| format!("writing {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // the mode above applies to a new file only
+        file.set_permissions(std::fs::Permissions::from_mode(0o600)).with_context(|| format!("writing {}", path.display()))?;
+    }
+    file.write_all(bytes).with_context(|| format!("writing {}", path.display()))
+}
+
 /// Open the signer a [`KeySpec`] points at, for `role`. The TPM variant needs
 /// the `tpm` feature. A software key is refused in every role unless the
 /// build opted into `insecure-software-keys` (tests only).
@@ -718,7 +740,7 @@ mod payee_tests {
 }
 
 #[cfg(all(test, unix))]
-mod auth_file_tests {
+mod file_mode_tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
@@ -739,6 +761,24 @@ mod auth_file_tests {
             let refused = read_auth_file(&path).unwrap_err().to_string();
             assert!(refused.contains(&format!("mode {mode:03o}")) && refused.contains("chmod 600"), "{mode:o}: {refused}");
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// #154: an enrollment record (it carries the device's serial number) is
+    /// written 0600, also over a file that was there with a wider mode.
+    #[test]
+    fn an_enrollment_record_is_written_owner_only() {
+        let dir = std::env::temp_dir().join(format!("agent-signer-record-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("enroll-response.json");
+        let _ = std::fs::remove_file(&path);
+        write_private(&path, b"{}").unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_private(&path, b"{\"again\": true}").unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::read(&path).unwrap(), b"{\"again\": true}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

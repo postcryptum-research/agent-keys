@@ -543,6 +543,7 @@ enum KeyCmd {
         /// Phone: write the enrollment — the request, the phone's answer and
         /// the attestation certificates (DER) — into this directory, for the
         /// off-device check (docs/MOBILE_OWNER_DESIGN.md §5.2) and for scripts.
+        /// Each file is written with mode 0600.
         #[arg(long, requires = "phone")]
         out: Option<PathBuf>,
         /// Phone: the fingerprint the phone will show (`ABCDE-FGHIJ-…`, at
@@ -1045,10 +1046,11 @@ fn phone_enroll(
     );
     if let Some(dir) = out {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-        std::fs::write(dir.join("enroll-request.json"), &request)?;
-        std::fs::write(dir.join("enroll-response.json"), &answer)?;
+        // the records identify the phone: owner-only
+        agent::write_private(&dir.join("enroll-request.json"), &request)?;
+        agent::write_private(&dir.join("enroll-response.json"), &answer)?;
         for (i, der) in e.attestation.iter().enumerate() {
-            std::fs::write(dir.join(format!("attest-{i}.der")), der)?;
+            agent::write_private(&dir.join(format!("attest-{i}.der")), der)?;
         }
         eprintln!("enrollment written to {} ({} attestation certificates)", dir.display(), e.attestation.len());
     }
@@ -1134,7 +1136,7 @@ fn yubikey_attest(key: KeyRef, out: &std::path::Path) -> Result<()> {
     let slot = key.yubikey.context("`key attest` is for YubiKey keys: --yubikey [slot]")?;
     let s = agent::open_yubikey(key.serial, &slot, agent::Role::Owner, false)?;
     let der = s.attestation()?;
-    std::fs::write(out, &der).with_context(|| format!("writing {}", out.display()))?;
+    agent::write_private(out, &der)?;
     println!("attestation certificate of slot {slot} ({} bytes DER) written to {}", der.len(), out.display());
     println!("it names the device's serial number: keep it out of the repository");
     println!(
