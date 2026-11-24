@@ -863,6 +863,10 @@ list as written at the time of the study:
 - `owner add-recovery --recovery-key <spec>` — there is already
   `add_recovery_calldata` [V `mobile/owner-core/src/kernel.rs:54–70`]. Add a check that the
   validator is not yet installed, and printing of the registry entry.
+- `owner replace-recovery` and `owner remove-recovery --leave-no-recovery`
+  (2026-11-24, issue #114): the owner key replaces the installed recovery key
+  in one operation, or removes it. Before them the first recovery key an
+  account got was the one it kept.
 - `owner recover --new-owner <spec>`:
   - step 1: recovery-op `changeRootValidator(recoveryVId)`; with a timelock —
     first `recover initiate`, then `recover execute` after `D`;
