@@ -414,6 +414,14 @@ enum OwnerCmd {
         /// Required: says that the account is to be left without a recovery key.
         #[arg(long)]
         leave_no_recovery: bool,
+        /// Remove the key from this earlier recovery validator, one the
+        /// deployments file keeps as `p256RecoveryValidatorV<n>` after a
+        /// redeploy, instead of from the current one. After `owner
+        /// add-recovery` has installed the key on the current validator, this
+        /// leaves the account with that one and needs no --leave-no-recovery
+        /// (docs/REDEPLOY.md).
+        #[arg(long)]
+        earlier: Option<Address>,
         #[arg(long)]
         sponsored: bool,
     },
@@ -1425,7 +1433,15 @@ async fn main() -> Result<()> {
                 let inc = s.replace_recovery(&key, sponsored).await?;
                 println!("recovery key replaced: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
             }
-            OwnerCmd::RemoveRecovery { agent, leave_no_recovery, sponsored } => {
+            OwnerCmd::RemoveRecovery { agent, leave_no_recovery, earlier: Some(earlier), sponsored } => {
+                let s = session(&agent).await?;
+                let inc = s.remove_earlier_recovery(earlier, leave_no_recovery, sponsored).await?;
+                println!(
+                    "recovery key removed from the earlier validator {earlier}: tx {} (block {}, {} gas)",
+                    inc.tx, inc.block, inc.gas_used
+                );
+            }
+            OwnerCmd::RemoveRecovery { agent, leave_no_recovery, earlier: None, sponsored } => {
                 if !leave_no_recovery {
                     bail!(
                         "this leaves the account without a recovery key: losing the owner key then loses the account. \

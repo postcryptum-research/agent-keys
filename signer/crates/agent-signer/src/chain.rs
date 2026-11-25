@@ -34,16 +34,22 @@ pub const PERMIT2: Address = alloy::primitives::address!("000000000022D473030F11
 pub fn forbidden_target(dep: &Deployments, account: Address, target: Address, selector: [u8; 4]) -> Option<String> {
     use crate::abi::IAgentPolicyTrading::orderRegisterCall;
     use crate::abi::IAgentPolicyX402::{x402AuthorizeCall, x402ReclaimCall};
-    let modules: [(Option<Address>, &str); 8] = [
+    let mut modules: Vec<(Option<Address>, &str)> = vec![
         (Some(dep.p256_validator), "the root validator: the agent could replace the owner key"),
-        (dep.p256_validator_v1, "a root validator: the agent could replace the owner key"),
         (dep.p256_recovery_validator, "the recovery validator: the agent could replace the recovery key"),
-        (dep.p256_recovery_validator_v1, "a recovery validator: the agent could replace the recovery key"),
         (Some(dep.p256_signer), "the permission signer: the agent could swap its own key"),
         (Some(dep.kernel), "the Kernel implementation"),
         (Some(dep.kernel_factory), "the account factory"),
         (dep.kernel_factory_staker, "the account factory's staker"),
     ];
+    // earlier instances keep the keys of the accounts and permissions not moved yet
+    for (name, why) in [
+        ("p256Validator", "an earlier root validator: the agent could replace the owner key"),
+        ("p256RecoveryValidator", "an earlier recovery validator: the agent could replace the recovery key"),
+        ("p256Signer", "an earlier permission signer: the agent could swap the key of a permission on it"),
+    ] {
+        modules.extend(dep.superseded(name).into_iter().map(|a| (Some(a), why)));
+    }
     if target == account {
         return Some("the account itself: the agent could grant itself access, replace the root key or execute as root".into());
     }
@@ -703,7 +709,12 @@ impl Session {
     /// uninstall the root validator; after `owner recover` the handover is
     /// finished first).
     async fn recovery_to_change(&self) -> Result<(Address, hw_signer::PublicKey)> {
-        let validator = self.recovery_validator()?;
+        self.recovery_to_change_at(self.recovery_validator()?).await
+    }
+
+    /// [`Session::recovery_to_change`] for a given recovery validator: the
+    /// current one, or an earlier one the deployments file keeps.
+    async fn recovery_to_change_at(&self, validator: Address) -> Result<(Address, hw_signer::PublicKey)> {
         if !self.is_installed(validator).await? {
             bail!("no recovery key is installed on this account ({validator}): `owner add-recovery` installs one");
         }
@@ -741,6 +752,28 @@ impl Session {
 
     /// Recovery operation: the recovery key makes itself root (the owner's
     /// device is lost or broken).
+    /// Owner operation after a redeploy (docs/REDEPLOY.md): the recovery key
+    /// on an earlier recovery validator the deployments file keeps
+    /// (`p256RecoveryValidatorV<n>`) is removed, its grant of
+    /// `changeRootValidator` withdrawn. Until then that key can still take
+    /// root through it. Refused while the current recovery validator holds no
+    /// key, which would leave the account without one, unless
+    /// `leave_no_recovery`.
+    pub async fn remove_earlier_recovery(&self, earlier: Address, leave_no_recovery: bool, sponsored: bool) -> Result<Included> {
+        if !self.dep.superseded("p256RecoveryValidator").contains(&earlier) {
+            bail!("{earlier} is not an earlier recovery validator of the deployments file (p256RecoveryValidatorV<n>)");
+        }
+        if !leave_no_recovery && !self.is_installed(self.recovery_validator()?).await? {
+            bail!(
+                "the current recovery validator holds no key on this account: `owner add-recovery` installs one first, \
+                 so that removing the earlier one does not leave the account without a recovery key (or add --leave-no-recovery)"
+            );
+        }
+        let (validator, _) = self.recovery_to_change_at(earlier).await?;
+        let call = kernel::remove_recovery_calldata(self.account, validator);
+        self.send_raw_at(call, SignAs::Owner, sponsored, None).await
+    }
+
     pub async fn recover(&self, sponsored: bool) -> Result<Included> {
         let validator = self.recovery_validator()?;
         // said here, for every kind of key: without this a removed recovery key shows as a
@@ -960,15 +993,12 @@ impl Session {
     /// This repository's P-256 validators on this chain: the only root
     /// validators whose key the CLI knows how to read.
     fn known_validators(&self) -> Vec<Address> {
-        [
-            Some(self.dep.p256_validator),
-            self.dep.p256_validator_v1,
-            self.dep.p256_recovery_validator,
-            self.dep.p256_recovery_validator_v1,
-        ]
-        .into_iter()
-        .flatten()
-        .collect()
+        [Some(self.dep.p256_validator), self.dep.p256_recovery_validator]
+            .into_iter()
+            .flatten()
+            .chain(self.dep.superseded("p256Validator"))
+            .chain(self.dep.superseded("p256RecoveryValidator"))
+            .collect()
     }
 
     /// Before a root operation: the key about to sign must be the one the
@@ -1802,6 +1832,31 @@ mod tests {
         assert!(serde_json::from_str::<AgentConfig>(&typo).is_err(), "a misspelled field must be an error");
     }
 
+    /// The tracked configs name the current instances: an allow-list target
+    /// that its deployments file keeps as superseded is a config a redeploy
+    /// left behind (docs/REDEPLOY.md).
+    #[test]
+    fn repository_configs_target_no_superseded_instance() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let names = [
+            "agentPolicy", "p256Validator", "p256RecoveryValidator", "p256Signer", "safeNonceAssert", "whitelistPaymaster", "demoCounter", "cowSwapDecoder",
+        ];
+        let mut checked = 0;
+        for name in ["agent.base-sepolia.json", "agent.enclave.base-sepolia.json", "agent.tropic01.base-sepolia.json", "agent.window-demo.base-sepolia.json", "agent.x402.base-sepolia.json"] {
+            let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join(name)).unwrap()).unwrap();
+            let path = dir.join(cfg["deployments"].as_str().unwrap());
+            let dep: Deployments = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let old: Vec<Address> = names.iter().flat_map(|n| dep.superseded(n)).collect();
+            assert!(!old.is_empty(), "{name}: the file keeps earlier instances");
+            for entry in cfg["policy"]["allow"].as_array().unwrap() {
+                let target: Address = entry["target"].as_str().unwrap().parse().unwrap();
+                assert!(!old.contains(&target), "{name}: {target} is superseded in {}", path.display());
+                checked += 1;
+            }
+        }
+        assert!(checked > 0);
+    }
+
     #[test]
     fn protected_tpm_key_parses() {
         let spec: crate::agent::KeySpec =
@@ -1855,9 +1910,40 @@ mod forbidden_target_tests {
             "agentPolicy": "0x1000000000000000000000000000000000000005",
             "demoCounter": "0x1000000000000000000000000000000000000006",
             "p256RecoveryValidator": "0x1000000000000000000000000000000000000007",
-            "p256ValidatorV1": "0x1000000000000000000000000000000000000008"
+            "p256ValidatorV1": "0x1000000000000000000000000000000000000008",
+            "p256ValidatorV2": "0x1000000000000000000000000000000000000009",
+            "p256RecoveryValidatorV2": "0x100000000000000000000000000000000000000a",
+            "p256SignerV2": "0x100000000000000000000000000000000000000b",
+            "agentPolicyV9": "0x100000000000000000000000000000000000000c",
+            "solc": "0.8.38"
         }))
         .unwrap()
+    }
+
+    /// What a redeploy keeps as `<name>V<n>` is read by its name, every
+    /// version of it, and a versioned key that holds no address is refused.
+    #[test]
+    fn earlier_instances_are_read_by_their_versioned_names() {
+        let dep = deployments();
+        let at = |s: &str| s.parse::<Address>().unwrap();
+        assert_eq!(
+            dep.superseded("p256Validator"),
+            vec![at("0x1000000000000000000000000000000000000008"), at("0x1000000000000000000000000000000000000009")]
+        );
+        assert_eq!(dep.superseded("p256RecoveryValidator"), vec![at("0x100000000000000000000000000000000000000a")]);
+        assert_eq!(dep.superseded("p256Signer"), vec![at("0x100000000000000000000000000000000000000b")]);
+        assert!(dep.superseded("demoCounter").is_empty() && dep.superseded("solc").is_empty());
+        dep.check_superseded().unwrap();
+        // what is no `<name>V<n>` is not read as one, whatever it holds
+        for not_versioned in ["p256ValidatorV", "p256ValidatorV01", "V1", "evmVersion"] {
+            let mut d = deployments();
+            d.other.insert(not_versioned.into(), serde_json::json!("not an address"));
+            d.check_superseded().unwrap();
+            assert_eq!(d.superseded("p256Validator").len(), 2, "{not_versioned}");
+        }
+        let mut d = deployments();
+        d.other.insert("p256ValidatorV3".into(), serde_json::json!("not an address"));
+        assert!(d.check_superseded().unwrap_err().to_string().contains("p256ValidatorV3 is not an address"));
     }
 
     #[test]
@@ -1869,7 +1955,16 @@ mod forbidden_target_tests {
         assert!(forbidden_target(&dep, account, account, any).unwrap().contains("the account itself"));
         assert!(forbidden_target(&dep, account, dep.entry_point, any).unwrap().contains("EntryPoint"));
         assert!(forbidden_target(&dep, account, dep.p256_validator, any).unwrap().contains("root validator"));
-        assert!(forbidden_target(&dep, account, dep.p256_validator_v1.unwrap(), any).is_some());
+        // every earlier validator, recovery validator and signer: accounts and permissions not moved yet use them
+        for earlier in ["p256Validator", "p256RecoveryValidator", "p256Signer"] {
+            let all = dep.superseded(earlier);
+            assert!(!all.is_empty(), "{earlier}");
+            for a in all {
+                assert!(forbidden_target(&dep, account, a, any).unwrap().contains("earlier"), "{earlier} {a}");
+            }
+        }
+        // an earlier policy is no module of the account's keys
+        assert!(forbidden_target(&dep, account, dep.superseded("agentPolicy")[0], any).is_none());
         assert!(forbidden_target(&dep, account, dep.p256_recovery_validator.unwrap(), any).is_some());
         assert!(forbidden_target(&dep, account, dep.p256_signer, any).is_some());
         assert!(forbidden_target(&dep, account, dep.kernel, any).is_some());
