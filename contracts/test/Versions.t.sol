@@ -21,9 +21,9 @@ contract SettlementForVersion {
 }
 
 /// @dev Every deployable contract answers `VERSION()` with its version, so that
-/// an instance on chain says which code it is. Each started at 0.1.0; a
+/// an instance on chain says which code it is. All started at 0.1.0; a
 /// change to a contract's bytecode raises its version (CLAUDE.md, versions
-/// and releases).
+/// and releases), and that contract's line here then names its own.
 contract VersionsTest is Test {
     string internal constant FIRST = "0.1.0";
     // install data of exactly the expected length (#154)
@@ -38,7 +38,8 @@ contract VersionsTest is Test {
         assertEq(new DemoCounter().VERSION(), FIRST, "DemoCounter");
         assertEq(new Logger(address(this), address(this), bytes32(0), bytes32(0)).VERSION(), FIRST, "Logger");
         // Contracts with constructor arguments, given stand-ins
-        assertEq(new AgentPolicy(address(new SafeNonceAssert())).VERSION(), FIRST, "AgentPolicy");
+        // 0.1.1: a venue's spender is refused as a target (issue #149)
+        assertEq(new AgentPolicy(address(new SafeNonceAssert())).VERSION(), "0.1.1", "AgentPolicy");
         assertEq(new CowSwapDecoder(address(new SettlementForVersion())).VERSION(), FIRST, "CowSwapDecoder");
         IAAEntryPoint entryPoint = IAAEntryPoint(EntryPointLib.deploy());
         assertEq(new WhitelistPaymaster(entryPoint, address(this)).VERSION(), FIRST, "WhitelistPaymaster");

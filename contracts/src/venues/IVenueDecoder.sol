@@ -42,8 +42,9 @@ interface IVenueDecoder {
     /// @return The venue's contract address.
     function venue() external view returns (address);
 
-    /// @notice Who takes the sell token from the account at this venue. For
-    /// the owner's tools (the allowance); the policy does not ask.
+    /// @notice Who takes the sell token from the account at this venue: the
+    /// owner's tools approve it (the allowance). Like `venue()`, a mandate
+    /// may not name it as a target: through it the allowance would move.
     /// @return The address the account approves to spend its sell token.
     function spender() external view returns (address);
 }

@@ -51,11 +51,11 @@ interface IKernelEntryPoint {
 ///    budget and allow-list, make a schedule ("weekdays: up to X on these
 ///    contracts; the 1st: payroll up to Y");
 ///  - the account itself, its EntryPoint, this policy (except its two
-///    x402 entry points) and Permit2 are never valid targets: all are
-///    refused at install, and all but the EntryPoint again at validation
-///    (it is not re-checked there, see `_judge`). No mandate, however
-///    written, lets the agent widen its own permission, replace the root key
-///    or drain the deposit.
+///    x402 entry points and its order entry point) and Permit2 are never
+///    valid targets: all are refused at install, and all but the
+///    EntryPoint again at validation (it is not re-checked there, see
+///    `_judge`). No mandate, however written, lets the agent widen its own
+///    permission, replace the root key or drain the deposit.
 ///
 ///  - optionally, per token, a list of payees: with one, `transfer` and
 ///    `transferFrom` may only pay a listed address, `approve` and
@@ -102,7 +102,7 @@ interface IERC3009State {
 contract AgentPolicy is IPolicy {
     /// @dev The version of this contract's code (semantic versioning), raised with
     /// any change to its bytecode. A release tag names the versions it carries.
-    string public constant VERSION = "0.1.0";
+    string public constant VERSION = "0.1.1";
 
     struct Config {
         uint48 validUntil; // 0 = not installed
@@ -263,11 +263,13 @@ contract AgentPolicy is IPolicy {
     /// key: `keccak256(mandate, decoder)`
     mapping(bytes32 key => mapping(address account => VenuePin)) internal _venues;
     /// The venues an account has ever pinned in a mandate: each venue's own
-    /// contract and its decoder. None of them is a target for the agent
-    /// under any mandate of the account, whichever was installed first:
-    /// at the venue itself an order could be signed past the decoder
-    /// (CoW: `setPreSignature`), and the venue holds the owner's allowance.
-    /// Never cleared: an address that was a venue stays out of reach.
+    /// contract, its decoder and its spender. None of them is a target for
+    /// the agent under any mandate of the account, whichever was installed
+    /// first: at the venue itself an order could be signed past the decoder
+    /// (CoW: `setPreSignature`), and the spender holds the owner's allowance
+    /// of the sold tokens (CoW: the vault relayer), so through it they would
+    /// leave past their caps and payee lists. Never cleared: an address that
+    /// was a venue stays out of reach.
     mapping(address place => mapping(address account => bool)) internal _venuePlaces;
 
     constructor(address nonceAssert) {
@@ -320,9 +322,9 @@ contract AgentPolicy is IPolicy {
 
     /// @notice The pinned code hash and config hash of a venue's decoder
     /// under the permission; zeros when it is not one of its venues.
-    /// @notice Whether `place` is, or ever was, a venue's own contract or a
-    /// venue's decoder in a mandate of `account`: then no mandate of the
-    /// account may name it as a target.
+    /// @notice Whether `place` is, or ever was, a venue's own contract, its
+    /// decoder or its spender in a mandate of `account`: then no mandate of
+    /// the account may name it as a target.
     function venuePlace(address account, address place) external view returns (bool) {
         return _venuePlaces[place][account];
     }
@@ -445,6 +447,8 @@ contract AgentPolicy is IPolicy {
     /// be the code the owner pinned, once per mandate; the venue's own
     /// contract (CoW's settlement, with `setPreSignature` on it) may not be
     /// among the mandate's targets: only orders the decoder judged reach it.
+    /// Nor may the decoder, or the venue's spender (CoW's vault relayer),
+    /// which holds the owner's allowance of the sold tokens.
     function _installTrading(bytes32 m, bytes calldata params, address[] memory targets)
         internal
         returns (uint32 period_)
@@ -467,13 +471,21 @@ contract AgentPolicy is IPolicy {
             ) revert InvalidConfig();
             (v.codeHash, v.configHash) = (venues[i].codeHash, venues[i].configHash);
             address place = IVenueDecoder(decoder).venue();
+            address spender = IVenueDecoder(decoder).spender();
             // this mandate's own targets were judged before the venue was known
             for (uint256 j; j < targets.length; j++) {
-                if (targets[j] == place || targets[j] == decoder) revert ForbiddenTarget(targets[j], bytes4(0));
+                if (targets[j] == place || targets[j] == decoder || targets[j] == spender) {
+                    revert ForbiddenTarget(targets[j], bytes4(0));
+                }
             }
             // a venue that is the account or this policy would close the account's own paths
-            if (place == msg.sender || place == address(this) || decoder == address(this)) revert InvalidConfig();
-            (_venuePlaces[place][msg.sender], _venuePlaces[decoder][msg.sender]) = (true, true);
+            if (
+                place == msg.sender || place == address(this) || decoder == address(this) || spender == msg.sender
+                    || spender == address(this)
+            ) revert InvalidConfig();
+            _venuePlaces[place][msg.sender] = true;
+            _venuePlaces[decoder][msg.sender] = true;
+            _venuePlaces[spender][msg.sender] = true;
         }
     }
 
@@ -1005,8 +1017,9 @@ contract AgentPolicy is IPolicy {
     /// @dev Targets no agent may ever have, whatever the allow-list says: the
     /// account itself (Kernel's own `grantAccess`, `installValidations`,
     /// `changeRootValidator`, `execute`: the mandate would widen or replace
-    /// itself) and this policy, except the two x402 entry points the account
-    /// calls on purpose. `msg.sender` is the account in both callers.
+    /// itself) and this policy, except the three entry points the account
+    /// calls on purpose: `x402Authorize`, `x402Reclaim` and `orderRegister`.
+    /// `msg.sender` is the account in both callers.
     /// And Permit2: it holds one allowance per token and its own `approve`
     /// names who may pull it, a call this policy does not read, so through
     /// it a token would leave past its cap and its payee list. Refused until
