@@ -87,28 +87,34 @@ jobs:
           persist-credentials: false
       - name: The policy with ${{ matrix.break }} broken, and the harness
         id: copy
+        env:
+          BREAK: ${{ matrix.break }}
         run: |
           set -euo pipefail
           dir="$RUNNER_TEMP/proof"
           mkdir -p "$dir/test"
           cp -R contracts/src contracts/lib contracts/foundry.toml "$dir/"
           cp contracts/test/BudgetProof.t.sol "$dir/test/"
-          proof="$(python3 scripts/kontrol-break.py "${{ matrix.break }}" "$dir/src/AgentPolicy.sol")"
+          proof="$(python3 scripts/kontrol-break.py "$BREAK" "$dir/src/AgentPolicy.sol")"
+          [[ "$proof" =~ ^check_[A-Za-z0-9_]+$ ]] || { echo "not a proof name: $proof"; exit 1; }
           git diff --no-index contracts/src/AgentPolicy.sol "$dir/src/AgentPolicy.sol" || true
           echo "proof=$proof" >> "$GITHUB_OUTPUT"
           chmod -R a+rwX "$dir"
       - name: ${{ steps.copy.outputs.proof }} must fail
+        env:
+          BREAK: ${{ matrix.break }}
+          PROOF: ${{ steps.copy.outputs.proof }}
         run: |
           # the step's shell is `bash -e`; the prove is expected to exit non-zero
           set +e -uo pipefail
           docker run --rm \
-            -e KPROFILE_TELEMETRY_DISABLED=true \
+            -e KPROFILE_TELEMETRY_DISABLED=true -e PROOF \
             -v "$RUNNER_TEMP/proof:/home/user/workspace" -w /home/user/workspace \
             "$KONTROL_IMAGE" \
-            bash -c 'kontrol build && kontrol prove --match-test "BudgetProof.${{ steps.copy.outputs.proof }}"' \
+            bash -c 'kontrol build && kontrol prove --match-test "BudgetProof.$PROOF"' \
             > "$RUNNER_TEMP/prove.log" 2>&1
           cat "$RUNNER_TEMP/prove.log"
           # failed with a failing node (a counterexample), not timed out or crashed
           grep -q "PROOF FAILED" "$RUNNER_TEMP/prove.log" \
             && grep -Eq '(^|[^0-9])[1-9][0-9]* failing' "$RUNNER_TEMP/prove.log" \
-            || { echo "the proof did not fail with ${{ matrix.break }} broken"; exit 1; }
+            || { echo "the proof did not fail with $BREAK broken"; exit 1; }
