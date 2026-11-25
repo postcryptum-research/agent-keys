@@ -513,7 +513,12 @@ which refuses the operation all the same [I].
   call that was not made, the withdrawal of an allowance among them
   (#190, `test_safe_aTransactionThatMayFailQuietlyIsRefused`) [V
   `contracts/lib/safe-smart-account/contracts/Safe.sol`, the `GS013`
-  rule]; Safes do not
+  rule]. A Safe's guard can only add a refusal to this. A module enabled
+  on the Safe is another matter: `execTransactionFromModule` runs without
+  `execTransaction`'s rules, so a mandate that lets the agent reach a
+  module of the Safe rests on that module's own checks, and enabling one
+  is the owner's to weigh [I from `ModuleManager.sol` in the same tree].
+  Safes do not
   nest; a DELEGATECALL goes only into an allow-listed `multiSend` that is
   still a target the agent may reach (not made a venue's place since, by
   another mandate of the account), whose every leg is a CALL that passes
