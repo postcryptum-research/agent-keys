@@ -373,7 +373,8 @@ which refuses the operation all the same [I].
   `approve(spender, x)` took effect, would leave that allowance standing:
   the account does not read a token's return value. So a token given a
   limit must be one whose `approve(spender, 0)` clears the allowance; the
-  widely used ones do. [I: no such token is known to us; the requirement
+  widely used ones do. The same is assumed of an allow-listed contract's
+  `setApprovalForAll(operator, false)`. [I: no such token is known to us; the requirement
   is on the owner's choice of tokens]
 - *Window.* The operation is valid from `validAfter` up to and at
   `validUntil`; the policy returns the window and the EntryPoint enforces
@@ -462,7 +463,10 @@ which refuses the operation all the same [I].
   `safe` a whole address word: a word with bits above the low 160 is
   refused in validation, since `check` would revert on it at execution
   with the operation already charged
-  (`test_safe_theGuardedAddressIsAWholeWord`). The call
+  (`test_safe_theGuardedAddressIsAWholeWord`). The same is asked of the
+  address words of `execTransaction` itself (`to`, `gasToken`,
+  `refundReceiver`): a Safe whose decoder validates them would revert at
+  execution (`test_safe_theTransactionsAddressesAreWholeWords`). The call
   inside is judged against the same mandate; `gasPrice` must be 0, or the
   Safe would pay a refund to a receiver the agent picks; Safes do not
   nest; a DELEGATECALL goes only into an allow-listed `multiSend` that is
