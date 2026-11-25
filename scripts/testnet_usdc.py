@@ -5,7 +5,7 @@ A testnet chore, not part of the signer: swaps ETH -> USDC on Uniswap v3
 (SwapRouter02, WETH/USDC pool) with the recipient set directly, so the USDC
 lands at --to without a second transfer. Needs Foundry's `cast` on PATH.
 
-    python3 scripts/testnet_usdc.py --to 0xEdB6…c9E9 --eth 0.0005 [--env-file ../.env] [--dry-run]
+    python3 scripts/testnet_usdc.py --to 0xEdB645B14e2f952C5784e34949b58F0826fBc9E9 --eth 0.0005 [--env-file ../.env] [--dry-run]
 
 Reads BASE_SEPOLIA_RPC_URL and GAS_WALLET_KEYFILE from the env file (or the
 environment). The key is handed to `cast send --private-key` (as `forge script`
