@@ -204,6 +204,25 @@ contract MockOperators {
         return true;
     }
 
+    mapping(address => mapping(uint256 => uint256)) public balanceOf;
+
+    function mint(address to, uint256 id, uint256 amount) external {
+        balanceOf[to][id] += amount;
+    }
+
+    function transfer(address receiver, uint256 id, uint256 amount) external returns (bool) {
+        balanceOf[msg.sender][id] -= amount;
+        balanceOf[receiver][id] += amount;
+        return true;
+    }
+
+    function transferFrom(address sender, address receiver, uint256 id, uint256 amount) external returns (bool) {
+        require(sender == msg.sender, "this mock moves the caller's own");
+        balanceOf[sender][id] -= amount;
+        balanceOf[receiver][id] += amount;
+        return true;
+    }
+
     /// ERC-777
     mapping(address => mapping(address => bool)) public authorized;
 
@@ -921,6 +940,148 @@ contract AgentPermissionTest is Test {
         );
     }
 
+    /// The eleven-word form: a mandate with limits per id of an ERC-6909
+    /// contract, installed by the owner under `id`.
+    function _installIdMandate(
+        PermissionId id,
+        address[] memory targets,
+        bytes4[] memory selectors,
+        AgentPolicy.IdCap[] memory caps,
+        uint32 period
+    ) internal {
+        bytes[] memory entries = new bytes[](2);
+        entries[0] = abi.encodePacked(bytes2(0), address(policy), _idParams(targets, selectors, caps, period));
+        entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(agentX, agentY));
+        ValidationId vId = ValidatorLib.permissionToIdentifier(id);
+        Execution[] memory install = new Execution[](2);
+        install[0] = Execution(acct, 0, _installCall(vId, Kernel(payable(acct)).currentNonce(), abi.encode(entries)));
+        install[1] = Execution(acct, 0, abi.encodeCall(Kernel.grantAccess, (vId, Kernel.execute.selector, true)));
+        _send(
+            _rootOp(
+                abi.encodeWithSelector(
+                    Kernel.execute.selector, ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))), ExecLib.encodeBatch(install)
+                )
+            )
+        );
+    }
+
+    function _idParams(address[] memory targets, bytes4[] memory selectors, AgentPolicy.IdCap[] memory caps, uint32 period)
+        internal
+        view
+        returns (bytes memory)
+    {
+        return abi.encode(
+            targets,
+            selectors,
+            MAX_VALUE,
+            BUDGET,
+            expiry,
+            new AgentPolicy.TokenCap[](0),
+            uint48(0),
+            new AgentPolicy.TokenPayees[](0),
+            period,
+            new AgentPolicy.Venue[](0),
+            caps
+        );
+    }
+
+    function _idTargets(address t) internal pure returns (address[] memory targets, bytes4[] memory selectors) {
+        targets = new address[](3);
+        selectors = new bytes4[](3);
+        (targets[0], selectors[0]) = (t, bytes4(0x095bcdb6)); // transfer(address,uint256,uint256)
+        (targets[1], selectors[1]) = (t, bytes4(0xfe99049a)); // transferFrom(address,address,uint256,uint256)
+        (targets[2], selectors[2]) = (t, bytes4(0x426a8493)); // approve(address,uint256,uint256)
+    }
+
+    function _idMove(MockOperators t, address to, uint256 tokenId, uint256 amount) internal pure returns (Execution memory) {
+        return Execution(address(t), 0, abi.encodeWithSelector(bytes4(0x095bcdb6), to, tokenId, amount));
+    }
+
+    /// #186: an id of an ERC-6909 contract is held to its cap per operation
+    /// and its budget; an id without a limit is not moved at all.
+    function test_ids_anIdIsHeldToItsLimits() public {
+        MockOperators t = new MockOperators();
+        t.mint(acct, 7, 100);
+        t.mint(acct, 8, 100);
+        PermissionId id = PermissionId.wrap(0x69643031); // "id01"
+        (address[] memory targets, bytes4[] memory selectors) = _idTargets(address(t));
+        AgentPolicy.IdCap[] memory caps = new AgentPolicy.IdCap[](1);
+        caps[0] = AgentPolicy.IdCap(address(t), 7, 5, 8);
+        _installIdMandate(id, targets, selectors, caps, 0);
+        address to = makeAddr("receiver");
+        // above the cap per operation, in one call and summed over two
+        _expectRefused(_agentOpWith(AGENT, id, address(t), 0, _idMove(t, to, 7, 6).callData));
+        Execution[] memory calls = new Execution[](2);
+        (calls[0], calls[1]) = (_idMove(t, to, 7, 3), _idMove(t, to, 7, 3));
+        _expectRefused(_agentBatchWith(AGENT, id, calls));
+        // an id without a limit
+        _expectRefused(_agentOpWith(AGENT, id, address(t), 0, _idMove(t, to, 8, 1).callData));
+        // within both: 3, then 5 by transferFrom, which is the whole budget
+        _send(_agentOpWith(AGENT, id, address(t), 0, _idMove(t, to, 7, 3).callData));
+        _send(_agentOpWith(AGENT, id, address(t), 0, abi.encodeWithSelector(bytes4(0xfe99049a), acct, to, 7, 5)));
+        assertEq(t.balanceOf(to, 7), 8);
+        // the budget is spent
+        _expectRefused(_agentOpWith(AGENT, id, address(t), 0, _idMove(t, to, 7, 1).callData));
+        // a short call is refused
+        _expectRefused(_agentOpWith(AGENT, id, address(t), 0, abi.encodePacked(bytes4(0x095bcdb6), bytes32(uint256(uint160(to))), uint256(7))));
+        assertEq(t.balanceOf(to, 7), 8);
+        assertEq(t.balanceOf(to, 8), 0);
+    }
+
+    /// What install refuses in the eleven-word form, and around it.
+    function test_ids_installRules() public {
+        MockOperators t = new MockOperators();
+        (address[] memory targets, bytes4[] memory selectors) = _idTargets(address(t));
+        AgentPolicy.IdCap[] memory caps = new AgentPolicy.IdCap[](1);
+        caps[0] = AgentPolicy.IdCap(address(t), 7, 5, 8);
+        // the control installs
+        this.installAsAccount(1, _idParams(targets, selectors, caps, 0));
+        // no id limit in the form that exists to carry one
+        _installRefused(2, _idParams(targets, selectors, new AgentPolicy.IdCap[](0), 0));
+        // the same id twice
+        AgentPolicy.IdCap[] memory twice = new AgentPolicy.IdCap[](2);
+        (twice[0], twice[1]) = (caps[0], caps[0]);
+        _installRefused(3, _idParams(targets, selectors, twice, 0));
+        // the zero address
+        AgentPolicy.IdCap[] memory zero = new AgentPolicy.IdCap[](1);
+        zero[0] = AgentPolicy.IdCap(address(0), 7, 5, 8);
+        _installRefused(4, _idParams(targets, selectors, zero, 0));
+        // any other function on a contract with id limits: an operator moves every id
+        address[] memory more = new address[](4);
+        bytes4[] memory moreSelectors = new bytes4[](4);
+        for (uint256 i; i < 3; i++) {
+            (more[i], moreSelectors[i]) = (targets[i], selectors[i]);
+        }
+        (more[3], moreSelectors[3]) = (address(t), MockOperators.setOperator.selector);
+        _installRefused(5, _idParams(more, moreSelectors, caps, 0));
+        // one of the three on a contract without an id limit, in a mandate that has none
+        _installRefused(
+            6,
+            abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, new AgentPolicy.TokenCap[](0), uint48(0))
+        );
+        // and in one whose limits are another contract's
+        AgentPolicy.IdCap[] memory other = new AgentPolicy.IdCap[](1);
+        other[0] = AgentPolicy.IdCap(address(counter), 7, 5, 8);
+        _installRefused(7, _idParams(targets, selectors, other, 0));
+        // a cap wider than its type
+        bytes memory wide = _idParams(targets, selectors, caps, 0);
+        uint256 at = wide.length - 32; // the last word: the one cap's budget
+        assembly {
+            mstore(add(add(wide, 32), at), shl(128, 1))
+        }
+        _installRefused(8, wide);
+    }
+
+    function installAsAccount(uint256 n, bytes calldata params) external {
+        vm.prank(acct);
+        policy.onInstall(abi.encodePacked(bytes32((uint256(0x69640000) + n) << 224), params));
+    }
+
+    function _installRefused(uint256 n, bytes memory params) internal {
+        vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+        this.installAsAccount(n, params);
+    }
+
     function test_allowances_anOperatorGrantIsWithdrawnInTheSameOperation() public {
         MockOperators nft = new MockOperators();
         PermissionId id = PermissionId.wrap(0x6f707273); // "oprs"
@@ -991,7 +1152,11 @@ contract AgentPermissionTest is Test {
         address[] memory targets = new address[](1);
         bytes4[] memory selectors = new bytes4[](1);
         (targets[0], selectors[0]) = (address(t), bytes4(0x426a8493)); // approve(address,uint256,uint256)
-        _installOperatorMandate(id, targets, selectors);
+        AgentPolicy.IdCap[] memory caps = new AgentPolicy.IdCap[](3);
+        for (uint256 i; i < 3; i++) {
+            caps[i] = AgentPolicy.IdCap(address(t), 7 + i, 10 ether, 100 ether);
+        }
+        _installIdMandate(id, targets, selectors, caps, 0);
         address spender = makeAddr("spender");
         bytes4 approve3 = bytes4(0x426a8493);
         Execution memory grant = Execution(address(t), 0, abi.encodeWithSelector(approve3, spender, 7, 5 ether));
