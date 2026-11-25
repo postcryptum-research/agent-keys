@@ -20,6 +20,12 @@ jobs:
       - name: forge test
         working-directory: contracts
         run: forge test --evm-version osaka
+      # The CLI's local-chain tests (the review-to-install differential among
+      # them) run this project's contracts from fixtures of bytecode. A
+      # contract changed without them would leave those tests on the earlier
+      # code, passing. scripts/test-fixtures.py --write brings them up.
+      - name: the test fixtures are this build
+        run: python3 scripts/test-fixtures.py
 
   # House rules 3 and 9: a pull request may change comments in contracts/src
   # freely; a contract whose bytecode differs from the merge base must carry
