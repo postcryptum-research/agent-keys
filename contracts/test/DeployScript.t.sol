@@ -46,6 +46,25 @@ contract DeployScriptTest is Test {
         assertEq(script.nextVersionKey(keys, "agentPolicyV"), "agentPolicyVV1");
     }
 
+    /// @dev The gas limit of a deployment is the chain's estimate, read from
+    /// `eth_estimateGas`, with 30% added.
+    function test_theChainsEstimateIsReadAndGivenAMargin() public view {
+        assertEq(script.quantity(hex"5208"), 21000);
+        assertEq(script.quantity(hex"0235592d"), 37050669);
+        assertEq(script.quantity(hex"00000000000000ff"), 255);
+        // empty, or wider than any gas figure: no estimate
+        assertEq(script.quantity(""), 0);
+        assertEq(script.quantity(hex"010000000000000000"), 0);
+        assertEq(script.withMargin(37058759), 48176386);
+        assertEq(script.withMargin(0), 0);
+    }
+
+    /// @dev Without an RPC to ask (a test, or a script run without one),
+    /// there is no estimate and forge sizes the transaction as before.
+    function test_noRpcMeansNoEstimate() public {
+        assertEq(script.chainGas(address(this), hex"00"), 0);
+    }
+
     /// @dev Against the file as it stands for Base Sepolia.
     function test_theRecordedFileGivesTheExpectedNames() public view {
         string[] memory keys = vm.parseJsonKeys(vm.readFile("deployments/84532.json"), "$");

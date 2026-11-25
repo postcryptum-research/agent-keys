@@ -46,34 +46,29 @@ Sepolia (11155111). What is deployed where, with every earlier instance:
    (`git checkout -- deployments/<chainId>.json`). The modules have the
    same address on every chain; the decoder is deployed only where CoW's
    settlement has code.
-5. **Gas on the deployer** on each chain, and gas limits the chain will
-   honour. forge sizes each transaction's gas limit by simulating it under
-   the `evm_version` the contracts are compiled for (`cancun`), not under
-   the chain's rules. On a chain with EIP-8037 (Glamsterdam: Sepolia since
-   2026-10-06) a deployed byte costs 1,530 gas of state gas instead of 200,
-   so those limits come out five to seven times too low, and the first
-   deployment runs out of gas while its code is stored. Ask the chain
-   itself, with the input of a transaction from the dry run's
-   `broadcast/Deploy.s.sol/<chainId>/` record:
-
-   ```sh
-   cast estimate 0x4e59b44847b379578588920cA78FbF26c0B4956C <input> \
-       --from <the deployer's address> --rpc-url <the chain's RPC>
-   ```
-
-   On Sepolia on 2026-11-25 this said 37,058,759 gas for `AgentPolicy`
-   against forge's 5,822,848; EIP-7825's cap of 2^24 applies to regular gas
-   only, so such a transaction is valid [V the estimate; EIP-8037]. Where
-   the chain's figure is above forge's, raise forge's margin with
-   `--gas-estimate-multiplier` (800 on Sepolia; 130 is forge's default).
-   The addresses do not change: only the compilation decides them.
+5. **Gas on the deployer** on each chain. The script sizes each
+   deployment's gas limit by the chain itself: it asks the chain's
+   `eth_estimateGas` for the call to the CREATE2 deployer and adds 30%,
+   and prints the limit beside each address [V `_deploy` and `chainGas` in
+   `contracts/script/Deploy.s.sol`; `test/DeployScript.t.sol`]. forge's own
+   estimate simulates under the `evm_version` the contracts are compiled
+   for (`cancun`), not under the chain's rules: on a chain with EIP-8037
+   (Glamsterdam: Sepolia since 2026-10-06), where a deployed byte costs
+   1,530 gas of state gas instead of 200, it came out five to seven times
+   too low, and the first deployment ran out of gas while its code was
+   stored (2026-11-25, before the script asked the chain). With the
+   chain's figure, a dry run against Sepolia gives `AgentPolicy` a limit
+   of 48,273,733 gas; EIP-7825's cap of 2^24 applies to regular gas only,
+   so such a transaction is valid [V the dry run, 2026-11-25; EIP-8037].
+   Without an RPC to ask (a run with no `--rpc-url`), forge estimates as
+   before. The addresses do not change: only the compilation decides them.
 
 ## The broadcast, per chain
 
 ```sh
 cd contracts
 REDEPLOY=true forge script script/Deploy.s.sol --rpc-url <the chain's RPC> --broadcast --slow \
-    [--gas-estimate-multiplier 800] --private-key "$(cat <the deployer's key file>)"
+    --private-key "$(cat <the deployer's key file>)"
 ```
 
 `--slow` sends one transaction at a time and waits for its receipt. A run

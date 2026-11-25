@@ -31,8 +31,11 @@ import {IEntryPoint} from "account-abstraction/interfaces/IEntryPoint.sol";
 ///
 /// Writes deployments/<chainid>.json, which the Rust side reads.
 contract Deploy is Script {
-    // A number constant: inline assembly below cannot reference a bytes32 one.
     uint256 internal constant SALT = 0;
+
+    // The canonical CREATE2 deployer: its calldata is the salt (32 bytes)
+    // followed by the creation code, and it returns the 20-byte address.
+    address internal constant CREATE2_DEPLOYER = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
 
     // ERC-4337 EntryPoint v0.7 and ZeroDev Kernel v3.3 (same on every chain).
     address internal constant ENTRY_POINT = 0x0000000071727De22E5E9d8BAf0edAc6f37da032;
@@ -221,10 +224,44 @@ contract Deploy is Script {
             console.log(name, "already at", addr);
             return addr;
         }
-        assembly {
-            addr := create2(0, add(creationCode, 0x20), mload(creationCode), SALT)
-        }
-        require(addr != address(0), "create2 failed");
+        bytes memory data = abi.encodePacked(bytes32(SALT), creationCode);
+        // The gas limit is the chain's own estimate with a margin. forge sizes
+        // a limit by simulating under the compiled `evm_version`, and on a
+        // chain that prices state creation higher (EIP-8037, Glamsterdam:
+        // Sepolia since 2026-10-06) that limit runs out while the code is
+        // stored. With no RPC to ask, forge estimates as before.
+        uint256 limit = chainGas(msg.sender, data);
+        (bool ok, bytes memory ret) =
+            limit == 0 ? CREATE2_DEPLOYER.call(data) : CREATE2_DEPLOYER.call{gas: limit}(data);
+        require(ok && ret.length == 20 && address(bytes20(ret)) == addr, "create2 failed");
         console.log(name, "deployed at", addr);
+        if (limit != 0) console.log("  gas limit from the chain's estimate:", limit);
+    }
+
+    /// @dev The chain's `eth_estimateGas` for a call, 30% added (forge's own
+    /// default margin); 0 when there is no RPC or it gives no estimate.
+    function chainGas(address from, bytes memory data) public returns (uint256) {
+        string memory params = string.concat(
+            '[{"from":"', vm.toString(from), '","to":"', vm.toString(CREATE2_DEPLOYER), '","data":"', vm.toString(data), '"}]'
+        );
+        try vm.rpc("eth_estimateGas", params) returns (bytes memory r) {
+            return withMargin(quantity(r));
+        } catch {
+            return 0;
+        }
+    }
+
+    /// @dev A JSON-RPC quantity as `vm.rpc` returns it (big-endian bytes);
+    /// 0 when empty or wider than 8 bytes, which no gas figure is.
+    function quantity(bytes memory r) public pure returns (uint256 q) {
+        if (r.length == 0 || r.length > 8) return 0;
+        for (uint256 i; i < r.length; i++) {
+            q = (q << 8) | uint8(r[i]);
+        }
+    }
+
+    /// @dev `estimate` with 30% added, rounded down.
+    function withMargin(uint256 estimate) public pure returns (uint256) {
+        return estimate * 13 / 10;
     }
 }
