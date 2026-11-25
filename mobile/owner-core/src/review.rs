@@ -841,6 +841,16 @@ pub fn mandate_terms(init: &[u8], place: &MandatePlace, name: &dyn Fn(Address) -
         if *t == alloy_primitives::address!("000000000022D473030F116dDEE9F6B43aC78BA3") {
             return Err("this mandate lets the agent call Permit2, through which a token's allowance can be handed to any address, past its limits and payee list; refused".into());
         }
+        // and the mirror: one of the four on a target the mandate sets no limit
+        // for is refused at every operation, a mandate that cannot do what it
+        // lists; AgentPolicy refuses it at install (#175)
+        if METERED.contains(&sel.0) && !tokens.iter().any(|token| token.0 == *t) {
+            return Err(format!(
+                "this mandate allows {} on {} but sets no limit for it; such an entry is refused at every operation, and AgentPolicy refuses the mandate at install; refused",
+                selector_name(sel.0),
+                name(*t)
+            ));
+        }
         if tokens.iter().any(|token| token.0 == *t) && !METERED.contains(&sel.0) {
             return Err(format!(
                 "this mandate limits the token {} and also allows {} on it; a limited token may only be called through transfer, transferFrom, approve and increaseAllowance, anything else would move it past its limits; refused",
@@ -952,6 +962,9 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
         let (targets, selectors): (Vec<Address>, Vec<FixedBytes<4>>) = allow.into_iter().unzip();
         for (t, sel) in targets.iter().zip(&selectors) {
             b.row(s, "Allow", format!("{} · {}", b.name(*t), selector_name(sel.0)));
+            if let Some(what) = operator_grant(sel.0) {
+                b.bold(s, "Operator grant", format!("{} · {what}", b.name(*t)));
+            }
         }
         b.row(s, "Max value per operation", format!("{} ETH", format_ether(max_value)));
         b.row(s, "Budget", format!("{} ETH", format_ether(budget)));
@@ -1267,6 +1280,27 @@ fn vid_text(vid: FixedBytes<21>) -> String {
     }
 }
 
+/// What an allow-list entry for a known approval-like function lets the agent
+/// grant (#176): rights another address keeps after the call, which a revoke
+/// of the mandate does not end unless the policy reads the function.
+fn operator_grant(sel: [u8; 4]) -> Option<&'static str> {
+    match sel {
+        SELECTOR_SET_APPROVAL_FOR_ALL => Some(
+            "lets the agent make an address the operator of all its tokens there; the agent must withdraw it in the same operation (an AgentPolicy from before 2026-11-25 lets it stand)",
+        ),
+        [0x95, 0x9b, 0x8c, 0x3f] => Some(
+            "authorizeOperator (ERC-777): lets the agent make an address the operator of all its tokens there; no AgentPolicy reads it, so the grant outlives a revoke",
+        ),
+        [0x55, 0x8a, 0x72, 0x97] => Some(
+            "setOperator (ERC-6909): lets the agent make an address the operator of all its tokens there; no AgentPolicy reads it, so the grant outlives a revoke",
+        ),
+        _ => None,
+    }
+}
+
+/// `setApprovalForAll(address,bool)` of ERC-721 and ERC-1155.
+const SELECTOR_SET_APPROVAL_FOR_ALL: [u8; 4] = [0xa2, 0x2c, 0xb4, 0x65];
+
 fn selector_name(sel: [u8; 4]) -> String {
     let name = match sel {
         s if s == IKernel::executeCall::SELECTOR => Some("execute"),
@@ -1277,6 +1311,11 @@ fn selector_name(sel: [u8; 4]) -> String {
         SELECTOR_INCREMENT => Some("increment"),
         SELECTOR_ERC20_TRANSFER => Some("transfer"),
         SELECTOR_ERC20_APPROVE => Some("approve"),
+        [0x39, 0x50, 0x93, 0x51] => Some("increaseAllowance"),
+        [0x23, 0xb8, 0x72, 0xdd] => Some("transferFrom"),
+        SELECTOR_SET_APPROVAL_FOR_ALL => Some("setApprovalForAll"),
+        [0x95, 0x9b, 0x8c, 0x3f] => Some("authorizeOperator"),
+        [0x55, 0x8a, 0x72, 0x97] => Some("setOperator"),
         [0x27, 0xdd, 0xae, 0x76] => Some("orderRegister"),
         [0, 0, 0, 0] => Some("plain value transfer"),
         _ => None,
@@ -1480,6 +1519,56 @@ mod tests {
 
     fn one_venue(config: &Bytes) -> kernel::Trading {
         kernel::Trading { period: 86_400, venues: vec![(DECODER, DECODER_CODE, alloy_primitives::keccak256(config))] }
+    }
+
+    /// An entry for a known approval-like function is named for what it lets
+    /// the agent grant (#176), beside the entry itself.
+    #[test]
+    fn an_operator_grant_is_named_on_the_screen() {
+        let nft = Address::with_last_byte(0x71);
+        for (sel, said) in [
+            ([0xa2, 0x2c, 0xb4, 0x65], "must withdraw it in the same operation"),
+            ([0x95, 0x9b, 0x8c, 0x3f], "authorizeOperator (ERC-777)"),
+            ([0x55, 0x8a, 0x72, 0x97], "setOperator (ERC-6909)"),
+        ] {
+            let params = kernel::PolicyParams {
+                targets: vec![COUNTER, nft],
+                selectors: vec![FixedBytes::from(SELECTOR_INCREMENT), FixedBytes::from(sel)],
+                max_value_per_op: 1000,
+                budget: 10u128.pow(18),
+                valid_until: NOW + 86_400,
+                tokens: vec![],
+                valid_after: 0,
+                payees: vec![],
+            };
+            let perm = FixedBytes::from([0x6f, 0x70, 0x72, 0x73]);
+            let pdata = kernel::permission_data(POLICY, &params, SIGNER, &key(2));
+            let mut o = op(kernel::execute_batch_calldata(vec![
+                (ACCOUNT, U256::ZERO, kernel::install_permission_calldata(perm, pdata, 1)),
+                (ACCOUNT, U256::ZERO, kernel::grant_execute_calldata(perm)),
+            ]));
+            o.gas_fees = kernel::pack_gas(1, 1);
+            let t = open(&o).text();
+            assert!(t.contains("! Operator grant") && t.contains(said), "{t}");
+        }
+        // an ordinary entry carries no such line
+        let params = kernel::PolicyParams {
+            targets: vec![COUNTER],
+            selectors: vec![FixedBytes::from(SELECTOR_INCREMENT)],
+            max_value_per_op: 1000,
+            budget: 10u128.pow(18),
+            valid_until: NOW + 86_400,
+            tokens: vec![],
+            valid_after: 0,
+            payees: vec![],
+        };
+        let perm = FixedBytes::from([0x6f, 0x70, 0x72, 0x74]);
+        let mut o = op(kernel::execute_batch_calldata(vec![
+            (ACCOUNT, U256::ZERO, kernel::install_permission_calldata(perm, kernel::permission_data(POLICY, &params, SIGNER, &key(2)), 1)),
+            (ACCOUNT, U256::ZERO, kernel::grant_execute_calldata(perm)),
+        ]));
+        o.gas_fees = kernel::pack_gas(1, 1);
+        assert!(!open(&o).text().contains("Operator grant"));
     }
 
     #[test]
@@ -2430,7 +2519,12 @@ mod tests {
             ("a token twice", Box::new(move |m| m.5.extend([(token, U256::from(1), U256::from(1), B256::ZERO); 2])), "two for one token"),
             ("the account as a target", Box::new(|m| (m.0.push(ACCOUNT), m.1.push(FixedBytes::ZERO)).0), "the account itself"),
             ("the EntryPoint as a target", Box::new(|m| (m.0.push(ENTRY), m.1.push(FixedBytes::ZERO)).0), "EntryPoint"),
-            ("the policy outside x402", Box::new(move |m| (m.0.push(POLICY), m.1.push(transfer)).0), "outside its x402 and order entries"),
+            ("the policy outside x402", Box::new(move |m| (m.0.push(POLICY), m.1.push(x402("pause()"))).0), "outside its x402 and order entries"),
+            (
+                "a metered function without a limit",
+                Box::new(move |m| (m.0.push(Address::with_last_byte(0x77)), m.1.push(transfer)).0),
+                "sets no limit for it",
+            ),
         ];
         for (what, change, why) in cases {
             let mut m = good();

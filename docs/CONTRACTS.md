@@ -336,9 +336,16 @@ which refuses the operation all the same [I].
   with another entry on it, and validation such a call
   (`test_token_selectorWithoutLimitIsRefused`,
   `test_tokenCapPerOperation_legsAddUp`,
-  `test_probe2_installRefusesEveryUnmeteredFunctionOnALimitedToken`). An
-  approval is charged like a transfer; what the spender later pulls is not
-  seen.
+  `test_probe2_installRefusesEveryUnmeteredFunctionOnALimitedToken`). And
+  the four go to a token with a limit only: such an entry on any other
+  target would be refused at every operation, so install refuses the
+  mandate (#175, `test_probe2_installRefusesAMeteredFunctionWithoutALimit`).
+  ERC-721's `approve(to, tokenId)` and `transferFrom` carry the ERC-20
+  selectors, so on an NFT contract they are metered functions and need a
+  limit, which an NFT contract does not meaningfully have: they cannot be
+  listed for one.
+  An approval is charged like a transfer; what the spender later pulls is
+  not seen.
 - *No standing allowances.* An allowance the agent grants (`approve` or
   `increaseAllowance` of more than 0) must be withdrawn with
   `approve(spender, 0)` later in the same operation, by the same holder:
@@ -348,12 +355,16 @@ which refuses the operation all the same [I].
   able to pull. Allowances the owner grants (a venue's spender, say) are
   not the agent's and are not counted (`test_allowances_noneOutlivesTheOperation`,
   `test_allowances_theHolderWithdrawsWhatItGranted`; the fuzzing model
-  holds it too). [V source, tests] The rule covers the two ERC-20 approval
-  functions the policy meters. Another approval-like function the owner
-  allow-lists (`setApprovalForAll` of an ERC-721 or ERC-1155, a vault's own
-  operator grant) is a call the policy allows or refuses and does not read,
-  as any unmetered selector, and what it grants can stand. An allowance
-  that has to stand across operations is granted by the owner.
+  holds it too). [V source, tests] The same holds for an operator grant,
+  `setApprovalForAll(operator, true)` of ERC-721 and ERC-1155: it must be
+  withdrawn with `setApprovalForAll(operator, false)` in the same operation
+  (`test_allowances_anOperatorGrantIsWithdrawnInTheSameOperation`, #176).
+  Another approval-like function the owner allow-lists (ERC-777's
+  `authorizeOperator`, ERC-6909's `setOperator`, a protocol's own operator
+  grant) is a call the policy allows or refuses and does not read, as any
+  unmetered selector, and what it grants can stand; the phone's review names
+  the known ones on the entry. An allowance or a grant that has to stand
+  across operations is the owner's to make.
 - *Window.* The operation is valid from `validAfter` up to and at
   `validUntil`; the policy returns the window and the EntryPoint enforces
   it (`test_schedule_windowIsEnforced`). The window `checkUserOpPolicy`

@@ -225,8 +225,10 @@ The token caps already limit the **amount** of every `approve`, and no
 allowance the agent grants outlives the operation: the policy refuses an
 operation that does not withdraw it (`approve(spender, 0)`) by its end.
 The pattern is approve exactly the trade's amount, trade, withdraw, in
-one batch. Allowances the owner grants, such as a venue's spender's,
-are not the agent's and are not counted.
+one batch. An operator grant of ERC-721 and ERC-1155
+(`setApprovalForAll`) is held to the same rule. Allowances and grants the
+owner makes, such as a venue's spender's allowance, are not the agent's
+and are not counted.
 
 What remains:
 

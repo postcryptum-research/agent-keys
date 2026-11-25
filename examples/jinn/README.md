@@ -128,7 +128,13 @@ asserts.) The Kernel signs and its mandate is checked *before* the Safe
 changes hands, so the Safe is never handed to an address that cannot
 operate it; a 1/1 Safe is required. The agent mandate must list
 `(Safe, execTransaction)`, the Safe-routed calls the operator makes, and
-`(IdentityRegistry, setApprovalForAll)` / `setMetadata`. A separate fleet
+`(IdentityRegistry, setApprovalForAll)` / `setMetadata`. With an
+`AgentPolicy` from 2026-11-25 on, the agent cannot leave the Safe's
+operator grant standing (#176), so the owner grants it once, as a root
+operation, before the migration: `agent-signer op send --root --target
+<IdentityRegistry> --data <setApprovalForAll(Safe, true)>`. The migration
+then finds it and reports the step as `already`; the mandate needs no
+`setApprovalForAll` entry. A separate fleet
 identity Safe is migrated in the same run.
 
 How `KernelSafeBroadcaster` keeps a Safe transaction from running twice (a
