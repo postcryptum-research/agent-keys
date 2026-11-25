@@ -31,6 +31,13 @@ const AAD_PREFIX: &[u8] = b"tpm_sign keyfile v1";
 /// scrypt N = 2^18, r = 8 (256 MiB): the floor from KEY_POLICY.md rule 5.
 const LOG_N: u8 = 18;
 const MIN_LOG_N: u8 = 18;
+/// The most a key file may ask of scrypt. Memory is `128 * r * 2^log_n`
+/// bytes: 2^22 with r = 32 is 16 GiB, far above what this CLI writes
+/// (256 MiB) and still a refusal with a reason; a tampered or corrupted
+/// file asking for more would abort the process on the allocation (#178).
+const MAX_LOG_N: u8 = 22;
+const MAX_R: u32 = 32;
+const MAX_P: u32 = 8;
 const R: u32 = 8;
 const P: u32 = 1;
 
@@ -174,6 +181,15 @@ pub fn open(path: &Path, passphrase: &[u8]) -> Result<KeyFileSigner> {
     if file.kdf.name != "scrypt" || file.kdf.log_n < MIN_LOG_N || file.kdf.r < R || file.kdf.p < 1 {
         bail!("key file KDF below the required strength (scrypt N >= 2^{MIN_LOG_N}, r >= {R})");
     }
+    if file.kdf.log_n > MAX_LOG_N || file.kdf.r > MAX_R || file.kdf.p > MAX_P {
+        bail!(
+            "key file KDF asks for more than this CLI computes (scrypt N <= 2^{MAX_LOG_N}, r <= {MAX_R}, p <= {MAX_P}): \
+             N = 2^{}, r = {}, p = {}. The file is damaged or was not written by this CLI",
+            file.kdf.log_n,
+            file.kdf.r,
+            file.kdf.p
+        );
+    }
     if file.cipher.name != "aes-256-gcm" {
         bail!("unsupported cipher {}", file.cipher.name);
     }
@@ -263,6 +279,17 @@ mod tests {
         file["kdf"]["logN"] = serde_json::json!(10);
         std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
         assert!(open(&path, b"correct horse battery staple").is_err());
+
+        // a KDF that asks for more than this CLI computes is refused before any memory is asked for:
+        // logN 30 would be about 1 TiB, and the failed allocation would abort the process
+        for (field, value) in [("logN", 30), ("logN", 23), ("r", 33), ("p", 9)] {
+            let mut file: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            file["kdf"]["logN"] = serde_json::json!(18);
+            file["kdf"][field] = serde_json::json!(value);
+            std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+            let refused = open(&path, b"correct horse battery staple").err().expect("refused").to_string();
+            assert!(refused.contains("asks for more than this CLI computes"), "{field} {value}: {refused}");
+        }
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

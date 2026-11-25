@@ -58,8 +58,9 @@ jobs:
       # code that ships. The lints are in the Cargo.toml files. Clippy is
       # pinned, so that a newer one seeing more sites does not turn a pull
       # request red with no change of code; raise the pin in its own change.
-      # The Linux TPM backend builds here and is linted; the other hardware
-      # backends are linted on the machines that build them.
+      # The Linux TPM backend builds here and is linted; the Windows and
+      # macOS ones in the `platforms` job; TROPIC01 and YubiKey on the
+      # machines that build them.
       - name: the pinned clippy and the TPM library
         run: |
           rustup toolchain install "$CLIPPY_TOOLCHAIN" --profile minimal --component clippy
@@ -90,6 +91,51 @@ jobs:
       - name: agent-signer, the regular build
         working-directory: signer
         run: cargo test --locked -p agent-signer
+
+  # The CLI on the two platforms the `rust` job does not build. Each has a
+  # hardware backend that compiles nowhere else, and Windows gives a
+  # process's main thread 1 MiB of stack where Linux gives 8: an unoptimized
+  # build once overflowed it on every command and nothing here saw it (#180).
+  # The runners have no secure element, so this builds and lints the backend
+  # and runs the commands that need none; the device runs stay with the
+  # platform's guide in docs/.
+  platforms:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            backend: windows-tpm
+          - os: macos-latest
+            backend: secure-enclave
+    runs-on: ${{ matrix.os }}
+    env:
+      CLIPPY_TOOLCHAIN: "1.95.0"
+      BACKEND: ${{ matrix.backend }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: signer
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: the pinned clippy
+        run: rustup toolchain install "$CLIPPY_TOOLCHAIN" --profile minimal --component clippy
+      - name: checked arithmetic, with the platform's backend
+        run: cargo "+$CLIPPY_TOOLCHAIN" clippy --locked -p hw-signer -p agent-signer --features "$BACKEND"
+      - name: the tests that need no device
+        run: |
+          cargo test --locked -p hw-signer
+          cargo test --locked -p agent-signer
+      - name: a command of the unoptimized build runs to its end
+        run: |
+          cargo build --locked -p agent-signer --features "$BACKEND"
+          if out=$(./target/debug/agent-signer key show --keyfile no-such-key.json 2>&1); then
+            echo "$out"; echo "expected a refusal: there is no such file"; exit 1
+          fi
+          echo "$out"
+          echo "$out" | grep -q 'no-such-key.json'
 
   # A short run of every Rust fuzz target from its seeds (docs/FUZZING.md):
   # enough to see that the targets build and that no seed or near neighbour
