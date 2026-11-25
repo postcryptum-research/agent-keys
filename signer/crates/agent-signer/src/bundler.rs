@@ -84,7 +84,9 @@ pub fn pre_verification_ceiling(op: &PackedUserOperation, ours: u128) -> u128 {
 pub fn apply_estimate(op: &mut PackedUserOperation, est: &GasEstimate) -> Result<()> {
     const OURS: &str = "the CLI's own estimate";
     let (our_verification, our_call) = split_gas(op.accountGasLimits);
-    let our_pre_verification = op.preVerificationGas.saturating_to::<u128>();
+    let our_pre_verification = u128::try_from(op.preVerificationGas).map_err(|_| {
+        anyhow::anyhow!("the operation's own preVerificationGas, {}, is beyond any real gas figure", op.preVerificationGas)
+    })?;
     let pre_verification = bounded(
         "preVerificationGas",
         est.pre_verification_gas,
@@ -130,7 +132,7 @@ pub fn apply_estimate(op: &mut PackedUserOperation, est: &GasEstimate) -> Result
 /// maxPriorityFeePerGas: 100000)`. Returns the floor in wei.
 pub fn min_priority_fee_from_error(message: &str) -> Option<u128> {
     let idx = message.find("maxPriorityFeePerGas must be at least")?;
-    let rest = &message[idx + "maxPriorityFeePerGas must be at least".len()..];
+    let rest = message.get(idx.checked_add("maxPriorityFeePerGas must be at least".len())?..)?;
     let digits: String = rest.trim_start().chars().take_while(|c| c.is_ascii_digit()).collect();
     digits.parse().ok()
 }

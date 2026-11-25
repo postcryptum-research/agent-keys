@@ -253,7 +253,7 @@ fn der_int32(mut v: &[u8]) -> Option<[u8; 32]> {
         return None;
     }
     let mut out = [0u8; 32];
-    out[32 - v.len()..].copy_from_slice(v);
+    out[32usize.saturating_sub(v.len())..].copy_from_slice(v);
     Some(out)
 }
 

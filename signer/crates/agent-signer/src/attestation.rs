@@ -85,14 +85,14 @@ const fn posture_of(pins: &[[u8; 32]], packages: &[&str]) -> bool {
         let (name, suffix) = (packages[i].as_bytes(), b".spike");
         if name.len() >= suffix.len() {
             let mut j = 0;
-            while j < suffix.len() && name[name.len() - suffix.len() + j] == suffix[j] {
-                j += 1;
+            while j < suffix.len() && name[name.len().saturating_sub(suffix.len()).saturating_add(j)] == suffix[j] {
+                j = j.saturating_add(1);
             }
             if j == suffix.len() {
                 return true;
             }
         }
-        i += 1;
+        i = i.saturating_add(1);
     }
     false
 }
@@ -370,25 +370,36 @@ fn time(t: Tlv<'_>) -> Result<u64, String> {
     let bad = || "certificate: a time that is not YYMMDDHHMMSSZ or YYYYMMDDHHMMSSZ".to_string();
     let text = std::str::from_utf8(t.value).map_err(|_| bad())?;
     let digits = text.strip_suffix('Z').filter(|d| d.bytes().all(|b| b.is_ascii_digit())).ok_or_else(bad)?;
-    let n = |range: std::ops::Range<usize>| digits[range].parse::<i64>().map_err(|_| bad());
+    let n = |from: usize| digits.get(from..from.saturating_add(2)).and_then(|d| d.parse::<i64>().ok()).ok_or_else(bad);
     let (year, rest) = match (t.class, t.number, digits.len()) {
         (der::UNIVERSAL, der::UTC_TIME, 12) => {
-            let yy = n(0..2)?;
-            (if yy >= 50 { 1900 + yy } else { 2000 + yy }, 2)
+            let yy = n(0)?;
+            (if yy >= 50 { 1900i64.saturating_add(yy) } else { 2000i64.saturating_add(yy) }, 2usize)
         }
-        (der::UNIVERSAL, der::GENERALIZED_TIME, 14) => (n(0..4)?, 4),
+        (der::UNIVERSAL, der::GENERALIZED_TIME, 14) => (n(0)?.saturating_mul(100).saturating_add(n(2)?), 4usize),
         _ => return Err(bad()),
     };
-    let (month, day, hour, minute, second) = (n(rest..rest + 2)?, n(rest + 2..rest + 4)?, n(rest + 4..rest + 6)?, n(rest + 6..rest + 8)?, n(rest + 8..rest + 10)?);
+    let at = |k: usize| n(rest.saturating_add(k));
+    let (month, day, hour, minute, second) = (at(0)?, at(2)?, at(4)?, at(6)?, at(8)?);
     if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 || second > 60 {
         return Err(bad());
     }
-    // days from the civil date (Howard Hinnant's algorithm)
-    let y = if month <= 2 { year - 1 } else { year };
-    let (era, yoe) = (y.div_euclid(400), y.rem_euclid(400));
-    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
-    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
-    u64::try_from(days * 86_400 + hour * 3600 + minute * 60 + second).map_err(|_| "certificate: a time before 1970".to_string())
+    // days from the civil date (Howard Hinnant's algorithm), every step checked
+    let seconds = || -> Option<i64> {
+        let y = if month <= 2 { year.checked_sub(1)? } else { year };
+        let (era, yoe) = (y.div_euclid(400), y.rem_euclid(400));
+        let shifted = if month > 2 { month.checked_sub(3)? } else { month.checked_add(9)? };
+        let doy = (shifted.checked_mul(153)?.checked_add(2)? / 5).checked_add(day)?.checked_sub(1)?;
+        let days = era
+            .checked_mul(146_097)?
+            .checked_add(yoe.checked_mul(365)?)?
+            .checked_add(yoe / 4)?
+            .checked_sub(yoe / 100)?
+            .checked_add(doy)?
+            .checked_sub(719_468)?;
+        days.checked_mul(86_400)?.checked_add(hour.checked_mul(3600)?)?.checked_add(minute.checked_mul(60)?)?.checked_add(second)
+    };
+    seconds().and_then(|s| u64::try_from(s).ok()).ok_or_else(|| "certificate: a time before 1970".to_string())
 }
 
 /// One authorization list of the key description: the tags the checks read.
@@ -460,12 +471,13 @@ pub fn verify_android(chain: &[Vec<u8>], roots: &[Root], expect: &Expect<'_>) ->
         if i > 0 && cert.key_description.is_some() {
             return Err(format!("certificate {i} carries an attestation record; only the key's own certificate may"));
         }
-        let Some(issuer) = certs.get(i + 1) else { break };
+        let above = i.saturating_add(1);
+        let Some(issuer) = certs.get(above) else { break };
         if cert.issuer != issuer.subject {
-            return Err(format!("certificate {i} was not issued by certificate {}", i + 1));
+            return Err(format!("certificate {i} was not issued by certificate {above}"));
         }
         if !issuer.is_ca {
-            return Err(format!("certificate {} issued certificate {i} but is not a CA", i + 1));
+            return Err(format!("certificate {above} issued certificate {i} but is not a CA"));
         }
         cert.signed_by(&issuer.key).map_err(|e| format!("certificate {i}: {e}"))?;
     }

@@ -47,7 +47,7 @@ pub fn read(input: &[u8]) -> Result<(Tlv<'_>, &[u8]), String> {
                 return Err("DER: tag number too large".into());
             }
             number = (number << 7) | (b & 0x7f) as u32;
-            i += 1;
+            i = i.checked_add(1).ok_or("DER: truncated tag")?;
             if b & 0x80 == 0 {
                 break;
             }
@@ -57,7 +57,7 @@ pub fn read(input: &[u8]) -> Result<(Tlv<'_>, &[u8]), String> {
         }
     }
     let l = *input.get(i).ok_or("DER: truncated length")?;
-    i += 1;
+    i = i.checked_add(1).ok_or("DER: truncated length")?;
     let len = if l < 0x80 {
         l as usize
     } else {
@@ -65,8 +65,9 @@ pub fn read(input: &[u8]) -> Result<(Tlv<'_>, &[u8]), String> {
         if n == 0 || n > 4 {
             return Err("DER: indefinite or oversized length".into());
         }
-        let bytes = input.get(i..i + n).ok_or("DER: truncated length")?;
-        i += n;
+        let after = i.checked_add(n).ok_or("DER: truncated length")?;
+        let bytes = input.get(i..after).ok_or("DER: truncated length")?;
+        i = after;
         let len = bytes.iter().fold(0usize, |acc, b| (acc << 8) | *b as usize);
         if bytes[0] == 0 || len < 0x80 {
             return Err("DER: a length that is not minimal".into());

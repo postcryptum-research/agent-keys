@@ -6,6 +6,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lints]
+workspace = true
+
 [features]
 default = ["software"]
 # In-memory key. Dev/CI only: the one backend that exists on every platform.

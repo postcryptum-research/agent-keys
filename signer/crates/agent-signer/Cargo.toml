@@ -10,6 +10,9 @@ repository.workspace = true
 name = "agent-signer"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [features]
 default = []
 # Enable `--backend tpm` (Linux, needs libtss2-dev).

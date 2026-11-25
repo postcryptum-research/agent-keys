@@ -607,11 +607,10 @@ impl Session {
         let packed = Self::packed(op);
         let mut labels = std::collections::BTreeMap::new();
         labels.insert(self.dep.demo_counter, "demo counter".to_string());
-        let expires = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-            + crate::phone::options().timeout.as_secs();
+        let expires = crate::phone::expiry(
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
         let command = match sign_as {
             SignAs::Agent => "agent operation",
             SignAs::Owner => "owner operation (root)",
@@ -873,7 +872,7 @@ impl Session {
                 .provider
                 .call(TransactionRequest::default().with_to(policy).with_input(Bytes::from(call)))
                 .await?;
-            let word = |i: usize| raw.get(i * 32..i * 32 + 32).map(U256::from_be_slice).unwrap_or_default();
+            let word = |i: usize| raw.chunks_exact(32).nth(i).map(U256::from_be_slice).unwrap_or_default();
             let (until, max, budget, spent, after) = (word(0), word(2), word(3), word(4), word(5));
             let p = &self.cfg.policy;
             println!("{}validUntil      chain {until} / config {}", mark(until == U256::from(p.valid_until)), p.valid_until);
@@ -1118,11 +1117,12 @@ impl Session {
     /// next period and names that one.
     async fn period_to_name(&self) -> Result<u64> {
         const PERIOD_EDGE_SECS: u64 = 20;
-        let period = self.cfg.policy.period as u64;
+        let period = u64::from(self.cfg.policy.period);
         let now = self.chain_time().await?;
-        let left = period - now % period;
-        if left > PERIOD_EDGE_SECS || period <= 2 * PERIOD_EDGE_SECS {
-            return Ok(now / period);
+        let index = |t: u64| t.checked_div(period).context("a mandate without a budget period names no period");
+        let left = period.saturating_sub(now.checked_rem(period).context("a mandate without a budget period names no period")?);
+        if left > PERIOD_EDGE_SECS || period <= PERIOD_EDGE_SECS.saturating_mul(2) {
+            return index(now);
         }
         eprintln!("period:         this budget period ends in {left} s; waiting for the next one");
         let waited = std::time::Instant::now();
@@ -1130,8 +1130,8 @@ impl Session {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             let t = self.chain_time().await?;
             // a chain that stands still (a local one) is not waited for past the edge
-            if t / period > now / period || waited.elapsed().as_secs() > left + 30 {
-                return Ok(t / period);
+            if index(t)? > index(now)? || waited.elapsed().as_secs() > left.saturating_add(30) {
+                return index(t);
             }
         }
     }
@@ -1140,11 +1140,11 @@ impl Session {
     /// what the agent registers (an order, an x402 authorization) must end
     /// with the period it is charged in.
     pub async fn period_next(&self) -> Result<Option<u64>> {
-        let period = self.cfg.policy.period as u64;
-        if period == 0 {
+        let period = u64::from(self.cfg.policy.period);
+        let Some(index) = self.chain_time().await?.checked_div(period) else {
             return Ok(None);
-        }
-        Ok(Some((self.chain_time().await? / period + 1) * period))
+        };
+        Ok(Some(index.checked_add(1).and_then(|next| next.checked_mul(period)).context("the next budget period starts beyond any timestamp")?))
     }
 
     /// The latest block's timestamp: the clock the contracts judge by.
@@ -1370,8 +1370,9 @@ impl Session {
             // code is a valid `from`, and callees see the same msg.sender), plus
             // Kernel's dispatch overhead per call.
             const PER_CALL_OVERHEAD: u128 = 40_000;
+            const FIRST_FLOOR: u128 = FLOOR * 2;
             let Some(calls) = kernel::decode_execute(call_data) else {
-                return Ok(FLOOR * 2);
+                return Ok(FIRST_FLOOR);
             };
             let mut total: u128 = 0;
             for (target, value, data) in calls {
@@ -1385,9 +1386,12 @@ impl Session {
                     .estimate_gas(tx)
                     .await
                     .context("estimating the first operation's calls (one of them reverts as sent from the account)")?;
-                total += estimate as u128 + PER_CALL_OVERHEAD;
+                total = total
+                    .checked_add(u128::from(estimate))
+                    .and_then(|t| t.checked_add(PER_CALL_OVERHEAD))
+                    .context("the first operation's calls ask for more gas than any number holds")?;
             }
-            return Ok((total * 13 / 10).max(FLOOR * 2));
+            return Ok(with_margin(total, 13)?.max(FIRST_FLOOR));
         }
         let tx = TransactionRequest::default()
             .with_from(self.dep.entry_point)
@@ -1398,7 +1402,7 @@ impl Session {
             .estimate_gas(tx)
             .await
             .context("estimating the execution phase (the call itself reverts; see the message above)")?;
-        Ok(((estimate as u128) * 13 / 10).max(FLOOR))
+        Ok(with_margin(u128::from(estimate), 13)?.max(FLOOR))
     }
 
     /// Kernel's rule for `installValidations`: the config nonce must equal
@@ -1412,7 +1416,7 @@ impl Session {
         let account = IKernel::new(self.account, self.provider.clone());
         let current = account.currentNonce().call().await?;
         let stored = account.validationConfig(vid).call().await?.nonce;
-        Ok(if stored == current { current + 1 } else { current })
+        Ok(if stored == current { current.checked_add(1).context("the account's validation nonce is at its largest")? } else { current })
     }
 
     /// Sign `call_data` in hardware and submit it through `handleOps`. The
@@ -1468,8 +1472,9 @@ impl Session {
         let nonce = match pinned {
             None => next,
             Some(n) => {
-                if n >> 64 != next >> 64 {
-                    bail!("--nonce {n:#x} is not in this path's nonce space (key {:#x})", next >> 64);
+                // the upper 192 bits; a shift below the word's width loses only the sequence
+                if n.wrapping_shr(64) != next.wrapping_shr(64) {
+                    bail!("--nonce {n:#x} is not in this path's nonce space (key {:#x})", next.wrapping_shr(64));
                 }
                 if n < next {
                     bail!("nonce {n:#x} is already used: an operation with it was included (next is {next:#x})");
@@ -1565,7 +1570,7 @@ impl Session {
             op.signature = frame(&PLACEHOLDER_SIGNATURE);
             let est = bundler.estimate(&mut op).await?;
             let (verification, call) = crate::bundler::split_gas(op.accountGasLimits);
-            op.accountGasLimits = kernel::pack_gas(verification * 12 / 10, call);
+            op.accountGasLimits = kernel::pack_gas(with_margin(verification, 12).context("the bundler's verificationGasLimit")?, call);
             eprintln!(
                 "bundler est.:   preVerification {}, verification {} (+20% margin), call {}",
                 est.pre_verification_gas, est.verification_gas_limit, est.call_gas_limit
@@ -1711,6 +1716,15 @@ pub struct Included {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A margin on a gas figure is refused, not wrapped, when the product
+    /// does not fit: a wrapped limit would be a small one, and signed.
+    #[test]
+    fn a_gas_margin_does_not_wrap() {
+        assert_eq!(with_margin(100_000, 13).unwrap(), 130_000);
+        assert_eq!(with_margin(u128::MAX / 12, 12).unwrap(), u128::MAX / 12 / 10 * 12 + (u128::MAX / 12 % 10 * 12) / 10);
+        assert!(with_margin(u128::MAX / 12 + 1, 12).is_err());
+    }
 
     const DEPLOYMENTS: &str = r#"{
         "chainId": 84532,
@@ -1882,6 +1896,12 @@ mod forbidden_target_tests {
         assert!(venue_target(&venues, relayer).unwrap().contains("holds the owner's allowance"));
         assert!(venue_target(&venues, at(0xc0)).is_none());
     }
+}
+
+/// `gas` with a margin, as tenths: 13 gives 130%. Refused, not wrapped, when
+/// the product does not fit.
+fn with_margin(gas: u128, tenths: u128) -> Result<u128> {
+    Ok(gas.checked_mul(tenths).context("a gas figure too large to add a margin to")? / 10)
 }
 
 /// `approve(spender, amount)` on `token`, as a call of the account.

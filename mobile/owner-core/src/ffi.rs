@@ -465,9 +465,9 @@ fn der_to_rs(der: &[u8]) -> Option<([u8; 32], [u8; 32])> {
     if der.get(i)? != &0x30 {
         return None;
     }
-    i += 1;
+    i = i.checked_add(1)?;
     let seq_len = der_len(der, &mut i)?;
-    if i + seq_len != der.len() {
+    if i.checked_add(seq_len)? != der.len() {
         return None;
     }
     let r = der_int(der, &mut i)?;
@@ -478,13 +478,13 @@ fn der_to_rs(der: &[u8]) -> Option<([u8; 32], [u8; 32])> {
 /// Strict: the short form below 128, the one-byte long form at or above it.
 fn der_len(der: &[u8], i: &mut usize) -> Option<usize> {
     let b = *der.get(*i)?;
-    *i += 1;
+    *i = i.checked_add(1)?;
     if b < 0x80 {
         return Some(b as usize);
     }
     if b == 0x81 {
         let l = *der.get(*i)? as usize;
-        *i += 1;
+        *i = i.checked_add(1)?;
         return (l >= 0x80).then_some(l);
     }
     None
@@ -494,10 +494,11 @@ fn der_int(der: &[u8], i: &mut usize) -> Option<[u8; 32]> {
     if der.get(*i)? != &0x02 {
         return None;
     }
-    *i += 1;
+    *i = i.checked_add(1)?;
     let len = der_len(der, i)?;
-    let bytes = der.get(*i..*i + len)?;
-    *i += len;
+    let end = i.checked_add(len)?;
+    let bytes = der.get(*i..end)?;
+    *i = end;
     // minimal: no leading zero unless the next byte needs it, never empty or negative
     let bytes = match bytes {
         [] => return None,
@@ -508,7 +509,7 @@ fn der_int(der: &[u8], i: &mut usize) -> Option<[u8; 32]> {
         _ => return None,
     };
     let mut out = [0u8; 32];
-    out[32 - bytes.len()..].copy_from_slice(bytes);
+    out.get_mut(32usize.checked_sub(bytes.len())?..)?.copy_from_slice(bytes);
     Some(out)
 }
 

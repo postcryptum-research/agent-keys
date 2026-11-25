@@ -819,9 +819,9 @@ fn prove_key(spec: &str, challenge: &str) -> Result<()> {
     );
     let at = possession::now()?;
     if at > challenge.expires {
-        eprintln!("  note: by this machine's clock the challenge expired {} s ago; the machine that asked decides", at - challenge.expires);
+        eprintln!("  note: by this machine's clock the challenge expired {} s ago; the machine that asked decides", at.saturating_sub(challenge.expires));
     } else {
-        eprintln!("  the challenge is good for another {} s", challenge.expires - at);
+        eprintln!("  the challenge is good for another {} s", challenge.expires.saturating_sub(at));
     }
     let signer = open_key_spec(spec)?;
     println!("{}", challenge.prove(signer.as_ref())?);
@@ -859,7 +859,7 @@ fn ask_for_proof(challenge: &possession::Challenge, seconds: u64) -> Result<()> 
         let at = possession::now()?;
         if line.trim().is_empty() {
             if at > challenge.expires {
-                bail!("the challenge expired {} s ago and no proof was accepted: run the command again. Nothing sent", at - challenge.expires);
+                bail!("the challenge expired {} s ago and no proof was accepted: run the command again. Nothing sent", at.saturating_sub(challenge.expires));
             }
             continue;
         }
@@ -868,7 +868,7 @@ fn ask_for_proof(challenge: &possession::Challenge, seconds: u64) -> Result<()> 
             Err(e) if at > challenge.expires => return Err(e.context("nothing sent")),
             Err(e) => {
                 refused = true;
-                eprintln!("not accepted: {e:#}\npaste the proof again ({} s left), or end the command", challenge.expires - at);
+                eprintln!("not accepted: {e:#}\npaste the proof again ({} s left), or end the command", challenge.expires.saturating_sub(at));
             }
         }
     }
