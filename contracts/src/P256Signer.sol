@@ -142,7 +142,8 @@ contract P256Signer is ISigner {
     /// calls it from the account's `isValidSignature`, with the hash wrapped
     /// for this account, only after the permission's policies have accepted
     /// the request: what the agent may sign is the policies' decision
-    /// (`AgentPolicy` refuses all but registered x402 authorizations). The
+    /// (`AgentPolicy` refuses all but registered x402 authorizations and
+    /// orders). The
     /// second parameter, the address that asked the account, is not read.
     /// @param id The permission id the signature names.
     /// @param hash The hash to check, as the account hands it over.

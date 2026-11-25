@@ -140,7 +140,7 @@ what the policies installed with it allow (`AgentPolicy`) [V source].
 - `checkSignature` for an ERC-1271 request naming the permission, after the
   policies' `checkSignaturePolicy` has passed it (`_checkPermissionSignature`).
   `AgentPolicy` refuses every such request but a registered x402
-  authorization (`docs/ERC1271.md`);
+  authorization or order (`docs/ERC1271.md`);
 - `onUninstall` when the owner uninstalls the permission (`permission
   revoke`, `permission rotate`), with `bytes32(id) ‖ …`; Kernel goes on even
   if this call reverts (`_uninstallPermission`, `ModuleLib.uninstallModule`).
