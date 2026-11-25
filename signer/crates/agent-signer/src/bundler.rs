@@ -90,6 +90,19 @@ pub fn pre_verification_ceiling(op: &PackedUserOperation, ours: u128, factor: u1
         .ok_or_else(|| anyhow::anyhow!("the preVerificationGas ceiling times bundlerPreVerificationFactor {factor} does not fit a gas figure"))
 }
 
+/// The factor an operation's `preVerificationGas` ceiling is widened by: the
+/// config's for an operation the agent signs under its mandate, 1 for every
+/// other. The mandate's budget caps what a bundler can take from the agent's
+/// operations; the owner's and the recovery key's have no policy, so for
+/// them the ordinary ceiling stays whatever the config says.
+pub fn factor_for(under_mandate: bool, configured: u128) -> u128 {
+    if under_mandate {
+        configured
+    } else {
+        1
+    }
+}
+
 /// Write a bundler's estimate into `op`, whose gas fields still hold the
 /// CLI's own figures: each one is the bound for the bundler's. Refused, and
 /// `op` left as it was, if any figure goes beyond its bound.
@@ -271,23 +284,27 @@ impl Bundler {
     /// [`apply_estimate`]. The operation carries a placeholder signature of
     /// the real one's length: bundlers simulate without checking it, and the
     /// hash covers the gas fields, so the hardware signs once, after this.
-    pub async fn estimate(&self, op: &mut PackedUserOperation) -> Result<GasEstimate> {
+    ///
+    /// `under_mandate` says the agent signs it under its permission: only
+    /// then does the config's factor widen the `preVerificationGas` ceiling
+    /// ([`factor_for`]).
+    pub async fn estimate(&self, op: &mut PackedUserOperation, under_mandate: bool) -> Result<GasEstimate> {
         let est: GasEstimate = self
             .rpc
             .raw_request("eth_estimateUserOperationGas".into(), (to_rpc(op), self.entry_point))
             .await
             .context("eth_estimateUserOperationGas")?;
-        if self.pre_verification_factor > 1 {
+        let factor = factor_for(under_mandate, self.pre_verification_factor);
+        if factor > 1 {
             // said on every operation: the config widened what a bundler may take here
             if let Ok(ours) = u128::try_from(op.preVerificationGas) {
                 eprintln!(
-                    "bundler:        preVerificationGas is taken up to {} (bundlerPreVerificationFactor {} in the agent config)",
-                    pre_verification_ceiling(op, ours, self.pre_verification_factor)?,
-                    self.pre_verification_factor
+                    "bundler:        preVerificationGas is taken up to {} (bundlerPreVerificationFactor {factor} in the agent config)",
+                    pre_verification_ceiling(op, ours, factor)?
                 );
             }
         }
-        apply_estimate(op, &est, self.pre_verification_factor)?;
+        apply_estimate(op, &est, factor)?;
         Ok(est)
     }
 
@@ -496,6 +513,13 @@ mod tests {
         let mut est = honest();
         est.verification_gas_limit = U256::from(600_001u64);
         assert!(apply_estimate(&mut ours(0), &est, 64).is_err());
+
+        // the owner's and the recovery key's operations keep the ordinary ceiling under any config
+        assert_eq!(factor_for(true, 64), 64);
+        assert_eq!(factor_for(false, 64), 1);
+        let err = apply_estimate(&mut ours(0), &with_pre(200_001), factor_for(false, 64)).unwrap_err().to_string();
+        assert!(err.contains("preVerificationGas 200001 is above 200000, 2 times"), "{err}");
+        apply_estimate(&mut ours(0), &with_pre(200_001), factor_for(true, 64)).unwrap();
 
         // a product that does not fit is a refusal, not a wrapped ceiling
         assert!(pre_verification_ceiling(&ours(0), u128::MAX / 2, 2).is_err());

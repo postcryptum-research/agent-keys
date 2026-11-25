@@ -1568,7 +1568,9 @@ impl Session {
             // confirmation per operation. The placeholder's failed check may
             // cost less than a real one, hence the margin on verification.
             op.signature = frame(&PLACEHOLDER_SIGNATURE);
-            let est = bundler.estimate(&mut op).await?;
+            // the config's factor on preVerificationGas is for the agent's operations only:
+            // the mandate's budget caps those, and nothing caps the owner's or the recovery key's
+            let est = bundler.estimate(&mut op, matches!(sign_as, SignAs::Agent)).await?;
             let (verification, call) = crate::bundler::split_gas(op.accountGasLimits);
             op.accountGasLimits = kernel::pack_gas(with_margin(verification, 12).context("the bundler's verificationGasLimit")?, call);
             eprintln!(

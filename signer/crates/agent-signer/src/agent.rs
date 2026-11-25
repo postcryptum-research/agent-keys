@@ -322,7 +322,8 @@ pub struct AgentConfig {
     pub recovery: Option<KeySpec>,
     /// Widens the one bound on a bundler's `preVerificationGas` by this whole
     /// factor, for a chain whose bundlers fold the L1 data fee into that
-    /// figure. Absent is 1; see [`AgentConfig::pre_verification_factor`].
+    /// figure, for the agent's operations only. Absent is 1; see
+    /// [`AgentConfig::pre_verification_factor`].
     #[serde(default)]
     pub bundler_pre_verification_factor: Option<u64>,
     pub policy: PolicyConfig,
