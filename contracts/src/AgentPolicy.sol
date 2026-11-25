@@ -342,12 +342,21 @@ contract AgentPolicy is IPolicy {
     /// `SafeNonceAssert.check(address,uint256)`
     bytes4 public constant NONCE_CHECK = SafeNonceAssert.check.selector;
     /// `setApprovalForAll(address,bool)` of ERC-721 and ERC-1155: an operator
-    /// grant over every token of the contract, withdrawn like an allowance. It
-    /// shares the open flag `(holder, target, spender)` with ERC-20 allowances;
-    /// one cannot be opened by one function and closed by the other because
-    /// install keeps them on different targets: `approve` needs a limit on its
-    /// target, and `setApprovalForAll` is refused on a target with one.
+    /// grant over every token of the contract, withdrawn like an allowance.
+    /// Each kind of grant has its own open flag (`_noteAllowance`), so one
+    /// function cannot close what another opened; install also keeps this
+    /// and `approve` on different targets (`approve` needs a limit on its
+    /// target, and this is refused on a target with one).
     bytes4 internal constant SET_APPROVAL_FOR_ALL = 0xa22cb465;
+    /// `setOperator(address,bool)` of ERC-6909: the same grant in the same
+    /// shape, held the same way
+    bytes4 internal constant SET_OPERATOR = 0x558a7297;
+    /// `approve(address,uint256,uint256)` of ERC-6909: an allowance of one
+    /// token id, withdrawn with the same function and amount 0
+    bytes4 internal constant ERC6909_APPROVE = 0x426a8493;
+    /// `authorizeOperator(address)` of ERC-777: an operator grant withdrawn
+    /// by another function (`revokeOperator`). No mandate may list it.
+    bytes4 internal constant AUTHORIZE_OPERATOR = 0x959b8c3f;
     /// `executeUserOp(PackedUserOperation,bytes32)`: the prefix Kernel requires
     /// of the `callData` of a permission that carries an execution hook
     bytes4 internal constant EXECUTE_USER_OP = 0x8dd7712f;
@@ -627,6 +636,9 @@ contract AgentPolicy is IPolicy {
         // time, a mandate that cannot do what it lists. Either is refused whole.
         for (uint256 i; i < targets.length; i++) {
             if (_token(msg.sender, m, targets[i]).set != _isMetered(selectors[i])) revert InvalidConfig();
+            // An ERC-777 operator grant stands until `revokeOperator`, which
+            // this policy does not pair with it: no mandate lists it
+            if (selectors[i] == AUTHORIZE_OPERATOR) revert InvalidConfig();
         }
         // The window and the native limits; the counters from zero, since an
         // earlier installation of the id left its own in this `Config`
@@ -1363,15 +1375,17 @@ contract AgentPolicy is IPolicy {
     // No standing allowances: an allowance the agent grants (`approve` or
     // `increaseAllowance` of more than 0) must be withdrawn with
     // `approve(spender, 0)` later in the same operation, and an operator grant
-    // (`setApprovalForAll(operator, true)` of ERC-721 and ERC-1155) with
-    // `setApprovalForAll(operator, false)`, by the same holder
+    // (`setApprovalForAll(operator, true)` of ERC-721 and ERC-1155,
+    // `setOperator(operator, true)` of ERC-6909) with the same function and
+    // `false`, an ERC-6909 allowance of an id (`approve(spender, id, amount)`)
+    // with the same function and 0, by the same holder
     // (the account, or the Safe whose transaction grants it). Otherwise it
     // would outlive a revoke of the mandate: the spender could pull from it
     // whenever it likes. Allowances the owner grants are not the agent's and
     // are not counted. Kept in transient slots of this operation.
     /// How many allowances the operation has granted and not withdrawn.
     bytes32 internal constant OPEN_ALLOWANCES = keccak256("agent-keys.AgentPolicy.openAllowances");
-    /// One allowance granted and not withdrawn: under `(holder, token, spender)`.
+    /// One allowance granted and not withdrawn: under `(kind, holder, token, spender)`.
     bytes32 internal constant OPEN_ALLOWANCE = keccak256("agent-keys.AgentPolicy.openAllowance");
     /// The Safe whose transaction is being judged; 0 while it is the account's own call.
     bytes32 internal constant ALLOWANCE_HOLDER = keccak256("agent-keys.AgentPolicy.allowanceHolder");
@@ -1406,12 +1420,16 @@ contract AgentPolicy is IPolicy {
 
     /// @dev Opens or withdraws one allowance of the current holder, and keeps
     /// the count of those open.
+    /// @param kind What withdraws it: `approve` for an ERC-20 allowance, the
+    /// grant's own selector for an operator grant, the selector with the
+    /// token id for an ERC-6909 allowance. A grant is withdrawn only by its
+    /// own kind.
     /// @param token The token.
     /// @param spender The spender.
-    /// @param open True for a grant, false for `approve(spender, 0)`.
-    function _noteAllowance(address token, address spender, bool open) internal {
+    /// @param open True for a grant, false for its withdrawal.
+    function _noteAllowance(bytes32 kind, address token, address spender, bool open) internal {
         uint256 holder = _tload(_thisOperation(ALLOWANCE_HOLDER));
-        uint256 flag = _thisOperation(keccak256(abi.encode(OPEN_ALLOWANCE, holder, token, spender)));
+        uint256 flag = _thisOperation(keccak256(abi.encode(OPEN_ALLOWANCE, kind, holder, token, spender)));
         uint256 count = _thisOperation(OPEN_ALLOWANCES);
         bool wasOpen = _tload(flag) != 0;
         if (open && !wasOpen) {
@@ -1623,12 +1641,29 @@ contract AgentPolicy is IPolicy {
             return (from == FROM_ACCOUNT && value == 0 && _registerOrder(m, data)) ? (true, 0) : (false, 0);
         }
         // Any other call: the ERC-20 rules, if the target is a token with a limit
-        // An operator grant is open until `setApprovalForAll(operator, false)`
-        // in the same operation withdraws it, as an allowance is
-        if (selector == SET_APPROVAL_FOR_ALL) {
+        // An operator grant (ERC-721 and ERC-1155 `setApprovalForAll`, ERC-6909
+        // `setOperator`) is open until the same function with `false`, in the
+        // same operation, withdraws it, as an allowance is
+        if (selector == SET_APPROVAL_FOR_ALL || selector == SET_OPERATOR) {
             if (data.length < 68) return (false, 0);
-            _noteAllowance(target, address(uint160(uint256(bytes32(data[4:36])))), uint256(bytes32(data[36:68])) != 0);
+            _noteAllowance(
+                bytes32(selector), target, address(uint160(uint256(bytes32(data[4:36])))), uint256(bytes32(data[36:68])) != 0
+            );
         }
+        // An ERC-6909 allowance of one id: open until the same function, for
+        // the same spender and id, sets it to 0 in the same operation
+        if (selector == ERC6909_APPROVE) {
+            if (data.length < 100) return (false, 0);
+            _noteAllowance(
+                keccak256(abi.encode(selector, bytes32(data[36:68]))),
+                target,
+                address(uint160(uint256(bytes32(data[4:36])))),
+                uint256(bytes32(data[68:100])) != 0
+            );
+        }
+        // Install refuses it; refused again here, as the account and the
+        // policy are as targets
+        if (selector == AUTHORIZE_OPERATOR) return (false, 0);
         if (!_chargeToken(m, target, selector, data)) return (false, 0);
         return (true, value);
     }
@@ -1759,7 +1794,8 @@ contract AgentPolicy is IPolicy {
         // An allowance granted is open until `approve(spender, 0)` in the same
         // operation withdraws it; the spender is the low 160 bits the token reads
         if (selector == ERC20_APPROVE || (selector == ERC20_INCREASE_ALLOWANCE && amount != 0)) {
-            _noteAllowance(token, address(uint160(uint256(bytes32(data[4:36])))), amount != 0);
+            // `approve(spender, 0)` withdraws what either function granted: one kind
+            _noteAllowance(bytes32(ERC20_APPROVE), token, address(uint160(uint256(bytes32(data[4:36])))), amount != 0);
         }
         return true;
     }
