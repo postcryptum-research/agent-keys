@@ -410,6 +410,26 @@ What breaking them one at a time found: with the budgets set at first (a token c
 
 **In CI:** `.github/workflows/kontrol.yml` runs the proofs, and each break in a job of its own, by hand, once a week, and on a pull request that changes `AgentPolicy.sol`, the harness, the breaks, `foundry.toml` or the workflow. A proof reported vacuous fails the run. The image is pinned by digest. Kontrol sends anonymous usage data unless `KPROFILE_TELEMETRY_DISABLED=true` is set, as the workflow does. The command to run it by hand is in the harness's header. Its first run, on GitHub's `ubuntu-latest` runner on 2026-11-24 ([#135](https://github.com/postcryptum-research/agent-keys/pull/135)), passed all three proofs: pulling the image took 45 s, `kontrol build` 2 min 9 s, and `kontrol prove` with three workers 6 min 49 s, about 10 min 30 s for the whole job.
 
+**The run of the eleven proofs on 2026-11-25**, on the policy frozen for the redeploy of the test networks (master `772e8f1608bcdf8bc966cb81ef27c7446c0677d0` merged into this harness; [the run](https://github.com/postcryptum-research/agent-keys/actions/runs/45639366853), GitHub's `ubuntu-latest`, four vCPUs):
+- **Proofs:** all eleven passed, none vacuous; the `prove` job took 38 min with three workers.
+- **Each proof's time:**
+
+  | Proof | Time |
+  |---|---|
+  | `check_nativeTransfer_oneOp` | 3 min 4 s |
+  | `check_faithful_single` | 4 min 19 s |
+  | `check_tokenTransfer_oneOp` | 4 min 29 s |
+  | `check_safe_innerValue` | 5 min 48 s |
+  | `check_nativeBatch_twoLegs` | 6 min 5 s |
+  | `check_tokenBatch_twoLegs` | 7 min 23 s |
+  | `check_faithful_batch` | 8 min 18 s |
+  | `check_safe_multiSend_twoLegs` | 9 min 5 s |
+  | `check_nativeTransfer_twoOps` | 10 min 32 s |
+  | `check_tokenTransfer_twoOps` | 11 min 47 s |
+  | `check_allowance_mustBeWithdrawn` | 16 min 55 s |
+
+- **Breaks:** each of the ten made its proof fail, in a job of its own of 10 to 19 min. The jobs run beside the proofs, so the whole run took about 40 min.
+
 **What it does not prove** ([#130](https://github.com/postcryptum-research/agent-keys/issues/130)):
 - **Any number of legs.** The batch, Safe and multiSend proofs fix the number of legs at two. A loop over a length the caller chooses stays with the fuzzing above.
 - **Any encoding.** The shapes are well-formed encodings with symbolic amounts. Symbolic offsets, short or trailing bytes stay with the parsers' tests and the fuzzing.
