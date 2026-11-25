@@ -99,7 +99,8 @@ jobs:
           chmod -R a+rwX "$dir"
       - name: ${{ steps.copy.outputs.proof }} must fail
         run: |
-          set -uo pipefail
+          # the step's shell is `bash -e`; the prove is expected to exit non-zero
+          set +e -uo pipefail
           docker run --rm \
             -e KPROFILE_TELEMETRY_DISABLED=true \
             -v "$RUNNER_TEMP/proof:/home/user/workspace" -w /home/user/workspace \
