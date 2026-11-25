@@ -351,15 +351,42 @@ pub struct AgentConfig {
     /// `{"keyfile": "/media/…/recovery.json"}` on a USB drive.
     #[serde(default)]
     pub recovery: Option<KeySpec>,
+    /// Widens the one bound on a bundler's `preVerificationGas` by this whole
+    /// factor, for a chain whose bundlers fold the L1 data fee into that
+    /// figure, for the agent's operations only. Absent is 1; see
+    /// [`AgentConfig::pre_verification_factor`].
+    #[serde(default)]
+    pub bundler_pre_verification_factor: Option<u64>,
     pub policy: PolicyConfig,
 }
+
+/// The largest `bundlerPreVerificationFactor` the CLI takes. With it a
+/// bundler may be paid up to this many times the ordinary ceiling for an
+/// operation's bytes, from the mandate's budget.
+pub const MAX_PRE_VERIFICATION_FACTOR: u64 = 64;
 
 impl AgentConfig {
     pub fn load(path: &Path) -> Result<(Self, PathBuf)> {
         let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
         let cfg: Self = serde_json::from_slice(&bytes).context("parsing agent config")?;
+        cfg.pre_verification_factor()?;
         let base = path.parent().map(Path::to_path_buf).unwrap_or_default();
         Ok((cfg, base))
+    }
+
+    /// `bundlerPreVerificationFactor`, 1 when the file does not set it.
+    /// Refused outside 1..=[`MAX_PRE_VERIFICATION_FACTOR`]: zero would refuse
+    /// every operation, and there is no fraction, since a factor below 1
+    /// would only tighten a bound that honest bundlers already sit near.
+    pub fn pre_verification_factor(&self) -> Result<u128> {
+        match self.bundler_pre_verification_factor {
+            None => Ok(1),
+            Some(f) if (1..=MAX_PRE_VERIFICATION_FACTOR).contains(&f) => Ok(u128::from(f)),
+            Some(f) => anyhow::bail!(
+                "bundlerPreVerificationFactor is {f}: it is a whole number from 1 to {MAX_PRE_VERIFICATION_FACTOR} \
+                 (docs/AGENT_CONFIG.md)"
+            ),
+        }
     }
 
     pub fn load_deployments(&self, base: &Path) -> Result<Deployments> {
