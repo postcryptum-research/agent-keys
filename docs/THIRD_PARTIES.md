@@ -90,10 +90,20 @@ What the deployed contracts are compiled from, and what the accounts call.
      `paymasterAndData`, the policy reads its length word as the pointer,
      past the batch's bounds, and refuses the batch [V
      `test_batch_pastTheEndOfTheCallThePolicyRefuses`]. In both cases the
-     policy refuses. That every arrangement past the end fails closed is
-     argued, not proven [I]: the pointer the policy reads there comes from
-     a length word or the signature, and a leg Kernel would read there
-     targets an address below 2^64.
+     policy refuses.
+   - **The policy now refuses every such batch by a rule of its own:** a
+     batch whose pointer array does not end within `executionData` is
+     refused, whatever its legs are [V
+     `test_batch_aPointerArrayPastTheEndIsRefused`: with a mandate made to
+     allow the calls the batch reads as, it passes without the rule and is
+     refused with it]. In a batch the policy accepts, every pointer word
+     and every leg lies inside `executionData`, which the policy and
+     Kernel read alike. The instances deployed on 2026-11-25 predate the
+     rule. There the case is closed by argument [I]: a leg read through a
+     pointer past the end must fit, head and data, in the last words of
+     `executionData`, which are the first pointer words themselves, so
+     its target is read from those pointer words: address 0 or a small
+     number, which no mandate of real contracts lists.
 
    Kernel's
    [issue 137](https://github.com/zerodevapp/kernel/issues/137) acknowledges
@@ -189,9 +199,10 @@ the Android and npm packages, and GitHub's advisories [V].
   bytes with the keccak hash
   `0x9933b3f70809361dcfebe1f731b129890454cc29af5b32840dcae92400a8826b`
   [V 2026-11-25].
-- Every arrangement of a batch whose pointer words lie past the end of
-  `callData` (point 2 of the on-chain list): two are tested, the rest
-  argued.
+- On the instances deployed on 2026-11-25, every arrangement of a batch
+  whose pointer words lie past the end of `callData` (point 2 of the
+  on-chain list): two are tested, the rest argued. The source refuses
+  them all by rule.
 - Audits of `windows`, `uniffi`, `tokio`, `reqwest`, `serialport`, `clap`
   and the bundler; the `tpm2-tss` version on any given host.
 

@@ -1628,7 +1628,19 @@ contract AgentPolicy is IPolicy {
             return _judge(m, target, value, data, FROM_ACCOUNT);
         }
         // A batch, leg by leg; any other call type (delegatecall, static) is refused
-        if (callType == CALLTYPE_BATCH) return _judgeAccountBatch(m, LibERC7579.decodeBatch(executionData));
+        if (callType == CALLTYPE_BATCH) {
+            bytes32[] calldata pointers = LibERC7579.decodeBatch(executionData);
+            // The pointer array ends within `executionData`. Kernel's pinned
+            // decoder bounds each leg and not the array, so a pointer could
+            // be read past the end: zeros there for the account, the rest of
+            // the operation for the policy (Solady's review, finding 5.3.7).
+            bool within;
+            assembly ("memory-safe") {
+                let end := add(executionData.offset, executionData.length)
+                within := iszero(or(gt(pointers.offset, end), gt(pointers.length, shr(5, sub(end, pointers.offset)))))
+            }
+            return within ? _judgeAccountBatch(m, pointers) : (false, 0);
+        }
         return (false, 0);
     }
 
