@@ -363,10 +363,14 @@ Lessons that cost real debugging time:
 
   Lesson from 3.2: solc's metadata hash embeds compiler settings, so adding
   remappings changed every contract's creation code and the deploy script
-  minted a second, unused set of modules (`0xA3DF…`, `0x492E…`, `0xFA85…`,
-  `0x617D…`). Bytecode is now metadata-free (`bytecode_hash = "none"`,
-  `cbor_metadata = false`) and the script reuses addresses recorded in
-  `deployments/<chainid>.json` whenever they hold code.
+  minted a second, unused set of modules
+  (`0xA3DFEebc75623266beBBA9fEAEd8Df7Cd0cceE97`,
+  `0x492E57EEB529338b0c48b5e8Be52508E5AeE6267`,
+  `0xFA85F816a6698C9725dad58919054067E41391E8`,
+  `0x617D8f2e2039265558cF7e8Ecb311480a227a5f5`). Bytecode is now
+  metadata-free (`bytecode_hash = "none"`, `cbor_metadata = false`) and the
+  script reuses addresses recorded in `deployments/<chainid>.json` whenever
+  they hold code.
 - **Phase 4 — gas benchmark** on Base Sepolia, mirroring the reference paper's
   measurements with a TPM in place of the ATECC608A.
 

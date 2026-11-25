@@ -13,12 +13,11 @@
 
 use alloy::primitives::{Address, Bytes, B256, U256};
 use alloy::providers::Provider;
-use alloy::rpc::types::{Filter, TransactionRequest};
-use alloy::sol_types::SolEvent;
+use alloy::rpc::types::TransactionRequest;
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
-use crate::abi::{IAgentPolicyTrading, IErc1271, IErc20Allowance};
+use crate::abi::{IErc1271, IErc20Allowance};
 use crate::agent::{open_signer, Role, VenueEntry};
 use crate::chain::{Session, VenueOnChain};
 use crate::kernel::{self, CowSellOrder};

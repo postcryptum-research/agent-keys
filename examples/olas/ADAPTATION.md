@@ -315,7 +315,7 @@ Safe 0xd0b972a8ee7D8AB91a2e3381Eb6F10550B80E52A owners=('0xEdB645B14e2f952C5784e
 1. safeTxHash (Olas encode_typed_data) 0x9ac3fcfccd8c2cb4bc13db18a6844e5e6097dc30c090ccbaf21aa2f46fc89a95
    Safe.getTransactionHash(nonce=4)   0x9ac3fcfccd8c2cb4bc13db18a6844e5e6097dc30c090ccbaf21aa2f46fc89a95  match=True
 2. hash_payload_to_hex -> 648 hex chars; decoded to=0xD2Adc331B867435b82Ceba1D4f7f715eeF9FdbC1 op=0
-3. participant_to_signature[0xEdB6…] = 000…edb645b1…c9e9 000…000 01
+3. participant_to_signature[0xEdB645B14e2f952C5784e34949b58F0826fBc9E9] = 000…edb645b14e2f952c5784e34949b58f0826fbc9e9 000…000 01
 4. execTransaction calldata 516 bytes, eth_estimateGas from Kernel = 63733 (accepted)
    control: same v=1 signature, sender 0x…dEaD -> gas 0 (0 = estimate reverted, as expected)
 5. keeper send: agent-signer op send --agent … --target 0xd0b972a8ee7D8AB91a2e3381Eb6F10550B80E52A --wei 0 --data 0x… --sponsored --json
