@@ -335,6 +335,12 @@ which refuses the operation all the same [I].
   account and the policy would read different bytes
   (`test_batch_aPointerArrayPastTheEndIsRefused`;
   [`THIRD_PARTIES.md`](THIRD_PARTIES.md), point 2).
+  The policy cuts the batch's bytes out of the call by hand, and the
+  account takes them through Solidity's decoder: a fuzz test lays a batch
+  out with other offsets and declared lengths and holds that whatever the
+  policy accepts, the account reads as calls on the allow-list with the
+  values the policy charged
+  (`testFuzz_batch_executionDataIsReadAsKernelReadsIt`).
 - *Native value.* What an operation moves, Safe transactions and batch
   legs included, is at most `maxValuePerOp`, and is charged to `budget`
   together with the gas the account pays for itself (the EntryPoint's

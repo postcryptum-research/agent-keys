@@ -156,6 +156,25 @@ contract Counter {
 /// selector as `Kernel.execute`, so the calldata is laid out as the account
 /// sees it, and the Solady that Kernel pins, which `AgentPolicy` uses too.
 /// `decodeFixed` is Solady v0.1.26, with the bounds check of PR 1244.
+/// What Kernel's `execute(bytes32, bytes calldata)` reads of a batch: the
+/// same ABI decoding of `executionData`'s offset and length, and the same
+/// pinned decoder, with each leg's data returned as well.
+contract KernelReads {
+    function execute(bytes32, bytes calldata executionData)
+        external
+        pure
+        returns (address[] memory targets, uint256[] memory values, bytes[] memory datas)
+    {
+        bytes32[] calldata pointers = PinnedERC7579.decodeBatch(executionData);
+        targets = new address[](pointers.length);
+        values = new uint256[](pointers.length);
+        datas = new bytes[](pointers.length);
+        for (uint256 i; i < pointers.length; i++) {
+            (targets[i], values[i], datas[i]) = PinnedERC7579.getExecution(pointers, i);
+        }
+    }
+}
+
 contract KernelDecodes {
     function execute(bytes32, bytes calldata executionData)
         external
@@ -1533,6 +1552,132 @@ contract AgentPermissionTest is Test {
         // and with the array starting past the end altogether
         bytes memory beyond = abi.encodePacked(head, uint256(32), uint256(0x40), uint256(0), uint256(0));
         assertEq(_policyVerdict(beyond, ""), 1, "an array that starts past the end");
+    }
+
+    /// `executionData`'s own offset and length, read alike by the policy and
+    /// by Kernel. The policy slices `executionData` out of `callData` by
+    /// hand; Kernel's `execute` takes it through Solidity's ABI decoder. A
+    /// well-formed batch of allowed legs is laid out with an offset other
+    /// than 0x40, a declared length shorter or longer than the bytes, bytes
+    /// between and after, and now and then one byte changed. Whenever the
+    /// policy accepts: Kernel reads the call too, every leg Kernel reads is
+    /// on the mandate's allow-list, and the value the policy charged is the
+    /// sum of the values Kernel would send. So nothing runs that was not
+    /// judged, and nothing judged with a value goes unmade.
+    function testFuzz_batch_executionDataIsReadAsKernelReadsIt(uint256 seed) public {
+        KernelReads kernel = new KernelReads();
+        uint256 accepted;
+        uint256 odd;
+        for (uint256 n; n < 16; n++) {
+            uint256 r = uint256(keccak256(abi.encode(seed, n)));
+            // the first is always the plain layout, so that every run has one accepted
+            if (n == 0) r = (r & ((1 << 40) - 1)) | (1 << 40) | (8 << 56) | (1 << 110);
+            (bool ok, bool plain) = _oneLayout(kernel, r);
+            if (plain) assertTrue(ok, "the plain layout of allowed legs passes");
+            else odd++;
+            if (ok) accepted++;
+        }
+        // not a property of the policy: the generator still reaches both kinds
+        assertGt(accepted, 0, "none accepted");
+        assertGt(odd, 2, "too few odd layouts");
+    }
+
+    function _oneLayout(KernelReads kernel, uint256 r) internal returns (bool ok, bool plain) {
+        bytes32 id = bytes32(PermissionId.unwrap(AGENT_ID));
+        bytes memory callData;
+        (callData, plain) = _batchLaidOut(r);
+        bytes memory paymasterAndData =
+            (r >> 200) % 3 == 0 ? abi.encodePacked(address(0xbeef), uint128(1), uint128(1), r) : bytes("");
+        uint256 snap = vm.snapshotState();
+        // what the policy charges for the operation's gas alone, with the same fields
+        uint256 gasOnly = _charged(id, _opWith(_singleCall(address(counter), 0, ""), paymasterAndData));
+        vm.revertToState(snap);
+        uint256 charged;
+        (ok, charged) = _judged(id, _opWith(callData, paymasterAndData));
+        vm.revertToState(snap);
+        if (ok) assertEq(charged, gasOnly + _kernelWouldSend(kernel, id, callData), "charged: the values Kernel would send");
+    }
+
+    function _judged(bytes32 id, PackedUserOperation memory op) internal returns (bool ok, uint256 charged) {
+        (,,,, uint128 before,) = policy.configs(acct, id);
+        vm.prank(acct);
+        (bool answered, bytes memory verdict) = address(policy).call(abi.encodeCall(policy.checkUserOpPolicy, (id, op)));
+        ok = answered && abi.decode(verdict, (uint256)) != 1;
+        (,,,, uint128 afterwards,) = policy.configs(acct, id);
+        charged = afterwards - before;
+    }
+
+    /// Kernel's reading of a call the policy accepted: every leg on the
+    /// allow-list; the values together.
+    function _kernelWouldSend(KernelReads kernel, bytes32 id, bytes memory callData) internal returns (uint256 sum) {
+        (bool read, bytes memory ret) = address(kernel).call(callData);
+        assertTrue(read, "the policy accepted a call Kernel cannot read");
+        (address[] memory targets, uint256[] memory values, bytes[] memory datas) =
+            abi.decode(ret, (address[], uint256[], bytes[]));
+        assertGt(targets.length, 0, "the policy accepted a batch Kernel reads as empty");
+        for (uint256 i; i < targets.length; i++) {
+            bytes memory d = datas[i];
+            assertTrue(d.length == 0 || d.length >= 4, "a leg of one to three bytes");
+            assertTrue(
+                policy.isAllowed(acct, id, targets[i], d.length == 0 ? bytes4(0) : bytes4(d)),
+                "Kernel would run a call the mandate does not list"
+            );
+            sum += values[i];
+        }
+    }
+
+    function _charged(bytes32 id, PackedUserOperation memory op) internal returns (uint256) {
+        (,,,, uint128 before,) = policy.configs(acct, id);
+        vm.prank(acct);
+        assertTrue(policy.checkUserOpPolicy(id, op) != 1, "the control passes");
+        (,,,, uint128 afterwards,) = policy.configs(acct, id);
+        return afterwards - before;
+    }
+
+    /// A batch of one to three allowed legs (an increment, or a few wei to
+    /// the counter) as `execute` calldata; `plain` when laid out as
+    /// `abi.encode` would.
+    function _batchLaidOut(uint256 r) internal view returns (bytes memory callData, bool plain) {
+        Execution[] memory legs = new Execution[](1 + r % 3);
+        for (uint256 i; i < legs.length; i++) {
+            uint256 k = (r >> (8 + 8 * i)) % 4;
+            legs[i] = k == 0
+                ? Execution(address(counter), 0, abi.encodeWithSelector(Counter.increment.selector))
+                : Execution(address(counter), k, "");
+        }
+        bytes memory body = ExecLib.encodeBatch(legs);
+        uint256 between = (r >> 40) % 4 == 0 ? (r >> 48) % 4 : 0; // words between the offset and the length
+        uint256 offset = 0x40 + 32 * between;
+        uint256 length = body.length;
+        uint256 how = (r >> 56) % 12;
+        if (how == 0) offset += 1 + (r >> 64) % 31; // not on a word
+        if (how == 1) offset -= 32; // onto the offset word itself
+        if (how == 2) offset = (r >> 64) % 0x200;
+        if (how == 3) length -= 32 * (1 + (r >> 72) % 3);
+        if (how == 4) length += 32 * (1 + (r >> 72) % 3);
+        if (how == 5) length = (r >> 72) % 2 == 0 ? length - 1 : length + 1;
+        if (how == 6) length = r >> 80;
+        if (how == 7) length = 0;
+        bytes memory gap;
+        for (uint256 i; i < between; i++) {
+            // zeros, a small number, or any word
+            uint256 w = uint256(keccak256(abi.encode(r, "gap", i)));
+            gap = abi.encodePacked(gap, w % 3 == 0 ? uint256(0) : w % 3 == 1 ? (w >> 8) % 0x200 : w);
+        }
+        bytes memory tail;
+        for (uint256 i; i < (r >> 100) % 4; i++) {
+            uint256 w = uint256(keccak256(abi.encode(r, "tail", i)));
+            tail = abi.encodePacked(tail, w % 2 == 0 ? (w >> 8) % 0x200 : w);
+        }
+        callData = abi.encodePacked(
+            Kernel.execute.selector, ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))), offset, gap, length, body, tail
+        );
+        bool changed = (r >> 110) % 6 == 0;
+        if (changed) {
+            uint256 at = 36 + (r >> 120) % (callData.length - 36);
+            callData[at] = bytes1(uint8(uint8(callData[at]) ^ uint8(1 << ((r >> 140) % 8))));
+        }
+        plain = between == 0 && how > 7 && !changed;
     }
 
     function _policyVerdict(bytes memory callData, bytes memory paymasterAndData) internal returns (uint256) {
