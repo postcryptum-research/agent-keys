@@ -43,12 +43,43 @@ pub struct Deployments {
     /// The P256Validator instance that holds a cold recovery key.
     #[serde(default)]
     pub p256_recovery_validator: Option<Address>,
-    /// Earlier instances, still root on some accounts: the CLI reads their
-    /// keys for the pre-signature checks but installs nothing new on them.
-    #[serde(default)]
-    pub p256_validator_v1: Option<Address>,
-    #[serde(default)]
-    pub p256_recovery_validator_v1: Option<Address>,
+    /// The keys not named above: the compiler settings and the earlier
+    /// instances a redeploy keeps as `<name>V<n>` (`p256ValidatorV2`, …),
+    /// still in use on accounts until the owner moves them. Read through
+    /// [`Deployments::superseded`].
+    #[serde(flatten)]
+    pub other: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+impl Deployments {
+    /// Every earlier instance of `name` the file keeps (`<name>V<n>`): the
+    /// CLI reads their keys for the pre-signature checks and refuses them as
+    /// targets, but installs nothing new on them.
+    pub fn superseded(&self, name: &str) -> Vec<Address> {
+        self.other
+            .iter()
+            .filter(|(key, _)| version_of(key).is_some_and(|(base, _)| base == name))
+            .filter_map(|(_, v)| v.as_str()?.parse().ok())
+            .collect()
+    }
+
+    /// A versioned key whose value is not an address would drop an earlier
+    /// instance from the checks without a word: refused when the file is read.
+    pub(crate) fn check_superseded(&self) -> Result<()> {
+        for (key, value) in &self.other {
+            if version_of(key).is_some() && value.as_str().and_then(|s| s.parse::<Address>().ok()).is_none() {
+                anyhow::bail!("deployments: {key} is not an address");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `<name>V<n>` as the deploy script writes a superseded key: a name, `V`,
+/// and a number without a leading zero (`Deploy.s.sol`, `versionOf`).
+fn version_of(key: &str) -> Option<(&str, &str)> {
+    let (base, n) = key.rsplit_once('V')?;
+    (!base.is_empty() && !n.is_empty() && !n.starts_with('0') && n.bytes().all(|b| b.is_ascii_digit())).then_some((base, n))
 }
 
 /// A TPM key: `"0x81010010"`; `{"handle": "0x81010011", "pcrs": [0, 2, 4, 7]}`
@@ -334,7 +365,9 @@ impl AgentConfig {
     pub fn load_deployments(&self, base: &Path) -> Result<Deployments> {
         let path = base.join(&self.deployments);
         let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-        serde_json::from_slice(&bytes).context("parsing deployments")
+        let dep: Deployments = serde_json::from_slice(&bytes).context("parsing deployments")?;
+        dep.check_superseded()?;
+        Ok(dep)
     }
 
     pub fn permission_id(&self) -> Result<PermissionId> {

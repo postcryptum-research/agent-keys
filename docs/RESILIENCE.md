@@ -867,6 +867,10 @@ list as written at the time of the study:
   (2026-11-24, issue #114): the owner key replaces the installed recovery key
   in one operation, or removes it. Before them the first recovery key an
   account got was the one it kept.
+- `owner remove-recovery --earlier <address>` (2026-11-25): after a redeploy
+  the key comes off the earlier recovery validator, once `owner
+  add-recovery` has put it on the current one. Until then the earlier
+  validator can still take root.
 - `owner recover --new-owner <spec>`:
   - step 1: recovery-op `changeRootValidator(recoveryVId)`; with a timelock —
     first `recover initiate`, then `recover execute` after `D`;
