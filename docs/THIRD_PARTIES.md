@@ -138,9 +138,9 @@ the Android and npm packages, and GitHub's advisories [V].
 | `x25519-dalek` | the secure channel to TROPIC01 | 2.0.1, and 3.0.0 through `yubikey` | 3.0.0 [V] | Quarkslab, 2019, version 0.5.2, a quick look only [V] | none [V] |
 | `aws-lc-rs` / `aws-lc-sys` | TLS crypto under `rustls` | 1.18.2 / 0.46.0 | 1.19.0 / 0.47.0 [V] | FIPS 140-3 certificates cover the separate FIPS build, **not the `aws-lc-sys` we link** [V]; no third-party report found | none (GHSA-xv35-xp83-5wrf is fixed in our version) [V] |
 | `rustls` | TLS to RPC nodes | 0.23.46 | the same [V] | Cure53, 2020, version 0.16 or newer [V] | none [V] |
-| `alloy` | Ethereum RPC, ABI, the CLI's chain access | 2.5.0 (`alloy-primitives` 1.7.3) | 2.6.1 [V] | no public audit found | none directly. Through it, **`crypto-bigint` 0.5.5: RUSTSEC-2026-0387** (timing in constant-time code), with no 0.5 fix; alloy 2.6.1 still needs it. Our P-256 path uses `crypto-bigint` 0.7.x, which is fixed [V]. **`url` 2.5.8: RUSTSEC-2026-0592** (a crash in `Url::origin()`), fixed in 2.5.9 [V] |
+| `alloy` | Ethereum RPC, ABI, the CLI's chain access | 2.5.0 (`alloy-primitives` 1.7.3) | 2.6.1 [V] | no public audit found | none directly. Through it, **`crypto-bigint` 0.5.5: RUSTSEC-2026-0387** (timing in constant-time code), with no 0.5 fix; alloy 2.6.1 still needs it. Our P-256 path uses `crypto-bigint` 0.7.x, which is fixed [V]. `url` is 2.5.9, which has the fix of RUSTSEC-2026-0592 (a crash in `Url::origin()`) [V `signer/Cargo.lock`] |
 | `tss-esapi` | the TPM 2.0 backend | 7.7.0 | the same [V] | no public audit found | none in the crate. **The system `tpm2-tss` library it links had 13 advisories** published 2026-10-26 to 2026-11-04, fixed in 4.1.5 and 4.2.1 (latest 4.2.2); a Linux host needs one of those [V] |
-| `yubikey` | the YubiKey backend | 0.9.0-rc.0 | no stable 0.9 (0.8.0 is the last stable) [V] | none: its README says no audit was ever done [V] | through it, **`rsa` 0.10.0-rc.19: RUSTSEC-2023-0071** (we use P-256 slots only, the RSA code is not called [I]) and **`inout` 0.2.5: GHSA-2943-gp7x-qg39** (low); both fixable by `cargo update` [V] |
+| `yubikey` | the YubiKey backend | 0.9.0-rc.0 | no stable 0.9 (0.8.0 is the last stable) [V] | none: its README says no audit was ever done [V] | through it, **`rsa` 0.10.0-rc.19: RUSTSEC-2023-0071** (we use P-256 slots only, the RSA code is not called [I]). It cannot be moved: `yubikey` 0.9.0-rc.0 asks `rsa` for a feature `sha2` that `rsa` 0.10.0 no longer has, so the fix waits for a `yubikey` release [V `cargo update -p rsa --precise 0.10.0` fails to resolve]. `inout` is 0.2.6, which has the fix of GHSA-2943-gp7x-qg39 [V `signer/Cargo.lock`] |
 | `tropic01` (libtropic-rs, git) | the TROPIC01 backend | rev `3310775775c211496d514f9110554884afa3ba80` | that rev is its master; no releases [V] | none. **Its README calls it a community project, not maintained by Tropic Square, not for production** [V]. The chip itself was audited by Ledger Donjon; the full report is due in spring 2027 [V] | none published [V] |
 | `windows`, `uniffi`, `tokio`, `reqwest`, `serialport`, `clap` | Windows CNG, the phone bindings, the runtime, HTTP, serial, the CLI | 0.62.2, 0.32.2, 1.54.1, 0.13.5, 4.10.1, 4.6.7 | current, except `clap` 4.6.10 [V] | not researched | none [V] |
 | Rust | the toolchain | 1.94.1 minimum, 1.95.0 for clippy in CI | 1.100.0 [V] | n/a | Cargo's CVE-2026-5222 and CVE-2026-5223 matter only with third-party registries; we use crates.io and one git dependency [V/I] |
@@ -151,9 +151,11 @@ the Android and npm packages, and GitHub's advisories [V].
 
 ### What follows for us
 
-1. **Three locked crates have fixes to take:** `rsa` 0.10.0, `inout` 0.2.6
-   and `url` 2.5.9, by `cargo update -p rsa -p inout -p url`. Each needs the
-   tests run before it is merged [I]. `crypto-bigint` 0.5.5 stays until
+1. **Two of three locked crates with fixes are taken:** `inout` 0.2.6 and
+   `url` 2.5.9, in `signer/Cargo.lock`, the only lock file that holds them
+   [V]. **`rsa` stays at 0.10.0-rc.19** until `yubikey` has a release that
+   builds with `rsa` 0.10.0; the RSA code is not called with our P-256
+   slots [I]. `crypto-bigint` 0.5.5 stays until
    alloy moves to `k256` 0.14 [V]. It is not on the P-256 path; it touches
    secp256k1 arithmetic inside alloy, which signs with a real secret only
    under `insecure-software-keys` [I].
