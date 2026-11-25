@@ -365,6 +365,17 @@ which refuses the operation all the same [I].
   unmetered selector, and what it grants can stand; the phone's review names
   the known ones on the entry. An allowance or a grant that has to stand
   across operations is the owner's to make.
+  What the rule reads is the calls of the operation, and validation cannot
+  see how they end. A call that reverts takes the whole operation's
+  execution with it, the grant included (only the default execution type
+  is admitted, and a Safe's batch is one `multiSend`). A token whose
+  `approve(spender, 0)` returns `false` and changes nothing, where its
+  `approve(spender, x)` took effect, would leave that allowance standing:
+  the account does not read a token's return value. So a token given a
+  limit must be one whose `approve(spender, 0)` clears the allowance; the
+  widely used ones do. The same is assumed of an allow-listed contract's
+  `setApprovalForAll(operator, false)`. [I: no such token is known to us; the requirement
+  is on the owner's choice of tokens]
 - *Window.* The operation is valid from `validAfter` up to and at
   `validUntil`; the policy returns the window and the EntryPoint enforces
   it (`test_schedule_windowIsEnforced`). The window `checkUserOpPolicy`
@@ -448,7 +459,14 @@ which refuses the operation all the same [I].
   (zkSync-style chains differ), so the constant is to be checked before
   the policy goes to a new chain [V source].
 - *Safes.* `(safe, execTransaction)` is admitted only as the leg right
-  after `SafeNonceAssert.check(safe, n)` in the account's batch. The call
+  after `SafeNonceAssert.check(safe, n)` in the account's batch, with
+  `safe` a whole address word: a word with bits above the low 160 is
+  refused in validation, since `check` would revert on it at execution
+  with the operation already charged
+  (`test_safe_theGuardedAddressIsAWholeWord`). The same is asked of the
+  address words of `execTransaction` itself (`to`, `gasToken`,
+  `refundReceiver`): a Safe whose decoder validates them would revert at
+  execution (`test_safe_theTransactionsAddressesAreWholeWords`). The call
   inside is judged against the same mandate; `gasPrice` must be 0, or the
   Safe would pay a refund to a receiver the agent picks; Safes do not
   nest; a DELEGATECALL goes only into an allow-listed `multiSend` that is

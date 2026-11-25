@@ -1566,8 +1566,11 @@ contract AgentPolicy is IPolicy {
         if (value != 0 || data.length != 68 || bytes4(data[0:4]) != NONCE_CHECK || i + 1 >= pointers.length) {
             return (false, 0);
         }
-        // The Safe it guards: the low 160 bits of its first argument
-        // (`check` reverts at execution on anything above them)
+        // The Safe it guards: its first argument, a whole address word. With
+        // anything above the low 160 bits `check` reverts at execution, after
+        // validation has charged the operation: refused here, as a payee's
+        // address word is (`_chargeToken`)
+        if (uint256(bytes32(data[4:36])) >> 160 != 0) return (false, 0);
         address guarded = address(uint160(uint256(bytes32(data[4:36]))));
         // The next leg must be that Safe's `execTransaction`
         (address safe, uint256 safeValue, bytes calldata safeData) = LibERC7579.getExecution(pointers, i + 1);
@@ -1864,6 +1867,13 @@ contract AgentPolicy is IPolicy {
         inner = d[0:0];
         // selector + ten head words
         if (d.length < 324) return (false, address(0), 0, 0, inner);
+        // Head words 0, 7 and 8 are addresses (to, gasToken, refundReceiver):
+        // whole words only. A Safe built with a decoder that masks the word
+        // would call the address judged here; one built with a decoder that
+        // validates it reverts at execution, with the operation charged
+        if ((uint256(bytes32(d[4:36])) | uint256(bytes32(d[228:260])) | uint256(bytes32(d[260:292]))) >> 160 != 0) {
+            return (false, address(0), 0, 0, inner);
+        }
         // Head words 0 to 3: to, value, the data's offset, operation
         to = address(uint160(uint256(bytes32(d[4:36]))));
         value = uint256(bytes32(d[36:68]));

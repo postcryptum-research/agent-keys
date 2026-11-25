@@ -1019,6 +1019,58 @@ contract AgentPermissionTest is Test {
         assertEq(counter.count(), 0);
     }
 
+    /// The assertion's address is a whole word. With a bit above the low 160
+    /// the policy used to judge the low 160 bits and pass the operation;
+    /// `check` then reverted at execution, and the operation was charged its
+    /// gas for nothing. Refused in validation now.
+    function test_safe_theGuardedAddressIsAWholeWord() public {
+        Safe safe = _withSafe();
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+        bytes memory exec = _safeExec(safe, address(counter), 0, inc, Enum.Operation.Call, 0);
+        Execution[] memory calls = new Execution[](2);
+        calls[1] = Execution(address(safe), 0, exec);
+        for (uint256 bit = 160; bit < 256; bit += 19) {
+            calls[0] = Execution(
+                address(nonceAssert),
+                0,
+                abi.encodeWithSelector(SafeNonceAssert.check.selector, uint256(uint160(address(safe))) | (1 << bit), safe.nonce())
+            );
+            _expectRefused(_agentBatchWith(AGENT, SAFE_ID, calls));
+        }
+        assertEq(_spent(SAFE_ID), 0, "a refused operation is charged nothing");
+        // the control: the same pair with the plain address
+        calls[0] = Execution(address(nonceAssert), 0, abi.encodeCall(SafeNonceAssert.check, (address(safe), safe.nonce())));
+        _send(_agentBatchWith(AGENT, SAFE_ID, calls));
+        assertEq(counter.count(), 1);
+    }
+
+    /// The same one call deeper: the address words of `execTransaction`
+    /// itself (`to`, `gasToken`, `refundReceiver`). The policy judged the low
+    /// 160 bits of `to`; this Safe, built with a decoder that validates the
+    /// word, reverted at execution with the operation charged.
+    function test_safe_theTransactionsAddressesAreWholeWords() public {
+        Safe safe = _withSafe();
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+        // head words 0, 7 and 8, after the selector
+        uint256[3] memory words = [uint256(0), 7, 8];
+        for (uint256 w; w < words.length; w++) {
+            for (uint256 bit = 160; bit < 256; bit += 31) {
+                bytes memory exec = _safeExec(safe, address(counter), 0, inc, Enum.Operation.Call, 0);
+                uint256 at = 32 + 4 + 32 * words[w];
+                uint256 mask = 1 << bit;
+                assembly {
+                    mstore(add(exec, at), or(mload(add(exec, at)), mask))
+                }
+                _expectRefused(_agentViaSafe(safe, exec));
+            }
+        }
+        assertEq(_spent(SAFE_ID), 0, "a refused operation is charged nothing");
+        assertEq(counter.count(), 0);
+        // the control
+        _send(_agentViaSafe(safe, _safeExec(safe, address(counter), 0, inc, Enum.Operation.Call, 0)));
+        assertEq(counter.count(), 1);
+    }
+
     function test_safe_replayCannotExecuteTwice() public {
         Safe safe = _withSafe();
         bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
