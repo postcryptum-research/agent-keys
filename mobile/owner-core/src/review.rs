@@ -1391,9 +1391,27 @@ fn operator_grant(sel: [u8; 4]) -> Option<&'static str> {
         SELECTOR_SET_OPERATOR => Some(
             "setOperator (ERC-6909): lets the agent make an address the operator of all its tokens there; the agent must withdraw it in the same operation (an AgentPolicy built before this rule lets it stand)",
         ),
+        // Grants of lending protocols. The policy does not read them: one stands
+        // until the owner withdraws it, and a revoke of the mandate does not end it.
+        SELECTOR_SET_AUTHORIZATION => Some(
+            "setAuthorization (Morpho Blue): lets the agent authorize an address to act on the account's positions there; the policy does not read this call, so the grant stands after the operation and after a revoke of the mandate",
+        ),
+        SELECTOR_COMET_ALLOW => Some(
+            "allow (Compound III): lets the agent make an address a manager of the account's position in that market; the policy does not read this call, so the grant stands after the operation and after a revoke of the mandate",
+        ),
+        SELECTOR_APPROVE_DELEGATION => Some(
+            "approveDelegation (Aave): lets the agent let an address borrow against the account's collateral, up to an amount the agent picks; the policy does not read this call, so the grant stands after the operation and after a revoke of the mandate",
+        ),
         _ => None,
     }
 }
+
+/// `setAuthorization(address,bool)` of Morpho Blue.
+const SELECTOR_SET_AUTHORIZATION: [u8; 4] = [0xee, 0xce, 0xa0, 0x00];
+/// `allow(address,bool)` of Compound III (Comet).
+const SELECTOR_COMET_ALLOW: [u8; 4] = [0x11, 0x04, 0x96, 0xe5];
+/// `approveDelegation(address,uint256)` of Aave's debt tokens.
+const SELECTOR_APPROVE_DELEGATION: [u8; 4] = [0xc0, 0x4a, 0x8a, 0x10];
 
 /// `setApprovalForAll(address,bool)` of ERC-721 and ERC-1155.
 const SELECTOR_SET_APPROVAL_FOR_ALL: [u8; 4] = [0xa2, 0x2c, 0xb4, 0x65];
@@ -1749,6 +1767,9 @@ mod tests {
         for (sel, said) in [
             ([0xa2, 0x2c, 0xb4, 0x65], "must withdraw it in the same operation"),
             ([0x55, 0x8a, 0x72, 0x97], "setOperator (ERC-6909)"),
+            ([0xee, 0xce, 0xa0, 0x00], "setAuthorization (Morpho Blue)"),
+            ([0x11, 0x04, 0x96, 0xe5], "allow (Compound III)"),
+            ([0xc0, 0x4a, 0x8a, 0x10], "approveDelegation (Aave)"),
         ] {
             let params = kernel::PolicyParams {
                 targets: vec![COUNTER, nft],
