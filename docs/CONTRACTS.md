@@ -520,7 +520,10 @@ which refuses the operation all the same [I].
   `baseGas` must be 0 too, since a Safe given a `safeTxGas` does not
   revert when its inner call does, and validation would have counted a
   call that was not made, the withdrawal of an allowance among them
-  (#190, `test_safe_aTransactionThatMayFailQuietlyIsRefused`) [V
+  (#190, `test_safe_aTransactionThatMayFailQuietlyIsRefused`). With all
+  three at 0, an inner call that fails at execution fails the operation,
+  and nothing of it stands (`test_safe_aFailingInnerCallFailsTheOperation`,
+  run through the EntryPoint, the Safe and the token) [V
   `contracts/lib/safe-smart-account/contracts/Safe.sol`, the `GS013`
   rule]. A Safe's guard can only add a refusal to this. A module enabled
   on the Safe is another matter: `execTransactionFromModule` runs without

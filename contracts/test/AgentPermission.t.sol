@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, Vm} from "forge-std/Test.sol";
 
 import {P256Validator} from "../src/P256Validator.sol";
 import {P256RecoveryValidator} from "../src/P256RecoveryValidator.sol";
@@ -1336,6 +1336,44 @@ contract AgentPermissionTest is Test {
         // the control: both 0
         _send(_agentViaSafe(safe, _safeExecGas(address(token), withdraw, 0, 0)));
         assertEq(safe.nonce(), nonce + 1);
+    }
+
+    /// #193, item 3: with the three gas words at 0, an inner call that fails
+    /// at execution fails the operation. The shape of #190 with `safeTxGas`
+    /// at 0: validation accepts it, having seen the withdrawal; the
+    /// withdrawal reverts at execution (the token refuses the word); the Safe
+    /// reverts with it (`GS013`: `require(success || safeTxGas != 0 ||
+    /// gasPrice != 0)`); and the EntryPoint reverts the operation's whole
+    /// execution. The grant goes with it, so no allowance stands, and the
+    /// Safe's nonce does not move. Run through the EntryPoint, Kernel's
+    /// batch, the Safe and the token.
+    function test_safe_aFailingInnerCallFailsTheOperation() public {
+        Safe safe = _withSafeApprovals();
+        address spender = makeAddr("spender");
+        bytes memory grant = abi.encodeCall(MockToken.approve, (spender, 5 ether));
+        bytes memory dirtyWithdraw =
+            abi.encodeWithSelector(MockToken.approve.selector, uint256(uint160(spender)) | (1 << 200), uint256(0));
+        uint256 nonce = safe.nonce();
+        Execution[] memory calls = new Execution[](4);
+        calls[0] = Execution(address(nonceAssert), 0, abi.encodeCall(SafeNonceAssert.check, (address(safe), nonce)));
+        calls[1] = Execution(address(safe), 0, _safeExecGas(address(token), grant, 0, 0));
+        calls[2] = Execution(address(nonceAssert), 0, abi.encodeCall(SafeNonceAssert.check, (address(safe), nonce + 1)));
+        calls[3] = Execution(address(safe), 0, _safeExecGas(address(token), dirtyWithdraw, 0, 0));
+        vm.recordLogs();
+        // validation accepts it: handleOps does not revert
+        _send(_agentBatchWith(AGENT, SAFE_ID, calls));
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 topic = keccak256("UserOperationEvent(bytes32,address,address,uint256,bool,uint256,uint256)");
+        uint256 seen;
+        for (uint256 i; i < logs.length; i++) {
+            if (logs[i].emitter != address(entryPoint) || logs[i].topics[0] != topic) continue;
+            (, bool success,,) = abi.decode(logs[i].data, (uint256, bool, uint256, uint256));
+            assertFalse(success, "the operation's execution failed");
+            seen++;
+        }
+        assertEq(seen, 1, "one operation, reported once");
+        assertEq(token.allowance(address(safe), spender), 0, "the grant was undone with the failed withdrawal");
+        assertEq(safe.nonce(), nonce, "the Safe ran neither transaction");
     }
 
     function _safeExecGas(address to, bytes memory data, uint256 safeTxGas, uint256 baseGas)
