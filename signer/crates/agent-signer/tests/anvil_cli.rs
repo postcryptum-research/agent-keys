@@ -1153,6 +1153,34 @@ fn assert_owner_only(path: &std::path::Path) {
     }
 }
 
+/// A client that opens the session's POST, announces a body and sends none of
+/// it, holding the connection for `hold`. The body announced is over 1 KiB:
+/// the HTTP server reads a smaller one itself before it hands the request
+/// over, so only a larger one reaches the session unread.
+fn stalled_post(qr_file: std::path::PathBuf, hold: Duration) -> std::thread::JoinHandle<()> {
+    use owner_core::request::QrPayload;
+    use std::io::Write;
+    std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        let uri = loop {
+            if let Ok(u) = std::fs::read_to_string(&qr_file) {
+                if u.starts_with("tpmsign:") {
+                    break u;
+                }
+            }
+            assert!(started.elapsed() < Duration::from_secs(30), "the CLI never showed a QR");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let qr = QrPayload::parse(&uri).expect("a valid QR payload");
+        let rest = qr.url.strip_prefix("http://").expect("an http URL");
+        let (host, path) = rest.split_once('/').expect("a path");
+        let mut stream = TcpStream::connect(host).expect("the session's port");
+        write!(stream, "POST /{path} HTTP/1.1\r\nHost: {host}\r\nContent-Length: 4096\r\n\r\n").unwrap();
+        stream.flush().unwrap();
+        std::thread::sleep(hold);
+    })
+}
+
 fn phone_simulator(qr_file: std::path::PathBuf, key: Key, mode: &'static str) -> std::thread::JoinHandle<bool> {
     phone_simulator_after(qr_file, key, mode, Duration::ZERO)
 }
@@ -1433,6 +1461,23 @@ fn phone_owner_signs_a_root_operation() {
     assert!(err.contains("the phone will REFUSE this operation"), "{err}");
     assert!(err.contains("the phone refused: core") && err.contains("cannot decode"), "{err}");
     assert_eq!(chain.counter(), before);
+
+    // 6-stall. a host on the network that saw the session's URL opens an answer and sends no
+    //     body. It holds its own connection and nothing else: the phone, a moment later, is
+    //     served and signs. Before #178 the session waited on that body for all the time it
+    //     had left and ended with "no answer from the phone".
+    let _ = std::fs::remove_file(&qr_file);
+    let staller = stalled_post(qr_file.clone(), Duration::from_secs(7));
+    let sim = phone_simulator_after(qr_file.clone(), key(7), "sign", Duration::from_millis(1500));
+    let before = chain.counter();
+    let out = chain.ok(&[
+        "op", "send", "--agent", &cfg_path, "--root", "--target", &counter, "--data", INCREMENT,
+        "--listen", "127.0.0.1:0", "--phone-qr-file", qr, "--phone-timeout", "6",
+    ]);
+    sim.join().unwrap();
+    staller.join().unwrap();
+    assert!(out.contains("phone:          signed, signature verified"), "{out}");
+    assert_eq!(chain.counter(), before + U256::from(1));
 
     // 6a. a host on the network that never saw the QR posts a refusal in the phone's place:
     //     it carries no MAC of the session's secret, so it is ignored and the phone's own

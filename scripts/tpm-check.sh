@@ -98,12 +98,12 @@ checks() {
     "$B" key check --handle $SEALED --pcrs 0,2,4,7
     # One test key goes before the next comes: an Azure vTPM has room for
     # three persistent objects of ours, the storage parent among them.
-    "$B" key evict --handle $SEALED
+    "$B" key evict --handle $SEALED --yes
     printf 'a secret only root reads\n' >"$tmp/auth"
     chmod 600 "$tmp/auth" # the CLI refuses an auth file others may read
     "$B" key create --handle $PROTECTED --auth-file "$tmp/auth"
     "$B" key check --handle $PROTECTED --auth-file "$tmp/auth"
-    "$B" key evict --handle $PROTECTED
+    "$B" key evict --handle $PROTECTED --yes
     # Forget the tests' two failures, where the lockout hierarchy has no password.
     if [ "$(prop lockoutAuthSet)" = 0 ]; then tpm2_dictionarylockout -Q -c; fi
     echo "failed authorizations counted now: $(($(prop TPM2_PT_LOCKOUT_COUNTER)))"
@@ -143,6 +143,6 @@ case "$mode" in
         make_srk
     fi
     checks
-    if [ -n "$keep" ]; then echo "kept $KEY: run --again later"; else "$B" key evict --handle $KEY; fi
+    if [ -n "$keep" ]; then echo "kept $KEY: run --again later"; else "$B" key evict --handle $KEY --yes; fi
     ;;
 esac
