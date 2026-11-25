@@ -1504,6 +1504,37 @@ contract AgentPermissionTest is Test {
     }
 
     /// The policy asked directly, as Kernel asks it for the agent's permission.
+    /// The policy refuses a batch whose pointer array does not end within
+    /// `executionData`, whatever its legs are. The batch of Solady's review
+    /// reads as four plain calls to address 0. Here the mandate is made to
+    /// allow exactly that (written into storage), so that nothing but the
+    /// rule on the array refuses it: without the rule this batch passes.
+    /// The same four calls in a batch whose array ends inside pass.
+    function test_batch_aPointerArrayPastTheEndIsRefused() public {
+        bytes32 id = bytes32(PermissionId.unwrap(AGENT_ID));
+        vm.record();
+        policy.isAllowed(acct, id, address(0), bytes4(0));
+        (bytes32[] memory reads,) = vm.accesses(address(policy));
+        vm.store(address(policy), reads[reads.length - 1], bytes32(uint256(1)));
+        assertTrue(policy.isAllowed(acct, id, address(0), bytes4(0)), "not planted where the policy reads");
+
+        bytes memory head = abi.encodePacked(
+            Kernel.execute.selector, ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))), uint256(0x40)
+        );
+        // four pointers of 0, all inside: each leg is the array's first three words
+        bytes memory inside =
+            abi.encodePacked(head, uint256(32 * 6), uint256(0x20), uint256(4), uint256(0), uint256(0), uint256(0), uint256(0));
+        assertTrue(_policyVerdict(inside, "") != 1, "the control: four calls to address 0 pass when the array is inside");
+        // the same bytes with executionData declared one word shorter: pointers[3] is past its end
+        bytes memory past =
+            abi.encodePacked(head, uint256(32 * 5), uint256(0x20), uint256(4), uint256(0), uint256(0), uint256(0), uint256(0));
+        _kernelReadsFourCallsToZero(past);
+        assertEq(_policyVerdict(past, ""), 1, "a pointer past the end of executionData");
+        // and with the array starting past the end altogether
+        bytes memory beyond = abi.encodePacked(head, uint256(32), uint256(0x40), uint256(0), uint256(0));
+        assertEq(_policyVerdict(beyond, ""), 1, "an array that starts past the end");
+    }
+
     function _policyVerdict(bytes memory callData, bytes memory paymasterAndData) internal returns (uint256) {
         // built first: a prank goes to the next call, and building the
         // operation makes calls of its own

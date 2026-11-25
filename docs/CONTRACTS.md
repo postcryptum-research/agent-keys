@@ -329,7 +329,12 @@ which refuses the operation all the same [I].
   (target, selector) is on the allow-list. Selector `0x00000000` is a
   plain transfer and admits empty calldata only: 1 to 3 bytes, or a body
   that starts with four zero bytes, would run the target's fallback
-  (`test_probe2_oneToThreeBytesAreRefusedOnEveryPath`).
+  (`test_probe2_oneToThreeBytesAreRefusedOnEveryPath`). A batch's pointer
+  array ends within the batch's own bytes, or the batch is refused: the
+  decoder the account runs does not check that, and past the end the
+  account and the policy would read different bytes
+  (`test_batch_aPointerArrayPastTheEndIsRefused`;
+  [`THIRD_PARTIES.md`](THIRD_PARTIES.md), point 2).
 - *Native value.* What an operation moves, Safe transactions and batch
   legs included, is at most `maxValuePerOp`, and is charged to `budget`
   together with the gas the account pays for itself (the EntryPoint's
