@@ -147,7 +147,8 @@ More, including a stolen device: [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md).
 What runs today, phase by phase and backend by backend, with the transactions:
 [`docs/STATUS.md`](docs/STATUS.md).
 Where the contracts are deployed, chain by chain, with every earlier instance:
-[`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md).
+[`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md). How a redeploy is done and
+recorded: [`docs/REDEPLOY.md`](docs/REDEPLOY.md).
 
 ## Docs
 

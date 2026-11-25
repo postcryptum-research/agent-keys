@@ -246,7 +246,8 @@ Lessons that cost real debugging time:
   unversioned names were built, so that their code can be rebuilt and
   compared (issue #123; `test/DeploymentsRecord.t.sol` holds the script,
   `foundry.toml` and each chain's file equal). [V] Compared on chain for Base
-  Sepolia on 2026-11-24, against a build of commit `175acbf3a3127e804a45a3e4dd097165f0a4c922` with solc 0.8.38
+  Sepolia on 2026-11-24 (the instances then current, now kept under
+  versioned names), against a build of commit `175acbf3a3127e804a45a3e4dd097165f0a4c922` with solc 0.8.38
   and `cancun` (master has moved ahead since, `VERSION` among the changes):
   - `P256Validator`, `P256RecoveryValidator`, `P256Signer` and
     `SafeNonceAssert` equal byte for byte;
@@ -290,7 +291,7 @@ Lessons that cost real debugging time:
     deposit|sponsor` and `--sponsored` on `op send` / `demo`. Today that
     address is recorded as `whitelistPaymasterV1`; the current paymaster
     (`whitelistPaymaster` in `deployments/84532.json`,
-    `0x50Ab706dA586895D5775a1e51DcF1a66eAaAE001`) gives each account a gas
+    `0x657792557C1D40f2Da031FD7aB277078D2c0a4cb`) gives each account a gas
     budget and a per-operation cap (`paymaster sponsor --budget
     --max-per-op`), and `paymaster stake` exists.
   - *3.3 done (2026-10-20).* **Rotation and revocation:** root operations
