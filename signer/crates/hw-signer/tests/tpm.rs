@@ -83,6 +83,97 @@ fn persisting_twice_is_refused_and_the_key_stays() {
     assert!(key.x == same.x && key.y == same.y, "the same key");
 }
 
+/// A handle for an object that is not one of this crate's keys.
+const OTHER: u32 = 0x8101_ff15;
+
+fn raw_context() -> Context {
+    let tcti = TctiNameConf::from_environment_variable()
+        .or_else(|_| TctiNameConf::from_str("device:/dev/tpmrm0"))
+        .unwrap();
+    Context::new(tcti).unwrap()
+}
+
+/// A restricted decryption key (what a storage parent is), persisted at
+/// `OTHER` with the TPM's own commands.
+fn persist_a_storage_key() {
+    use tss_esapi::attributes::ObjectAttributesBuilder;
+    use tss_esapi::interface_types::algorithm::{HashingAlgorithm, PublicAlgorithm};
+    use tss_esapi::interface_types::dynamic_handles::Persistent;
+    use tss_esapi::interface_types::ecc::EccCurve;
+    use tss_esapi::interface_types::resource_handles::{Hierarchy, Provision};
+    use tss_esapi::structures::{
+        EccPoint, EccScheme, KeyDerivationFunctionScheme, PublicBuilder, PublicEccParametersBuilder, SymmetricDefinitionObject,
+    };
+    let attributes = ObjectAttributesBuilder::new()
+        .with_fixed_tpm(true)
+        .with_fixed_parent(true)
+        .with_sensitive_data_origin(true)
+        .with_user_with_auth(true)
+        .with_no_da(true)
+        .with_restricted(true)
+        .with_decrypt(true)
+        .with_sign_encrypt(false)
+        .build()
+        .unwrap();
+    let ecc = PublicEccParametersBuilder::new()
+        .with_ecc_scheme(EccScheme::Null)
+        .with_curve(EccCurve::NistP256)
+        .with_is_signing_key(false)
+        .with_is_decryption_key(true)
+        .with_restricted(true)
+        .with_symmetric(SymmetricDefinitionObject::AES_128_CFB)
+        .with_key_derivation_function_scheme(KeyDerivationFunctionScheme::Null)
+        .build()
+        .unwrap();
+    let public = PublicBuilder::new()
+        .with_public_algorithm(PublicAlgorithm::Ecc)
+        .with_name_hashing_algorithm(HashingAlgorithm::Sha256)
+        .with_object_attributes(attributes)
+        .with_ecc_parameters(ecc)
+        .with_ecc_unique_identifier(EccPoint::default())
+        .build()
+        .unwrap();
+    let mut ctx = raw_context();
+    ctx.execute_with_nullauth_session(|ctx| {
+        let key = ctx.create_primary(Hierarchy::Owner, public, None, None, None, None)?.key_handle;
+        ctx.evict_control(Provision::Owner, key.into(), Persistent::Persistent(PersistentTpmHandle::new(OTHER)?))?;
+        ctx.flush_context(key.into())
+    })
+    .unwrap();
+}
+
+/// Whether something is persisted at `handle`; with `remove`, takes it away
+/// with the TPM's own command, whatever it is.
+fn other_object(remove: bool) -> bool {
+    use tss_esapi::interface_types::dynamic_handles::Persistent;
+    use tss_esapi::interface_types::resource_handles::Provision;
+    let mut ctx = raw_context();
+    let handle = PersistentTpmHandle::new(OTHER).unwrap();
+    let Ok(object) = ctx.tr_from_tpm_public(TpmHandle::Persistent(handle)) else { return false };
+    if remove {
+        ctx.execute_with_nullauth_session(|ctx| ctx.evict_control(Provision::Owner, object, Persistent::Persistent(handle)))
+            .unwrap();
+    }
+    true
+}
+
+/// #178: `evict` removes a key of the kind this crate makes and nothing
+/// else. A storage parent at a handle one digit away from a key's is the
+/// costly mistake: every key under it goes with it.
+#[test]
+#[ignore = "requires a TPM"]
+fn evict_refuses_what_is_not_a_signing_key() {
+    if other_object(false) {
+        other_object(true);
+    }
+    persist_a_storage_key();
+    let refused = TpmSigner::evict(OTHER);
+    let still = other_object(true);
+    let refused = refused.unwrap_err().to_string();
+    assert!(refused.contains("not an unrestricted ECC signing key") && refused.contains("not evicted"), "{refused}");
+    assert!(still, "the object was still at its handle");
+}
+
 /// #43: the TPM's words for an empty handle are "the handle is not correct
 /// for the use". The error has to say what is missing, where, and what to do.
 #[test]

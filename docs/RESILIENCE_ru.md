@@ -173,7 +173,7 @@
 | Перезагрузка, обновление ОС/ядра | жив | persistent handle |
 | `TPM2_Clear` (tpm2_clear, «Clear TPM» в Windows Security / tpm.msc / UEFI, PPI-запрос из ОС) | **уничтожен** | SPS новый, persistent-объекты удалены [V] |
 | Смена SPS — только через Clear | **уничтожен** | «регенерация SRK» с тем же шаблоном без Clear даёт тот же SRK [I по спецификации: первичные ключи детерминированы от сида и шаблона] |
-| Случайный `key evict` / `tpm2_evictcontrol` | **уничтожен** | blob мы не храним, восстановить нечем [V: `KeyCmd::Evict` в CLI, `signer/crates/agent-signer/src/main.rs`]. CLI показывает ключ по handle и удаляет его только с `--yes`; `tpm2_evictcontrol` ничего не спрашивает |
+| Случайный `key evict` / `tpm2_evictcontrol` | **уничтожен** | blob мы не храним, восстановить нечем [V: `KeyCmd::Evict` в CLI, `signer/crates/agent-signer/src/main.rs`]. CLI показывает ключ по handle и удаляет его только с `--yes`, причём только нерестриктный ECC-ключ подписи: handle, который не читается, родительский ключ хранилища или объект другого инструмента он не трогает. `tpm2_evictcontrol` ничего не спрашивает |
 | Обновление BIOS на машине с **fTPM** | зависит от вендора; **часто уничтожен** | §1.2 |
 | Обновление **прошивки самого TPM** (dTPM или fTPM) | часто уничтожен | Intel NUC: «TPM firmware update clears all data in the TPM» [V https://www.intel.com/content/dam/support/us/en/documents/mini-pcs/NUC5i3MY-TPM-Firmware-Update.pdf]; Infineon-апдейты (ROCA) требовали очистки [V https://www.getac.com/uploads/2023/01/infineon_tpm_security_update_20230116.pdf, I детали] |
 | Замена CPU (AMD fTPM) | **уничтожен** при ответе «Y» | §1.2 |

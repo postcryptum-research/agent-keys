@@ -409,11 +409,29 @@ impl TpmSigner {
         Ok(())
     }
 
-    /// Remove a persisted key from the TPM.
+    /// Remove a persisted key from the TPM. Only an unrestricted ECC signing
+    /// key, the kind this crate makes: anything else at the handle (a storage
+    /// parent, another tool's object) is refused and left where it is.
     pub fn evict(handle: u32) -> Result<(), SignerError> {
         let mut ctx = connect()?;
         let target = PersistentTpmHandle::new(handle).map_err(tss)?;
         let object = Self::resolve_key(&mut ctx, handle)?;
+        // Only a key of the kind this crate makes. A handle is typed by hand,
+        // and one digit away from a key may be the storage parent every key
+        // on the machine hangs from: evicting that is not undone (#178).
+        let (public, _, _) = ctx.execute_without_session(|ctx| ctx.read_public(object)).map_err(tss)?;
+        let ours = match &public {
+            Public::Ecc { object_attributes, .. } => {
+                object_attributes.sign_encrypt() && !object_attributes.restricted() && !object_attributes.decrypt()
+            }
+            _ => false,
+        };
+        if !ours {
+            return Err(SignerError::Key(format!(
+                "the object at {handle:#010x} is not an unrestricted ECC signing key (it is a storage parent, or another \
+                 tool's object): not evicted. `tpm2_evictcontrol` removes such an object, if that is what you mean"
+            )));
+        }
         ctx.evict_control(Provision::Owner, object.into(), Persistent::Persistent(target))
             .map_err(tss)?;
         Ok(())

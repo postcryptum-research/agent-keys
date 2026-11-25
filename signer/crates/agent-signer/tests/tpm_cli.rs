@@ -57,6 +57,8 @@ fn key_evict_shows_the_key_and_waits_for_yes() {
     let asked = cli(&["key", "evict", "--handle", HANDLE]);
     let still = cli(&["key", "show", "--handle", HANDLE]);
     let empty = cli(&["key", "evict", "--handle", "0x8101ff14"]);
+    // what cannot be read was not shown, so --yes agrees to nothing
+    let unread = cli(&["key", "evict", "--handle", "0x8101ff14", "--yes"]);
     let evicted = cli(&["key", "evict", "--handle", HANDLE, "--yes"]);
     let gone = cli(&["key", "show", "--handle", HANDLE]);
 
@@ -65,6 +67,8 @@ fn key_evict_shows_the_key_and_waits_for_yes() {
     assert!(!said(&asked).contains("evicted"), "{}", said(&asked));
     assert!(still.status.success() && said(&still).contains(&fingerprint), "{}", said(&still));
     assert!(said(&empty).contains("could not be read") && said(&empty).contains("nothing was removed"), "{}", said(&empty));
+    assert!(!unread.status.success() && said(&unread).contains("could not be read"), "{}", said(&unread));
+    assert!(said(&unread).contains("nothing was removed") && !said(&unread).contains("evicted"), "{}", said(&unread));
     assert!(evicted.status.success() && said(&evicted).contains("evicted 0x8101ff13"), "{}", said(&evicted));
     assert!(!gone.status.success(), "{}", said(&gone));
 }

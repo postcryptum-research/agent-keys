@@ -806,17 +806,19 @@ enum KeyOp {
 /// Whether `key evict` goes on. Removing a key from a device cannot be
 /// undone, and a mistyped handle or label names another key: the key at
 /// `name` is shown, and it is removed only when the command carries `--yes`.
-/// A place whose key cannot be read is said so, and still needs `--yes`.
+/// A place whose key cannot be read is not evicted at all, `--yes` or not:
+/// what is there was not shown, so nothing was agreed to.
 #[cfg_attr(not(any(feature = "tpm", feature = "tropic01", feature = "secure-enclave", feature = "windows-tpm")), allow(dead_code))]
-fn may_evict(name: &str, key: Result<PublicKey>, yes: bool) -> bool {
+fn may_evict(name: &str, key: Result<PublicKey>, yes: bool) -> Result<bool> {
     match key {
         Ok(pk) => eprintln!("the key at {name}:\n  {}", chain::key_text(&pk, "  ")),
+        Err(e) if yes => bail!("the key at {name} could not be read ({e:#}): nothing was removed, since --yes agrees to a key that was shown"),
         Err(e) => eprintln!("the key at {name} could not be read ({e:#})"),
     }
     if !yes {
         eprintln!("nothing was removed. Removing a key cannot be undone: if this is the key you mean, run the command again with --yes");
     }
-    yes
+    Ok(yes)
 }
 
 /// Sign a random digest with `signer` and verify it against its public key.
@@ -1207,7 +1209,7 @@ fn tropic01_key(port: &str, slot: u16, op: KeyOp) -> Result<()> {
         KeyOp::Check { .. } => check_signer(name, &Tropic01Signer::open(port, slot)?),
         KeyOp::Evict { yes } => {
             let signer = Tropic01Signer::open(port, slot)?;
-            if may_evict(&name, signer.public_key().map_err(Into::into), yes) {
+            if may_evict(&name, signer.public_key().map_err(Into::into), yes)? {
                 signer.erase()?;
                 println!("erased {name}");
             }
@@ -1230,7 +1232,7 @@ fn cng_key(name: &str, op: KeyOp) -> Result<()> {
         KeyOp::Check { .. } => check_signer(name.into(), &CngSigner::open(name)?),
         KeyOp::Evict { yes } => {
             let signer = CngSigner::open(name)?;
-            if may_evict(name, signer.public_key().map_err(Into::into), yes) {
+            if may_evict(name, signer.public_key().map_err(Into::into), yes)? {
                 signer.delete()?;
                 println!("deleted {name}");
             }
@@ -1288,7 +1290,7 @@ fn tpm_key(handle: u32, op: KeyOp) -> Result<()> {
         KeyOp::Evict { yes } => {
             // a handle is typed by hand: show which key is there before it is gone for good (#178)
             let key = TpmSigner::open_persistent(handle).and_then(|s| s.public_key()).map_err(Into::into);
-            if may_evict(&name, key, yes) {
+            if may_evict(&name, key, yes)? {
                 TpmSigner::evict(handle)?;
                 println!("evicted {name}");
             }
@@ -1332,7 +1334,7 @@ fn enclave_key(label: &str, op: KeyOp) -> Result<()> {
         KeyOp::Check { .. } => check_signer(label.into(), &SecureEnclaveSigner::open(label)?),
         KeyOp::Evict { yes } => {
             let signer = SecureEnclaveSigner::open(label)?;
-            if may_evict(label, signer.public_key().map_err(Into::into), yes) {
+            if may_evict(label, signer.public_key().map_err(Into::into), yes)? {
                 signer.delete()?;
                 println!("deleted {label}");
             }

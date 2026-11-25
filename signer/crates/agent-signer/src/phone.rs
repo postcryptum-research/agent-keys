@@ -568,7 +568,10 @@ type Answer = (tiny_http::Request, Option<String>, Result<Vec<u8>, String>);
 /// and hands it to the session's loop over `done` when it is whole. The loop
 /// never waits on a body: a client that opens the POST and stalls holds this
 /// thread until it closes the connection or the process ends, and nothing
-/// else. If the session ended meanwhile the body goes nowhere.
+/// else. If the session ended meanwhile the body goes nowhere. The loop
+/// counts a read in progress against `MAX_UNAUTHENTICATED`, so there are
+/// never more than that many of these threads; each ends when its client
+/// closes the connection or the CLI exits.
 fn read_body(mut req: tiny_http::Request, mac: Option<String>, done: std::sync::mpsc::Sender<Answer>) {
     std::thread::spawn(move || {
         let mut buf = Vec::new();
