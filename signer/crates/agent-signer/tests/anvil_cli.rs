@@ -1088,6 +1088,17 @@ fn http_get(url: &str) -> Vec<u8> {
 /// The thread returns whether the laptop **confirmed** the answer: its reply
 /// was the confirmation MAC under the session's secret, the only thing the
 /// app takes as "the laptop has it".
+/// A QR file carries the session secret: the CLI writes it owner-only
+/// (#154), and so does the path attacker below when it relays one.
+fn assert_owner_only(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path).expect("the QR file").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the QR file {} has mode {mode:o}", path.display());
+    }
+}
+
 fn phone_simulator(qr_file: std::path::PathBuf, key: Key, mode: &'static str) -> std::thread::JoinHandle<bool> {
     phone_simulator_after(qr_file, key, mode, Duration::ZERO)
 }
@@ -1111,6 +1122,7 @@ fn phone_simulator_after(qr_file: std::path::PathBuf, key: Key, mode: &'static s
             assert!(started.elapsed() < Duration::from_secs(30), "the CLI never showed a QR");
             std::thread::sleep(Duration::from_millis(50));
         };
+        assert_owner_only(&qr_file);
         let qr = QrPayload::parse(&uri).expect("a valid QR payload");
         let post = |body: Vec<u8>| {
             let body = String::from_utf8(body).unwrap();
@@ -1220,7 +1232,15 @@ fn path_attacker(laptop_qr: PathBuf, phone_qr: Option<PathBuf>) -> std::thread::
         let listener = TcpListener::bind(format!("{}:0", laptop.rsplit_once(':').unwrap().0)).unwrap();
         let uri = uri.replacen(&laptop, &listener.local_addr().unwrap().to_string(), 1);
         match &phone_qr {
-            Some(file) => std::fs::write(file, &uri).unwrap(),
+            Some(file) => {
+                // the CLI wrote laptop_qr owner-only; the relayed copy is written the same way
+                assert_owner_only(&laptop_qr);
+                let mut opts = std::fs::OpenOptions::new();
+                opts.write(true).create(true).truncate(true);
+                #[cfg(unix)]
+                std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+                std::io::Write::write_all(&mut opts.open(file).unwrap(), uri.as_bytes()).unwrap();
+            }
             None => {
                 use qrcode::render::unicode;
                 let code = qrcode::QrCode::new(uri.as_bytes()).unwrap();

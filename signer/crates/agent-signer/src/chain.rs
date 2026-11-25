@@ -1812,6 +1812,32 @@ mod tests {
                 if auth_file.to_str() == Some("/etc/tpm_sign/owner.auth")
         ));
     }
+
+    /// #154: `pcrs` with `authFile` used to load as a sealed key, the auth
+    /// file unread; it is refused now, as is any other unknown field, and the
+    /// three forms still load.
+    #[test]
+    fn tpm_key_with_pcrs_and_auth_file_is_refused() {
+        use crate::agent::{KeySpec, TpmKey};
+        let parse = |s: &str| serde_json::from_str::<KeySpec>(s);
+        assert!(matches!(parse(r#"{"tpm": "0x81010010"}"#).unwrap(), KeySpec::Tpm(TpmKey::Handle(_))));
+        assert!(matches!(
+            parse(r#"{"tpm": {"handle": "0x81010011", "pcrs": [0, 2, 4, 7]}}"#).unwrap(),
+            KeySpec::Tpm(TpmKey::Sealed { .. })
+        ));
+        assert!(matches!(
+            parse(r#"{"tpm": {"handle": "0x81010013", "authFile": "/etc/tpm_sign/owner.auth"}}"#).unwrap(),
+            KeySpec::Tpm(TpmKey::Protected { .. })
+        ));
+        for bad in [
+            r#"{"tpm": {"handle": "0x81010013", "pcrs": [0, 2, 4, 7], "authFile": "/etc/tpm_sign/owner.auth"}}"#,
+            r#"{"tpm": {"handle": "0x81010013", "pcrs": [], "authFile": "/etc/tpm_sign/owner.auth"}}"#,
+            r#"{"tpm": {"handle": "0x81010011", "pcrs": [7], "comment": "x"}}"#,
+        ] {
+            let refused = parse(bad).unwrap_err().to_string();
+            assert!(refused.contains("pcrs and authFile do not combine"), "{bad}: {refused}");
+        }
+    }
 }
 
 #[cfg(test)]

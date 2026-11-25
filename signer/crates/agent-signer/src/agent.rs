@@ -56,8 +56,15 @@ pub struct Deployments {
 /// or `{"handle": "0x81010013", "authFile": "/etc/tpm_sign/owner.auth"}` for a
 /// key protected by an authValue whose secret is that file — for the owner
 /// key on the agent's chip, a file only root can read (docs/KEY_POLICY.md).
+/// Unknown fields are an error: with `pcrs` and `authFile` both given, the
+/// key would otherwise load as sealed and the `authFile` go unread (#154).
 #[derive(Debug, Deserialize)]
-#[serde(untagged)]
+#[serde(
+    untagged,
+    deny_unknown_fields,
+    expecting = "a TPM key: a handle string, {\"handle\", \"pcrs\"} or {\"handle\", \"authFile\"} \
+                 (pcrs and authFile do not combine; no other fields)"
+)]
 pub enum TpmKey {
     Handle(String),
     Sealed { handle: String, pcrs: Vec<u8> },
@@ -488,6 +495,54 @@ pub fn parse32(s: &str) -> Result<[u8; 32]> {
         .map_err(|_| anyhow::anyhow!("expected 32 bytes, got {}", raw.len()))
 }
 
+/// Read a TPM key's authValue secret (`authFile`, `--auth-file`). On Unix a
+/// file that group or others may use is refused: the owner key behind it is
+/// out of the agent's reach only while root alone reads it (docs/KEY_POLICY.md
+/// rule 3, mode 0600).
+#[cfg_attr(not(feature = "tpm"), allow(dead_code))] // its callers are the TPM backend's
+pub fn read_auth_file(path: &Path) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = file.metadata().with_context(|| format!("reading {}", path.display()))?.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            anyhow::bail!(
+                "{} has mode {mode:03o}: an auth file must be readable by its owner only (docs/KEY_POLICY.md rule 3); \
+                 run `chmod 600 {}`",
+                path.display(),
+                path.display()
+            );
+        }
+    }
+    let mut secret = Vec::new();
+    file.read_to_end(&mut secret).with_context(|| format!("reading {}", path.display()))?;
+    Ok(secret)
+}
+
+/// Write a record that names a device (an enrollment, an attestation
+/// certificate with its serial number) readable by its owner only: mode 0600
+/// on Unix, a file already there included.
+pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts.open(path).with_context(|| format!("writing {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // the mode above applies to a new file only
+        file.set_permissions(std::fs::Permissions::from_mode(0o600)).with_context(|| format!("writing {}", path.display()))?;
+    }
+    file.write_all(bytes).with_context(|| format!("writing {}", path.display()))
+}
+
 /// Open the signer a [`KeySpec`] points at, for `role`. The TPM variant needs
 /// the `tpm` feature. A software key is refused in every role unless the
 /// build opted into `insecure-software-keys` (tests only).
@@ -503,8 +558,8 @@ pub fn open_signer(spec: &KeySpec, role: Role) -> Result<Box<dyn HardwareSigner>
                         Box::new(TpmSigner::open_persistent_sealed(parse_hex_u32(handle)?, pcrs)?)
                     }
                     TpmKey::Protected { handle, auth_file } => {
-                        let secret = std::fs::read(auth_file).with_context(|| {
-                            format!("reading the authValue secret {} (owner operations run as root)", auth_file.display())
+                        let secret = read_auth_file(auth_file).with_context(|| {
+                            format!("the authValue secret {} (owner operations run as root)", auth_file.display())
                         })?;
                         Box::new(TpmSigner::open_persistent_protected(parse_hex_u32(handle)?, &secret)?)
                     }
@@ -682,5 +737,49 @@ mod payee_tests {
                 assert!(refused.contains("callable only through"), "{refused}");
             }
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod file_mode_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// #154: an auth file is read only when group and others have no access
+    /// to it (docs/KEY_POLICY.md rule 3); otherwise the refusal says how to fix it.
+    #[test]
+    fn an_auth_file_others_may_read_is_refused() {
+        let dir = std::env::temp_dir().join(format!("agent-signer-authfile-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("owner.auth");
+        std::fs::write(&path, b"a secret only root reads").unwrap();
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(read_auth_file(&path).unwrap(), b"a secret only root reads");
+
+        for mode in [0o644, 0o640, 0o604, 0o620] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            let refused = read_auth_file(&path).unwrap_err().to_string();
+            assert!(refused.contains(&format!("mode {mode:03o}")) && refused.contains("chmod 600"), "{mode:o}: {refused}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// #154: an enrollment record (it carries the device's serial number) is
+    /// written 0600, also over a file that was there with a wider mode.
+    #[test]
+    fn an_enrollment_record_is_written_owner_only() {
+        let dir = std::env::temp_dir().join(format!("agent-signer-record-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("enroll-response.json");
+        let _ = std::fs::remove_file(&path);
+        write_private(&path, b"{}").unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_private(&path, b"{\"again\": true}").unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::read(&path).unwrap(), b"{\"again\": true}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

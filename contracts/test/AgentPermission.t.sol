@@ -876,6 +876,41 @@ contract AgentPermissionTest is Test {
         signer.onInstall(abi.encodePacked(id, bytes32(x), bytes32(y)));
     }
 
+    /// Issue #154: install data is exactly the key, 64 bytes, for the validator
+    /// and the recovery validator; a word short or anything after it is refused.
+    function test_validatorInstallDataIsExactlyTheKey() public {
+        (uint256 x, uint256 y) = vm.publicKeyP256(AGENT2);
+        bytes memory key = abi.encode(bytes32(x), bytes32(y));
+        P256Validator[2] memory validators = [new P256Validator(), P256Validator(new P256RecoveryValidator())];
+        for (uint256 i; i < validators.length; i++) {
+            vm.expectRevert(P256Validator.InvalidPublicKey.selector);
+            validators[i].onInstall(abi.encodePacked(key, bytes1(0))); // 65 bytes
+            vm.expectRevert(P256Validator.InvalidPublicKey.selector);
+            validators[i].onInstall(abi.encodePacked(key, bytes32(0))); // 96 bytes
+            vm.expectRevert(P256Validator.InvalidPublicKey.selector);
+            validators[i].onInstall(abi.encodePacked(bytes32(x), bytes31(bytes32(y)))); // 63 bytes
+            validators[i].onInstall(key);
+            assertTrue(validators[i].isInitialized(address(this)));
+        }
+    }
+
+    /// Issue #154: the signer's install data is exactly the id and the key, 96
+    /// bytes; a byte short or anything after the key is refused.
+    function test_signerInstallDataIsExactlyTheIdAndTheKey() public {
+        (uint256 x, uint256 y) = vm.publicKeyP256(AGENT2);
+        bytes32 id = bytes32(PermissionId.unwrap(PermissionId.wrap(0x6c656e67))); // "leng"
+        bytes memory key = abi.encode(bytes32(x), bytes32(y));
+        vm.expectRevert(P256Signer.InvalidPublicKey.selector);
+        signer.onInstall(abi.encodePacked(id, key, bytes1(0))); // 97 bytes
+        vm.expectRevert(P256Signer.InvalidPublicKey.selector);
+        signer.onInstall(abi.encodePacked(id, key, bytes32(0))); // 128 bytes
+        vm.expectRevert(P256Signer.InvalidPublicKey.selector);
+        signer.onInstall(abi.encodePacked(id, bytes32(x), bytes31(bytes32(y)))); // 95 bytes
+        signer.onInstall(abi.encodePacked(id, key));
+        (bytes32 storedX,) = signer.publicKeys(id, address(this));
+        assertEq(storedX, bytes32(x));
+    }
+
     // --- cold recovery owner (docs/RESILIENCE.md, docs/KEY_POLICY.md rule 5) ---
 
     uint256 internal constant RECOVERY = 0x0000000000000000000000000000000000000000000000000000000000000DD4;

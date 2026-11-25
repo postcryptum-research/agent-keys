@@ -26,12 +26,14 @@ contract SettlementForVersion {
 /// and releases), and that contract's line here then names its own.
 contract VersionsTest is Test {
     string internal constant FIRST = "0.1.0";
+    // install data of exactly the expected length (#154)
+    string internal constant P256_MODULES = "0.1.1";
 
     function test_everyDeployableContractCarriesItsVersion() public {
         // Contracts without constructor arguments
-        assertEq(new P256Validator().VERSION(), FIRST, "P256Validator");
-        assertEq(new P256RecoveryValidator().VERSION(), FIRST, "P256RecoveryValidator");
-        assertEq(new P256Signer().VERSION(), FIRST, "P256Signer");
+        assertEq(new P256Validator().VERSION(), P256_MODULES, "P256Validator");
+        assertEq(new P256RecoveryValidator().VERSION(), P256_MODULES, "P256RecoveryValidator");
+        assertEq(new P256Signer().VERSION(), P256_MODULES, "P256Signer");
         assertEq(new SafeNonceAssert().VERSION(), FIRST, "SafeNonceAssert");
         assertEq(new DemoCounter().VERSION(), FIRST, "DemoCounter");
         assertEq(new Logger(address(this), address(this), bytes32(0), bytes32(0)).VERSION(), FIRST, "Logger");
