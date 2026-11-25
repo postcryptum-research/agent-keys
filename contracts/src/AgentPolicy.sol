@@ -342,7 +342,11 @@ contract AgentPolicy is IPolicy {
     /// `SafeNonceAssert.check(address,uint256)`
     bytes4 public constant NONCE_CHECK = SafeNonceAssert.check.selector;
     /// `setApprovalForAll(address,bool)` of ERC-721 and ERC-1155: an operator
-    /// grant over every token of the contract, withdrawn like an allowance
+    /// grant over every token of the contract, withdrawn like an allowance. It
+    /// shares the open flag `(holder, target, spender)` with ERC-20 allowances;
+    /// one cannot be opened by one function and closed by the other because
+    /// install keeps them on different targets: `approve` needs a limit on its
+    /// target, and `setApprovalForAll` is refused on a target with one.
     bytes4 internal constant SET_APPROVAL_FOR_ALL = 0xa22cb465;
     /// `executeUserOp(PackedUserOperation,bytes32)`: the prefix Kernel requires
     /// of the `callData` of a permission that carries an execution hook

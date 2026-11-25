@@ -340,6 +340,10 @@ which refuses the operation all the same [I].
   the four go to a token with a limit only: such an entry on any other
   target would be refused at every operation, so install refuses the
   mandate (#175, `test_probe2_installRefusesAMeteredFunctionWithoutALimit`).
+  ERC-721's `approve(to, tokenId)` and `transferFrom` carry the ERC-20
+  selectors, so on an NFT contract they are metered functions and need a
+  limit, which an NFT contract does not meaningfully have: they cannot be
+  listed for one.
   An approval is charged like a transfer; what the spender later pulls is
   not seen.
 - *No standing allowances.* An allowance the agent grants (`approve` or

@@ -268,6 +268,24 @@ contract PayeeProbes2 is PayeeProbes {
         }
     }
 
+    /// An operator grant and an ERC-20 approval on one target cannot both be
+    /// listed, so a grant opened by one cannot be closed by the other: with a
+    /// limit `setApprovalForAll` is refused, without one `approve` is.
+    function test_probe2_anOperatorGrantAndAnApprovalNeverShareATarget() public {
+        address[] memory targets = new address[](2);
+        bytes4[] memory selectors = new bytes4[](2);
+        (targets[0], selectors[0]) = (address(forbidden), bytes4(0xa22cb465)); // setApprovalForAll(address,bool)
+        (targets[1], selectors[1]) = (address(forbidden), MockToken.approve.selector);
+        AgentPolicy.TokenCap[] memory capped = new AgentPolicy.TokenCap[](1);
+        capped[0] = AgentPolicy.TokenCap(address(forbidden), TOKEN_MAX, TOKEN_BUDGET, bytes32(0));
+        vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+        this.installForProbe(abi.encodePacked(bytes32(uint256(0xc001) << 224), abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, capped, uint48(0))));
+        vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+        this.installForProbe(
+            abi.encodePacked(bytes32(uint256(0xc002) << 224), abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, new AgentPolicy.TokenCap[](0), uint48(0)))
+        );
+    }
+
     function installForProbe(bytes calldata data) external {
         policy.onInstall(data);
     }
