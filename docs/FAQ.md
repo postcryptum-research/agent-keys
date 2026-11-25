@@ -468,6 +468,18 @@ names the figure ([#148](https://github.com/postcryptum-research/agent-keys/issu
 [V] Pimlico's public endpoints priced at 0.67 to 0.82 times the node's
 `maxFeePerGas` on Base Sepolia, Base, Ethereum and Arbitrum on 2026-11-25.
 
+On a rollup whose bundlers fold the L1 data fee into `preVerificationGas`,
+an honest figure can be above that ceiling, and the CLI would refuse every
+operation there. [I] No such chain has been run with this CLI; the ceiling
+was set from Base's figures. For such a chain the agent config takes
+`bundlerPreVerificationFactor`, a whole number from 1 to 64 (1 when absent)
+that multiplies the ceiling on `preVerificationGas` and no other bound
+([#162](https://github.com/postcryptum-research/agent-keys/issues/162)).
+It widens what a bundler can take from the mandate's budget for that figure
+by exactly that factor, so set the smallest value the chain's honest
+bundlers need. With a factor above 1 the CLI prints the ceiling it applies
+on every operation.
+
 With a bundler, no gas wallet is needed: leave `GAS_WALLET_KEYFILE` unset.
 It is only required to submit `handleOps` yourself and for the commands that
 send ETH from it (`account fund`, `paymaster deposit / sponsor / stake`);

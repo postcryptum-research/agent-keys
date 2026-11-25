@@ -54,10 +54,16 @@ pub const FACTOR: u128 = 2;
 /// `theirs` if it is at most `ceiling`, refused otherwise. A value too wide
 /// for 128 bits is above any ceiling: a refusal, never a panic (issue #150).
 pub fn bounded(name: &str, theirs: U256, ceiling: u128, of: &str) -> Result<u128> {
+    bounded_by(name, theirs, ceiling, FACTOR, of)
+}
+
+/// [`bounded`] with the multiple its refusal names: `times` is what
+/// `ceiling` was multiplied from, [`FACTOR`] unless the config widened it.
+fn bounded_by(name: &str, theirs: U256, ceiling: u128, times: u128, of: &str) -> Result<u128> {
     match u128::try_from(theirs) {
         Ok(v) if v <= ceiling => Ok(v),
         _ => bail!(
-            "the bundler's {name} {theirs} is above {ceiling}, {FACTOR} times {of}: refusing to sign it \
+            "the bundler's {name} {theirs} is above {ceiling}, {times} times {of}: refusing to sign it \
              (docs/FAQ.md, \"Do I need a bundler or a gas wallet?\")"
         ),
     }
@@ -68,29 +74,41 @@ pub fn bounded(name: &str, theirs: U256, ceiling: u128, of: &str) -> Result<u128
 /// reference bundler's overheads (21000 per bundle, 18300 per operation, 4 per
 /// word) with each byte at EIP-7623's floor rate (10 gas zero, 40 other), the
 /// dearer of the two calldata schedules — so a large first operation is not
-/// refused.
-pub fn pre_verification_ceiling(op: &PackedUserOperation, ours: u128) -> u128 {
+/// refused. `factor` is the config's `bundlerPreVerificationFactor`, 1 unless
+/// the owner widened this bound for a chain whose bundlers fold the L1 data
+/// fee into the figure: the ceiling is multiplied by it, and a product that
+/// does not fit is a refusal.
+pub fn pre_verification_ceiling(op: &PackedUserOperation, ours: u128, factor: u128) -> Result<u128> {
     // saturating: these are ceilings from our own figures, and the largest value is a right bound (rule 10)
     let packed = op.abi_encode();
     let bytes = packed.iter().fold(0u128, |sum, &b| sum.saturating_add(if b == 0 { 10 } else { 40 }));
     let words = u128::try_from(packed.len().div_ceil(32)).unwrap_or(u128::MAX);
     let l1 = 39_300u128.saturating_add(words.saturating_mul(4)).saturating_add(bytes); // 21000 + 18300
-    FACTOR.saturating_mul(ours.max(l1))
+    FACTOR
+        .saturating_mul(ours.max(l1))
+        .checked_mul(factor)
+        .ok_or_else(|| anyhow::anyhow!("the preVerificationGas ceiling times bundlerPreVerificationFactor {factor} does not fit a gas figure"))
 }
 
 /// Write a bundler's estimate into `op`, whose gas fields still hold the
 /// CLI's own figures: each one is the bound for the bundler's. Refused, and
 /// `op` left as it was, if any figure goes beyond its bound.
-pub fn apply_estimate(op: &mut PackedUserOperation, est: &GasEstimate) -> Result<()> {
+/// `pre_verification_factor` widens the bound on `preVerificationGas` alone
+/// ([`pre_verification_ceiling`]).
+pub fn apply_estimate(op: &mut PackedUserOperation, est: &GasEstimate, pre_verification_factor: u128) -> Result<()> {
     const OURS: &str = "the CLI's own estimate";
     let (our_verification, our_call) = split_gas(op.accountGasLimits);
     let our_pre_verification = u128::try_from(op.preVerificationGas).map_err(|_| {
         anyhow::anyhow!("the operation's own preVerificationGas, {}, is beyond any real gas figure", op.preVerificationGas)
     })?;
-    let pre_verification = bounded(
+    let pre_verification_times = FACTOR
+        .checked_mul(pre_verification_factor)
+        .ok_or_else(|| anyhow::anyhow!("bundlerPreVerificationFactor {pre_verification_factor} is beyond any real factor"))?;
+    let pre_verification = bounded_by(
         "preVerificationGas",
         est.pre_verification_gas,
-        pre_verification_ceiling(op, our_pre_verification),
+        pre_verification_ceiling(op, our_pre_verification, pre_verification_factor)?,
+        pre_verification_times,
         "the larger of the CLI's own figure and the operation's calldata cost",
     )?;
     let verification =
@@ -216,11 +234,13 @@ pub struct InnerReceipt {
 pub struct Bundler {
     rpc: DynProvider,
     entry_point: Address,
+    /// The config's `bundlerPreVerificationFactor`, 1 by default.
+    pre_verification_factor: u128,
 }
 
 impl Bundler {
-    pub fn new(rpc: DynProvider, entry_point: Address) -> Self {
-        Self { rpc, entry_point }
+    pub fn new(rpc: DynProvider, entry_point: Address, pre_verification_factor: u128) -> Self {
+        Self { rpc, entry_point, pre_verification_factor }
     }
 
     /// Refuse early if the bundler does not serve our EntryPoint.
@@ -257,7 +277,17 @@ impl Bundler {
             .raw_request("eth_estimateUserOperationGas".into(), (to_rpc(op), self.entry_point))
             .await
             .context("eth_estimateUserOperationGas")?;
-        apply_estimate(op, &est)?;
+        if self.pre_verification_factor > 1 {
+            // said on every operation: the config widened what a bundler may take here
+            if let Ok(ours) = u128::try_from(op.preVerificationGas) {
+                eprintln!(
+                    "bundler:        preVerificationGas is taken up to {} (bundlerPreVerificationFactor {} in the agent config)",
+                    pre_verification_ceiling(op, ours, self.pre_verification_factor)?,
+                    self.pre_verification_factor
+                );
+            }
+        }
+        apply_estimate(op, &est, self.pre_verification_factor)?;
         Ok(est)
     }
 
@@ -361,7 +391,7 @@ mod tests {
     #[test]
     fn an_honest_estimate_is_taken_as_given() {
         let mut op = ours(0);
-        apply_estimate(&mut op, &honest()).unwrap();
+        apply_estimate(&mut op, &honest(), 1).unwrap();
         assert_eq!(split_gas(op.accountGasLimits), (109_000, 17_955));
         assert_eq!(op.preVerificationGas, U256::from(49_175u64));
         assert_eq!(paymaster_limits(&op), (24_484, 1));
@@ -376,7 +406,7 @@ mod tests {
             paymaster_verification_gas_limit: Some(U256::from(200_000u64)),
             paymaster_post_op_gas_limit: None,
         };
-        apply_estimate(&mut op, &est).unwrap();
+        apply_estimate(&mut op, &est, 1).unwrap();
         assert_eq!(split_gas(op.accountGasLimits), (600_000, 300_000));
         assert_eq!(paymaster_limits(&op), (200_000, 0));
     }
@@ -396,7 +426,7 @@ mod tests {
             f(&mut est);
             let mut op = ours(0);
             let before = op.clone();
-            let err = apply_estimate(&mut op, &est).unwrap_err().to_string();
+            let err = apply_estimate(&mut op, &est, 1).unwrap_err().to_string();
             assert!(err.contains(&format!("the bundler's {named} is above")), "{err}");
             assert!(err.contains("refusing to sign it"), "{err}");
             assert_eq!(op.abi_encode(), before.abi_encode());
@@ -417,7 +447,7 @@ mod tests {
             for v in [wide, U256::MAX] {
                 let mut est = honest();
                 f(&mut est, v);
-                let err = apply_estimate(&mut ours(0), &est).unwrap_err().to_string();
+                let err = apply_estimate(&mut ours(0), &est, 1).unwrap_err().to_string();
                 assert!(err.contains(&v.to_string()), "{err}");
             }
         }
@@ -431,14 +461,44 @@ mod tests {
     #[test]
     fn a_large_first_operation_raises_the_pre_verification_ceiling() {
         // a small operation: our own figure is the larger one
-        assert_eq!(pre_verification_ceiling(&ours(0), 100_000), 200_000);
+        assert_eq!(pre_verification_ceiling(&ours(0), 100_000, 1).unwrap(), 200_000);
         // 8 KiB of factory data costs a bundler more than 100000 on L1
         let big = ours(8192);
-        let ceiling = pre_verification_ceiling(&big, 100_000);
+        let ceiling = pre_verification_ceiling(&big, 100_000, 1).unwrap();
         assert!(ceiling > 2 * (39_300 + 40 * 8192), "{ceiling}");
         let mut est = honest();
         est.pre_verification_gas = U256::from(400_000u64);
-        apply_estimate(&mut big.clone(), &est).unwrap();
-        assert!(apply_estimate(&mut ours(0), &est).is_err());
+        apply_estimate(&mut big.clone(), &est, 1).unwrap();
+        assert!(apply_estimate(&mut ours(0), &est, 1).is_err());
+    }
+
+    #[test]
+    fn the_configured_factor_widens_the_pre_verification_ceiling_only() {
+        // factor 1 is today's bound: 200000 taken, 200001 refused
+        // factor 5: up to five times that, and no further
+        assert_eq!(pre_verification_ceiling(&ours(0), 100_000, 5).unwrap(), 1_000_000);
+        let with_pre = |v: u64| {
+            let mut est = honest();
+            est.pre_verification_gas = U256::from(v);
+            est
+        };
+        let mut op = ours(0);
+        apply_estimate(&mut op, &with_pre(1_000_000), 5).unwrap();
+        assert_eq!(op.preVerificationGas, U256::from(1_000_000u64));
+        assert!(apply_estimate(&mut ours(0), &with_pre(1_000_000), 1).is_err());
+        let err = apply_estimate(&mut ours(0), &with_pre(1_000_001), 5).unwrap_err().to_string();
+        assert!(err.contains("preVerificationGas 1000001 is above 1000000, 10 times"), "{err}");
+
+        // the other limits stay at twice ours whatever the factor
+        let mut est = honest();
+        est.call_gas_limit = U256::from(300_001u64);
+        assert!(apply_estimate(&mut ours(0), &est, 64).unwrap_err().to_string().contains("callGasLimit 300001 is above 300000, 2 times"));
+        let mut est = honest();
+        est.verification_gas_limit = U256::from(600_001u64);
+        assert!(apply_estimate(&mut ours(0), &est, 64).is_err());
+
+        // a product that does not fit is a refusal, not a wrapped ceiling
+        assert!(pre_verification_ceiling(&ours(0), u128::MAX / 2, 2).is_err());
+        assert!(apply_estimate(&mut ours(0), &honest(), u128::MAX).is_err());
     }
 }
