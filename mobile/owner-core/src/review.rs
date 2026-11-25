@@ -2642,8 +2642,8 @@ mod tests {
     /// On Sepolia the build knows the trading policy, CoW's venue by its
     /// decoder's address and code, and the two tokens: a trading mandate there
     /// is shown in full and can be signed, with its allowance; the same
-    /// mandate on the first policy instance, on Base Sepolia, or with another
-    /// decoder code is refused.
+    /// mandate on the first policy instance, on Base Sepolia with Sepolia's
+    /// decoder code, or with another decoder code is refused.
     #[test]
     fn a_trading_mandate_on_sepolia_is_read_from_the_build_facts() {
         let f = crate::facts::for_chain(11155111);
@@ -2688,7 +2688,7 @@ mod tests {
         let t = r.text();
         assert_eq!(r.verdict, Verdict::Sign, "{t}");
         for needed in [
-            "Trading on: CoW Swap (decoder 0x085883DD35e12d32de2F4f9d8CeFBE663ffa7cB0 verified in this build)",
+            "Trading on: CoW Swap (decoder 0x42F62bF7134F5eF6d46d4BC07d806E77D1Df641a verified in this build)",
             "never for less than 0.0002 WETH per 1 USDC",
             "Orders live: at most 30 minutes",
             "Tokens are taken by: 0xC92E8bdf79f0507f65a392b0ab4667716BFE0110 — CoW Swap vault relayer (verified in this build)",
@@ -2704,9 +2704,10 @@ mod tests {
         // the first instance on Sepolia, which let a registration outlive its period
         let first = address!("5Cfa68d42e4245c9Ba71e6103D4E2D99F3E40b42");
         assert!(matches!(show(11155111, first, venue.code_hash).verdict, Verdict::Refuse(_)));
-        // Base Sepolia: no policy there knows periods, and the venue is not that chain's
+        // Base Sepolia: the decoder has the same address there, and other code,
+        // since it keeps the settlement's domain separator, which names the chain
         let base = crate::facts::for_chain(84532);
-        assert!(matches!(show(84532, base.policy_modules[0], venue.code_hash).verdict, Verdict::Refuse(_)));
+        refused(show(84532, base.trading_policy_modules[0], venue.code_hash), "pins other code");
     }
 
     /// What `AgentPolicy.onInstall` refuses, the review refuses first: a

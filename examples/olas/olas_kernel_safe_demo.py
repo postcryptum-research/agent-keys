@@ -55,7 +55,7 @@ CHAIN_ID = 84532
 RPC = os.environ.get("BASE_SEPOLIA_RPC_URL", "https://sepolia.base.org")
 SAFE = os.environ.get("AGENT_SAFE", "0xd0b972a8ee7D8AB91a2e3381Eb6F10550B80E52A")
 KERNEL = os.environ.get("AGENT_KERNEL", "0xEdB645B14e2f952C5784e34949b58F0826fBc9E9")
-COUNTER = os.environ.get("DEMO_COUNTER", "0xD2Adc331B867435b82Ceba1D4f7f715eeF9FdbC1")
+COUNTER = os.environ.get("DEMO_COUNTER", "0x29da894F3E456CAC92b3EC76710524E74411E99f")
 INCREMENT = bytes.fromhex("d09de08a")  # increment()
 OA = Path(os.environ.get("OPEN_AUTONOMY_SRC", Path(__file__).resolve().parent / "open-autonomy"))
 

@@ -48,7 +48,7 @@ sync to the cloud): [`PHONE_OWNER.md`](PHONE_OWNER.md).
 
 **On-chain: nothing changes.** The owner key is a P-256 key checked by
 `P256Validator` (`contracts/src/P256Validator.sol`, Base Sepolia
-`0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2`). It expects exactly 64
+`0x9b6f7A83e10F3360af6B34F672c0AC5295f72d63`). It expects exactly 64
 bytes, `r ‖ s` over the 32-byte `userOpHash`. The phone only has to produce
 that.
 
@@ -279,8 +279,9 @@ both run `open_request_with_build_facts`: names are "verified in this
 build", superseded versions are named as such and are not readable
 modules, only the canonical no-charge paymaster sponsors, known tokens are
 shown in their units, and a mandate whose x402 domain is not the known
-token's own is refused. A variant's paymaster (`84532.enclave.json`) is
-not a fact, so the phone refuses operations it sponsors. The laptop's pins
+token's own is refused. A paymaster that only a variant file names (such
+as `whitelistPaymasterV2` of `84532.enclave.json`) is not a fact, so the
+phone refuses operations it sponsors. The laptop's pins
 (§4.3) travel in the enrollment request for addresses the build does not
 know; the phone keeps them as unverified labels, reports the ones its
 build names itself or whose label is a name the build reserves, and never
