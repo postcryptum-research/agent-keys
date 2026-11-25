@@ -246,7 +246,7 @@ impl Session {
         let bundler = match &env.bundler_url {
             Some(url) => {
                 let rpc = ProviderBuilder::new().connect(url).await.context("connecting to the bundler")?.erased();
-                let bundler = Bundler::new(rpc, dep.entry_point);
+                let bundler = Bundler::new(rpc, dep.entry_point, cfg.pre_verification_factor()?);
                 bundler.check_entry_point().await?;
                 Some(bundler)
             }
@@ -1598,7 +1598,9 @@ impl Session {
             // confirmation per operation. The placeholder's failed check may
             // cost less than a real one, hence the margin on verification.
             op.signature = frame(&PLACEHOLDER_SIGNATURE);
-            let est = bundler.estimate(&mut op).await?;
+            // the config's factor on preVerificationGas is for the agent's operations only:
+            // the mandate's budget caps those, and nothing caps the owner's or the recovery key's
+            let est = bundler.estimate(&mut op, matches!(sign_as, SignAs::Agent)).await?;
             let (verification, call) = crate::bundler::split_gas(op.accountGasLimits);
             op.accountGasLimits = kernel::pack_gas(with_margin(verification, 12).context("the bundler's verificationGasLimit")?, call);
             eprintln!(
@@ -1785,6 +1787,31 @@ mod tests {
             }}"#
         ))
         .unwrap()
+    }
+
+    #[test]
+    fn the_pre_verification_factor_is_a_whole_number_from_1_to_the_maximum() {
+        use crate::agent::MAX_PRE_VERIFICATION_FACTOR as MAX;
+        let owner = r#"{"tpm": "0x81010010"}"#;
+        assert_eq!(config(owner, "").pre_verification_factor().unwrap(), 1);
+        for ok in [1, 5, MAX] {
+            let cfg = config(owner, &format!(r#""bundlerPreVerificationFactor": {ok},"#));
+            assert_eq!(cfg.pre_verification_factor().unwrap(), u128::from(ok));
+        }
+        for bad in [0, MAX + 1, u64::MAX] {
+            let refused =
+                config(owner, &format!(r#""bundlerPreVerificationFactor": {bad},"#)).pre_verification_factor().unwrap_err();
+            assert!(refused.to_string().contains(&format!("is {bad}: it is a whole number from 1 to {MAX}")), "{refused}");
+        }
+        // a fraction, a negative number and a string are not the field's type
+        for not_a_number in ["1.5", "-1", r#""2""#] {
+            let text = format!(
+                r#"{{"deployments": "d.json", "owner": {owner}, "agent": {owner}, "permissionId": "0x74727333",
+                    "bundlerPreVerificationFactor": {not_a_number},
+                    "policy": {{"allow": [], "maxValuePerOp": "0", "budget": "0", "validUntil": 1}}}}"#
+            );
+            assert!(serde_json::from_str::<AgentConfig>(&text).is_err(), "{not_a_number}");
+        }
     }
 
     /// The agent session's key material never opens the owner key. The owner
