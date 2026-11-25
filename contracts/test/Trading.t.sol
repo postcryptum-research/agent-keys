@@ -13,6 +13,8 @@ import {CALLTYPE_BATCH} from "kernel/src/types/Constants.sol";
 import {CallType} from "kernel/src/types/Types.sol";
 import {ValidatorLib} from "kernel/src/utils/ValidationTypeLib.sol";
 import {ExecLib} from "kernel/src/utils/ExecLib.sol";
+import {Safe} from "safe-smart-account/Safe.sol";
+import {Enum} from "safe-smart-account/common/Enum.sol";
 
 interface IERC1271 {
     function isValidSignature(bytes32 hash, bytes calldata signature) external view returns (bytes4);
@@ -388,6 +390,27 @@ contract TradingTest is AgentPermissionTest {
         assertTrue(policy.venuePlace(acct, address(relayer)));
         assertTrue(policy.venuePlace(acct, address(settlement)));
         assertTrue(policy.venuePlace(acct, address(relayed)));
+    }
+
+    /// A venue takes its places out of the agent's reach under every mandate
+    /// of the account, a Safe's delegatecalled batcher included: an earlier
+    /// mandate that allow-listed the batcher cannot delegatecall it once a
+    /// later venue made it one of its places.
+    function test_trading_aVenuePlaceIsNoLongerASafesBatcher() public {
+        _world();
+        expiry = tradingExpiry; // the Safe's mandate lives in the trading world's time
+        Safe safe = _withSafe();
+        bytes memory txs = _legOf(0, address(counter), 0, abi.encodeWithSelector(Counter.increment.selector));
+        // the control: before the venue the batch runs
+        _send(_agentViaSafe(safe, _batch(safe, address(multiSend), txs, Enum.Operation.DelegateCall)));
+        assertEq(counter.count(), 1);
+        // a venue whose spender is that batcher, under another mandate
+        CowSwapDecoder relayed = _decoderWithSpender(address(multiSend));
+        _install(TRD_ID, _params(DAY, _venues(address(relayed), address(relayed).codehash, keccak256(_cowConfig()))));
+        assertTrue(policy.venuePlace(acct, address(multiSend)));
+        // refused now under the Safe's mandate too
+        _expectRefused(_agentViaSafe(safe, _batch(safe, address(multiSend), txs, Enum.Operation.DelegateCall)));
+        assertEq(counter.count(), 1);
     }
 
     // --- an order, end to end ---

@@ -355,10 +355,13 @@ which refuses the operation all the same [I].
 - *x402.* `x402Authorize` in an operation registers an EIP-3009
   authorization: the account's own call (not from a Safe), paying from the
   account, in a token with a limit and a domain separator, judged like a
-  transfer, recorded once under its EIP-712 digest.
+  transfer, recorded once under its EIP-712 digest. A `validBefore` of 0
+  is refused, here and for orders (their `validTo` is recorded the same
+  way): Kernel reads an end of 0 as no end at all.
   `checkSignaturePolicy` vouches for that digest only, within the
   mandate's window and up to `validBefore`. `x402Reclaim` gives back the
   charge of one that expired unused (`test_x402_registrationIsHeldToTheMandate`,
+  `test_x402_anAuthorizationWithoutAnEndIsRefused`,
   `test_x402_notFromInsideASafe`,
   `test_x402_reclaimReturnsBudgetOfExpiredUnused`; `docs/ERC1271.md`).
 - *Orders through a venue's decoder.* `orderRegister` in an operation is
@@ -422,11 +425,14 @@ which refuses the operation all the same [I].
   after `SafeNonceAssert.check(safe, n)` in the account's batch. The call
   inside is judged against the same mandate; `gasPrice` must be 0, or the
   Safe would pay a refund to a receiver the agent picks; Safes do not
-  nest; a DELEGATECALL goes only into an allow-listed `multiSend` whose
-  every leg is a CALL that passes the mandate. One allow-list entry admits
+  nest; a DELEGATECALL goes only into an allow-listed `multiSend` that is
+  still a target the agent may reach (not made a venue's place since, by
+  another mandate of the account), whose every leg is a CALL that passes
+  the mandate. One allow-list entry admits
   its call directly, through a Safe and as a batch leg alike
   (`test_safe_unguardedIsRefused`,
   `test_safe_refusesDelegatecallRefundsAndNesting`,
+  `test_trading_aVenuePlaceIsNoLongerASafesBatcher`,
   `test_batch_everyLegIsJudged`).
 
 **Instances.** Both predate master: each is recorded with the commit

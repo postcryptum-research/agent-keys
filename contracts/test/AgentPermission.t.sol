@@ -1259,6 +1259,23 @@ contract AgentPermissionTest is Test {
         usdc.transferWithAuthorization(acct, PAYEE, 500_000, 0, before, bytes32(uint256(1)), sig);
     }
 
+    /// An authorization without an end is refused: its `validBefore` of 0
+    /// would be vouched for as Kernel reads a `validUntil` of 0, without end,
+    /// past the mandate's own `validUntil`.
+    function test_x402_anAuthorizationWithoutAnEndIsRefused() public {
+        _withX402();
+        bytes32 id = bytes32(PermissionId.unwrap(PAY_ID));
+        bytes32 digest = usdc.digestOf(acct, PAYEE, 500_000, 0, 0, bytes32(uint256(9)));
+        _expectRefused(_agentOpWith(AGENT, PAY_ID, address(policy), 0, _authorizeCall(500_000, 0, bytes32(uint256(9)))));
+        assertFalse(_isValid(digest));
+        assertEq(policy.tokenLimit(acct, id, address(usdc)).spent, 0);
+        // the control: the same authorization with an end registers
+        uint256 before = block.timestamp + 1 hours;
+        _send(_agentOpWith(AGENT, PAY_ID, address(policy), 0, _authorizeCall(500_000, before, bytes32(uint256(9)))));
+        assertTrue(_isValid(usdc.digestOf(acct, PAYEE, 500_000, 0, before, bytes32(uint256(9)))));
+        assertEq(policy.tokenLimit(acct, id, address(usdc)).spent, 500_000);
+    }
+
     function test_x402_onlyRegisteredDigestsAreVouchedFor() public {
         _withX402();
         uint256 before = block.timestamp + 1 hours;

@@ -1274,7 +1274,8 @@ contract AgentPolicy is IPolicy {
     /// @param m The mandate key.
     /// @param digest The digest `checkSignaturePolicy` will vouch for.
     /// @param value The amount charged; never 0 here.
-    /// @param validBefore The last second it is vouched for.
+    /// @param validBefore The last second it is vouched for; never 0, which
+    /// `checkSignaturePolicy` would hand Kernel as "no end".
     /// @param token The token charged.
     /// @return True if recorded.
     function _recordX402(bytes32 m, bytes32 digest, uint256 value, uint256 validBefore, address token)
@@ -1286,6 +1287,8 @@ contract AgentPolicy is IPolicy {
         if (p.value != 0) return false;
         // Never truncated
         if (value > type(uint128).max) return false;
+        // An end of 0 would be vouched for without end, past the mandate's own
+        if (validBefore == 0) return false;
         // The record, and the period it was charged in (0 without periods)
         (p.value, p.validBefore, p.token) = (uint128(value), uint48(validBefore), token);
         _chargedIn[keccak256(abi.encode(m, digest))][msg.sender] = uint48(_perOperation(PERIOD_NOW));
@@ -1577,11 +1580,16 @@ contract AgentPolicy is IPolicy {
         (bool decoded, address to, uint256 innerValue, uint256 operation, bytes calldata inner) = _decodeSafeExec(data);
         if (!decoded) return (false, 0);
         // CALL (0): the inner call is judged like any other, from the Safe.
-        // DELEGATECALL (1): only into an allow-listed MultiSend batch, with no
-        // value named, and every leg judged. Any other operation is refused.
+        // DELEGATECALL (1): only into an allow-listed MultiSend batch that is
+        // still a target the agent may reach (not since made a venue place),
+        // with no value named, and every leg judged. Any other operation is
+        // refused.
         if (operation == 0) {
             (ok, moved) = _judge(m, to, innerValue, inner, FROM_SAFE);
-        } else if (operation == 1 && innerValue == 0 && _selector(inner) == MULTI_SEND && _allowed[_allowedKey(m, to, MULTI_SEND)][msg.sender]) {
+        } else if (
+            operation == 1 && innerValue == 0 && _selector(inner) == MULTI_SEND
+                && _allowed[_allowedKey(m, to, MULTI_SEND)][msg.sender] && _targetAllowed(to, MULTI_SEND)
+        ) {
             (ok, moved) = _judgeBatch(m, inner);
         }
         return ok ? (true, value + moved) : (false, 0);
