@@ -176,6 +176,13 @@ cargo test --features tpm -- --ignored       # signs inside the TPM
 cargo run -p agent-signer --features tpm -- vector --backend tpm --message hello
 ```
 
+The system `tpm2-tss` must be 4.1.5 or later, or 4.2.1 or later: thirteen
+advisories were published from 2026-10-26 to 2026-11-04, some in the ESAPI
+library the backend links ([`THIRD_PARTIES.md`](THIRD_PARTIES.md)).
+`pkg-config --modversion tss2-esys` gives the installed version; a
+distribution's package may carry the fixes under an older number, which its
+security notices say.
+
 Lessons that cost real debugging time:
 
 - Talk to `/dev/tpmrm0` (kernel resource manager, group `tss`), never raw

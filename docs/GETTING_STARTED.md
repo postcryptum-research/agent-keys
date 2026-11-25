@@ -27,6 +27,13 @@ cargo test --features tpm -- --ignored
 cargo run -p agent-signer --features tpm -- vector --backend tpm --message hello
 ```
 
+The system `tpm2-tss` must be 4.1.5 or later, or 4.2.1 or later: thirteen
+advisories were published from 2026-10-26 to 2026-11-04, some in the ESAPI
+library the backend links ([`THIRD_PARTIES.md`](THIRD_PARTIES.md)).
+`pkg-config --modversion tss2-esys` gives the installed version; a
+distribution's package may carry the fixes under an older number, which its
+security notices say.
+
 The `vector` command prints a JSON `(digest, r, s, x, y)` record; the Solidity
 tests verify every file under `contracts/test/vectors/` — signed inside an
 Intel PTT, a Windows TPM, a TROPIC01, an Apple Secure Enclave and a YubiKey 5. Windows: [`docs/WINDOWS.md`](WINDOWS.md)

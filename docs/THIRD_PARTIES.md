@@ -58,9 +58,29 @@ What the deployed contracts are compiled from, and what the accounts call.
    5.3.7, Medium: `decodeBatch` bounds) [V]. The newer `decodeBatch`
    bounds-checks differently [V by diff], so moving the policy alone to a
    newer Solady would make the policy and the deployed Kernel differ. 5.2.2
-   is in functions we do not call [V]. For 5.3.7 the policy and the account
-   share the decoder [I]. A test that runs the report's proof-of-concept
-   batch through both is still to write. Kernel's
+   is in functions we do not call [V]. 5.3.7 is a batch whose pointer
+   array runs past the declared end of `executionData`; the old decoder
+   reads the missing pointer words from whatever follows:
+   - **The report's proof of concept**, with those words in the call's own
+     trailing bytes: Kernel and the policy read the same bytes, and the
+     same four calls to address 0, which the policy refuses; Solady v0.1.26
+     refuses the batch itself [V
+     `test_batch_theSoladyReviewsBatchIsReadAsKernelReadsIt` in
+     `AgentPermission.t.sol`, with a control batch that passes; with
+     Kernel's side decoded by v0.1.26 instead, the test fails].
+   - **Past the end of `callData`** the two readings differ. Kernel reads
+     zeros past its calldata; the policy reads what follows `callData` in
+     the encoded operation. With no `paymasterAndData` that is zeros too,
+     and the policy refuses the calls as Kernel reads them. With a
+     `paymasterAndData`, the policy reads its length word as the pointer,
+     past the batch's bounds, and refuses the batch [V
+     `test_batch_pastTheEndOfTheCallThePolicyRefuses`]. In both cases the
+     policy refuses. That every arrangement past the end fails closed is
+     argued, not proven [I]: the pointer the policy reads there comes from
+     a length word or the signature, and a leg Kernel would read there
+     targets an address below 2^64.
+
+   Kernel's
    [issue 137](https://github.com/zerodevapp/kernel/issues/137) acknowledges
    the stale pin [V].
 3. **EntryPoint v0.7 is two releases behind.** These are fixed only from
@@ -98,7 +118,7 @@ the Android and npm packages, and GitHub's advisories [V].
 
 | Dependency | What we use it for | Ours | Latest stable | Audit, and the version it covers | Advisories on ours |
 |---|---|---|---|---|---|
-| `p256` / `ecdsa` / `elliptic-curve` (RustCrypto) | P-256 keys and signatures in software and in checks | 0.14.0 / 0.17.0 / 0.14.3 | the same [V] | zkSecurity for NEAR, [2025-04-07](https://reports.zksecurity.xyz/reports/near-p256/), `p256` 0.14.0-pre.2, **verification only**; signing and constant time out of scope [V]. The READMEs say "never been independently audited" [V] | none [V] |
+| `p256` / `ecdsa` / `elliptic-curve` (RustCrypto) | P-256 keys and signatures in software and in checks | 0.14.0 / 0.17.0, and 0.16.9 through alloy's secp256k1 / 0.14.3, and 0.13.8 through alloy | the same [V] | zkSecurity for NEAR, [2025-04-07](https://reports.zksecurity.xyz/reports/near-p256/), `p256` 0.14.0-pre.2, **verification only**; signing and constant time out of scope [V]. The READMEs say "never been independently audited" [V] | none [V] |
 | `aes-gcm`, `scrypt`, `sha2`, `hmac`, `zeroize`, `rand_core`, `getrandom` | the cold recovery key file, hashing, secrets | 0.10.3, 0.11.0, 0.11.1, 0.13.0, 1.9.1, 0.6/0.9/0.10, 0.2/0.3/0.4 | `aes-gcm` 0.11.1, `scrypt` 0.12.0, `sha2` 0.11.2, `zeroize` 1.9.2; the rest current [V] | `aes-gcm`: NCC Group, 2020, version 0.3.0 [V]. The others: no public audit found | none (`aes-gcm`'s RUSTSEC-2023-0096 is fixed in 0.10.3) [V] |
 | `x25519-dalek` | the secure channel to TROPIC01 | 2.0.1, and 3.0.0 through `yubikey` | 3.0.0 [V] | Quarkslab, 2019, version 0.5.2, a quick look only [V] | none [V] |
 | `aws-lc-rs` / `aws-lc-sys` | TLS crypto under `rustls` | 1.18.2 / 0.46.0 | 1.19.0 / 0.47.0 [V] | FIPS 140-3 certificates cover the separate FIPS build, **not the `aws-lc-sys` we link** [V]; no third-party report found | none (GHSA-xv35-xp83-5wrf is fixed in our version) [V] |
@@ -123,7 +143,11 @@ the Android and npm packages, and GitHub's advisories [V].
    secp256k1 arithmetic inside alloy, which signs with a real secret only
    under `insecure-software-keys` [I].
 2. **A Linux TPM host needs `tpm2-tss` 4.1.5 or later, or 4.2.1 or later**
-   [V]: the crate links whatever the host has installed.
+   [V]: the crate links whatever the host has installed. The install
+   steps in `ARCHITECTURE.md` and `GETTING_STARTED.md` say so. The CLI
+   does not print the version: `tss-esapi` exposes only the version found
+   at build time, while the advisories concern the library installed at
+   run time.
 3. **No audit covers P-256 signing at the versions we ship** [V]. It signs
    wherever a key is held in software: the cold recovery key file of the
    CLI (kept under scrypt and AES-GCM), the software backend, and the
@@ -144,8 +168,9 @@ the Android and npm packages, and GitHub's advisories [V].
 - Whether ZeroDev holds an unpublished report on Kernel v3.2 or v3.3.
 - Whether the deployed Kernel v3.3 implementation and the P-256 verifier's
   code equal a build of their sources. Only Kernel's `accountId` was read.
-- The proof-of-concept batch of the Solady review run through `AgentPolicy`
-  and Kernel together (point 2 of the on-chain list).
+- Every arrangement of a batch whose pointer words lie past the end of
+  `callData` (point 2 of the on-chain list): two are tested, the rest
+  argued.
 - Audits of `windows`, `uniffi`, `tokio`, `reqwest`, `serialport`, `clap`
   and the bundler; the `tpm2-tss` version on any given host.
 
