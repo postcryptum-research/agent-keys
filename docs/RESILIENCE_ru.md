@@ -13,9 +13,11 @@
 > both fixed before any recovery key was installed:**
 > 1. Kernel lets *any* installed validator vouch for ERC-1271 signatures,
 >    regardless of the selectors granted to it, so a recovery key could have
->    signed permits for the account. `P256RecoveryValidator`
->    (`0x63dd80Fc5E109A44fd179F85050487E02c5e6958` on Base Sepolia) now
->    refuses every ERC-1271 request; the earlier build that did not
+>    signed permits for the account. `P256RecoveryValidator` now refuses
+>    every ERC-1271 request: the current instance
+>    (`0xb7a06e6c7B5cC9852578EF89f38d161C31218047`) and the one installed
+>    here on 2026-10-20 (`0x63dd80Fc5E109A44fd179F85050487E02c5e6958`), both
+>    on Base Sepolia; the earlier build that did not
 >    (`0xe1dcC2CC7F5D01931d8Ee2c00A8c2f555b0dA64D`) was never installed on any account.
 > 2. `changeRootValidator` leaves the lost owner's validator installed, so
 >    its key would still pass ERC-1271. `owner set-root --retire <validator>`

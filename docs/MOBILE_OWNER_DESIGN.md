@@ -344,7 +344,7 @@ integers that can exceed 2^53 are decimal strings.
   "laptop": {
     "userOpHash": "0x…",
     "command": "owner operation (root)",
-    "labels": { "0xD2Adc331B867435b82Ceba1D4f7f715eeF9FdbC1": "demo counter" },
+    "labels": { "0x29da894F3E456CAC92b3EC76710524E74411E99f": "demo counter" },
     "agentVersion": "0.1.0"
   }
 }
@@ -824,12 +824,13 @@ one (T19). So the facts come from the **build**:
 - **Build-embedded deployments.** `owner-core` embeds the canonical
   `contracts/deployments/<chainId>.json` files at build time
   (`include_str!` and a parse in the build), today `84532.json` for Base
-  Sepolia. That includes the **version history**: `agentPolicyV1`–`V6`,
-  `p256SignerV1`, `p256ValidatorV1`, `whitelistPaymasterV1` and
-  `p256RecoveryValidatorV1`. "Superseded version" is therefore a build
-  fact, not a laptop claim. Only canonical files are embedded. Variants
-  such as `84532.enclave.json`, which names a test paymaster owned by a
-  developer's wallet, are not.
+  Sepolia and `11155111.json` for Sepolia. That includes the **version
+  history**: every instance a redeploy replaced, under `<name>V<n>`
+  (`agentPolicyV1`–`V9`, `p256ValidatorV2`, `safeNonceAssertV1`,
+  `cowSwapDecoderV1`, …). "Superseded version" is therefore a build fact,
+  not a laptop claim. Only canonical files are embedded. Variants such as
+  `84532.enclave.json`, whose `whitelistPaymasterV2` is a test paymaster
+  owned by a developer's wallet, are not.
 - **Build-embedded tokens.** A small reviewed table in `owner-core`
   (address, symbol, decimals per chain), today USDC on Base Sepolia.
 - **The EntryPoint is a build fact too.** Where the build knows a chain,

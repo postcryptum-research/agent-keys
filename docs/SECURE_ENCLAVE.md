@@ -413,8 +413,8 @@ Pimlico's free endpoint ([tx](https://sepolia.basescan.org/tx/0x38cc6c7e8414c6be
 
 ### Sponsored by a paymaster
 
-The paymaster recorded in `deployments/84532.json` is owned by the project's
-gas wallet, so only that key can list new accounts. For a run from another
+The paymaster recorded in `deployments/84532.json` is owned by the wallet
+that file names as `paymasterOwner`, so only that key can list new accounts. For a run from another
 wallet, deploy your own — the constructor takes the sponsor — and give the
 config a deployments file that names it:
 
@@ -426,9 +426,12 @@ Deployed to: 0x05a97329397200dF8795A882da0b5b1aD894EB97
 Transaction hash: 0x9926c60d655280f88ab28127d23d4f0cb313b95ddedaf39b4971c4a9c7980299
 ```
 
-`deployments/84532.enclave.json` is `84532.json` with `whitelistPaymaster`
-and `paymasterOwner` replaced by that paymaster and its owner; the enclave
-config points at it. Then:
+`deployments/84532.enclave.json` was made as `84532.json` with
+`whitelistPaymaster` and `paymasterOwner` replaced by that paymaster and its
+owner, and the enclave config points at it. The run below used that
+paymaster; today the file keeps it as `whitelistPaymasterV2`, and its
+current paymaster is the one of `84532.json`, which has the same owner
+([`DEPLOYMENTS.md`](DEPLOYMENTS.md)). Then:
 
 ```
 $ $B paymaster deposit --agent … --wei 5000000000000000
