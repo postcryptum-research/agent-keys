@@ -1569,13 +1569,25 @@ contract AgentPermissionTest is Test {
         uint256 accepted;
         uint256 odd;
         for (uint256 n; n < 16; n++) {
-            uint256 r = uint256(keccak256(abi.encode(seed, n)));
+            uint256 r = uint256(keccak256(abi.encode(seed, n))) & ((1 << 255) - 1);
             // the first is always the plain layout, so that every run has one accepted
             (bool ok, bool plain) = _oneLayout(kernel, r, n == 0);
             if (plain) assertTrue(ok, "the plain layout of allowed legs passes");
             else odd++;
             if (ok) accepted++;
         }
+        // The seventeenth: a pointer array that runs one word past the end
+        // of `callData`. Both sides read it as four plain calls to address
+        // 0, and the mandate is made to allow exactly that (written into
+        // storage, as in `test_batch_aPointerArrayPastTheEndIsRefused`), so
+        // that only the rule on the array can refuse it.
+        bytes32 id = bytes32(PermissionId.unwrap(AGENT_ID));
+        vm.record();
+        policy.isAllowed(acct, id, address(0), bytes4(0));
+        (bytes32[] memory reads,) = vm.accesses(address(policy));
+        vm.store(address(policy), reads[reads.length - 1], bytes32(uint256(1)));
+        (bool past,) = _oneLayout(kernel, 1 << 255, false);
+        assertFalse(past, "a pointer array past the end of callData was accepted");
         // not a property of the policy: the generator still reaches both kinds
         assertGt(accepted, 0, "none accepted");
         assertGt(odd, 2, "too few odd layouts");
@@ -1645,6 +1657,23 @@ contract AgentPermissionTest is Test {
                 : Execution(address(counter), k, "");
         }
         bytes memory body = ExecLib.encodeBatch(legs);
+        if (r >> 255 == 1 && !asEncoded) {
+            // four pointers of 0, the last one word past the end of callData
+            return (
+                abi.encodePacked(
+                    Kernel.execute.selector,
+                    ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))),
+                    uint256(0x40),
+                    uint256(32 * 5),
+                    uint256(0x20),
+                    uint256(4),
+                    uint256(0),
+                    uint256(0),
+                    uint256(0)
+                ),
+                false
+            );
+        }
         if (asEncoded) {
             return (
                 abi.encodeWithSelector(Kernel.execute.selector, ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))), body),
