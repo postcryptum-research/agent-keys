@@ -53,8 +53,10 @@ cd ../../scripts/erc7562 && npm install && npm run check
    `try_from`. `cargo clippy` fails on a violation, and CI runs it.
 
 Never in a commit, a pull request or an issue: keys, seed phrases, PINs, `.env` files and RPC URLs that carry a
-key; a person's name or account handle; serial numbers, device names, local network addresses and
-home-directory paths; statements about what anyone owns or lacks.
+key; a person's name; serial numbers, device names, local network addresses and home-directory paths;
+statements about what anyone owns or lacks. An account handle only to address a collaborator directly in a
+comment (a task handed over, a review asked for, thanks), never in code, docs or commits, and never to say who
+made a mistake or decided something: that is "the review", "the owner" and the issue's number.
 
 ## The pull request
 

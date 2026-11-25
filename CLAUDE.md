@@ -117,8 +117,14 @@ scripts/test-fixtures.py                          # the contract code in the CLI
 ## Never in the repository, a pull request or an issue
 
 - Keys, seed phrases, PINs, RPC URLs that carry a key, `.env` files.
-- A person's name or account handle. Write "the owner", "the reviewer", "the
+- A person's name, anywhere. Write "the owner", "the reviewer", "the
   auditor", and cite a finding by its number.
+- An account handle, except to address a collaborator of this project
+  directly in an issue or pull request comment: handing over or splitting a
+  task, asking for a review or an answer, thanking. Never in code, docs or
+  commit messages, and never to say in the third person who made a mistake,
+  broke something or decided something: those stay "the review", "the
+  owner" and the issue's number.
 - Anything from a private repository: its paths, issue numbers or wording.
 - Statements about anyone's devices or holdings: what someone owns, has at
   hand, ordered or lacks. The record of a test names the model and the
