@@ -31,8 +31,10 @@ yubikey = ["hw-signer/yubikey-piv"]
 # a software key in every role (docs/KEY_POLICY.md rule 5). The same test
 # build gives owner-core its facts for that local chain (31337), so the phone
 # review the CLI previews, and the simulated phone runs, knows the contracts
-# the harness installs.
-insecure-software-keys = ["owner-core/test-chains"]
+# the harness installs. It is also the one feature that links the software
+# backend at all: a regular build has no code that holds a key in memory in
+# the clear (#178).
+insecure-software-keys = ["owner-core/test-chains", "hw-signer/software"]
 # For a build that is handed to anyone. It refuses to compile while the CLI is
 # in its development posture: no signing digest pinned for the owner app, a
 # provisional package name, or the test features (src/attestation.rs; issue
@@ -41,7 +43,7 @@ insecure-software-keys = ["owner-core/test-chains"]
 distribution = []
 
 [dependencies]
-hw-signer = { path = "../hw-signer" }
+hw-signer = { path = "../hw-signer", default-features = false }
 # Shared with the mobile owner apps (docs/MOBILE_OWNER_DESIGN.md §7): Kernel
 # encodings and the local userOpHash. Outside this workspace on purpose; see
 # its README for the licence status.

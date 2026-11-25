@@ -369,9 +369,30 @@ impl AgentConfig {
     pub fn load(path: &Path) -> Result<(Self, PathBuf)> {
         let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
         let cfg: Self = serde_json::from_slice(&bytes).context("parsing agent config")?;
+        cfg.check_listed_once()?;
         cfg.pre_verification_factor()?;
         let base = path.parent().map(Path::to_path_buf).unwrap_or_default();
         Ok((cfg, base))
+    }
+
+    /// A token or a venue listed twice is refused here. The phone's review
+    /// refuses such a mandate and the policy reverts on it, so nothing wrong
+    /// could be installed; without this the CLI read the first entry, sent
+    /// both, and the mistake showed only at the install (#178).
+    pub fn check_listed_once(&self) -> Result<()> {
+        let mut tokens = std::collections::BTreeSet::new();
+        for t in &self.policy.tokens {
+            if !tokens.insert(t.token) {
+                anyhow::bail!("policy.tokens lists {} twice: one entry per token", t.token);
+            }
+        }
+        let mut venues = std::collections::BTreeSet::new();
+        for v in &self.policy.venues {
+            if !venues.insert(v.decoder) {
+                anyhow::bail!("policy.venues lists the decoder {} twice: one entry per venue", v.decoder);
+            }
+        }
+        Ok(())
     }
 
     /// `bundlerPreVerificationFactor`, 1 when the file does not set it.
@@ -797,6 +818,34 @@ mod payee_tests {
             allow.push(serde_json::json!({"target": token, "selector": selector}));
         }
         serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn a_token_or_a_venue_listed_twice_is_refused_at_load() {
+        let text = include_str!("../../../agent.x402.base-sepolia.json");
+        let v: serde_json::Value = serde_json::from_str(text).unwrap();
+        serde_json::from_value::<AgentConfig>(v.clone()).unwrap().check_listed_once().unwrap();
+
+        let mut twice = v.clone();
+        let token = twice["policy"]["tokens"][0].clone();
+        twice["policy"]["tokens"].as_array_mut().unwrap().push(token);
+        let refused = serde_json::from_value::<AgentConfig>(twice).unwrap().check_listed_once().unwrap_err().to_string();
+        assert!(refused.contains("policy.tokens lists") && refused.contains("twice"), "{refused}");
+
+        let venue = serde_json::json!({
+            "kind": "cowswap", "decoder": "0x00000000000000000000000000000000000000c0",
+            "appData": "0x0000000000000000000000000000000000000000000000000000000000000000", "maxLife": 600, "pairs": []
+        });
+        let mut twice = v;
+        twice["policy"]["period"] = serde_json::json!(86400);
+        twice["policy"]["venues"] = serde_json::json!([venue.clone(), venue]);
+        match serde_json::from_value::<AgentConfig>(twice) {
+            Ok(cfg) => {
+                let refused = cfg.check_listed_once().unwrap_err().to_string();
+                assert!(refused.contains("policy.venues lists the decoder") && refused.contains("twice"), "{refused}");
+            }
+            Err(e) => panic!("the venue of this test does not parse: {e}"),
+        }
     }
 
     #[test]

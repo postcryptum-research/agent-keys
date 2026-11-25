@@ -280,6 +280,7 @@ the only path.
 | `GET /s/<token>` | returns the request bytes (`application/json`). Allowed again within the lifetime, so the phone can retry |
 | `POST /s/<token>` | body = response (§4.2, §4.3), with the header `X-TpmSign-Mac: base64url(HMAC-SHA256(k, body))`. Without a valid MAC: `401`, the answer is ignored and the session waits on. With one: an answer that fails its checks gets `400` and the session waits on; the phone's refusal ends the session; the first accepted answer ends it, and its `200` carries the laptop's confirmation, `base64url(HMAC-SHA256(k, "TPM_sign/v1/accepted" ‖ that MAC))`, as its body |
 | Wrong token | `404`, compared in constant time; 20 wrong tokens or rejected answers end the session; unauthenticated answers have their own cap of 200 |
+| An answer opened and not sent | its body is read apart from the session's loop: the client holds its own connection, the phone is served meanwhile, and the session ends on its own timeout and no sooner. Answers still being read count against the cap of 200 |
 | After the end | the port closes |
 | Body limits | request ≤ 64 KiB; answer ≤ 64 KiB (an enrollment carries a certificate chain); the body is read under the session's deadline |
 

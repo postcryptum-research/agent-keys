@@ -166,7 +166,7 @@ the flow is the one in the README: `account status` → `account fund` →
 | `nasm` "not recognized" right after `winget install NASM.NASM` | the installer usually goes per-user (`%LOCALAPPDATA%\bin\NASM`) without admin rights and does not touch PATH | not needed for this project; if you want it: `$env:PATH += ";$env:LOCALAPPDATA\bin\NASM"` |
 | `error[E0433]` / `no function named ...` in `windows_tpm.rs` | `windows` crate API drift | send the full error |
 | `NTE_NOT_SUPPORTED` (`0x80090029`) or provider not found | TPM disabled or no Platform Crypto Provider | enable the TPM in firmware; check `tpm.msc` |
-| `NTE_EXISTS` (`0x8009000F`) on `key create` | a key with that name already exists | `key evict --cng <name>` or pick another name |
+| `NTE_EXISTS` (`0x8009000F`) on `key create` | a key with that name already exists | `key evict --cng <name> --yes` or pick another name |
 | `NTE_BAD_KEYSET` (`0x80090016`) on `key show` | no key with that name for this user | `key create` first; names are per Windows user |
 | `NTE_DEVICE_NOT_READY` (`0x80090030`) | TPM busy or not initialized | wait and retry; check `tpm.msc` → "Prepare the TPM" |
 | `verify`: `expected value at line 1 column 1` | an older build reading a UTF-16 file from `>` | `git pull` and rebuild, or write it with `Out-File -Encoding ascii` (step 7) |
@@ -193,7 +193,7 @@ It must contain, in order:
 ## 11. Cleanup
 
 ```powershell
-& $B key evict --cng tpm_sign-demo
+& $B key evict --cng tpm_sign-demo --yes
 ```
 
 removes the demo key from the TPM. The test key from step 6 deletes itself.
