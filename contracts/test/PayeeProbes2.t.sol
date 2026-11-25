@@ -229,7 +229,7 @@ contract PayeeProbes2 is PayeeProbes {
             }
             // the same function on a contract the mandate sets no limit for is an ordinary entry
             bytes32 ok = bytes32((0x7000 + k) << 224);
-            this.installLimitedForProbe(ok, address(forbidden), unmetered[k], true, new AgentPolicy.TokenCap[](0));
+            this.installPlainForProbe(ok, address(forbidden), unmetered[k], true);
             assertTrue(policy.isAllowed(address(this), ok, address(forbidden), unmetered[k]));
         }
         assertEq(n, 24);
@@ -240,6 +240,36 @@ contract PayeeProbes2 is PayeeProbes {
         external
     {
         _installLimited(id, limited, other, otherFirst, caps);
+    }
+
+    /// Install: a metered function on a target the mandate sets no limit for
+    /// would be refused at every operation, a mandate that cannot do what it
+    /// lists; it is refused at install (#175). With a limit it installs.
+    function test_probe2_installRefusesAMeteredFunctionWithoutALimit() public {
+        bytes4[4] memory metered = [
+            MockToken.transfer.selector, MockToken.approve.selector, bytes4(0x39509351), MockToken.transferFrom.selector
+        ];
+        AgentPolicy.TokenCap[] memory none = new AgentPolicy.TokenCap[](0);
+        AgentPolicy.TokenCap[] memory capped = new AgentPolicy.TokenCap[](1);
+        capped[0] = AgentPolicy.TokenCap(address(forbidden), TOKEN_MAX, TOKEN_BUDGET, bytes32(0));
+        for (uint256 k; k < metered.length; k++) {
+            address[] memory targets = new address[](2);
+            bytes4[] memory selectors = new bytes4[](2);
+            (targets[0], selectors[0]) = (address(counter), Counter.increment.selector);
+            (targets[1], selectors[1]) = (address(forbidden), metered[k]);
+            vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+            this.installForProbe(
+                abi.encodePacked(bytes32((0xa000 + k) << 224), abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, none, uint48(0)))
+            );
+            // the control: the same entry with a limit for that target
+            bytes32 ok = bytes32((0xb000 + k) << 224);
+            this.installForProbe(abi.encodePacked(ok, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, capped, uint48(0))));
+            assertTrue(policy.isAllowed(address(this), ok, address(forbidden), metered[k]));
+        }
+    }
+
+    function installForProbe(bytes calldata data) external {
+        policy.onInstall(data);
     }
 
     /// A reinstall under the same id starts clean: the earlier mandate's
@@ -327,6 +357,12 @@ contract PayeeProbes2 is PayeeProbes {
                 this.installPlainForProbe(bytes32((0x8000 + 2 * k + first) << 224), PERMIT2_ADDR, fns[k], first == 1);
             }
             bytes32 ok = bytes32((0x9000 + k) << 224);
+            if (fns[k] == MockToken.transfer.selector) {
+                // a metered function needs a limit for its target (#175), the neighbour's too
+                vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+                this.installPlainForProbe(ok, neighbour, fns[k], true);
+                continue;
+            }
             this.installPlainForProbe(ok, neighbour, fns[k], true);
             assertTrue(policy.isAllowed(address(this), ok, neighbour, fns[k]));
         }

@@ -501,6 +501,19 @@ impl AgentConfig {
         // limits and payee list are checked on. Anything else on that token
         // would pass neither, and AgentPolicy refuses the mandate at install.
         const METERED: [&str; 4] = ["a9059cbb", "095ea7b3", "39509351", "23b872dd"];
+        // and the mirror: one of the four on a target with no limit here is
+        // refused at every operation, and AgentPolicy refuses it at install (#175)
+        if let Some(a) = self.policy.allow.iter().find(|a| {
+            METERED.contains(&a.selector.trim_start_matches("0x").to_lowercase().as_str())
+                && !self.policy.tokens.iter().any(|t| t.token == a.target)
+        }) {
+            anyhow::bail!(
+                "allow: {} {} is refused: transfer, transferFrom, approve and increaseAllowance are checked against a token's limits, and {} has none in `tokens`; add its limits, or remove the entry",
+                a.target,
+                a.selector,
+                a.target
+            );
+        }
         for t in self.policy.tokens.iter() {
             if let Some(a) = self.policy.allow.iter().find(|a| {
                 a.target == t.token && !METERED.contains(&a.selector.trim_start_matches("0x").to_lowercase().as_str())
@@ -770,6 +783,24 @@ mod payee_tests {
                 assert!(refused.contains("callable only through"), "{refused}");
             }
         }
+    }
+
+    /// #175: one of the four metered functions on a target without a limit
+    /// would be refused at every operation; the config is refused.
+    #[test]
+    fn a_metered_function_needs_a_limit_for_its_target() {
+        for selector in ["0xa9059cbb", "0x095ea7b3", "0x39509351", "0x23b872dd"] {
+            let mut v: serde_json::Value = serde_json::from_str(include_str!("../../../agent.x402.base-sepolia.json")).unwrap();
+            v["policy"]["allow"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!({"target": "0x00000000000000000000000000000000000000e1", "selector": selector}));
+            let cfg: AgentConfig = serde_json::from_value(v).unwrap();
+            let refused = cfg.check_payees_stated().unwrap_err().to_string();
+            assert!(refused.contains("has none in `tokens`"), "{selector}: {refused}");
+        }
+        // the control: the same entry on the config's limited token
+        config_with(false, Some("0x095ea7b3")).check_payees_stated().unwrap();
     }
 }
 

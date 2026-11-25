@@ -876,6 +876,29 @@ contract TradingTest is AgentPermissionTest {
         vm.stopPrank();
     }
 
+    /// With a period of one second the highest index would make the count of
+    /// periods seen 2^48, which does not fit 48 bits: it is refused before
+    /// anything is written, so the count never wraps to 0 and walks back
+    /// (#175). Asked directly, as the account asks: a refusal returns without
+    /// reverting, so what it wrote would stay.
+    function test_period_theCountOfPeriodsNeverWrapsToZero() public {
+        _world();
+        PermissionId id = PermissionId.wrap(0x70657231); // "per1"
+        _install(id, _params(1, _venues(address(decoder), address(decoder).codehash, keccak256(_cowConfig()))));
+        bytes32 key = bytes32(PermissionId.unwrap(id));
+        PackedUserOperation memory op = _op(_permissionNonce(id), _singleCall(address(counter), 0, abi.encodeWithSelector(Counter.increment.selector)));
+        vm.startPrank(acct);
+        op.signature = abi.encodePacked(bytes6(uint48(100)));
+        policy.checkUserOpPolicy(key, op);
+        (, uint48 seen) = policy.period(acct, key);
+        assertEq(seen, 101, "the control: index 100 seen");
+        op.signature = abi.encodePacked(bytes6(type(uint48).max));
+        assertEq(policy.checkUserOpPolicy(key, op), 1, "the highest index");
+        (, seen) = policy.period(acct, key);
+        assertEq(seen, 101, "the count did not wrap");
+        vm.stopPrank();
+    }
+
     function test_period_budgetsStartAfreshEachPeriod() public {
         _with(DAY);
         _register(_order(200e6, _soon()));

@@ -3096,6 +3096,18 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
                 }
             }
         }
+        // and the four functions go to a token with a limit, which both sides require at
+        // install (#175): steer most mandates that way too
+        if !rng.one_in(5) {
+            for (t, s) in allow.iter_mut() {
+                if selectors[1..5].contains(&s.0) && !caps.iter().any(|c| c.0 == *t) {
+                    match caps.first() {
+                        Some(c) => *t = c.0,
+                        None => *s = selectors[0].into(),
+                    }
+                }
+            }
+        }
         let mut lists: Vec<(Address, Vec<Address>)> = Vec::new();
         if rng.one_in(2) {
             for cap in &caps {

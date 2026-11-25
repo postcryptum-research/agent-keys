@@ -341,6 +341,9 @@ contract AgentPolicy is IPolicy {
     bytes4 public constant MULTI_SEND = 0x8d80ff0a;
     /// `SafeNonceAssert.check(address,uint256)`
     bytes4 public constant NONCE_CHECK = SafeNonceAssert.check.selector;
+    /// `setApprovalForAll(address,bool)` of ERC-721 and ERC-1155: an operator
+    /// grant over every token of the contract, withdrawn like an allowance
+    bytes4 internal constant SET_APPROVAL_FOR_ALL = 0xa22cb465;
     /// `executeUserOp(PackedUserOperation,bytes32)`: the prefix Kernel requires
     /// of the `callData` of a permission that carries an execution hook
     bytes4 internal constant EXECUTE_USER_OP = 0x8dd7712f;
@@ -615,9 +618,11 @@ contract AgentPolicy is IPolicy {
         // A token with a limit is callable through the four metered
         // functions only (`_chargeToken`). Any other entry on it would pass
         // neither its caps nor its payee list, so the limit the owner wrote
-        // down would not be one: such a mandate is refused whole.
+        // down would not be one. And a metered function is allowed on a token
+        // with a limit only: on any other target validation refuses it every
+        // time, a mandate that cannot do what it lists. Either is refused whole.
         for (uint256 i; i < targets.length; i++) {
-            if (_token(msg.sender, m, targets[i]).set && !_isMetered(selectors[i])) revert InvalidConfig();
+            if (_token(msg.sender, m, targets[i]).set != _isMetered(selectors[i])) revert InvalidConfig();
         }
         // The window and the native limits; the counters from zero, since an
         // earlier installation of the id left its own in this `Config`
@@ -906,7 +911,9 @@ contract AgentPolicy is IPolicy {
             // Its first and last second, which must fit the 48-bit window
             uint256 start = index * c.period;
             uint256 end = start + c.period - 1;
-            if (end > type(uint48).max) return (false, 0, 0);
+            // Strictly below the 48-bit maximum, so that `seen` (index + 1) and
+            // the next period's start (end + 1) fit in 48 bits too
+            if (end >= type(uint48).max) return (false, 0, 0);
             // A new period starts the native budget afresh
             if (seen > c.periodSeen) {
                 c.periodSeen = uint48(seen);
@@ -1351,7 +1358,9 @@ contract AgentPolicy is IPolicy {
 
     // No standing allowances: an allowance the agent grants (`approve` or
     // `increaseAllowance` of more than 0) must be withdrawn with
-    // `approve(spender, 0)` later in the same operation, by the same holder
+    // `approve(spender, 0)` later in the same operation, and an operator grant
+    // (`setApprovalForAll(operator, true)` of ERC-721 and ERC-1155) with
+    // `setApprovalForAll(operator, false)`, by the same holder
     // (the account, or the Safe whose transaction grants it). Otherwise it
     // would outlive a revoke of the mandate: the spender could pull from it
     // whenever it likes. Allowances the owner grants are not the agent's and
@@ -1607,6 +1616,12 @@ contract AgentPolicy is IPolicy {
             return (from == FROM_ACCOUNT && value == 0 && _registerOrder(m, data)) ? (true, 0) : (false, 0);
         }
         // Any other call: the ERC-20 rules, if the target is a token with a limit
+        // An operator grant is open until `setApprovalForAll(operator, false)`
+        // in the same operation withdraws it, as an allowance is
+        if (selector == SET_APPROVAL_FOR_ALL) {
+            if (data.length < 68) return (false, 0);
+            _noteAllowance(target, address(uint160(uint256(bytes32(data[4:36])))), uint256(bytes32(data[36:68])) != 0);
+        }
         if (!_chargeToken(m, target, selector, data)) return (false, 0);
         return (true, value);
     }
