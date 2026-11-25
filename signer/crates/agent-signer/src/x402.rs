@@ -150,15 +150,9 @@ impl Session {
         }
         let mut valid_before = now().saturating_add(lifetime(timeout));
         if let Some(next) = self.period_next().await? {
-            let chain_now = self.chain_time().await?;
-            const LEAST_LIFE_SECS: u64 = 60;
-            // the period's seconds left; none if it turned between the two reads of the chain's time
-            let left = next.saturating_sub(chain_now);
-            if left <= LEAST_LIFE_SECS {
-                bail!("this budget period ends in {left} s, and a payment authorization ends with the period it is charged in: pay after the renewal");
-            }
-            if valid_before > next {
-                valid_before = next;
+            let (capped, left) = end_with_period(valid_before, next, self.chain_time().await?)?;
+            if capped < valid_before {
+                valid_before = capped;
                 eprintln!("x402:           the authorization ends with this budget period, in {left} s");
             }
         }
@@ -382,6 +376,20 @@ where
     Ok((out, (chunk < FIRST_CHUNK).then_some(chunk)))
 }
 
+/// An authorization under a budget per period ends with the period it is
+/// charged in: `valid_before` is cut to `next`, the next period's first
+/// second. Answers with the cut value and the period's seconds left. Refused
+/// when a minute or less is left, which is also the case where the period
+/// turned between the two reads of the chain's time (`next <= chain_now`).
+fn end_with_period(valid_before: u64, next: u64, chain_now: u64) -> Result<(u64, u64)> {
+    const LEAST_LIFE_SECS: u64 = 60;
+    let left = next.saturating_sub(chain_now);
+    if left <= LEAST_LIFE_SECS {
+        bail!("this budget period ends in {left} s, and a payment authorization ends with the period it is charged in: pay after the renewal");
+    }
+    Ok((valid_before.min(next), left))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,6 +397,21 @@ mod tests {
 
     fn block_on<F: std::future::Future>(f: F) -> F::Output {
         tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(f)
+    }
+
+    #[test]
+    fn an_authorization_ends_with_its_budget_period() {
+        // well inside the period: cut to the period's end, or left alone when it ends earlier
+        assert_eq!(end_with_period(2_000, 1_500, 1_000).unwrap(), (1_500, 500));
+        assert_eq!(end_with_period(1_200, 1_500, 1_000).unwrap(), (1_200, 500));
+        // a minute or less left: refused
+        assert!(end_with_period(2_000, 1_060, 1_000).unwrap_err().to_string().contains("ends in 60 s"));
+        assert_eq!(end_with_period(2_000, 1_061, 1_000).unwrap(), (1_061, 61));
+        // the period turned between the two reads of the chain's time: refused, no wrap
+        for (next, chain_now) in [(1_000, 1_000), (1_000, 1_001), (0, u64::MAX)] {
+            let refused = end_with_period(u64::MAX, next, chain_now).unwrap_err().to_string();
+            assert!(refused.contains("ends in 0 s"), "{next} {chain_now}: {refused}");
+        }
     }
 
     #[test]

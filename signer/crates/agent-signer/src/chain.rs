@@ -1370,7 +1370,7 @@ impl Session {
             // code is a valid `from`, and callees see the same msg.sender), plus
             // Kernel's dispatch overhead per call.
             const PER_CALL_OVERHEAD: u128 = 40_000;
-            const FIRST_FLOOR: u128 = 300_000;
+            const FIRST_FLOOR: u128 = FLOOR * 2;
             let Some(calls) = kernel::decode_execute(call_data) else {
                 return Ok(FIRST_FLOOR);
             };

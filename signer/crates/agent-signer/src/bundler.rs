@@ -84,7 +84,9 @@ pub fn pre_verification_ceiling(op: &PackedUserOperation, ours: u128) -> u128 {
 pub fn apply_estimate(op: &mut PackedUserOperation, est: &GasEstimate) -> Result<()> {
     const OURS: &str = "the CLI's own estimate";
     let (our_verification, our_call) = split_gas(op.accountGasLimits);
-    let our_pre_verification = op.preVerificationGas.saturating_to::<u128>();
+    let our_pre_verification = u128::try_from(op.preVerificationGas).map_err(|_| {
+        anyhow::anyhow!("the operation's own preVerificationGas, {}, is beyond any real gas figure", op.preVerificationGas)
+    })?;
     let pre_verification = bounded(
         "preVerificationGas",
         est.pre_verification_gas,

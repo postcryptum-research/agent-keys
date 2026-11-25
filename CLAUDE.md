@@ -102,13 +102,13 @@ scripts/source-record.sh                          # every contract's bytecode an
     `None` as a refusal with a reason; `saturating_*` only where the
     clamped value is the right answer (a counter, a number of seconds
     left). A conversion that can lose bits is `try_from`, never `as`, and
-    never `.to::<T>()` on a 256-bit value. Clippy holds the operators and
+    never `.to::<T>()` or its wrapping and saturating forms on a 256-bit value. Clippy holds the operators and
     the casts (`arithmetic_side_effects` and the three `cast_*` lints,
     denied in the `Cargo.toml` files): `cargo clippy` fails on a violation
-    and CI runs it on every pull request; `clippy.toml` adds `.to::<T>()`
-    to what it refuses. No `#[allow]` of these lints. A shift by a variable
-    it does not see: that stays with the review. Release builds keep `overflow-checks` on as the second
-    line.
+    and CI runs it on every pull request; `clippy.toml` adds the three
+    `.to::<T>()` forms to what it refuses. No `#[allow]` of these lints. A shift by a variable
+    it does not see: that stays with the review. Release builds keep
+    `overflow-checks` on as the second line.
 
 ## Never in the repository, a pull request or an issue
 
