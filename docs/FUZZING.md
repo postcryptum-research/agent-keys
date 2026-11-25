@@ -304,9 +304,13 @@ same bytes; Kernel's `installValidations` is not run here.
   their values. Any other reason fails the test, so a review that refuses
   too much is caught as well.
 - The generator reaches all three outcomes, or the test fails: at least a
-  sixth shown and installed (a fifth until the longer forms brought more
-  ways to be refused), a fifth refused by both, one in a hundred installed
-  and not shown.
+  seventh shown and installed, a fifth refused by both, one in a hundred
+  installed and not shown. The first floor guards the generator and not
+  the rule: every mandate is compared whatever the share. Runs give 18.8
+  to 20.1 percent shown and installed (75 of 400, 3,990 of 20,000), so a
+  floor of a sixth sat at the measured value and one of a seventh leaves
+  room for a seed's luck while a generator that stops producing
+  installable mandates still fails.
 
 **That it bites.** Sixteen rules were broken in the review's reader one at
 a time: fourteen refusals (the account or its EntryPoint as a target; the

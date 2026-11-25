@@ -3456,5 +3456,5 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
         "mandates: {cases}; shown and installed {both} ({with_period} with a period, {with_ids} with limits per id), installed and not shown {chain_only}, neither {neither}"
     );
     // the generator reaches each side's yes and no, and the one-way difference between them
-    assert!(both * 6 >= cases && neither * 5 >= cases && chain_only * 100 >= cases, "the generator has drifted: {both} / {chain_only} / {neither}");
+    assert!(both * 7 >= cases && neither * 5 >= cases && chain_only * 100 >= cases, "the generator has drifted: {both} / {chain_only} / {neither}");
 }
