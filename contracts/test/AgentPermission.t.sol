@@ -30,6 +30,8 @@ import {
 } from "kernel/src/types/Constants.sol";
 import {ValidatorLib} from "kernel/src/utils/ValidationTypeLib.sol";
 import {ExecLib} from "kernel/src/utils/ExecLib.sol";
+import {LibERC7579 as PinnedERC7579} from "kernel/lib/solady/src/accounts/LibERC7579.sol";
+import {LibERC7579 as FixedERC7579} from "solady/accounts/LibERC7579.sol";
 import {EntryPointLib} from "kernel/test/base/erc4337Util.sol";
 
 import {Safe} from "safe-smart-account/Safe.sol";
@@ -150,6 +152,29 @@ contract Counter {
 
 /// An execution hook that only counts: Kernel calls it around an operation
 /// of the permission it is installed with.
+/// A batch decoded as Kernel v3.3 decodes it: the same entry point and
+/// selector as `Kernel.execute`, so the calldata is laid out as the account
+/// sees it, and the Solady that Kernel pins, which `AgentPolicy` uses too.
+/// `decodeFixed` is Solady v0.1.26, with the bounds check of PR 1244.
+contract KernelDecodes {
+    function execute(bytes32, bytes calldata executionData)
+        external
+        pure
+        returns (address[] memory targets, uint256[] memory values)
+    {
+        bytes32[] calldata pointers = PinnedERC7579.decodeBatch(executionData);
+        targets = new address[](pointers.length);
+        values = new uint256[](pointers.length);
+        for (uint256 i; i < pointers.length; i++) {
+            (targets[i], values[i],) = PinnedERC7579.getExecution(pointers, i);
+        }
+    }
+
+    function decodeFixed(bytes calldata executionData) external pure returns (uint256) {
+        return FixedERC7579.decodeBatch(executionData).length;
+    }
+}
+
 contract CountingHook is IHook {
     uint256 public pre;
     uint256 public post;
@@ -1374,6 +1399,117 @@ contract AgentPermissionTest is Test {
         assertEq(seen, 1, "one operation, reported once");
         assertEq(token.allowance(address(safe), spender), 0, "the grant was undone with the failed withdrawal");
         assertEq(safe.nonce(), nonce, "the Safe ran neither transaction");
+    }
+
+    /// #201, item 2: finding 5.3.7 of Solady's Cantina/Spearbit review, its
+    /// proof of concept (`testDecodeBatchEdgeCase2`, fixed in PR 1244). The
+    /// batch's `executionData` declares five words while its pointer array
+    /// claims four entries, so the last pointer word lies past the declared
+    /// end, in the call's trailing bytes. Kernel decodes it with the Solady it
+    /// pins and so does `AgentPolicy`: both read the same four calls, to
+    /// address 0, and the policy refuses them, whatever follows `callData` in
+    /// the operation. Solady v0.1.26 refuses the batch itself, so moving the
+    /// policy alone to it would make the policy and the deployed Kernel differ.
+    function test_batch_theSoladyReviewsBatchIsReadAsKernelReadsIt() public {
+        bytes memory callData = abi.encodePacked(
+            Kernel.execute.selector,
+            ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))),
+            uint256(0x40), // the offset of executionData
+            uint256(32 * 5), // its declared length: five words
+            uint256(0x20), // the offset of the pointer array
+            uint256(4), // its length: four pointers
+            uint256(0),
+            uint256(0),
+            uint256(0), // pointers[0] to [2]
+            uint256(0) // pointers[3]: past the declared end, in the trailing bytes
+        );
+        // Kernel's reading: four calls to address 0
+        _kernelReadsFourCallsToZero(callData);
+        // The fixed decoder refuses the batch outright
+        KernelDecodes decoder = new KernelDecodes();
+        bytes memory executionData = new bytes(32 * 5);
+        for (uint256 i; i < executionData.length; i++) {
+            executionData[i] = callData[100 + i];
+        }
+        vm.expectRevert(FixedERC7579.DecodingError.selector);
+        decoder.decodeFixed(executionData);
+        // The policy's reading: the same calls, refused (address 0 is no
+        // target of the mandate), with or without bytes after `callData`.
+        // The control: a well-formed batch of one allowed call passes (a
+        // verdict other than 1 is the window it is valid in).
+        Execution[] memory one = new Execution[](1);
+        one[0] = Execution(address(counter), 0, abi.encodeWithSelector(Counter.increment.selector));
+        bytes memory wellFormed = abi.encodeWithSelector(
+            Kernel.execute.selector, ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))), ExecLib.encodeBatch(one)
+        );
+        assertTrue(_policyVerdict(wellFormed, "") != 1, "the control passes");
+        assertEq(_policyVerdict(callData, ""), 1, "refused, as read");
+        assertEq(_policyVerdict(callData, abi.encodePacked(address(0xbeef), uint128(1), uint128(1))), 1);
+        // and through the EntryPoint, refused
+        PackedUserOperation memory op = _op(_permissionNonce(AGENT_ID), callData);
+        op.signature = abi.encodePacked(bytes1(0xff), _sign(AGENT, entryPoint.getUserOpHash(op)));
+        _expectRefused(op);
+    }
+
+    /// The same batch shifted so that `executionData` ends where `callData`
+    /// ends, its last pointer word wholly past both. Kernel reads zeros past
+    /// its calldata and takes the four calls to address 0. The policy reads
+    /// what follows `callData` in the encoded operation: with no
+    /// `paymasterAndData`, zeros too, and it refuses the calls as Kernel reads
+    /// them; with a `paymasterAndData`, its length word (52) as the pointer,
+    /// past the batch's bounds, and the pinned decoder refuses the batch. The
+    /// two readings differ there, and the policy's is the refusal.
+    function test_batch_pastTheEndOfTheCallThePolicyRefuses() public {
+        bytes memory callData = abi.encodePacked(
+            Kernel.execute.selector,
+            ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))),
+            uint256(0x40 + 28), // executionData starts 28 bytes later
+            new bytes(28), // so that callData's length is a whole number of words
+            uint256(32 * 5),
+            uint256(0x20),
+            uint256(4),
+            uint256(0),
+            uint256(0),
+            uint256(0) // pointers[0] to [2]; pointers[3] would be the next word
+        );
+        assertEq(callData.length % 32, 0);
+        _kernelReadsFourCallsToZero(callData);
+        assertEq(_policyVerdict(callData, ""), 1, "no bytes after callData: zeros, refused as Kernel reads it");
+        bytes memory paymasterAndData = abi.encodePacked(address(0xbeef), uint128(1), uint128(1));
+        assertEq(paymasterAndData.length, 52);
+        PackedUserOperation memory op = _opWith(callData, paymasterAndData);
+        vm.prank(acct);
+        vm.expectRevert(PinnedERC7579.DecodingError.selector);
+        policy.checkUserOpPolicy(bytes32(PermissionId.unwrap(AGENT_ID)), op);
+    }
+
+    function _kernelReadsFourCallsToZero(bytes memory callData) internal {
+        (bool ok, bytes memory ret) = address(new KernelDecodes()).call(callData);
+        assertTrue(ok, "the pinned decoder takes the batch");
+        (address[] memory targets, uint256[] memory values) = abi.decode(ret, (address[], uint256[]));
+        assertEq(targets.length, 4);
+        for (uint256 i; i < 4; i++) {
+            assertEq(targets[i], address(0));
+            assertEq(values[i], 0);
+        }
+    }
+
+    function _opWith(bytes memory callData, bytes memory paymasterAndData)
+        internal
+        view
+        returns (PackedUserOperation memory op)
+    {
+        op = _op(_permissionNonce(AGENT_ID), callData);
+        op.paymasterAndData = paymasterAndData;
+    }
+
+    /// The policy asked directly, as Kernel asks it for the agent's permission.
+    function _policyVerdict(bytes memory callData, bytes memory paymasterAndData) internal returns (uint256) {
+        // built first: a prank goes to the next call, and building the
+        // operation makes calls of its own
+        PackedUserOperation memory op = _opWith(callData, paymasterAndData);
+        vm.prank(acct);
+        return policy.checkUserOpPolicy(bytes32(PermissionId.unwrap(AGENT_ID)), op);
     }
 
     function _safeExecGas(address to, bytes memory data, uint256 safeTxGas, uint256 baseGas)
