@@ -2438,7 +2438,7 @@ mod tests {
             let refused = read(m).expect_err(what);
             assert!(refused.contains(why), "{what}: {refused}");
         }
-        // the policy's two x402 entries are the calls a mandate may make on it
+        // of the policy's three entries, the two x402 ones are open to any mandate (`orderRegister` below)
         for name in ["x402Authorize(address,address,address,uint256,uint256,uint256,bytes32)", "x402Reclaim(bytes32,address,address,uint256,uint256,uint256,bytes32)"] {
             let mut m = good();
             m.0.push(POLICY);

@@ -936,6 +936,23 @@ deletion prompt and the health handle are exported too. The Android app
 still builds the enrollment answer and its refusal itself; the iOS app
 uses `enroll_answer` and `enroll_refusal`.
 
+A panic in the core: uniffi runs every call under `catch_unwind` and hands
+the panic over as an internal error (V, `uniffi_core` 0.32
+`ffi/rustcalls.rs`; the release profile keeps the default unwinding). An
+export that returns `Result` (`open_request`, `open_enrollment`,
+`open_health`) throws it as it throws a `CoreError`, and the iOS app shows
+an error line and signs nothing (V, `Model.swift`). An export that returns
+a plain value (`ReviewHandle.text`, `sections` and `refuse`,
+`verify_confirmation`, `enroll_refusal`, `attestation_challenge`,
+`HealthHandle.fingerprint`) is bound with `try!` in Swift, so a panic
+there ends the iOS app (V, Swift generated from `ffi.rs`, 2026-11-25). In
+Kotlin every export throws `InternalException`; the Android app shows it
+as an error line where the call runs inside its `safely` wrapper, and
+stops where it does not (I). With `overflow-checks = true` in release
+builds and checked arithmetic in `owner-core` (house rule 10), what can
+still panic is a dependency or an `expect` whose check before it failed to
+hold (I). A stop is preferred to a wrong screen.
+
 ### 7.3 Builds
 
 - **iOS:** an `xcframework` (device plus simulator), and the generated

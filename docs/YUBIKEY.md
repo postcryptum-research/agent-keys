@@ -262,8 +262,8 @@ Two config changes went with it: `contracts/deployments/84532.enclave.json`
 names the new policy (the previous one stays as `agentPolicyV6`), and the
 mandate's two x402 allow-list entries — which name the **policy's own
 address** as their target — moved to the new address too. Any mandate with
-x402 entries needs that second change when it is rotated; the guard then
-admits exactly those two selectors on the policy.
+entries on the policy (the x402 ones, `orderRegister`) needs that second
+change when it is rotated; the guard admits no other selector on the policy.
 
 The main account (`0xEdB645B14e2f952C5784e34949b58F0826fBc9E9`) followed the
 same day for its x402 permission `0x78347031`, after the same two-line change

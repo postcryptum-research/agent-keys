@@ -38,9 +38,11 @@ cd ../../scripts/erc7562 && npm install && npm run check
 1. **Fresh `master` under it.** Branch from it, or merge it in before adding to a branch.
 2. **Its test and its docs, in the same pull request.** Where a doc has a Russian original (`*_ru.md`), both
    change.
-3. **Deployed contracts left as they are.** A contract's source is the record of what is on chain; the
-   instances are listed in `contracts/deployments/<chainId>.json`. Change a contract's source only in a change
-   that redeploys it, and leave the other contracts' files alone, formatting included.
+3. **A deployed contract's source is the release it was built from.** Nothing goes to a mainnet but an audited
+   release tag. Instances on test networks are pre-audit and are recorded with the commit they were built from:
+   `contracts/deployments/<chainId>.json` lists them, and [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md) names the
+   tag or commit. `master` may differ from every deployment. A tagged release's source never changes, comments
+   included. `scripts/source-record.sh <tag or commit>` compares a build with another's, contract by contract.
 4. **Validation code that passes ERC-7562.** No clock and no storage but the account's in validator, signer and
    policy code. [`scripts/erc7562/`](scripts/erc7562/) checks a trace.
 5. **Claims with their source.** In docs, `[V]` is verified with the source given and `[I]` is inferred. Dates
