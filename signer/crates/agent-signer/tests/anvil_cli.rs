@@ -862,6 +862,55 @@ fn the_recovery_key_is_replaced_and_removed() {
     chain.ok(&["demo", "--agent", &new3]);
 }
 
+/// After a redeploy the recovery key moves to the new recovery validator
+/// (docs/REDEPLOY.md): `owner add-recovery` installs it on the current one,
+/// and `owner remove-recovery --earlier` takes it off the one the deployments
+/// file now keeps as `p256RecoveryValidatorV1`, which could otherwise still
+/// take root.
+#[test]
+fn the_recovery_key_moves_to_a_redeployed_validator() {
+    let chain = chain_or_skip!("recovery-move");
+    let (owner, agent, recovery) = (key(1), key(2), key(4));
+    let counter = chain.addr("demoCounter");
+    let until = far_future(&chain);
+    let account = chain.deploy(&chain.config("agent.json", &base_cfg(&owner, &agent, &counter, until)));
+    let cfg = Cfg { recovery: Some(&recovery), account: Some(account.clone()), ..base_cfg(&owner, &agent, &counter, until) };
+    let before = chain.config("before.json", &cfg);
+    chain.ok(&["owner", "add-recovery", "--agent", &before]);
+
+    // the redeploy: the same code at a new address; the old one is kept under its versioned name
+    let earlier = chain.addr("p256RecoveryValidator");
+    let current = "0x7000000000000000000000000000000000000007";
+    chain.rpc("anvil_setCode", json!([current, chain.code["contracts"]["p256RecoveryValidator"]["code"]]));
+    let mut dep: Value = serde_json::from_str(&std::fs::read_to_string(chain.dir.join("deployments.json")).unwrap()).unwrap();
+    dep["p256RecoveryValidator"] = json!(current);
+    dep["p256RecoveryValidatorV1"] = json!(earlier);
+    std::fs::write(chain.dir.join("deployments-redeployed.json"), dep.to_string()).unwrap();
+    let after = chain.config("after.json", &cfg);
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&after).unwrap()).unwrap();
+    v["deployments"] = json!(chain.dir.join("deployments-redeployed.json"));
+    std::fs::write(&after, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+
+    // not before the current validator holds the key: that would leave the account without one
+    let refused = chain.fails(&["owner", "remove-recovery", "--agent", &after, "--earlier", &earlier]);
+    assert!(refused.contains("the current recovery validator holds no key") && refused.contains("owner add-recovery"), "{refused}");
+    chain.ok(&["owner", "add-recovery", "--agent", &after]);
+    // only an earlier recovery validator the file keeps
+    for not_earlier in [current, counter.as_str(), "0x7000000000000000000000000000000000000008"] {
+        let refused = chain.fails(&["owner", "remove-recovery", "--agent", &after, "--earlier", not_earlier]);
+        assert!(refused.contains("is not an earlier recovery validator"), "{refused}");
+    }
+    let said = chain.ok(&["owner", "remove-recovery", "--agent", &after, "--earlier", &earlier]);
+    assert!(said.contains("recovery key removed from the earlier validator"), "{said}");
+    // the earlier validator recovers nothing any more; the current one does
+    let refused = chain.fails(&["owner", "recover", "--agent", &before]);
+    assert!(refused.contains("no recovery key is installed"), "{refused}");
+    let refused = chain.fails(&["owner", "remove-recovery", "--agent", &after, "--earlier", &earlier]);
+    assert!(refused.contains("no recovery key is installed"), "{refused}");
+    chain.ok(&["owner", "recover", "--agent", &after]);
+    assert!(chain.ok(&["owner", "status", "--agent", &after]).contains("is root now = true"));
+}
+
 /// Issue #51: `owner set-root --not-a-phone` hands the root to a key in one step, and the
 /// new key has no accept step. A fingerprint shows which public key was pasted, not that
 /// anybody can sign with it. So the key shows that first, by signing a challenge the command
