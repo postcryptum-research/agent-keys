@@ -100,6 +100,7 @@ checks() {
     # three persistent objects of ours, the storage parent among them.
     "$B" key evict --handle $SEALED
     printf 'a secret only root reads\n' >"$tmp/auth"
+    chmod 600 "$tmp/auth" # the CLI refuses an auth file others may read
     "$B" key create --handle $PROTECTED --auth-file "$tmp/auth"
     "$B" key check --handle $PROTECTED --auth-file "$tmp/auth"
     "$B" key evict --handle $PROTECTED

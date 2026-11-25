@@ -121,7 +121,7 @@ Exactly one of:
 |---|---|---|
 | `{"tpm": "0x81010011"}` | TPM 2.0 (Linux), persistent handle | build with `--features tpm` |
 | `{"tpm": {"handle": "0x81010012", "pcrs": [0, 2, 4, 7]}}` | TPM key sealed to those PCRs | signs only while the boot state matches |
-| `{"tpm": {"handle": "0x81010013", "authFile": "/etc/tpm_sign/owner.auth"}}` | TPM key protected by a secret (created with `key create --auth-file`) | for an owner key on the agent's chip; the file root-only ([`KEY_POLICY.md`](KEY_POLICY.md) rule 3) |
+| `{"tpm": {"handle": "0x81010013", "authFile": "/etc/tpm_sign/owner.auth"}}` | TPM key protected by a secret (created with `key create --auth-file`) | for an owner key on the agent's chip; the file root-only, mode 0600 ([`KEY_POLICY.md`](KEY_POLICY.md) rule 3): one that group or others may access is refused. `authFile` does not combine with `pcrs`: a TPM key with both, or with any other field, is refused |
 | `{"secure-enclave": "label"}` | Apple Secure Enclave | `--features secure-enclave`, macOS |
 | `{"windows-tpm": "name"}` | Windows TPM through CNG | `--features windows-tpm`, Windows |
 | `{"tropic01": {"port": "/dev/ttyACM0", "slot": 1}}` | TROPIC01 USB devkit, ECC slot 0–31 | `--features tropic01` |

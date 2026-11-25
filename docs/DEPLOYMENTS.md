@@ -25,7 +25,8 @@ missing from this page.
   file records the compiler settings its current instances were built with:
   `solc` 0.8.38 and `evmVersion` cancun [V `contracts/foundry.toml`].
 - **Master moves ahead of the instances.** Every contract carries
-  `string public constant VERSION`, 0.1.0 until the first audited release.
+  `string public constant VERSION`, from 0.1.0, raised with any change to
+  its bytecode.
   The instances listed here predate it: master's source no longer builds
   them, the commit named with each table does.
 - **Earlier instances stay recorded** under versioned names (`agentPolicyV1`,

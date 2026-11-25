@@ -34,7 +34,7 @@ contract P256Validator is IValidator {
     /// any change to its bytecode. A release tag names the versions it carries.
     /// `P256RecoveryValidator` inherits it (a constant cannot be redeclared), so
     /// a change to either contract raises it.
-    string public constant VERSION = "0.1.0";
+    string public constant VERSION = "0.1.1";
 
     // A P-256 public key in affine coordinates, each below the field prime p
     struct PublicKey {
@@ -44,7 +44,7 @@ contract P256Validator is IValidator {
         bytes32 y;
     }
 
-    /// @dev The install data is shorter than two words, or its point is not on P-256.
+    /// @dev The install data is not exactly two words, or its point is not on P-256.
     error InvalidPublicKey();
 
     /// @dev Emitted when an account enrolls its key.
@@ -64,13 +64,13 @@ contract P256Validator is IValidator {
     /// An account that already has a key here cannot enroll another over it: it
     /// uninstalls first, or uses another instance of the contract
     /// (`P256RecoveryValidator` is one).
-    /// @param data `abi.encode(bytes32 x, bytes32 y)`: the enrolled hardware key.
+    /// @param data `abi.encode(bytes32 x, bytes32 y)`, exactly 64 bytes: the enrolled hardware key.
     function onInstall(bytes calldata data) external payable override {
         // The account must not have a key here yet
         if (_isInitialized(msg.sender)) revert AlreadyInitialized(msg.sender);
-        // The data must hold both coordinates
-        if (data.length < 64) revert InvalidPublicKey();
-        // Decode the first two words; anything after them is not read
+        // The data must be both coordinates and nothing more
+        if (data.length != 64) revert InvalidPublicKey();
+        // Decode the two words
         (bytes32 x, bytes32 y) = abi.decode(data[:64], (bytes32, bytes32));
         // An off-curve key would fail every signature and lock the account out
         if (!P256Point.isOnCurve(x, y)) revert InvalidPublicKey();

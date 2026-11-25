@@ -94,7 +94,8 @@ YubiKey becomes root.
 The PIV applet signs a certificate for any slot with its attestation key
 (slot `f9`), whose certificate chains to Yubico's roots. The leaf names the
 firmware, the PIN and touch policies, the form factor and the device's
-**serial number** (so keep it out of the repository):
+**serial number** (so keep it out of the repository; `key attest` writes
+it with mode 0600):
 
 ```sh
 agent-signer key attest --yubikey 9c --out owner-9c.attest.der   # or: ykman piv keys attest 9c

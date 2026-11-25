@@ -8,9 +8,9 @@ account's validation touch, `keccak256(account ‖ x) + n` (rule 4 in
 `CLAUDE.md`). The paymaster is the one contract with an owner. Addresses
 are those of Base Sepolia (chain 84532), from
 `contracts/deployments/84532.json`, which keeps earlier instances under
-versioned names. Each contract answers `VERSION()`, 0.1.0 until the first
-audited release, raised with any change to its bytecode; the instances
-listed predate it. `AgentPolicy`'s section follows with its next instance.
+versioned names. Each contract answers `VERSION()`, from 0.1.0, raised
+with any change to its bytecode; the instances listed predate it.
+`AgentPolicy`'s section follows with its next instance.
 
 | Contract | What it is | Who calls it | Base Sepolia |
 |---|---|---|---|
@@ -67,8 +67,8 @@ what `P256RecoveryValidator` is.
 **Functions.**
 
 - `onInstall(abi.encode(x, y))`: enrolls the key. Reverts `AlreadyInitialized`
-  if the account has one here, `InvalidPublicKey` if the data is shorter
-  than 64 bytes or the point is not on P-256. Emits
+  if the account has one here, `InvalidPublicKey` if the data is not exactly
+  64 bytes or the point is not on P-256. Emits
   `P256KeyRegistered(account, x, y)`.
 - `onUninstall(bytes)`: deletes the key; reverts `NotInitialized` if there is
   none. The data is not read.
@@ -81,8 +81,10 @@ what `P256RecoveryValidator` is.
   `isInitialized(account)`; the getter `publicKeys(account)`.
 
 **Rules.** A signature is exactly 64 bytes; `s` is in the low half; the key
-is on P-256 with both coordinates below p, checked once at install [V
-source].
+is on P-256 with both coordinates below p, checked once at install; the
+install data is the key and nothing more, from 0.1.1 (#154): the Base
+Sepolia instances, older, refuse only shorter data and ignore bytes past
+the 64 [V source, `test_validatorInstallDataIsExactlyTheKey`].
 
 **Base Sepolia.** `0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2`
 (`p256Validator`); earlier, `p256ValidatorV1` [V
@@ -154,7 +156,7 @@ are `keccak256(account ‖ keccak256(id ‖ slot))` (+1) and
 
 - `onInstall(bytes32(id) ‖ abi.encode(x, y))`: enrolls the permission's key.
   Reverts `AlreadyInitialized` if that id has a key for the account,
-  `InvalidPublicKey` if the data is shorter than 96 bytes or the point is not
+  `InvalidPublicKey` if the data is not exactly 96 bytes or the point is not
   on P-256. Increments `usedIds`. Emits `P256SignerRegistered(account, id, x, y)`.
 - `onUninstall(bytes32(id) ‖ …)`: deletes the key, decrements `usedIds`;
   reverts `NotInitialized` if that id has no key.
@@ -168,7 +170,10 @@ are `keccak256(account ‖ keccak256(id ‖ slot))` (+1) and
   and `usedIds(account)`.
 
 **Rules.** As `P256Validator`'s: 64-byte signature, low `s`, a key on P-256
-checked at install. Keys are scoped per (permission id, account) [V source].
+checked at install, install data of exactly the id and the key from 0.1.1
+(the Base Sepolia instances ignore bytes past the 96). Keys are scoped per
+(permission id, account) [V source,
+`test_signerInstallDataIsExactlyTheIdAndTheKey`].
 
 **Base Sepolia.** `0xa19e6061b1C193573e5fe46c39363FfDd5CCA22E`
 (`p256Signer`); earlier, `p256SignerV1` [V `contracts/deployments/84532.json`].
