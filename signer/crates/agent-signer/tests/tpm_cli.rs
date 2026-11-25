@@ -29,7 +29,7 @@ fn key_check_checks_a_sealed_key_when_told_its_pcrs() {
     let without = cli(&["key", "check", "--handle", HANDLE]);
     let other_pcrs = cli(&["key", "check", "--handle", HANDLE, "--pcrs", "23"]);
     let both = cli(&["key", "check", "--handle", HANDLE, "--pcrs", "16", "--auth-file", "/dev/null"]);
-    let evicted = cli(&["key", "evict", "--handle", HANDLE]);
+    let evicted = cli(&["key", "evict", "--handle", HANDLE, "--yes"]);
     assert!(evicted.status.success(), "{}", said(&evicted));
 
     assert!(with_pcrs.status.success() && said(&with_pcrs).contains("OK: 0x8101ff12 signs"), "{}", said(&with_pcrs));
@@ -40,6 +40,33 @@ fn key_check_checks_a_sealed_key_when_told_its_pcrs() {
     // policy is given and is not the one the key was sealed to.
     assert!(!other_pcrs.status.success() && !said(&other_pcrs).contains("opened without them"), "{}", said(&other_pcrs));
     assert!(!both.status.success() && said(&both).contains("do not combine"), "{}", said(&both));
+}
+
+/// #178: `key evict` shows the key at the handle and removes nothing until
+/// the command carries `--yes`. A mistyped handle then costs a second look
+/// and not a key.
+#[test]
+#[ignore = "requires a TPM"]
+fn key_evict_shows_the_key_and_waits_for_yes() {
+    const HANDLE: &str = "0x8101ff13";
+    let created = cli(&["key", "create", "--handle", HANDLE]);
+    assert!(created.status.success(), "{}", said(&created));
+    let shown = String::from_utf8_lossy(&created.stdout).to_string();
+    let fingerprint = shown.split("\"fingerprint\": \"").nth(1).and_then(|s| s.split('"').next()).expect("a fingerprint").to_string();
+
+    let asked = cli(&["key", "evict", "--handle", HANDLE]);
+    let still = cli(&["key", "show", "--handle", HANDLE]);
+    let empty = cli(&["key", "evict", "--handle", "0x8101ff14"]);
+    let evicted = cli(&["key", "evict", "--handle", HANDLE, "--yes"]);
+    let gone = cli(&["key", "show", "--handle", HANDLE]);
+
+    assert!(asked.status.success() && said(&asked).contains(&fingerprint), "{}", said(&asked));
+    assert!(said(&asked).contains("nothing was removed") && said(&asked).contains("--yes"), "{}", said(&asked));
+    assert!(!said(&asked).contains("evicted"), "{}", said(&asked));
+    assert!(still.status.success() && said(&still).contains(&fingerprint), "{}", said(&still));
+    assert!(said(&empty).contains("could not be read") && said(&empty).contains("nothing was removed"), "{}", said(&empty));
+    assert!(evicted.status.success() && said(&evicted).contains("evicted 0x8101ff13"), "{}", said(&evicted));
+    assert!(!gone.status.success(), "{}", said(&gone));
 }
 
 /// #43: what `key create` says when the storage parent is not there.

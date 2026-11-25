@@ -175,7 +175,7 @@ added [V].
 | Reboot, OS/kernel update | alive | persistent handle |
 | `TPM2_Clear` (tpm2_clear, "Clear TPM" in Windows Security / tpm.msc / UEFI, PPI request from the OS) | **destroyed** | new SPS, persistent objects removed [V] |
 | SPS change — only via Clear | **destroyed** | "regenerating the SRK" with the same template without Clear yields the same SRK [I per the specification: primary keys are deterministic from the seed and the template] |
-| Accidental `key evict` / `tpm2_evictcontrol` | **destroyed** | we do not store the blob, nothing to restore from [V: `KeyCmd::Evict` exists in the CLI, main.rs:481] |
+| Accidental `key evict` / `tpm2_evictcontrol` | **destroyed** | we do not store the blob, nothing to restore from [V: `KeyCmd::Evict` in the CLI, `signer/crates/agent-signer/src/main.rs`]. The CLI shows the key at the handle and removes it only with `--yes`; `tpm2_evictcontrol` asks nothing |
 | BIOS update on a machine with **fTPM** | vendor-dependent; **often destroyed** | §1.2 |
 | Update of the **TPM's own firmware** (dTPM or fTPM) | often destroyed | Intel NUC: "TPM firmware update clears all data in the TPM" [V https://www.intel.com/content/dam/support/us/en/documents/mini-pcs/NUC5i3MY-TPM-Firmware-Update.pdf]; Infineon updates (ROCA) required a clear [V https://www.getac.com/uploads/2023/01/infineon_tpm_security_update_20230116.pdf, I details] |
 | CPU replacement (AMD fTPM) | **destroyed** when answering "Y" | §1.2 |

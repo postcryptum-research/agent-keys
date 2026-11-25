@@ -57,6 +57,32 @@ fn only_a_key_with_an_auth_value_is_under_the_lockout() {
     }
 }
 
+/// #178: `TPM2_EvictControl` on a persistent object removes it. A second
+/// `persist`, on the signer that persisted the key or on one that opened it,
+/// is refused and the key is still there.
+#[test]
+#[ignore = "requires a TPM"]
+fn persisting_twice_is_refused_and_the_key_stays() {
+    let mut signer = TpmSigner::create_under(DEFAULT_PARENT).unwrap();
+    signer.persist(HANDLE).unwrap();
+    let key = hw_signer::HardwareSigner::public_key(&signer).unwrap();
+
+    let again = signer.persist(HANDLE).unwrap_err().to_string();
+    assert!(again.contains("already persistent"), "{again}");
+    drop(signer);
+
+    let mut opened = TpmSigner::open_persistent(HANDLE).expect("the key is still at its handle");
+    let again = opened.persist(HANDLE).unwrap_err().to_string();
+    assert!(again.contains("already persistent"), "{again}");
+    drop(opened);
+
+    let still = TpmSigner::open_persistent(HANDLE).expect("the key is still at its handle");
+    let same = hw_signer::HardwareSigner::public_key(&still).unwrap();
+    drop(still);
+    TpmSigner::evict(HANDLE).unwrap();
+    assert!(key.x == same.x && key.y == same.y, "the same key");
+}
+
 /// #43: the TPM's words for an empty handle are "the handle is not correct
 /// for the use". The error has to say what is missing, where, and what to do.
 #[test]

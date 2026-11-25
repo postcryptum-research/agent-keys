@@ -379,8 +379,17 @@ impl TpmSigner {
     }
 
     /// Persist the loaded key at `handle` (owner hierarchy) so it survives
-    /// reboots and process restarts.
+    /// reboots and process restarts. Once only: a key that is already
+    /// persistent (after this call, or opened with `open_persistent*`) is
+    /// refused. `TPM2_EvictControl` on a persistent object **removes** it, so
+    /// a second call, made to be sure or as a retry, would delete the key
+    /// and report success (#178).
     pub fn persist(&mut self, handle: u32) -> Result<(), SignerError> {
+        if self.persistent {
+            return Err(SignerError::Backend(format!(
+                "this key is already persistent: persisting it again at {handle:#010x} would evict it from the TPM"
+            )));
+        }
         let target = PersistentTpmHandle::new(handle).map_err(tss)?;
         let key = self.key;
         let persisted = {

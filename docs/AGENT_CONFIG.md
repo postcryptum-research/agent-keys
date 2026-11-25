@@ -94,7 +94,10 @@ phone shows before a key is deleted there
 The `tokens` entry is illustrative.) Unknown fields are an **error** at the
 top level, in `policy`, `allow`, `tokens` and public keys (a misspelled
 `validAfter` must not silently become 0); inside a key spec an unknown field
-is ignored. Field names are case-sensitive.
+is ignored. Field names are case-sensitive. A token listed twice in
+`tokens`, or a decoder listed twice in `venues`, is an error when the config
+is read: the phone's review and the policy both refuse such a mandate, and
+the CLI says so before anything is sent.
 
 ## Fields
 
