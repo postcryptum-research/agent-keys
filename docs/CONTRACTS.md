@@ -339,6 +339,16 @@ which refuses the operation all the same [I].
   `test_probe2_installRefusesEveryUnmeteredFunctionOnALimitedToken`). An
   approval is charged like a transfer; what the spender later pulls is not
   seen.
+- *No standing allowances.* An allowance the agent grants (`approve` or
+  `increaseAllowance` of more than 0) must be withdrawn with
+  `approve(spender, 0)` later in the same operation, by the same holder:
+  the account for its own calls, the Safe for calls inside its
+  transaction. An operation that ends with one open is refused. So nothing
+  the agent granted outlives the operation, and a revoke leaves no spender
+  able to pull. Allowances the owner grants (a venue's spender, say) are
+  not the agent's and are not counted (`test_allowances_noneOutlivesTheOperation`,
+  `test_allowances_theHolderWithdrawsWhatItGranted`; the fuzzing model
+  holds it too). [V source, tests]
 - *Window.* The operation is valid from `validAfter` up to and at
   `validUntil`; the policy returns the window and the EntryPoint enforces
   it (`test_schedule_windowIsEnforced`). The window `checkUserOpPolicy`
