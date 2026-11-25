@@ -565,6 +565,9 @@ impl Session {
         sponsored: bool,
         pinned: Option<U256>,
     ) -> Result<Included> {
+        if !as_root {
+            safe_gas_words_are_zero(&exec_transaction)?;
+        }
         let assert = self
             .dep
             .safe_nonce_assert
@@ -1773,9 +1776,58 @@ pub struct Included {
     pub gas_used: u64,
 }
 
+/// What AgentPolicy asks of a Safe transaction's gas words, said here with
+/// the reason: `safeTxGas`, `baseGas` and `gasPrice` (head words 4 to 6 of
+/// `execTransaction`) are 0. With a `safeTxGas` the Safe does not revert when
+/// its inner call does, and with a `gasPrice` it pays a refund; the policy
+/// refuses both in validation, where the agent would see a failed simulation
+/// and no reason (#190).
+pub fn safe_gas_words_are_zero(exec_transaction: &[u8]) -> Result<()> {
+    let word = |i: usize| -> Option<&[u8]> {
+        let start = i.checked_mul(32)?.checked_add(4)?;
+        exec_transaction.get(start..start.checked_add(32)?)
+    };
+    for (i, name) in [(4, "safeTxGas"), (5, "baseGas"), (6, "gasPrice")] {
+        let w = word(i).context("the Safe transaction's calldata is shorter than execTransaction's ten head words")?;
+        if w.iter().any(|b| *b != 0) {
+            bail!(
+                "the Safe transaction's {name} is not 0: the agent's mandate admits a Safe transaction only with safeTxGas, baseGas and gasPrice of 0 \
+                 (with a safeTxGas the Safe goes on when its inner call fails; with a gasPrice it pays a refund). Build the transaction with all three at 0"
+            );
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #190: a Safe transaction for the agent has its three gas words at 0,
+    /// and the CLI says which one is not.
+    #[test]
+    fn a_safe_transactions_gas_words_are_zero() {
+        let exec = |words: [(usize, u8); 1]| -> Vec<u8> {
+            let mut d = vec![0u8; 4 + 32 * 10];
+            d[..4].copy_from_slice(&[0x6a, 0x76, 0x12, 0x02]);
+            for (word, byte) in words {
+                d[4 + 32 * word + 31] = byte;
+            }
+            d
+        };
+        safe_gas_words_are_zero(&exec([(4, 0)])).unwrap();
+        // another word may be anything
+        safe_gas_words_are_zero(&exec([(1, 7)])).unwrap();
+        for (word, name) in [(4, "safeTxGas"), (5, "baseGas"), (6, "gasPrice")] {
+            let said = safe_gas_words_are_zero(&exec([(word, 1)])).unwrap_err().to_string();
+            assert!(said.contains(&format!("{name} is not 0")), "{said}");
+        }
+        // a high byte counts too
+        let mut d = exec([(4, 0)]);
+        d[4 + 32 * 4] = 0x80;
+        assert!(safe_gas_words_are_zero(&d).is_err());
+        assert!(safe_gas_words_are_zero(&exec([(4, 0)])[..200]).unwrap_err().to_string().contains("shorter"));
+    }
 
     /// A margin on a gas figure is refused, not wrapped, when the product
     /// does not fit: a wrapped limit would be a small one, and signed.
