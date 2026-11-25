@@ -348,7 +348,12 @@ which refuses the operation all the same [I].
   able to pull. Allowances the owner grants (a venue's spender, say) are
   not the agent's and are not counted (`test_allowances_noneOutlivesTheOperation`,
   `test_allowances_theHolderWithdrawsWhatItGranted`; the fuzzing model
-  holds it too). [V source, tests]
+  holds it too). [V source, tests] The rule covers the two ERC-20 approval
+  functions the policy meters. Another approval-like function the owner
+  allow-lists (`setApprovalForAll` of an ERC-721 or ERC-1155, a vault's own
+  operator grant) is a call the policy allows or refuses and does not read,
+  as any unmetered selector, and what it grants can stand. An allowance
+  that has to stand across operations is granted by the owner.
 - *Window.* The operation is valid from `validAfter` up to and at
   `validUntil`; the policy returns the window and the EntryPoint enforces
   it (`test_schedule_windowIsEnforced`). The window `checkUserOpPolicy`
