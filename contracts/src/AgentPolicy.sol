@@ -218,6 +218,20 @@ contract AgentPolicy is IPolicy {
         bytes32 domainSeparator;
     }
 
+    /// Install-time limit for one id of an ERC-6909 contract: what `TokenCap`
+    /// is for an ERC-20 token, per `(token, id)`. No x402 and no payee list.
+    struct IdCap {
+        // The ERC-6909 contract; not zero, and not a token with a `TokenCap`
+        address token;
+        // The token id; one cap per `(token, id)`
+        uint256 id;
+        // The most of the id one operation may move, summed over its calls
+        uint128 maxPerOp;
+        // The most of the id the mandate may move: over its whole life, or
+        // in each period
+        uint128 budget;
+    }
+
     /// Install-time list of the only addresses a token's transfers,
     /// allowances and x402 payments may name. The token needs a `TokenCap`.
     struct TokenPayees {
@@ -354,6 +368,12 @@ contract AgentPolicy is IPolicy {
     /// `approve(address,uint256,uint256)` of ERC-6909: an allowance of one
     /// token id, withdrawn with the same function and amount 0
     bytes4 internal constant ERC6909_APPROVE = 0x426a8493;
+    /// The tag of `idAsset`'s hash
+    bytes32 internal constant ID_ASSET = keccak256("agent-keys.AgentPolicy.idAsset");
+    /// `transfer(address,uint256,uint256)` of ERC-6909
+    bytes4 internal constant ERC6909_TRANSFER = 0x095bcdb6;
+    /// `transferFrom(address,address,uint256,uint256)` of ERC-6909
+    bytes4 internal constant ERC6909_TRANSFER_FROM = 0xfe99049a;
     /// `authorizeOperator(address)` of ERC-777: an operator grant withdrawn
     /// by another function (`revokeOperator`). No mandate may list it.
     bytes4 internal constant AUTHORIZE_OPERATOR = 0x959b8c3f;
@@ -427,6 +447,10 @@ contract AgentPolicy is IPolicy {
     // counts for, plus one. Beside `TokenLimit` and not in it, so that what
     // `tokenLimit()` returns keeps its shape.
     mapping(bytes32 key => mapping(address account => uint48)) internal _tokenPeriod;
+    // Map of key => account => whether the mandate limits ids of the
+    // ERC-6909 contract. key: `keccak256(mandate, token)`. The limits
+    // themselves are `TokenLimit`s in `_tokens`, under `idAsset(token, id)`.
+    mapping(bytes32 key => mapping(address account => bool)) internal _idContracts;
     // key: `keccak256(mandate, digest)`. The window a registered
     // authorization or order was charged in, plus one; 0 without periods.
     mapping(bytes32 key => mapping(address account => uint48)) internal _chargedIn;
@@ -571,6 +595,10 @@ contract AgentPolicy is IPolicy {
     /// venues or without; one without a period is encoded in a shorter form
     /// and has no venues.
     uint256 internal constant HEAD_WITH_TRADING = 10 * 32;
+    /// Eleven words: the ten, then `IdCap[] ids`, which must not be empty
+    /// then. `payees` and `venues` may be empty and `period` may be 0 here
+    /// (with no venues): the form exists to carry the id limits.
+    uint256 internal constant HEAD_WITH_IDS = 11 * 32;
 
     /// @dev Installs a mandate under a permission of the account. Kernel calls
     /// it when the account installs a permission with this policy (an
@@ -628,14 +656,20 @@ contract AgentPolicy is IPolicy {
         _installPayees(m, data[32:]);
         // The period and venues of the ten-word form; no period otherwise
         c.period = _installTrading(m, data[32:], targets);
+        // The id limits of the eleven-word form
+        _installIds(m, data[32:]);
         // A token with a limit is callable through the four metered
         // functions only (`_chargeToken`). Any other entry on it would pass
         // neither its caps nor its payee list, so the limit the owner wrote
         // down would not be one. And a metered function is allowed on a token
         // with a limit only: on any other target validation refuses it every
         // time, a mandate that cannot do what it lists. Either is refused whole.
+        // The same for an ERC-6909 contract with id limits and its three
+        // metered functions. Any other entry on it is refused, `setOperator`
+        // among them: an operator may move every id, which no limit bounds.
         for (uint256 i; i < targets.length; i++) {
             if (_token(msg.sender, m, targets[i]).set != _isMetered(selectors[i])) revert InvalidConfig();
+            if (_hasIds(m, targets[i]) != _isIdMetered(selectors[i])) revert InvalidConfig();
             // An ERC-777 operator grant stands until `revokeOperator`, which
             // this policy does not pair with it: no mandate lists it
             if (selectors[i] == AUTHORIZE_OPERATOR) revert InvalidConfig();
@@ -651,6 +685,63 @@ contract AgentPolicy is IPolicy {
         // Count the permission and record the install
         usedIds[msg.sender]++;
         emit AgentPolicySet(msg.sender, id, validUntil, maxValuePerOp, budget);
+    }
+
+    /// @dev The id limits of the eleven-word form: one per `(token, id)`, on
+    /// a contract that is not itself a token with a limit.
+    /// @param m The mandate key.
+    /// @param params The mandate's parameters, after the permission id.
+    function _installIds(bytes32 m, bytes calldata params) internal {
+        if (uint256(bytes32(params[0:32])) != HEAD_WITH_IDS) return;
+        // The eleventh word: the offset of `IdCap[]`, a dynamic array of static
+        // tuples. Decoded on its own: eleven types at once do not fit the stack.
+        uint256 offset = uint256(bytes32(params[320:352]));
+        if (offset > params.length || params.length - offset < 32) revert InvalidConfig();
+        uint256 count = uint256(bytes32(params[offset:offset + 32]));
+        // the form exists to carry a limit: without one, use another
+        if (count == 0 || count > (params.length - offset - 32) / 128) revert InvalidConfig();
+        for (uint256 i; i < count; i++) {
+            // One `IdCap`: four words, each within its type's width
+            bytes calldata cap = params[offset + 32 + 128 * i:offset + 160 + 128 * i];
+            uint256 token = uint256(bytes32(cap[0:32]));
+            uint256 maxPerOp = uint256(bytes32(cap[64:96]));
+            uint256 budget = uint256(bytes32(cap[96:128]));
+            if (token == 0 || token >> 160 != 0 || (maxPerOp | budget) >> 128 != 0) revert InvalidConfig();
+            TokenLimit storage t = _token(msg.sender, m, idAsset(address(uint160(token)), uint256(bytes32(cap[32:64]))));
+            if (t.set || _token(msg.sender, m, address(uint160(token))).set) revert InvalidConfig();
+            (t.maxPerOp, t.budget, t.set) = (uint128(maxPerOp), uint128(budget), true);
+            _idContracts[keccak256(abi.encode(m, address(uint160(token))))][msg.sender] = true;
+        }
+    }
+
+    /// @notice The key an id's limit is kept under, in the place of a token's
+    /// address: `tokenLimit(account, permissionId, idAsset(token, id))` is
+    /// the id's limit and what it has spent.
+    /// @dev The low 160 bits of a tagged hash of `(token, id)`. Everything a
+    /// token's limit has (the sum per operation, the budget, its period) is
+    /// then the id's too. To use a limit meant for another id, or a token's,
+    /// takes a second preimage of 160 bits.
+    /// @param token The ERC-6909 contract.
+    /// @param id The token id.
+    /// @return The key, as an address.
+    function idAsset(address token, uint256 id) public pure returns (address) {
+        return address(uint160(uint256(keccak256(abi.encode(ID_ASSET, token, id)))));
+    }
+
+    /// @dev Whether the mandate limits ids of the contract.
+    /// @param m The mandate key.
+    /// @param token The contract.
+    /// @return True if the mandate has an `IdCap` for it.
+    function _hasIds(bytes32 m, address token) internal view returns (bool) {
+        return _idContracts[keccak256(abi.encode(m, token))][msg.sender];
+    }
+
+    /// @dev Whether a selector is one of the three ERC-6909 functions
+    /// `_chargeId` meters.
+    /// @param selector The selector.
+    /// @return True for ERC-6909's `transfer`, `transferFrom` and `approve`.
+    function _isIdMetered(bytes4 selector) internal pure returns (bool) {
+        return selector == ERC6909_TRANSFER || selector == ERC6909_TRANSFER_FROM || selector == ERC6909_APPROVE;
     }
 
     /// @dev Whether a selector is one of the four ERC-20 functions
@@ -679,7 +770,8 @@ contract AgentPolicy is IPolicy {
                 abi.decode(params, (address[], bytes4[], uint128, uint128, uint48, TokenCap[], uint48, TokenPayees[]));
             // the eight-word form exists to carry a list: without one, use the other
             if (lists.length == 0) revert InvalidConfig();
-        } else if (head == HEAD_WITH_TRADING) {
+        } else if (head == HEAD_WITH_TRADING || head == HEAD_WITH_IDS) {
+            // the eleven-word form's first ten words are the ten-word form's
             (,,,,,,, lists,,) = abi.decode(
                 params,
                 (address[], bytes4[], uint128, uint128, uint48, TokenCap[], uint48, TokenPayees[], uint32, Venue[])
@@ -716,8 +808,9 @@ contract AgentPolicy is IPolicy {
         internal
         returns (uint32 period_)
     {
-        // Only the ten-word form carries a period and venues
-        if (uint256(bytes32(params[0:32])) != HEAD_WITH_TRADING) return 0;
+        // Only the ten- and eleven-word forms carry a period and venues
+        uint256 head = uint256(bytes32(params[0:32]));
+        if (head != HEAD_WITH_TRADING && head != HEAD_WITH_IDS) return 0;
         Venue[] memory venues;
         (,,,,,,,, period_, venues) = abi.decode(
             params, (address[], bytes4[], uint128, uint128, uint48, TokenCap[], uint48, TokenPayees[], uint32, Venue[])
@@ -725,7 +818,8 @@ contract AgentPolicy is IPolicy {
         // The ten-word form carries a period, with venues or without. A mandate
         // with venues needs one: an order's charge is never given back, so the
         // period is what returns an unfilled order's part of the budget.
-        if (period_ == 0) revert InvalidConfig();
+        // The eleven-word form may have neither: it is there for the id limits.
+        if (period_ == 0 && (head == HEAD_WITH_TRADING || venues.length != 0)) revert InvalidConfig();
         for (uint256 i; i < venues.length; i++) {
             // Each decoder once, with a config, and with the code the owner pinned
             address decoder = venues[i].decoder;
@@ -1664,8 +1758,41 @@ contract AgentPolicy is IPolicy {
         // Install refuses it; refused again here, as the account and the
         // policy are as targets
         if (selector == AUTHORIZE_OPERATOR) return (false, 0);
+        // An ERC-6909 contract with id limits: its three metered functions,
+        // each against the limit of the id it names, and nothing else
+        if (_hasIds(m, target) || _isIdMetered(selector)) {
+            return _chargeId(m, target, selector, data) ? (true, value) : (false, 0);
+        }
         if (!_chargeToken(m, target, selector, data)) return (false, 0);
         return (true, value);
+    }
+
+    /// @dev Charges an ERC-6909 call to the limit of the id it names. The
+    /// amount is the last argument and the id the one before it, in all
+    /// three functions.
+    /// @param m The mandate key.
+    /// @param token The ERC-6909 contract.
+    /// @param selector The call's selector.
+    /// @param data The call's calldata.
+    /// @return True if the call is one of the three and within the id's limits.
+    function _chargeId(bytes32 m, address token, bytes4 selector, bytes calldata data) internal returns (bool) {
+        // Not one of the three, or on a contract without id limits (a
+        // mandate from before the install rule could list it): refused
+        if (!_isIdMetered(selector) || !_hasIds(m, token)) return false;
+        uint256 end = selector == ERC6909_TRANSFER_FROM ? 132 : 100;
+        if (data.length < end) return false;
+        uint256 amount = uint256(bytes32(data[end - 32:end]));
+        address asset = idAsset(token, uint256(bytes32(data[end - 64:end - 32])));
+        // The id's limit; an id without one is refused
+        TokenLimit storage t = _token(msg.sender, m, asset);
+        if (!t.set) return false;
+        // The cap per operation, over all of the operation's calls
+        if (_movedThisOperation(asset, amount) > t.maxPerOp) return false;
+        // The id's budget, in the current period if there is one
+        uint256 spent = _tokenSpent(m, asset, t) + amount;
+        if (spent > t.budget) return false;
+        t.spent = uint128(spent);
+        return true;
     }
 
     /// @dev Uniswap's Permit2 where it is deployed by the usual CREATE2

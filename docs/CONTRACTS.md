@@ -247,7 +247,7 @@ operation has moved of each token, and its notes (its period, its orders'
 window), are kept in transient storage, in the account's slots too [V
 source; `test_senderStorage_transientTotalsAreInTheAccountsSlots`].
 
-**Install data.** `bytes32(id) ‖ abi.encode(...)` in one of three forms,
+**Install data.** `bytes32(id) ‖ abi.encode(...)` in one of four forms,
 told apart by the first word, the offset of `targets`; a mandate is
 encoded in the shortest form that holds it [V source]:
 
@@ -256,11 +256,13 @@ encoded in the shortest form that holds it [V source]:
 | seven | `address[] targets, bytes4[] selectors, uint128 maxValuePerOp, uint128 budget, uint48 validUntil, TokenCap[] tokens, uint48 validAfter` | a plain mandate |
 | eight | the seven, then `TokenPayees[] payees`, not empty | payee lists |
 | ten | the eight (`payees` may be empty), then `uint32 period, Venue[] venues` | a budget per period, with venues or without |
+| eleven | the ten (`period` may be 0 when there are no venues), then `IdCap[] ids`, not empty | limits per id of an ERC-6909 contract (#186) |
 
 `TokenCap` is `(token, maxPerOp, budget, domainSeparator)`, the token's
 EIP-712 domain separator non-zero to allow x402 payments in it;
 `TokenPayees` is `(token, payees)`; `Venue` is `(decoder, codeHash,
-configHash)`. A first word that is none of the three is refused. The
+configHash)`; `IdCap` is `(token, id, maxPerOp, budget)`. A first word
+that is none of the four is refused. The
 contract decodes as loosely as `abi.decode` does; that the owner sees
 exactly what is installed rests on the reviewing app, which accepts
 canonical encodings only [V source].
@@ -294,7 +296,9 @@ canonical encodings only [V source].
 - `orderRegister(decoder, config, order)`: emits `OrderRegistered`.
 - Views: `configs(account, id)` (the first six fields of `Config`),
   `period(account, id)`, `isAllowed(account, id, target, selector)`,
-  `tokenLimit(account, id, token)`, `payeeAllowed(account, id, token,
+  `tokenLimit(account, id, token)`, `idAsset(token, tokenId)` (the key an
+  ERC-6909 id's limit is read under: `tokenLimit(account, id,
+  idAsset(token, tokenId))`), `payeeAllowed(account, id, token,
   payee)`, `x402Pending(account, id, digest)`, `venue(account, id,
   decoder)`, `venuePlace(account, place)`, `usedIds(account)`,
   `isModuleType(t)` (true only for `MODULE_TYPE_POLICY`) and
@@ -344,6 +348,27 @@ which refuses the operation all the same [I].
   selectors, so on an NFT contract they are metered functions and need a
   limit, which an NFT contract does not meaningfully have: they cannot be
   listed for one.
+- *Ids of an ERC-6909 contract (#186).* `transfer(receiver, id, amount)`,
+  `transferFrom(sender, receiver, id, amount)` and `approve(spender, id,
+  amount)` need a limit for the id they name (`IdCap`, in the eleven-word
+  form). The amounts, summed over the operation's calls, are at most the
+  id's `maxPerOp` and are charged to its budget, which follows the
+  mandate's period as a token's does; an id without a limit is refused. A
+  contract with limits per id is callable through these three functions
+  only, so not through `setOperator`, whose operator could move every id
+  past the limits; and the three go to a contract with such limits only.
+  Install refuses a mandate that breaks either, and one whose contract
+  also has a `TokenCap`, an id listed twice, the zero address or a limit
+  wider than 128 bits (`test_ids_anIdIsHeldToItsLimits`,
+  `test_ids_installRules`, `test_period_anIdsBudgetIsPerPeriod`; through a
+  Safe and the legs of its batch, `test_ids_heldThroughASafeAndItsBatch`). An
+  allowance of an id still has to be withdrawn in the same operation,
+  as below, and its amount is charged when it is given. An id has no
+  payee list and no x402: the agent picks the receiver and the spender.
+  An id's limit is kept as a token's, under a key made of the contract
+  and the id (the low 160 bits of a tagged hash; `idAsset`). The
+  contract's runtime size with this is 23,630 bytes of the 24,576 a
+  contract may have [V `forge build --sizes`, 2026-11-25].
   An approval is charged like a transfer; what the spender later pulls is
   not seen.
 - *No standing allowances.* An allowance the agent grants (`approve` or
@@ -362,7 +387,8 @@ which refuses the operation all the same [I].
   ERC-6909 is held whole: `setOperator(operator, true)` is withdrawn with
   `setOperator(operator, false)`, and an allowance of one id,
   `approve(spender, id, amount)`, with the same function, spender and id
-  and amount 0
+  and amount 0; `setOperator` can be listed only for a contract without
+  limits per id, and `approve(spender, id, amount)` only for one with them
   (`test_allowances_anERC6909OperatorIsWithdrawnByItsOwnFunction`,
   `test_allowances_anERC6909AllowanceIsWithdrawnForItsId`). A grant is
   withdrawn by its own function only: each kind has its own flag, so on a

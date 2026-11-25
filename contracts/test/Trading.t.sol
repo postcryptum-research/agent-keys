@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {AgentPermissionTest, MockToken, MockUSDC, Counter} from "./AgentPermission.t.sol";
+import {AgentPermissionTest, MockToken, MockUSDC, MockOperators, Counter} from "./AgentPermission.t.sol";
 import {AgentPolicy} from "../src/AgentPolicy.sol";
 import {CowSwapDecoder} from "../src/venues/CowSwapDecoder.sol";
 import {IVenueDecoder} from "../src/venues/IVenueDecoder.sol";
@@ -917,6 +917,42 @@ contract TradingTest is AgentPermissionTest {
         vm.warp((uint256(_today()) + 1) * DAY + 1 hours);
         _send(_tradeOp(_today(), address(counter), 0.1 ether, ""));
         assertEq(_spentOf(), afterOne, "each period starts at zero");
+    }
+
+    /// #186: with a period, the budget of an ERC-6909 id is one per period, as
+    /// a token's is.
+    function test_period_anIdsBudgetIsPerPeriod() public {
+        _world();
+        MockOperators t = new MockOperators();
+        t.mint(acct, 7, 100);
+        PermissionId id = PermissionId.wrap(0x69643032); // "id02"
+        (address[] memory targets, bytes4[] memory selectors) = _idTargets(address(t));
+        AgentPolicy.IdCap[] memory caps = new AgentPolicy.IdCap[](1);
+        caps[0] = AgentPolicy.IdCap(address(t), 7, 5, 5);
+        _send(
+            _installOp(
+                id,
+                abi.encode(
+                    targets,
+                    selectors,
+                    MAX_VALUE,
+                    BUDGET,
+                    tradingExpiry,
+                    new AgentPolicy.TokenCap[](0),
+                    uint48(0),
+                    new AgentPolicy.TokenPayees[](0),
+                    DAY,
+                    new AgentPolicy.Venue[](0),
+                    caps
+                )
+            )
+        );
+        address to = makeAddr("receiver");
+        _send(_periodOp(id, _today(), address(t), 0, _idMove(t, to, 7, 5).callData));
+        _expectRefused(_periodOp(id, _today(), address(t), 0, _idMove(t, to, 7, 1).callData));
+        vm.warp((uint256(_today()) + 1) * DAY + 1 hours);
+        _send(_periodOp(id, _today(), address(t), 0, _idMove(t, to, 7, 5).callData));
+        assertEq(t.balanceOf(to, 7), 10);
     }
 
     function _spentOf() internal view returns (uint128 spent) {

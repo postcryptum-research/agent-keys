@@ -219,6 +219,27 @@ pub struct PolicyConfig {
     /// Where the agent may place orders (issue #80), and on what terms.
     #[serde(default)]
     pub venues: Vec<VenueEntry>,
+    /// Limits per token id of an ERC-6909 contract (issue #186), for its
+    /// `transfer`, `transferFrom` and `approve`; an allow-listed one of the
+    /// three needs a limit on its target, and that target may list nothing
+    /// else. Needs an `AgentPolicy` that knows them.
+    #[serde(default)]
+    pub token_ids: Vec<TokenIdEntry>,
+}
+
+/// A limit for one id of an ERC-6909 contract. An id has no payee list and
+/// no x402: the agent picks who receives it.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TokenIdEntry {
+    /// The ERC-6909 contract.
+    pub token: Address,
+    /// The token id: a decimal string, or hex with `0x`.
+    pub id: String,
+    /// The id's units, decimal string
+    pub max_per_op: String,
+    /// The id's units, decimal string
+    pub budget: String,
 }
 
 /// A trading venue of the mandate: its decoder contract and the terms the
@@ -457,7 +478,20 @@ impl AgentConfig {
                 Ok((v.decoder, code, alloy::primitives::keccak256(v.config()?)))
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(owner_core::kernel::Trading { period: self.policy.period, venues })
+        Ok(owner_core::kernel::Trading { period: self.policy.period, venues, ids: self.token_ids()? })
+    }
+
+    /// The limits per token id as the policy takes them: `(contract, id,
+    /// maxPerOp, budget)`.
+    pub fn token_ids(&self) -> Result<Vec<(Address, U256, u128, u128)>> {
+        self.policy
+            .token_ids
+            .iter()
+            .map(|t| -> Result<_> {
+                let id: U256 = t.id.parse().with_context(|| format!("tokenIds.id: {}", t.id))?;
+                Ok((t.token, id, t.max_per_op.parse().context("tokenIds.maxPerOp")?, t.budget.parse().context("tokenIds.budget")?))
+            })
+            .collect()
     }
 
     /// The venues' configs, for the phone: the mandate carries their hashes.
@@ -570,6 +604,40 @@ impl AgentConfig {
                 a.selector,
                 a.target
             );
+        }
+        // The same for an ERC-6909 contract with limits per id (#186), and its
+        // transfer, transferFrom and approve
+        const ID_METERED: [&str; 3] = ["095bcdb6", "fe99049a", "426a8493"];
+        let ids = self.token_ids()?;
+        for (i, id) in ids.iter().enumerate() {
+            if id.0.is_zero() || ids.iter().take(i).any(|other| (other.0, other.1) == (id.0, id.1)) {
+                anyhow::bail!("tokenIds: {} id {} is listed twice, or its contract is the zero address", id.0, id.1);
+            }
+            if self.policy.tokens.iter().any(|t| t.token == id.0) {
+                anyhow::bail!("tokenIds: {} also has limits in `tokens`; a contract has a token limit or limits per id, not both", id.0);
+            }
+        }
+        for a in self.policy.allow.iter() {
+            let has_ids = ids.iter().any(|id| id.0 == a.target);
+            let metered = ID_METERED.contains(&a.selector.trim_start_matches("0x").to_lowercase().as_str());
+            if has_ids && !metered {
+                anyhow::bail!(
+                    "allow: {} {} is refused: {} has limits per id in `tokenIds`, and such a contract is callable only through ERC-6909's transfer, transferFrom and approve — \
+                     anything else (setOperator among them) would move its tokens past the limits; AgentPolicy refuses the mandate at install",
+                    a.target,
+                    a.selector,
+                    a.target
+                );
+            }
+            if !has_ids && metered {
+                anyhow::bail!(
+                    "allow: {} {} is refused: ERC-6909's transfer, transferFrom and approve are checked against a limit per token id, and {} has none in `tokenIds`; \
+                     add its limits, or remove the entry",
+                    a.target,
+                    a.selector,
+                    a.target
+                );
+            }
         }
         for t in self.policy.tokens.iter() {
             if let Some(a) = self.policy.allow.iter().find(|a| {
@@ -884,6 +952,45 @@ mod payee_tests {
             let refused = cfg.check_payees_stated().unwrap_err().to_string();
             assert!(refused.contains("authorizeOperator (ERC-777)"), "{selector}: {refused}");
         }
+    }
+
+    /// #186: limits per id of an ERC-6909 contract. The config gives them to
+    /// the mandate, and is refused where the policy would refuse the install.
+    #[test]
+    fn limits_per_token_id_follow_the_policys_rules() {
+        let pool = "0x0000000000000000000000000000000000006909";
+        let with = |allow: &[&str], ids: serde_json::Value| -> AgentConfig {
+            let mut v: serde_json::Value = serde_json::from_str(include_str!("../../../agent.x402.base-sepolia.json")).unwrap();
+            for selector in allow {
+                v["policy"]["allow"].as_array_mut().unwrap().push(serde_json::json!({"target": pool, "selector": selector}));
+            }
+            v["policy"]["tokenIds"] = ids;
+            serde_json::from_value(v).unwrap()
+        };
+        let seven = serde_json::json!([{"token": pool, "id": "7", "maxPerOp": "5", "budget": "8"}, {"token": pool, "id": "0x10", "maxPerOp": "1", "budget": "2"}]);
+        let cfg = with(&["0x095bcdb6", "0xfe99049a", "0x426a8493"], seven.clone());
+        cfg.check_payees_stated().unwrap();
+        let pool_address: Address = pool.parse().unwrap();
+        assert_eq!(cfg.token_ids().unwrap(), vec![(pool_address, U256::from(7), 5, 8), (pool_address, U256::from(16), 1, 2)]);
+        assert_eq!(cfg.trading(&Default::default()).unwrap().ids.len(), 2);
+        let refused = |cfg: AgentConfig, why: &str| {
+            let said = cfg.check_payees_stated().unwrap_err().to_string();
+            assert!(said.contains(why), "{said}");
+        };
+        // anything else on the contract, an operator among them
+        refused(with(&["0x095bcdb6", "0x558a7297"], seven.clone()), "callable only through ERC-6909's transfer, transferFrom and approve");
+        // one of the three without a limit per id
+        for selector in ["0x095bcdb6", "0xFE99049A", "0x426a8493"] {
+            refused(with(&[selector], serde_json::json!([])), "has none in `tokenIds`");
+        }
+        // the same id twice, in two spellings
+        let twice = serde_json::json!([{"token": pool, "id": "16", "maxPerOp": "5", "budget": "8"}, {"token": pool, "id": "0x10", "maxPerOp": "1", "budget": "2"}]);
+        refused(with(&["0x095bcdb6"], twice), "listed twice");
+        // a contract with a token limit too
+        let usdc = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+        refused(with(&[], serde_json::json!([{"token": usdc, "id": "7", "maxPerOp": "5", "budget": "8"}])), "not both");
+        // an id that is not a number
+        assert!(with(&[], serde_json::json!([{"token": pool, "id": "seven", "maxPerOp": "5", "budget": "8"}])).check_payees_stated().is_err());
     }
 
     /// #175: one of the four metered functions on a target without a limit
