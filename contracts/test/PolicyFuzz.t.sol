@@ -569,14 +569,19 @@ contract PolicyFuzzDifferential is PolicyFuzzBase {
         return keccak256(abi.encodePacked(hex"1901", a.token == TOKEN_A ? A_DOMAIN : B_DOMAIN, structHash));
     }
 
-    function _safeExec(address to, uint256 value, bytes memory inner, uint256 operation, uint256 gasPrice)
+    /// The last operation drawn holds a Safe transaction with `safeTxGas`,
+    /// `baseGas` or `gasPrice` other than 0. With any of them the Safe does
+    /// not revert when its inner call fails, or pays a refund (#190): the
+    /// policy must refuse the operation whatever else it holds.
+    bool internal quietSafe;
+
+    /// `gas` is `[safeTxGas, baseGas, gasPrice]`.
+    function _safeExec(address to, uint256 value, bytes memory inner, uint256 operation, uint256[3] memory gas)
         internal
         pure
         returns (bytes memory)
     {
-        return abi.encodeWithSelector(
-            SAFE_EXEC, to, value, inner, operation, uint256(0), uint256(0), gasPrice, address(0), address(0), ""
-        );
+        return abi.encodeWithSelector(SAFE_EXEC, to, value, inner, operation, gas[0], gas[1], gas[2], address(0), address(0), "");
     }
 
     function _multiSend(uint256 legs) internal returns (bytes memory) {
@@ -595,12 +600,17 @@ contract PolicyFuzzDifferential is PolicyFuzzBase {
     function _safePair() internal returns (Leg memory guard, Leg memory exec) {
         address guarded = _below(12) == 0 ? VAULT : SAFE;
         guard = Leg(NONCE_ASSERT, 0, abi.encodeCall(SafeNonceAssert.check, (guarded, _below(5))));
-        uint256 gasPrice = _below(15) == 0 ? 1 : 0;
+        // each of the three words now and then other than 0: 1, or any word at all
+        uint256[3] memory gas;
+        for (uint256 i; i < 3; i++) {
+            if (_below(20) == 0) gas[i] = _below(2) == 0 ? 1 : _next() | 1;
+            if (gas[i] != 0) quietSafe = true;
+        }
         if (_below(2) == 0) {
             Leg memory inner = _plainLeg();
-            exec = Leg(SAFE, _value(), _safeExec(inner.target, inner.value, inner.data, _below(15) == 0 ? 1 : 0, gasPrice));
+            exec = Leg(SAFE, _value(), _safeExec(inner.target, inner.value, inner.data, _below(15) == 0 ? 1 : 0, gas));
         } else {
-            exec = Leg(SAFE, 0, _safeExec(MULTISEND, _below(20) == 0 ? 1 : 0, _multiSend(1 + _below(3)), _below(15) == 0 ? 0 : 1, gasPrice));
+            exec = Leg(SAFE, 0, _safeExec(MULTISEND, _below(20) == 0 ? 1 : 0, _multiSend(1 + _below(3)), _below(15) == 0 ? 0 : 1, gas));
         }
     }
 
@@ -608,6 +618,7 @@ contract PolicyFuzzDifferential is PolicyFuzzBase {
     /// policy's own address in an x402 leg.
     function _operation(AgentPolicy policy, uint256 opSeed) internal returns (PackedUserOperation memory op) {
         rng = opSeed;
+        quietSafe = false;
         uint256 shape = _below(40);
         if (shape == 0) {
             bytes memory junk = abi.encodePacked(_next(), _next(), _next());
@@ -693,6 +704,7 @@ contract PolicyFuzzDifferential is PolicyFuzzBase {
 
     function testFuzz_differential_sourceAgainstTheDeployedInstance(uint256 seed) public {
         uint256 accepted;
+        uint256 quiet;
         for (uint256 n; n < 40; n++) {
             uint256 opSeed = uint256(keccak256(abi.encode(seed, n)));
             // now and then the permission is taken away and given back: a new epoch
@@ -712,11 +724,17 @@ contract PolicyFuzzDifferential is PolicyFuzzBase {
             (bool ok2, uint256 r2) = _try(deployed, forDeployed);
             assertEq(ok1, ok2, "one accepts what the other refuses");
             assertEq(r1, r2, "validation data");
+            // agreement is not enough here: both sides have the rule or both lack it
+            if (quietSafe) {
+                quiet++;
+                assertFalse(ok1, "a Safe transaction that may fail quietly, or pays a refund, was accepted");
+            }
             if (ok1) accepted++;
             _sameViews();
         }
         _sameAuthorizations();
         emit log_named_uint("accepted of 40", accepted);
+        emit log_named_uint("with a Safe gas word other than 0", quiet);
         emit log_named_uint("reclaimed", reclaimed);
     }
 
