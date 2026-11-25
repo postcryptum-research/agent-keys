@@ -40,7 +40,9 @@ import {Vm} from "forge-std/Vm.sol";
 /// - value-faithfulness on the account's own paths: the operation the policy
 ///   accepted is then executed the way Kernel v3.3 executes it
 ///   (`Kernel.execute` is `ExecLib.execute(mode, data)` behind its access
-///   check), and what reaches the payee is exactly what was booked.
+///   check), and what reaches the payee is exactly what was booked;
+/// - no standing allowances: an approval is accepted only with its withdrawal
+///   in the same operation, within the cap, and booked as a transfer is.
 ///
 /// `.github/workflows/kontrol.yml` also breaks each rule alone, in a copy of
 /// the policy, and requires its proof to fail. Timings are in
@@ -107,6 +109,8 @@ contract BudgetProof {
     address internal constant SAFE = address(0x5AFE);
     address internal constant MULTISEND = address(0x3157);
     bytes4 internal constant TRANSFER = 0xa9059cbb;
+    bytes4 internal constant APPROVE = 0x095ea7b3;
+    address internal constant SPENDER = address(0x5BE4);
     bytes4 internal constant SAFE_EXEC = 0x6a761202;
     bytes4 internal constant MULTI_SEND = 0x8d80ff0a;
     // Each budget is reachable within two operations: with a budget above
@@ -125,12 +129,13 @@ contract BudgetProof {
         // One mandate: plain native transfers to PAYEE (value capped per op
         // and by the budget), token transfers (amount capped per op and by
         // the token budget), a Safe's transactions and its multiSend.
-        address[] memory targets = new address[](4);
-        bytes4[] memory selectors = new bytes4[](4);
+        address[] memory targets = new address[](5);
+        bytes4[] memory selectors = new bytes4[](5);
         (targets[0], selectors[0]) = (PAYEE, bytes4(0)); // plain value transfer
         (targets[1], selectors[1]) = (token, TRANSFER);
         (targets[2], selectors[2]) = (SAFE, SAFE_EXEC);
         (targets[3], selectors[3]) = (MULTISEND, MULTI_SEND);
+        (targets[4], selectors[4]) = (token, APPROVE);
         AgentPolicy.TokenCap[] memory tokens = new AgentPolicy.TokenCap[](1);
         tokens[0] = AgentPolicy.TokenCap(token, A_MAX, A_BUDGET, bytes32(0));
         bytes memory data = abi.encodePacked(
@@ -311,6 +316,30 @@ contract BudgetProof {
         } else {
             assert(v1 + v2 <= MAX_VALUE);
             assert(_nativeSpent() == v1 + v2);
+        }
+    }
+
+    // --- no standing allowances ---
+
+    /// An approval of a limited token is accepted alone only if it grants
+    /// nothing; with its withdrawal (`approve(spender, 0)`) later in the same
+    /// operation it is accepted within the cap per operation and booked as a
+    /// transfer is. Nothing the agent grants outlives the operation.
+    function check_allowance_mustBeWithdrawn(uint256 amount) public {
+        // alone: it would stand
+        uint256 r1 = _validate(_single(token, 0, abi.encodeWithSelector(APPROVE, SPENDER, amount)));
+        if (r1 != 1) assert(amount == 0);
+        // granted and withdrawn in one batch
+        uint256 before = _tokenSpent();
+        Execution[] memory legs = new Execution[](2);
+        legs[0] = Execution(token, 0, abi.encodeWithSelector(APPROVE, SPENDER, amount));
+        legs[1] = Execution(token, 0, abi.encodeWithSelector(APPROVE, SPENDER, uint256(0)));
+        uint256 r2 = _validate(_batch(legs));
+        if (r2 == 1) {
+            assert(_tokenSpent() == before);
+        } else {
+            assert(amount <= A_MAX);
+            assert(_tokenSpent() == before + amount);
         }
     }
 

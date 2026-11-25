@@ -36,6 +36,8 @@ BREAKS = [
      "moved += legMoved;", "moved = legMoved;"),
     ("call-value-counted", "check_faithful_batch", "_judge",
      "return (true, value);", "return (true, 0);"),
+    ("allowance-left-open", "check_allowance_mustBeWithdrawn", "checkUserOpPolicy",
+     "if (_tload(_thisOperation(OPEN_ALLOWANCES)) != 0)", "if (false)"),
 ]
 
 

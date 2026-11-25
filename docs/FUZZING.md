@@ -379,6 +379,7 @@ bytecode needs.
 | `check_safe_multiSend_twoLegs` | a Safe delegatecalling multiSend with two legs: their sum is capped and booked |
 | `check_faithful_single` | value-faithfulness: an accepted token transfer, executed as Kernel v3.3 executes it, delivers exactly what was booked |
 | `check_faithful_batch` | the same for a batch of a token transfer and a native transfer |
+| `check_allowance_mustBeWithdrawn` | no standing allowances: an `approve` of a limited token is accepted alone only if it grants nothing; with `approve(spender, 0)` later in the same batch it is accepted within the cap per operation and booked as a transfer is |
 
 [V] (`contracts/test/BudgetProof.t.sol`, `contracts/lib/kernel/src/Kernel.sol:330-332`, `contracts/lib/account-abstraction/contracts/core/EntryPoint.sol:571-573`):
 - Kernel's `execute` is `ExecLib.execute(mode, data)` behind its access check. The harness's account runs exactly that on the `callData` the policy judged, so the faithfulness proofs execute what was validated.
@@ -397,6 +398,7 @@ bytecode needs.
 | `safe-inner-value`: a Safe transaction's inner value not counted | `check_safe_innerValue` |
 | `multisend-legs-summed`: a multiSend's value is its last leg's | `check_safe_multiSend_twoLegs` |
 | `call-value-counted`: a call's value not counted | `check_faithful_batch` |
+| `allowance-left-open`: an allowance left open at the end of the operation accepted | `check_allowance_mustBeWithdrawn` |
 
 What breaking them one at a time found: with the budgets set at first (a token cap of 100 and a token budget of 250, a native cap of 1 ether and a native budget of 5 ether), two operations could never reach the budget. A broken budget check could not show. The run below caught the token budget's break only because the cap was broken with it. The budgets are now 150 and 1.5 ether, reachable within two operations.
 
