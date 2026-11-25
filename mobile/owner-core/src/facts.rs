@@ -139,6 +139,16 @@ fn from_deployments(json: &str, chain_id: u64, canonical: bool) -> Facts {
                 if ID_POLICIES.contains(&addr) {
                     f.id_policy_modules.push(addr);
                 }
+                // The local test chain runs this build's contracts at these addresses
+                // (the CLI's fixtures, held to the build by scripts/test-fixtures.py):
+                // the policy there holds everything the current source does.
+                if chain_id == 31337 {
+                    for list in [&mut f.payee_policy_modules, &mut f.trading_policy_modules, &mut f.id_policy_modules] {
+                        if !list.contains(&addr) {
+                            list.push(addr);
+                        }
+                    }
+                }
             }
             "p256Signer" => f.signer_modules.push(addr),
             "demoCounter" => f.demo_counter = Some(addr),

@@ -283,13 +283,19 @@ same bytes; Kernel's `installValidations` is not run here.
 - A mandate the review lets the owner sign is one the policy installs.
 - For such a mandate the policy's views give back what the review read,
   and within the probes nothing more. The probes are the generator's pools
-  (9 targets by 9 functions, 3 tokens, 3 payees) and every target,
-  function, token and payee the review read in that case. Compared: the
+  (11 targets by 12 functions, 3 tokens, 3 payees, 3 ERC-6909 contracts
+  by 4 ids) and every target, function, token, payee and id the review
+  read in that case. Compared: the
   window and the two native limits (`configs`); every probed call allowed
   exactly when the review lists it (`isAllowed`); for each token whether
   it is limited, its two limits, its x402 domain and whether it has a
   payee list (`tokenLimit`); every probed payee reachable exactly when
-  the review says so (`payeeAllowed`).
+  the review says so (`payeeAllowed`); the budget period (`period`); for
+  each probed id whether it is limited and its two limits (`tokenLimit`
+  under `idAsset`). The generator reaches all four forms of the install
+  data: a normal run of 400 has 14 mandates shown and installed in the
+  ten-word form and 16 in the eleven-word one [V the run of 2026-11-25];
+  a venue it does not reach, since the local chain has none.
 - The review refuses a mandate the policy installs for one reason only:
   bytes the policy decodes although they are not the one encoding of
   their values. Any other reason fails the test, so a review that refuses

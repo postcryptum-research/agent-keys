@@ -2977,6 +2977,8 @@ mod mandate_abi {
         struct TokenLimit { uint128 maxPerOp; uint128 budget; uint128 spent; bool set; bool payeesOnly; bytes32 domainSeparator; }
         function tokenLimit(address account, bytes32 id, address token) external view returns (TokenLimit memory);
         function payeeAllowed(address account, bytes32 id, address token, address payee) external view returns (bool);
+        function period(address account, bytes32 id) external view returns (uint32 seconds_, uint48 seen);
+        function idAsset(address token, uint256 id) external pure returns (address);
     }
 }
 
@@ -3045,8 +3047,25 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
     let tokens: [Address; 4] = [Address::repeat_byte(0xa1), Address::repeat_byte(0xa2), Address::repeat_byte(0xa3), Address::ZERO];
     let payee_pool: [Address; 4] = [Address::repeat_byte(0xb1), Address::repeat_byte(0xb2), Address::repeat_byte(0xb3), Address::ZERO];
     let permit2: Address = "0x000000000022D473030F116dDEE9F6B43aC78BA3".parse().unwrap();
-    let targets: [Address; 9] = [addr("demoCounter"), tokens[0], tokens[1], tokens[2], Address::repeat_byte(0xc1), permit2, acct, entry, policy];
-    let selectors: [[u8; 4]; 9] = [
+    let targets: [Address; 11] = [
+        addr("demoCounter"),
+        tokens[0],
+        tokens[1],
+        tokens[2],
+        Address::repeat_byte(0xc1),
+        permit2,
+        acct,
+        entry,
+        policy,
+        Address::repeat_byte(0xd1),
+        Address::repeat_byte(0xd2),
+    ];
+    // ERC-6909 contracts for limits per id (#186): two of their own, a token of the
+    // other pool (a contract with both kinds of limit is refused), and zero
+    let id_contracts: [Address; 4] = [targets[9], targets[10], tokens[0], Address::ZERO];
+    let id_pool: [U256; 4] = [U256::ZERO, U256::from(7), U256::from(8), U256::MAX];
+    let id_selectors: [[u8; 4]; 3] = [[0x09, 0x5b, 0xcd, 0xb6], [0xfe, 0x99, 0x04, 0x9a], [0x42, 0x6a, 0x84, 0x93]];
+    let selectors: [[u8; 4]; 12] = [
         [0xd0, 0x9d, 0xe0, 0x8a], // increment()
         [0xa9, 0x05, 0x9c, 0xbb], // transfer
         [0x09, 0x5e, 0xa7, 0xb3], // approve
@@ -3056,10 +3075,15 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
         [0, 0, 0, 0],
         alloy::primitives::keccak256("x402Authorize(address,address,address,uint256,uint256,uint256,bytes32)")[..4].try_into().unwrap(),
         alloy::primitives::keccak256("x402Reclaim(bytes32,address,address,uint256,uint256,uint256,bytes32)")[..4].try_into().unwrap(),
+        id_selectors[0], // ERC-6909 transfer
+        id_selectors[1], // ERC-6909 transferFrom
+        id_selectors[2], // ERC-6909 approve
     ];
     let cases: u64 = std::env::var("MANDATE_DIFFERENTIAL_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(400);
     let mut rng = Seeded(0x6d61_6e64_6174_65); // "mandate"
     let (mut both, mut chain_only, mut neither) = (0u64, 0u64, 0u64);
+    // of those shown and installed: in the ten-word form, and in the eleven-word one
+    let (mut with_period, mut with_ids) = (0u64, 0u64);
 
     for case in 0..cases {
         // ---- a mandate from the seed
@@ -3108,6 +3132,47 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
                 }
             }
         }
+        // Limits per id, in one mandate of three; then most of the time the three
+        // functions go to a contract that has them and it lists nothing else,
+        // which both sides require at install
+        let mut ids: Vec<(Address, U256, U256, U256)> = Vec::new();
+        if rng.one_in(3) {
+            for _ in 0..1 + rng.below(3) {
+                let token = if rng.one_in(15) { rng.pick(&id_contracts[2..]) } else { rng.pick(&id_contracts[..2]) };
+                let id = rng.pick(&id_pool);
+                if !ids.iter().any(|i| (i.0, i.1) == (token, id)) || rng.one_in(8) {
+                    ids.push((token, id, amount(&mut rng), amount(&mut rng)));
+                }
+            }
+            if rng.one_in(2) {
+                if let Some(first) = ids.first() {
+                    allow.push((first.0, rng.pick(&id_selectors).into()));
+                }
+            }
+        }
+        if !rng.one_in(6) {
+            for (t, s) in allow.iter_mut() {
+                let (has, metered) = (ids.iter().any(|i| i.0 == *t), id_selectors.contains(&s.0));
+                match (has, metered) {
+                    (true, false) => *s = id_selectors[0].into(),
+                    (false, true) => match ids.first() {
+                        Some(i) => *t = i.0,
+                        None => *s = selectors[0].into(),
+                    },
+                    _ => {}
+                }
+            }
+        }
+        // A budget period, in the forms that carry one; and seldom a venue no build
+        // knows and no chain has code for, which both sides refuse
+        let period: u32 = match rng.below(6) {
+            0 => 0,
+            1 => 1,
+            2 => u32::MAX,
+            _ => 86_400,
+        };
+        let venues: Vec<(Address, B256, B256)> =
+            if rng.one_in(20) { vec![(Address::repeat_byte(0xe1), B256::repeat_byte(1), B256::repeat_byte(2))] } else { vec![] };
         let mut lists: Vec<(Address, Vec<Address>)> = Vec::new();
         if rng.one_in(2) {
             for cap in &caps {
@@ -3145,7 +3210,15 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
             ss.pop(); // a function short of the targets
         }
         let seven = (ts, ss, max_value, budget, until, caps.clone(), after);
-        let mut init = if lists.is_empty() && !rng.one_in(12) {
+        // The eleven-word form when there are limits per id (seldom without any, or
+        // the limits dropped into a shorter form); the ten-word form one time in five
+        let mut init = if !ids.is_empty() && !rng.one_in(12) || rng.one_in(40) {
+            let (a, b, c, d, e, f, g) = seven;
+            (a, b, c, d, e, f, g, lists.clone(), period, venues.clone(), ids.clone()).abi_encode_params()
+        } else if rng.one_in(5) {
+            let (a, b, c, d, e, f, g) = seven;
+            (a, b, c, d, e, f, g, lists.clone(), period, venues.clone()).abi_encode_params()
+        } else if lists.is_empty() && !rng.one_in(12) {
             seven.abi_encode_params()
         } else {
             let (a, b, c, d, e, f, g) = seven;
@@ -3193,7 +3266,7 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
         let bytes = request::SignRequest::new(&op, entry, 31337, NOW + 120, None, Default::default(), None).to_bytes();
         let review = open_request_with_build_facts(&bytes, &request::commitment(&bytes), NOW, &[EnrolledAccount::new(31337, entry, acct)]);
         let shown = !matches!(review.verdict, Verdict::Refuse(_));
-        let place = MandatePlace { account: acct, entry_point: entry, policy, payees_enforced: true, trading_enforced: false };
+        let place = MandatePlace { account: acct, entry_point: entry, policy, payees_enforced: true, trading_enforced: true, ids_enforced: true };
         let terms = mandate_terms(&init, &place, &|a| a.to_string());
         // the review signs nothing whose mandate it could not read
         assert!(!shown || terms.is_ok(), "case {case}: signed without terms: {:?}", review.verdict);
@@ -3233,6 +3306,11 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
             (true, true) => {
                 both += 1;
                 let t = terms.unwrap();
+                match init[31] {
+                    0x40 => with_period += 1,
+                    0x60 => with_ids += 1,
+                    _ => {}
+                }
                 let c = configsCall::abi_decode_returns(&chain.call(&chain.addr("agentPolicy"), configsCall { account: acct, id }.abi_encode())).unwrap();
                 assert_eq!(
                     (U256::from(c.validUntil), U256::from(c.validAfter), U256::from(c.maxValuePerOp), U256::from(c.budget), c.spent),
@@ -3249,6 +3327,25 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
                     }
                     if !probe_selectors.contains(&s.0) {
                         probe_selectors.push(s.0);
+                    }
+                }
+                // the period: the one the review read, or none
+                let on = periodCall::abi_decode_returns(&chain.call(&chain.addr("agentPolicy"), periodCall { account: acct, id }.abi_encode())).unwrap();
+                assert_eq!(on.seconds_, t.trading.as_ref().map_or(0, |p| p.0), "case {case}: the budget period");
+                assert!(t.trading.as_ref().map_or(true, |p| p.1.is_empty()), "case {case}: a venue no chain has");
+                // every id probed: limited exactly when the review lists it, and to that
+                let mut probe_ids: Vec<(Address, U256)> = id_contracts[..3].iter().flat_map(|c| id_pool.iter().map(|i| (*c, *i))).collect();
+                probe_ids.extend(t.ids.iter().map(|i| (i.0, i.1)).filter(|p| !id_contracts[..3].contains(&p.0) || !id_pool.contains(&p.1)));
+                for (token, token_id) in probe_ids {
+                    let key = Address::from_word(B256::from_slice(&chain.call(&chain.addr("agentPolicy"), idAssetCall { token, id: token_id }.abi_encode())));
+                    let l = tokenLimitCall::abi_decode_returns(&chain.call(&chain.addr("agentPolicy"), tokenLimitCall { account: acct, id, token: key }.abi_encode())).unwrap();
+                    match t.ids.iter().find(|i| (i.0, i.1) == (token, token_id)) {
+                        Some(i) => assert_eq!(
+                            (l.set, U256::from(l.maxPerOp), U256::from(l.budget), l.spent, l.payeesOnly, l.domainSeparator),
+                            (true, i.2, i.3, 0, false, B256::ZERO),
+                            "case {case}: the limits of {token} id {token_id}"
+                        ),
+                        None => assert!(!l.set, "case {case}: {token} id {token_id} has a limit the review did not read"),
                     }
                 }
                 let mut probe_tokens = tokens[..3].to_vec();
@@ -3287,7 +3384,9 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
             }
         }
     }
-    eprintln!("mandates: {cases}; shown and installed {both}, installed and not shown {chain_only}, neither {neither}");
+    eprintln!(
+        "mandates: {cases}; shown and installed {both} ({with_period} with a period, {with_ids} with limits per id), installed and not shown {chain_only}, neither {neither}"
+    );
     // the generator reaches each side's yes and no, and the one-way difference between them
     assert!(both * 5 >= cases && neither * 5 >= cases && chain_only * 100 >= cases, "the generator has drifted: {both} / {chain_only} / {neither}");
 }

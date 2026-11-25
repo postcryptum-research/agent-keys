@@ -227,7 +227,9 @@ operation that does not withdraw it (`approve(spender, 0)`) by its end.
 The pattern is approve exactly the trade's amount, trade, withdraw, in
 one batch. An operator grant of ERC-721 and ERC-1155
 (`setApprovalForAll`) is held to the same rule, and so are ERC-6909's
-`setOperator` and its allowance of one id (`approve(spender, id, amount)`).
+`setOperator` and its allowance of one id (`approve(spender, id, amount)`);
+the amounts of an id's transfers and allowances are bounded by limits per
+id (`docs/CONTRACTS.md`, #186).
 ERC-777's `authorizeOperator` cannot be listed in a mandate at all. Allowances and grants the
 owner makes, such as a venue's spender's allowance, are not the agent's
 and are not counted.

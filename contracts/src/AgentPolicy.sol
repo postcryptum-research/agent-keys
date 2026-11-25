@@ -368,7 +368,7 @@ contract AgentPolicy is IPolicy {
     /// `approve(address,uint256,uint256)` of ERC-6909: an allowance of one
     /// token id, withdrawn with the same function and amount 0
     bytes4 internal constant ERC6909_APPROVE = 0x426a8493;
-    /// The tag of `_idAsset`'s hash
+    /// The tag of `idAsset`'s hash
     bytes32 internal constant ID_ASSET = keccak256("agent-keys.AgentPolicy.idAsset");
     /// `transfer(address,uint256,uint256)` of ERC-6909
     bytes4 internal constant ERC6909_TRANSFER = 0x095bcdb6;
@@ -449,7 +449,7 @@ contract AgentPolicy is IPolicy {
     mapping(bytes32 key => mapping(address account => uint48)) internal _tokenPeriod;
     // Map of key => account => whether the mandate limits ids of the
     // ERC-6909 contract. key: `keccak256(mandate, token)`. The limits
-    // themselves are `TokenLimit`s in `_tokens`, under `_idAsset(token, id)`.
+    // themselves are `TokenLimit`s in `_tokens`, under `idAsset(token, id)`.
     mapping(bytes32 key => mapping(address account => bool)) internal _idContracts;
     // key: `keccak256(mandate, digest)`. The window a registered
     // authorization or order was charged in, plus one; 0 without periods.
@@ -707,22 +707,24 @@ contract AgentPolicy is IPolicy {
             uint256 maxPerOp = uint256(bytes32(cap[64:96]));
             uint256 budget = uint256(bytes32(cap[96:128]));
             if (token == 0 || token >> 160 != 0 || (maxPerOp | budget) >> 128 != 0) revert InvalidConfig();
-            TokenLimit storage t = _token(msg.sender, m, _idAsset(address(uint160(token)), uint256(bytes32(cap[32:64]))));
+            TokenLimit storage t = _token(msg.sender, m, idAsset(address(uint160(token)), uint256(bytes32(cap[32:64]))));
             if (t.set || _token(msg.sender, m, address(uint160(token))).set) revert InvalidConfig();
             (t.maxPerOp, t.budget, t.set) = (uint128(maxPerOp), uint128(budget), true);
             _idContracts[keccak256(abi.encode(m, address(uint160(token))))][msg.sender] = true;
         }
     }
 
-    /// @dev The key an id's limit is kept under, in the place of a token's
-    /// address: the low 160 bits of a tagged hash of `(token, id)`. Everything
-    /// a token's limit has (the sum per operation, the budget, its period) is
+    /// @notice The key an id's limit is kept under, in the place of a token's
+    /// address: `tokenLimit(account, permissionId, idAsset(token, id))` is
+    /// the id's limit and what it has spent.
+    /// @dev The low 160 bits of a tagged hash of `(token, id)`. Everything a
+    /// token's limit has (the sum per operation, the budget, its period) is
     /// then the id's too. To use a limit meant for another id, or a token's,
     /// takes a second preimage of 160 bits.
     /// @param token The ERC-6909 contract.
     /// @param id The token id.
     /// @return The key, as an address.
-    function _idAsset(address token, uint256 id) internal pure returns (address) {
+    function idAsset(address token, uint256 id) public pure returns (address) {
         return address(uint160(uint256(keccak256(abi.encode(ID_ASSET, token, id)))));
     }
 
@@ -1780,7 +1782,7 @@ contract AgentPolicy is IPolicy {
         uint256 end = selector == ERC6909_TRANSFER_FROM ? 132 : 100;
         if (data.length < end) return false;
         uint256 amount = uint256(bytes32(data[end - 32:end]));
-        address asset = _idAsset(token, uint256(bytes32(data[end - 64:end - 32])));
+        address asset = idAsset(token, uint256(bytes32(data[end - 64:end - 32])));
         // The id's limit; an id without one is refused
         TokenLimit storage t = _token(msg.sender, m, asset);
         if (!t.set) return false;

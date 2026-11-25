@@ -325,6 +325,16 @@ impl Session {
                 bail!("a mandate with venues goes to an existing account (`permission add` or `rotate`, with \"account\" pinned in the config): the owner's allowance to the venue is given in the same operation");
             }
         }
+        if !trading.ids.is_empty() {
+            // an earlier AgentPolicy refuses such a mandate at install; say so before any signature
+            let view = crate::abi::IAgentPolicyIds::new(dep.agent_policy, provider.clone());
+            if let Err(e) = view.idAsset(Address::ZERO, U256::ZERO).call().await {
+                bail!(
+                    "the config sets limits per token id (`policy.tokenIds`), and the AgentPolicy at {} (deployments.agentPolicy) did not answer `idAsset`: either it predates them or the call itself failed ({e:#})",
+                    dep.agent_policy
+                );
+            }
+        }
         let (permission_data, init_data) = account_material(&cfg, &dep, &token_domains, &trading)?;
 
         let (account, pinned) = match cfg.account {
@@ -930,6 +940,24 @@ impl Session {
                         l.spent
                     ),
                     Err(_) => println!("DIFF token           {token}: this policy version has no token limits"),
+                }
+            }
+            // the limits per token id: each is a token's limit under the id's key
+            let ids = crate::abi::IAgentPolicyIds::new(policy, self.provider.clone());
+            for (token, id, max, budget) in self.cfg.token_ids()? {
+                let limit = match ids.idAsset(token, id).call().await {
+                    Ok(key) => view.tokenLimit(self.account, id32, key).call().await,
+                    Err(e) => Err(e),
+                };
+                match limit {
+                    Ok(l) => println!(
+                        "{}token id        {token} id {id} chain {}/{} (spent {}) / config {max}/{budget}",
+                        mark(l.set && l.maxPerOp == max && l.budget == budget),
+                        l.maxPerOp,
+                        l.budget,
+                        l.spent
+                    ),
+                    Err(_) => println!("DIFF token id        {token} id {id}: this policy version has no limits per token id"),
                 }
             }
             // the period and the venues, on a policy that has them
