@@ -1307,6 +1307,49 @@ contract AgentPermissionTest is Test {
         assertEq(token.allowance(address(safe), spender), 0);
     }
 
+    /// A Safe transaction with a `safeTxGas` does not revert when its inner
+    /// call does: the Safe notes the failure and goes on. Validation counted
+    /// the inner call as made. So a withdrawal of an allowance that fails
+    /// inside such a transaction (here: a spender word with a bit above 160,
+    /// which the policy reads as the spender and the token's decoder
+    /// refuses) left the allowance standing after an operation that passed.
+    /// The policy admits a Safe transaction only with `safeTxGas` and
+    /// `baseGas` of 0, where the Safe reverts with its inner call.
+    function test_safe_aTransactionThatMayFailQuietlyIsRefused() public {
+        Safe safe = _withSafeApprovals();
+        address spender = makeAddr("spender");
+        bytes memory grant = abi.encodeCall(MockToken.approve, (spender, 5 ether));
+        bytes memory dirtyWithdraw =
+            abi.encodeWithSelector(MockToken.approve.selector, uint256(uint160(spender)) | (1 << 200), uint256(0));
+        uint256 nonce = safe.nonce();
+        Execution[] memory calls = new Execution[](4);
+        calls[0] = Execution(address(nonceAssert), 0, abi.encodeCall(SafeNonceAssert.check, (address(safe), nonce)));
+        calls[1] = Execution(address(safe), 0, _safeExecGas(address(token), grant, 0, 0));
+        calls[2] = Execution(address(nonceAssert), 0, abi.encodeCall(SafeNonceAssert.check, (address(safe), nonce + 1)));
+        calls[3] = Execution(address(safe), 0, _safeExecGas(address(token), dirtyWithdraw, 1, 0));
+        _expectRefused(_agentBatchWith(AGENT, SAFE_ID, calls));
+        assertEq(token.allowance(address(safe), spender), 0, "no allowance stands");
+        // either gas field alone, on a call that would succeed
+        bytes memory withdraw = abi.encodeCall(MockToken.approve, (spender, 0));
+        _expectRefused(_agentViaSafe(safe, _safeExecGas(address(token), withdraw, 1, 0)));
+        _expectRefused(_agentViaSafe(safe, _safeExecGas(address(token), withdraw, 0, 1)));
+        // the control: both 0
+        _send(_agentViaSafe(safe, _safeExecGas(address(token), withdraw, 0, 0)));
+        assertEq(safe.nonce(), nonce + 1);
+    }
+
+    function _safeExecGas(address to, bytes memory data, uint256 safeTxGas, uint256 baseGas)
+        internal
+        view
+        returns (bytes memory)
+    {
+        bytes memory sig = abi.encodePacked(uint256(uint160(acct)), uint256(0), uint8(1));
+        return abi.encodeCall(
+            Safe.execTransaction,
+            (to, 0, data, Enum.Operation.Call, safeTxGas, baseGas, 0, address(0), payable(address(0)), sig)
+        );
+    }
+
     /// The Safe mandate of `_withSafe`, with approvals of the mock token
     /// (approve, increaseAllowance) within its limits.
     function _withSafeApprovals() internal returns (Safe safe) {
