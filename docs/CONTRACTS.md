@@ -360,7 +360,8 @@ which refuses the operation all the same [I].
   Install refuses a mandate that breaks either, and one whose contract
   also has a `TokenCap`, an id listed twice, the zero address or a limit
   wider than 128 bits (`test_ids_anIdIsHeldToItsLimits`,
-  `test_ids_installRules`, `test_period_anIdsBudgetIsPerPeriod`). An
+  `test_ids_installRules`, `test_period_anIdsBudgetIsPerPeriod`; through a
+  Safe and the legs of its batch, `test_ids_heldThroughASafeAndItsBatch`). An
   allowance of an id still has to be withdrawn in the same operation,
   as below, and its amount is charged when it is given. An id has no
   payee list and no x402: the agent picks the receiver and the spender.

@@ -293,16 +293,20 @@ same bytes; Kernel's `installValidations` is not run here.
   the review says so (`payeeAllowed`); the budget period (`period`); for
   each probed id whether it is limited and its two limits (`tokenLimit`
   under `idAsset`). The generator reaches all four forms of the install
-  data: a normal run of 400 has 14 mandates shown and installed in the
-  ten-word form and 16 in the eleven-word one [V the run of 2026-11-25];
-  a venue it does not reach, since the local chain has none.
+  data: a normal run of 400 has 17 mandates shown and installed in the
+  ten-word form and 12 in the eleven-word one [V the run of 2026-11-25];
+  a venue it does not reach, since the local chain has none. The policy
+  reads the eleven-word form's last word and its array by hand, so one
+  such mandate in six is damaged there: the word replaced by another
+  array's offset, or the count of limits one more or one less.
 - The review refuses a mandate the policy installs for one reason only:
   bytes the policy decodes although they are not the one encoding of
   their values. Any other reason fails the test, so a review that refuses
   too much is caught as well.
 - The generator reaches all three outcomes, or the test fails: at least a
-  fifth shown and installed, a fifth refused by both, one in a hundred
-  installed and not shown.
+  sixth shown and installed (a fifth until the longer forms brought more
+  ways to be refused), a fifth refused by both, one in a hundred installed
+  and not shown.
 
 **That it bites.** Sixteen rules were broken in the review's reader one at
 a time: fourteen refusals (the account or its EntryPoint as a target; the

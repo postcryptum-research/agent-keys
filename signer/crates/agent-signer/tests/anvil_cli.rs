@@ -3126,6 +3126,7 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
     ];
     let cases: u64 = std::env::var("MANDATE_DIFFERENTIAL_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(400);
     let mut rng = Seeded(0x6d61_6e64_6174_65); // "mandate"
+    let mut ids_rng = Seeded(0x6964_6361_7073); // "idcaps"
     let (mut both, mut chain_only, mut neither) = (0u64, 0u64, 0u64);
     // of those shown and installed: in the ten-word form, and in the eleven-word one
     let (mut with_period, mut with_ids) = (0u64, 0u64);
@@ -3183,7 +3184,7 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
         let mut ids: Vec<(Address, U256, U256, U256)> = Vec::new();
         if rng.one_in(3) {
             for _ in 0..1 + rng.below(3) {
-                let token = if rng.one_in(15) { rng.pick(&id_contracts[2..]) } else { rng.pick(&id_contracts[..2]) };
+                let token = if rng.one_in(30) { rng.pick(&id_contracts[2..]) } else { rng.pick(&id_contracts[..2]) };
                 let id = rng.pick(&id_pool);
                 if !ids.iter().any(|i| (i.0, i.1) == (token, id)) || rng.one_in(8) {
                     ids.push((token, id, amount(&mut rng), amount(&mut rng)));
@@ -3195,7 +3196,7 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
                 }
             }
         }
-        if !rng.one_in(6) {
+        if !rng.one_in(12) {
             for (t, s) in allow.iter_mut() {
                 let (has, metered) = (ids.iter().any(|i| i.0 == *t), id_selectors.contains(&s.0));
                 match (has, metered) {
@@ -3210,10 +3211,10 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
         }
         // A budget period, in the forms that carry one; and seldom a venue no build
         // knows and no chain has code for, which both sides refuse
-        let period: u32 = match rng.below(6) {
+        let period: u32 = match rng.below(12) {
             0 => 0,
-            1 => 1,
-            2 => u32::MAX,
+            1 | 2 => 1,
+            3 | 4 => u32::MAX,
             _ => 86_400,
         };
         let venues: Vec<(Address, B256, B256)> =
@@ -3257,7 +3258,7 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
         let seven = (ts, ss, max_value, budget, until, caps.clone(), after);
         // The eleven-word form when there are limits per id (seldom without any, or
         // the limits dropped into a shorter form); the ten-word form one time in five
-        let mut init = if !ids.is_empty() && !rng.one_in(12) || rng.one_in(40) {
+        let mut init = if !ids.is_empty() && !rng.one_in(12) || rng.one_in(80) {
             let (a, b, c, d, e, f, g) = seven;
             (a, b, c, d, e, f, g, lists.clone(), period, venues.clone(), ids.clone()).abi_encode_params()
         } else if rng.one_in(5) {
@@ -3282,6 +3283,28 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
                     // a word's upper bits: a value the field does not hold, or an offset moved
                     let word = rng.below(init.len() as u64 / 32) as usize;
                     init[word * 32] ^= 0x80;
+                }
+            }
+        }
+
+        // ---- the eleven-word form's last word, which the policy reads by hand: one time
+        // in six it is another array's offset, or the count of limits is one more or less.
+        // From a seed of its own, so that the other mandates stay what they were.
+        if init.len() >= 352 && init[..32] == U256::from(352).to_be_bytes::<32>() && ids_rng.one_in(6) {
+            let rng = &mut ids_rng;
+            match rng.below(3) {
+                0 => {
+                    let from = rng.pick(&[0usize, 1, 5, 7, 9]) * 32;
+                    let word: [u8; 32] = init[from..from + 32].try_into().unwrap();
+                    init[320..352].copy_from_slice(&word);
+                }
+                kind => {
+                    let at = U256::from_be_slice(&init[320..352]);
+                    if let Some(at) = usize::try_from(at).ok().filter(|at| *at + 32 <= init.len()) {
+                        let count = U256::from_be_slice(&init[at..at + 32]);
+                        let moved = if kind == 1 { count + U256::from(1) } else { count.saturating_sub(U256::from(1)) };
+                        init[at..at + 32].copy_from_slice(&moved.to_be_bytes::<32>());
+                    }
                 }
             }
         }
@@ -3433,5 +3456,5 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
         "mandates: {cases}; shown and installed {both} ({with_period} with a period, {with_ids} with limits per id), installed and not shown {chain_only}, neither {neither}"
     );
     // the generator reaches each side's yes and no, and the one-way difference between them
-    assert!(both * 5 >= cases && neither * 5 >= cases && chain_only * 100 >= cases, "the generator has drifted: {both} / {chain_only} / {neither}");
+    assert!(both * 6 >= cases && neither * 5 >= cases && chain_only * 100 >= cases, "the generator has drifted: {both} / {chain_only} / {neither}");
 }

@@ -1035,6 +1035,65 @@ contract AgentPermissionTest is Test {
         assertEq(t.balanceOf(to, 8), 0);
     }
 
+    /// The same limits one call deeper: ids a Safe holds, moved by its
+    /// `execTransaction` and by the legs of a MultiSend batch. The cap per
+    /// operation sums the legs.
+    function test_ids_heldThroughASafeAndItsBatch() public {
+        (Safe safe, MockOperators t) = _safeWithIds();
+        address to = makeAddr("receiver");
+        // one inner call above the cap, and an id without a limit
+        _expectRefused(_idViaSafe(safe, _safeExec(safe, address(t), 0, _idMove(t, to, 7, 6).callData, Enum.Operation.Call, 0)));
+        _expectRefused(_idViaSafe(safe, _safeExec(safe, address(t), 0, _idMove(t, to, 8, 1).callData, Enum.Operation.Call, 0)));
+        // two legs of a batch that are above the cap together
+        bytes memory three = _legOf(0, address(t), 0, _idMove(t, to, 7, 3).callData);
+        _expectRefused(_idViaSafe(safe, _batch(safe, address(multiSend), bytes.concat(three, three), Enum.Operation.DelegateCall)));
+        // a leg for an id without a limit, beside one that is fine
+        bytes memory other = _legOf(0, address(t), 0, _idMove(t, to, 8, 1).callData);
+        _expectRefused(_idViaSafe(safe, _batch(safe, address(multiSend), bytes.concat(three, other), Enum.Operation.DelegateCall)));
+        assertEq(t.balanceOf(to, 7), 0);
+        // within the cap: 3 and 2 in a batch, then 3 alone, which is the whole budget
+        bytes memory two = _legOf(0, address(t), 0, _idMove(t, to, 7, 2).callData);
+        _send(_idViaSafe(safe, _batch(safe, address(multiSend), bytes.concat(three, two), Enum.Operation.DelegateCall)));
+        _send(_idViaSafe(safe, _safeExec(safe, address(t), 0, _idMove(t, to, 7, 3).callData, Enum.Operation.Call, 0)));
+        assertEq(t.balanceOf(to, 7), 8);
+        _expectRefused(_idViaSafe(safe, _safeExec(safe, address(t), 0, _idMove(t, to, 7, 1).callData, Enum.Operation.Call, 0)));
+        assertEq(t.balanceOf(to, 8), 0);
+    }
+
+    PermissionId internal constant SAFE_IDS = PermissionId.wrap(0x69643033); // "id03"
+
+    /// A Safe of the account's that holds ids 7 and 8, and a mandate with a
+    /// limit for id 7: 5 per operation, 8 in all.
+    function _safeWithIds() internal returns (Safe safe, MockOperators t) {
+        bytes memory setup =
+            abi.encodeCall(Safe.setup, (_one(acct), 1, address(0), "", address(0), address(0), 0, payable(address(0))));
+        safe = Safe(payable(address(new SafeProxyFactory().createProxyWithNonce(address(new Safe()), setup, 0))));
+        multiSend = new MultiSendCallOnly();
+        t = new MockOperators();
+        t.mint(address(safe), 7, 100);
+        t.mint(address(safe), 8, 100);
+        address[] memory targets = new address[](3);
+        bytes4[] memory selectors = new bytes4[](3);
+        (targets[0], selectors[0]) = (address(safe), Safe.execTransaction.selector);
+        (targets[1], selectors[1]) = (address(multiSend), MultiSendCallOnly.multiSend.selector);
+        (targets[2], selectors[2]) = (address(t), bytes4(0x095bcdb6));
+        AgentPolicy.IdCap[] memory caps = new AgentPolicy.IdCap[](1);
+        caps[0] = AgentPolicy.IdCap(address(t), 7, 5, 8);
+        _installIdMandate(SAFE_IDS, targets, selectors, caps, 0);
+    }
+
+    function _one(address a) internal pure returns (address[] memory list) {
+        list = new address[](1);
+        list[0] = a;
+    }
+
+    function _idViaSafe(Safe safe, bytes memory execData) internal view returns (PackedUserOperation memory) {
+        Execution[] memory calls = new Execution[](2);
+        calls[0] = Execution(address(nonceAssert), 0, abi.encodeCall(SafeNonceAssert.check, (address(safe), safe.nonce())));
+        calls[1] = Execution(address(safe), 0, execData);
+        return _agentBatchWith(AGENT, SAFE_IDS, calls);
+    }
+
     /// What install refuses in the eleven-word form, and around it.
     function test_ids_installRules() public {
         MockOperators t = new MockOperators();
