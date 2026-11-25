@@ -22,6 +22,13 @@ import {IEntryPoint} from "account-abstraction/interfaces/IEntryPoint.sol";
 ///   forge script script/Deploy.s.sol --rpc-url base_sepolia --broadcast \
 ///       --private-key "$(cat ../../gas-wallet.key)"
 ///
+/// With `REDEPLOY=true` in the environment, every contract is deployed from
+/// this build even where an address is recorded (house rule 9: before the
+/// first audited release a fix is carried by a redeploy). A recorded address
+/// that is replaced stays in the file under the next versioned name
+/// (`agentPolicy` -> `agentPolicyV9`): live accounts keep pointing there until
+/// the owner moves them. docs/REDEPLOY.md lists what follows a redeploy.
+///
 /// Writes deployments/<chainid>.json, which the Rust side reads.
 contract Deploy is Script {
     // A number constant: inline assembly below cannot reference a bytes32 one.
@@ -57,6 +64,7 @@ contract Deploy is Script {
         // that live accounts reference.
         string memory path = string.concat("deployments/", vm.toString(block.chainid), ".json");
         string memory recorded = vm.exists(path) ? vm.readFile(path) : "";
+        redeploy = vm.envOr("REDEPLOY", false);
 
         vm.startBroadcast();
         address validator = _reuseOrDeploy(recorded, "p256Validator", "P256Validator", type(P256Validator).creationCode);
@@ -93,6 +101,16 @@ contract Deploy is Script {
         vm.stopBroadcast();
 
         string memory json = "deployment";
+        // Every versioned key already recorded, then each address this run replaced
+        _keepSuperseded(json, recorded);
+        _supersede(json, recorded, "p256Validator", validator);
+        _supersede(json, recorded, "p256RecoveryValidator", recoveryValidator);
+        _supersede(json, recorded, "p256Signer", signer);
+        _supersede(json, recorded, "safeNonceAssert", nonceAssert);
+        _supersede(json, recorded, "agentPolicy", policy);
+        _supersede(json, recorded, "whitelistPaymaster", paymaster);
+        _supersede(json, recorded, "demoCounter", counter);
+        if (cowDecoder != address(0)) _supersede(json, recorded, "cowSwapDecoder", cowDecoder);
         vm.serializeUint(json, "chainId", block.chainid);
         vm.serializeString(json, "solc", SOLC);
         vm.serializeString(json, "evmVersion", EVM_VERSION);
@@ -110,37 +128,75 @@ contract Deploy is Script {
         vm.serializeAddress(json, "whitelistPaymaster", paymaster);
         vm.serializeAddress(json, "paymasterOwner", sponsor);
         if (cowDecoder != address(0)) vm.serializeAddress(json, "cowSwapDecoder", cowDecoder);
-        // Superseded module versions stay recorded: live permissions installed
-        // with them keep pointing there until the owner rotates them.
-        _keepSuperseded(json, recorded);
         string memory out = vm.serializeAddress(json, "demoCounter", counter);
         vm.writeJson(out, path);
         console.log("wrote", path);
     }
 
+    /// @dev True when this run deploys from the build rather than reusing what is recorded.
+    bool internal redeploy;
+
+    /// @dev Keeps every superseded version the file records (`<name>V<n>`):
+    /// live permissions and accounts installed with them keep pointing there
+    /// until the owner moves them.
+    /// @param json The serialization key of the file being written.
+    /// @param recorded The file as it was, or "".
     function _keepSuperseded(string memory json, string memory recorded) internal {
-        // Superseded versions stay recorded: live permissions and accounts
-        // installed with them keep pointing there until the owner moves them.
-        string[12] memory superseded = [
-            "agentPolicyV8",
-            "agentPolicyV7",
-            "agentPolicyV1",
-            "agentPolicyV2",
-            "agentPolicyV3",
-            "agentPolicyV4",
-            "agentPolicyV5",
-            "agentPolicyV6",
-            "p256SignerV1",
-            "p256ValidatorV1",
-            "whitelistPaymasterV1",
-            "p256RecoveryValidatorV1"
-        ];
-        for (uint256 i; i < superseded.length; i++) {
-            string memory k = string.concat(".", superseded[i]);
-            if (bytes(recorded).length > 0 && vm.keyExistsJson(recorded, k)) {
-                vm.serializeAddress(json, superseded[i], vm.parseJsonAddress(recorded, k));
-            }
+        if (bytes(recorded).length == 0) return;
+        string[] memory keys = vm.parseJsonKeys(recorded, "$");
+        for (uint256 i; i < keys.length; i++) {
+            (bool versioned,,) = versionOf(keys[i]);
+            if (versioned) vm.serializeAddress(json, keys[i], vm.parseJsonAddress(recorded, string.concat(".", keys[i])));
         }
+    }
+
+    /// @dev When this run put `current` where the file recorded another
+    /// address for `name`, the recorded one is kept as `<name>V<n>`, n one
+    /// above the highest version recorded for that name.
+    /// @param json The serialization key of the file being written.
+    /// @param recorded The file as it was, or "".
+    /// @param name The contract's key, e.g. "agentPolicy".
+    /// @param current The address this run records for it.
+    function _supersede(string memory json, string memory recorded, string memory name, address current) internal {
+        if (bytes(recorded).length == 0 || !vm.keyExistsJson(recorded, string.concat(".", name))) return;
+        address was = vm.parseJsonAddress(recorded, string.concat(".", name));
+        if (was == current) return;
+        string memory key = nextVersionKey(vm.parseJsonKeys(recorded, "$"), name);
+        vm.serializeAddress(json, key, was);
+        console.log(name, "superseded, kept as", key);
+    }
+
+    /// @dev The key a superseded `name` is kept under: `<name>V<n>`, n one
+    /// above the highest version among `keys` (V1 when there is none).
+    /// @param keys The file's keys.
+    /// @param name The contract's key.
+    /// @return The versioned key.
+    function nextVersionKey(string[] memory keys, string memory name) public pure returns (string memory) {
+        uint256 highest;
+        for (uint256 i; i < keys.length; i++) {
+            (bool versioned, string memory base, uint256 n) = versionOf(keys[i]);
+            if (versioned && keccak256(bytes(base)) == keccak256(bytes(name)) && n > highest) highest = n;
+        }
+        return string.concat(name, "V", vm.toString(highest + 1));
+    }
+
+    /// @dev Whether `key` is a superseded version, `<name>V<n>`: a name of at
+    /// least one letter, then `V`, then a number without a leading zero.
+    /// @param key A key of the deployments file.
+    /// @return versioned True for `<name>V<n>`.
+    /// @return base The name before `V<n>`.
+    /// @return n The version number.
+    function versionOf(string memory key) public pure returns (bool versioned, string memory base, uint256 n) {
+        bytes memory k = bytes(key);
+        uint256 i = k.length;
+        // The digits at the end
+        while (i > 0 && k[i - 1] >= "0" && k[i - 1] <= "9") i--;
+        // At least one digit, no leading zero, a `V` before them and a name before that
+        if (i == k.length || k[i] == "0" || i < 2 || k[i - 1] != "V") return (false, "", 0);
+        for (uint256 j = i; j < k.length; j++) n = n * 10 + uint8(k[j]) - 48;
+        bytes memory b = new bytes(i - 1);
+        for (uint256 j; j + 1 < i; j++) b[j] = k[j];
+        return (true, string(b), n);
     }
 
     function _reuseOrDeploy(string memory recorded, string memory key, string memory name, bytes memory creationCode)
@@ -148,7 +204,8 @@ contract Deploy is Script {
         returns (address addr)
     {
         string memory jsonKey = string.concat(".", key);
-        if (bytes(recorded).length > 0 && vm.keyExistsJson(recorded, jsonKey)) {
+        // A redeploy deploys from this build; the recorded address is superseded, not reused
+        if (!redeploy && bytes(recorded).length > 0 && vm.keyExistsJson(recorded, jsonKey)) {
             addr = vm.parseJsonAddress(recorded, jsonKey);
             if (addr.code.length > 0) {
                 console.log(name, "recorded at", addr);
