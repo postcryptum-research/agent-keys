@@ -1356,8 +1356,24 @@ async fn session(args: &AgentArgs) -> Result<Session> {
 /// `Safe.execTransaction(...)` selector.
 const SAFE_EXEC_TRANSACTION: [u8; 4] = [0x6a, 0x76, 0x12, 0x02];
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// The stack the CLI runs on. An unoptimized build needs more than 1 MiB for
+/// the command dispatch below, and 1 MiB is all a Windows process's main
+/// thread has: there a debug build overflowed its stack on every command,
+/// `key show` included. The work therefore runs on a thread whose stack is
+/// stated here, the same on every platform.
+const STACK_BYTES: usize = 16_777_216;
+
+fn main() -> Result<()> {
+    let work = std::thread::Builder::new().stack_size(STACK_BYTES).spawn(|| {
+        tokio::runtime::Builder::new_multi_thread().enable_all().build().context("starting the runtime")?.block_on(run())
+    })?;
+    match work.join() {
+        Ok(result) => result,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+async fn run() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Vector { message, backend, parent, label, slot } => {
             let signer = open_backend(backend, parent, label, slot)?;
