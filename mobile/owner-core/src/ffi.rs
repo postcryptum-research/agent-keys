@@ -559,9 +559,9 @@ mod tests {
     #[test]
     fn enrollment_is_opened_with_the_builds_view_of_its_pins() {
         use alloy_primitives::{address, B256};
-        let known = address!("12b7E79974CC4F4181a40Aa11f9d3170018ae0E2");
+        let known = address!("e52825D44396d72cA17adF0c0260d468e94F8C94");
         let unknown = address!("05a97329397200dF8795A882da0b5b1aD894EB97");
-        let pins = [(known, "MyPolicy".to_string()), (unknown, "test paymaster".to_string())].into_iter().collect();
+        let pins =[(known, "MyPolicy".to_string()), (unknown, "test paymaster".to_string())].into_iter().collect();
         let entry = address!("0000000071727De22E5E9d8BAf0edAc6f37da032");
         let pins2 = [(known, "MyPolicy".to_string())].into_iter().collect();
         // an enrollment for an EntryPoint other than the build's is refused

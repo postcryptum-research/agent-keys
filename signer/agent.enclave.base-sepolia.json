@@ -22,15 +22,15 @@
   "policy": {
     "allow": [
       {
-        "target": "0xD2Adc331B867435b82Ceba1D4f7f715eeF9FdbC1",
+        "target": "0x29da894F3E456CAC92b3EC76710524E74411E99f",
         "selector": "0xd09de08a"
       },
       {
-        "target": "0x12b7E79974CC4F4181a40Aa11f9d3170018ae0E2",
+        "target": "0xe52825D44396d72cA17adF0c0260d468e94F8C94",
         "selector": "0x4993d616"
       },
       {
-        "target": "0x12b7E79974CC4F4181a40Aa11f9d3170018ae0E2",
+        "target": "0xe52825D44396d72cA17adF0c0260d468e94F8C94",
         "selector": "0xf3ea183e"
       }
     ],

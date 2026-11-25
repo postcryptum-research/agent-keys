@@ -8,27 +8,27 @@ account's validation touch, `keccak256(account ‖ x) + n` (rule 4 in
 `CLAUDE.md`). The paymaster is the one contract with an owner. Addresses
 are those of Base Sepolia (chain 84532), from
 `contracts/deployments/84532.json`, which keeps earlier instances under
-versioned names. Each contract answers `VERSION()`, from 0.1.0, raised
-with any change to its bytecode; the instances listed predate it.
+versioned names. Each contract answers `VERSION()`: 0.1.0 for every
+contract until the first audited release, when a change to a contract's
+bytecode starts raising it (house rule 9). The instances listed are built
+from commit `60e773be7c7f071a4e5a69f84e7af3697092a4ef`, every contract at
+0.1.0, and Sepolia has them at the same addresses
+([`docs/DEPLOYMENTS.md`](DEPLOYMENTS.md)).
 
 | Contract | What it is | Who calls it | Base Sepolia |
 |---|---|---|---|
-| `P256Validator` | the owner key, as the account's root | Kernel, from the account | `0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2` |
-| `P256RecoveryValidator` | the recovery key, granted only `changeRootValidator` | Kernel, from the account | `0x63dd80Fc5E109A44fd179F85050487E02c5e6958` |
-| `P256Signer` | the agent key, as one Kernel permission | Kernel, from the account | `0xa19e6061b1C193573e5fe46c39363FfDd5CCA22E` |
-| `AgentPolicy` | the agent's mandate, as that permission's policy | Kernel, from the account; the account, for x402 and orders | `0x12b7E79974CC4F4181a40Aa11f9d3170018ae0E2` |
+| `P256Validator` | the owner key, as the account's root | Kernel, from the account | `0x9b6f7A83e10F3360af6B34F672c0AC5295f72d63` |
+| `P256RecoveryValidator` | the recovery key, granted only `changeRootValidator` | Kernel, from the account | `0xb7a06e6c7B5cC9852578EF89f38d161C31218047` |
+| `P256Signer` | the agent key, as one Kernel permission | Kernel, from the account | `0xd88d25Ca3e042A28893781935756ee90Bc2d2769` |
+| `AgentPolicy` | the agent's mandate, as that permission's policy | Kernel, from the account; the account, for x402 and orders | `0xe52825D44396d72cA17adF0c0260d468e94F8C94` |
 | `P256Point` | the on-curve check (library) | the key modules, at install | none: compiled into them |
-| `SafeNonceAssert` | the replay guard of an agent's Safe transaction | the account, in a batch | `0xC14AbFF54D40f4DAf665391E0B7079bd53EB8279` |
-| `WhitelistPaymaster` | a gas sponsor with a budget per account | the EntryPoint; its owner | `0x50Ab706dA586895D5775a1e51DcF1a66eAaAE001` |
+| `SafeNonceAssert` | the replay guard of an agent's Safe transaction | the account, in a batch | `0x29f600cBcdC5221a63bD5c88F4a75E20c5CBe219` |
+| `WhitelistPaymaster` | a gas sponsor with a budget per account | the EntryPoint; its owner | `0x657792557C1D40f2Da031FD7aB277078D2c0a4cb` |
 | `IVenueDecoder` | what a trading venue is to the policy (interface) | the policy; the owner's tools | none: an interface |
-| `CowSwapDecoder` | CoW Protocol's orders under that interface | the policy; the owner's tools | none recorded |
-| `DemoCounter` | a demo target | anyone; the agent in demos | `0xD2Adc331B867435b82Ceba1D4f7f715eeF9FdbC1` |
+| `CowSwapDecoder` | CoW Protocol's orders under that interface | the policy; the owner's tools | `0x42F62bF7134F5eF6d46d4BC07d806E77D1Df641a` |
+| `DemoCounter` | a demo target | anyone; the agent in demos | `0x29da894F3E456CAC92b3EC76710524E74411E99f` |
 
 The addresses are the file's current entries [V `contracts/deployments/84532.json`].
-The code at the first three addresses and at `SafeNonceAssert`'s equals what
-commit `175acbf3a3127e804a45a3e4dd097165f0a4c922` compiles to, byte for byte; the paymaster's differs only in its
-immutable EntryPoint address [V `cast code` against `forge inspect <Name>
-deployedBytecode`, 2026-11-24].
 
 ## P256Validator
 
@@ -82,12 +82,13 @@ what `P256RecoveryValidator` is.
 
 **Rules.** A signature is exactly 64 bytes; `s` is in the low half; the key
 is on P-256 with both coordinates below p, checked once at install; the
-install data is the key and nothing more, since #154: the Base
-Sepolia instances, older, refuse only shorter data and ignore bytes past
-the 64 [V source, `test_validatorInstallDataIsExactlyTheKey`].
+install data is the key and nothing more, since #154: the instance before
+it, `0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2` (`p256ValidatorV2` on Base
+Sepolia), refuses only shorter data and ignores bytes past the 64 [V source,
+`test_validatorInstallDataIsExactlyTheKey`].
 
-**Base Sepolia.** `0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2`
-(`p256Validator`); earlier, `p256ValidatorV1` [V
+**Base Sepolia.** `0x9b6f7A83e10F3360af6B34F672c0AC5295f72d63`
+(`p256Validator`); earlier, `p256ValidatorV1` and `p256ValidatorV2` [V
 `contracts/deployments/84532.json`].
 
 ## P256RecoveryValidator
@@ -114,9 +115,9 @@ installed validator to check one without looking at the selectors granted
 to it, so a recovery key that could sign messages would sign permits for the
 account without ever becoming root [V source; `docs/RESILIENCE.md` §0, item 5].
 
-**Base Sepolia.** `0x63dd80Fc5E109A44fd179F85050487E02c5e6958`
-(`p256RecoveryValidator`); earlier, `p256RecoveryValidatorV1` [V
-`contracts/deployments/84532.json`].
+**Base Sepolia.** `0xb7a06e6c7B5cC9852578EF89f38d161C31218047`
+(`p256RecoveryValidator`); earlier, `p256RecoveryValidatorV1` and
+`p256RecoveryValidatorV2` [V `contracts/deployments/84532.json`].
 
 ## P256Signer
 
@@ -171,12 +172,14 @@ are `keccak256(account ‖ keccak256(id ‖ slot))` (+1) and
 
 **Rules.** As `P256Validator`'s: 64-byte signature, low `s`, a key on P-256
 checked at install, install data of exactly the id and the key since #154
-(the Base Sepolia instances ignore bytes past the 96). Keys are scoped per
-(permission id, account) [V source,
+(the instance before it, `0xa19e6061b1C193573e5fe46c39363FfDd5CCA22E`,
+`p256SignerV2` on Base Sepolia, ignores bytes past the 96). Keys are scoped
+per (permission id, account) [V source,
 `test_signerInstallDataIsExactlyTheIdAndTheKey`].
 
-**Base Sepolia.** `0xa19e6061b1C193573e5fe46c39363FfDd5CCA22E`
-(`p256Signer`); earlier, `p256SignerV1` [V `contracts/deployments/84532.json`].
+**Base Sepolia.** `0xd88d25Ca3e042A28893781935756ee90Bc2d2769`
+(`p256Signer`); earlier, `p256SignerV1` and `p256SignerV2` [V
+`contracts/deployments/84532.json`].
 
 ## AgentPolicy
 
@@ -539,17 +542,23 @@ which refuses the operation all the same [I].
   the CLI builds the plain form only; a hook needs those two, not a new
   policy.
 
-**Instances.** Both predate master: each is recorded with the commit
-named in `docs/DEPLOYMENTS.md`, and master's source no longer builds it.
+**Instances.** The current one, `0xe52825D44396d72cA17adF0c0260d468e94F8C94`,
+is `agentPolicy` on both chains: built from commit
+`60e773be7c7f071a4e5a69f84e7af3697092a4ef`, with every rule of this
+section, periods, venues and the venue's spender as a place (#149) [V
+`contracts/deployments/84532.json`, `contracts/deployments/11155111.json`,
+`docs/DEPLOYMENTS.md`]. The instances it replaced stay recorded, each with
+the commit named in `docs/DEPLOYMENTS.md`; master's source no longer builds
+them.
 
-- Sepolia: `0x2511FF556aa1534676A34F9B715232917e04FE5e` (`agentPolicy` in
-  `contracts/deployments/11155111.json`; earlier, `agentPolicyV1` and
+- Sepolia: `0x2511FF556aa1534676A34F9B715232917e04FE5e` (`agentPolicyV3` in
+  `contracts/deployments/11155111.json`; before it, `agentPolicyV1` and
   `agentPolicyV2`). The runtime code of commit
   `8904478693c020e40f676b5161c67a1faa39105f`, with periods and venues; it
   marks the venue's contract and the decoder as venue places but not the
   spender (#149) [V `docs/DEPLOYMENTS.md`, Sepolia].
-- Base Sepolia: `0x12b7E79974CC4F4181a40Aa11f9d3170018ae0E2` (`agentPolicy`
-  in `contracts/deployments/84532.json`; earlier, `agentPolicyV1` to
+- Base Sepolia: `0x12b7E79974CC4F4181a40Aa11f9d3170018ae0E2` (`agentPolicyV9`
+  in `contracts/deployments/84532.json`; before it, `agentPolicyV1` to
   `agentPolicyV8`). The pre-trading policy, equal outside its immutable
   slots to what commit `175acbf3a3127e804a45a3e4dd097165f0a4c922` builds
   [V `docs/DEPLOYMENTS.md`, Base Sepolia]: it takes the seven- and
@@ -594,8 +603,9 @@ execution, where the validation rules of ERC-7562 do not apply [V source].
 **Function.** `check(safe, expected)` (view): returns if `safe.nonce()` is
 `expected`, else reverts `SafeNonceMismatch(safe, expected, actual)`.
 
-**Base Sepolia.** `0xC14AbFF54D40f4DAf665391E0B7079bd53EB8279`
-(`safeNonceAssert`) [V `contracts/deployments/84532.json`].
+**Base Sepolia.** `0x29f600cBcdC5221a63bD5c88F4a75E20c5CBe219`
+(`safeNonceAssert`), the one the current `AgentPolicy` names; earlier,
+`safeNonceAssertV1` [V `contracts/deployments/84532.json`].
 
 ## WhitelistPaymaster
 
@@ -647,9 +657,10 @@ paymaster stake [I, the source's own comment]; `paymaster stake` exists for
 bundlers that ask for one all the same (`docs/ARCHITECTURE.md`, roadmap
 item 3.5).
 
-**Base Sepolia.** `0x50Ab706dA586895D5775a1e51DcF1a66eAaAE001`
+**Base Sepolia.** `0x657792557C1D40f2Da031FD7aB277078D2c0a4cb`
 (`whitelistPaymaster`; its owner is `paymasterOwner` in the same file);
-earlier, `whitelistPaymasterV1` [V `contracts/deployments/84532.json`].
+earlier, `whitelistPaymasterV1` and `whitelistPaymasterV2` [V
+`contracts/deployments/84532.json`].
 
 ## IVenueDecoder
 
@@ -727,7 +738,12 @@ untouched [V source]. `checkConfig(config)` (pure) returns true or reverts
 and distinct tokens, a price in both terms, no pair twice; `judge` does not
 rely on it having been asked.
 
-**Base Sepolia.** No instance recorded [V `contracts/deployments/84532.json`].
+**Base Sepolia.** `0x42F62bF7134F5eF6d46d4BC07d806E77D1Df641a`
+(`cowSwapDecoder`), the address it has on Sepolia too, with other code: the
+domain separator it keeps names the chain [V
+`contracts/deployments/84532.json`, `docs/DEPLOYMENTS.md`]. Sepolia's
+earlier decoder is `cowSwapDecoderV1` in
+`contracts/deployments/11155111.json`.
 
 ## DemoCounter
 
@@ -747,8 +763,10 @@ Value sent to it stays: it has no way to send it out [V source].
 `Incremented(by, count)`. `receive()`: accepts plain transfers. `count()`:
 the getter.
 
-**Base Sepolia.** `0xD2Adc331B867435b82Ceba1D4f7f715eeF9FdbC1`
-(`demoCounter`) [V `contracts/deployments/84532.json`]. Its code there ends
-in the compiler metadata of an earlier build (solc 0.8.34), so it is not
-byte-equal to what commit `175acbf3a3127e804a45a3e4dd097165f0a4c922` compiles to; its source did not change
-from 2026-10-20 until `VERSION` was added [V `cast code`, `git log`, 2026-11-24].
+**Base Sepolia.** `0x29da894F3E456CAC92b3EC76710524E74411E99f`
+(`demoCounter`) [V `contracts/deployments/84532.json`]. The earlier one,
+`demoCounterV1` (`0xD2Adc331B867435b82Ceba1D4f7f715eeF9FdbC1`), has code
+that ends in the compiler metadata of an earlier build (solc 0.8.34), so it
+is not byte-equal to what commit `175acbf3a3127e804a45a3e4dd097165f0a4c922`
+compiles to; its source did not change from 2026-10-20 until `VERSION` was
+added [V `cast code`, `git log`, 2026-11-24].

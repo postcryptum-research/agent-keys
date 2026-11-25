@@ -72,15 +72,16 @@ contract SettledNonces {
 ///   below) decides each operation on its own, and the policy must decide
 ///   the same; the mandate's counters must never pass its limits.
 /// - `testFuzz_differential_*`: the policy in the source and the instance
-///   deployed to Base Sepolia on 2026-11-20 (its runtime code, in
+///   deployed to Base Sepolia on 2026-11-25 (its runtime code, in
 ///   `test/vectors`) get the same mandate and the same operations and must
-///   agree on every decision and every view. The two differ only in where
-///   they keep their state (issue #83), so any difference is a bug in one.
+///   agree on every decision and every view. That instance was built from
+///   commit `60e773be7c7f071a4e5a69f84e7af3697092a4ef`, so a difference is a
+///   change to the source since, or a bug in one of the two.
 ///
 /// More runs: `FOUNDRY_FUZZ_RUNS=20000 forge test --match-contract PolicyFuzz`.
 abstract contract PolicyFuzzBase is Test {
     // the deployed instance was built with this SafeNonceAssert
-    address internal constant NONCE_ASSERT = 0xC14AbFF54D40f4DAf665391E0B7079bd53EB8279;
+    address internal constant NONCE_ASSERT = 0x29f600cBcdC5221a63bD5c88F4a75E20c5CBe219;
     address internal constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
 
     address internal constant COUNTER = address(0xC0);
@@ -121,7 +122,6 @@ abstract contract PolicyFuzzBase is Test {
     FuzzAccount internal account;
     uint256 internal rng;
     /// Approvals carry an amount of 0 (see `PolicyFuzzDifferential.setUp`).
-    bool internal zeroApprovals;
 
     function _next() internal returns (uint256) {
         rng = uint256(keccak256(abi.encode(rng)));
@@ -201,11 +201,6 @@ abstract contract PolicyFuzzBase is Test {
         return _below(MAX_VALUE / 2);
     }
 
-    /// An approval's amount: drawn as any amount is, 0 under `zeroApprovals`.
-    function _approval(uint256 cap, address target) internal returns (uint256 amount) {
-        amount = _amount(cap, target);
-        if (zeroApprovals) amount = 0;
-    }
 
     /// A token call through one of the four metered functions, now and then
     /// cut short, or through `permit`.
@@ -215,8 +210,8 @@ abstract contract PolicyFuzzBase is Test {
         uint256 cap = leg.target == TOKEN_B ? B_MAX : A_MAX;
         uint256 s = _below(20);
         if (s < 8) leg.data = abi.encodeWithSelector(TRANSFER, _payee(), _amount(cap, leg.target));
-        else if (s < 12) leg.data = abi.encodeWithSelector(APPROVE, _payee(), _approval(cap, leg.target));
-        else if (s < 15) leg.data = abi.encodeWithSelector(INCREASE, _payee(), _approval(cap, leg.target));
+        else if (s < 12) leg.data = abi.encodeWithSelector(APPROVE, _payee(), _amount(cap, leg.target));
+        else if (s < 15) leg.data = abi.encodeWithSelector(INCREASE, _payee(), _amount(cap, leg.target));
         else if (s < 18) leg.data = abi.encodeWithSelector(TRANSFER_FROM, _payee(), _payee(), _amount(cap, leg.target));
         else if (s == 18) leg.data = abi.encodeWithSelector(PERMIT, _payee(), _payee(), _amount(cap, leg.target));
         else leg.data = abi.encodeWithSelector(DEPOSIT, _amount(cap, leg.target));
@@ -463,7 +458,7 @@ contract PolicyFuzzModel is PolicyFuzzBase {
 /// The source against the deployed instance.
 contract PolicyFuzzDifferential is PolicyFuzzBase {
     AgentPolicy internal fresh; // the source
-    AgentPolicy internal deployed; // Base Sepolia's runtime code of 2026-11-20
+    AgentPolicy internal deployed; // Base Sepolia's runtime code of 2026-11-25
 
     bytes32[] internal digests;
 
@@ -488,15 +483,10 @@ contract PolicyFuzzDifferential is PolicyFuzzBase {
         vm.etch(TOKEN_B, nonces);
         fresh = new AgentPolicy(NONCE_ASSERT);
         deployed = AgentPolicy(address(0xDE9107ED));
-        vm.etch(address(deployed), vm.parseBytes(vm.readFile("test/vectors/agent-policy-84532-0x12b7E799.hex")));
+        vm.etch(address(deployed), vm.parseBytes(vm.readFile("test/vectors/agent-policy-84532-0xe52825D4.hex")));
         assertEq(deployed.NONCE_ASSERT(), NONCE_ASSERT, "the vector is not the instance it is taken for");
         account.install(fresh, _installData(fresh));
         account.install(deployed, _installData(deployed));
-        // The instance leaves an allowance standing; the source refuses one
-        // (no standing allowances), so the two differ there by design. The
-        // generator's approvals carry 0 until the vector is a policy with
-        // that rule, the next deployed one (docs/REDEPLOY.md).
-        zeroApprovals = true;
     }
 
     // --- legs the model does not cover ---
@@ -764,8 +754,6 @@ contract PolicyFuzzDifferential is PolicyFuzzBase {
     /// policy, Permit2, the EntryPoint, a function outside the four on a
     /// token with a limit, a token twice, a zero address, a payee twice, a
     /// list for a token without a limit, an empty window).
-    /// The last mandate drawn lists a metered function on a target without a limit.
-    bool internal meteredWithoutLimit;
 
     function _mandate(AgentPolicy policy, uint256 seed) internal returns (bytes memory) {
         rng = seed;
@@ -790,17 +778,6 @@ contract PolicyFuzzDifferential is PolicyFuzzBase {
             caps[i] = AgentPolicy.TokenCap(
                 tokens[_below(8) == 0 ? 3 : _below(3)], uint128(_below(100)), uint128(_below(1000)), _below(2) == 0 ? bytes32(0) : B_DOMAIN
             );
-        }
-        // a metered function on a target the mandate sets no limit for: the
-        // source refuses it at install (#175), the deployed instance does not
-        meteredWithoutLimit = false;
-        for (uint256 i; i < targets.length && i < selectors.length; i++) {
-            bool metered = selectors[i] == TRANSFER || selectors[i] == APPROVE || selectors[i] == TRANSFER_FROM;
-            bool limited;
-            for (uint256 j; j < caps.length; j++) {
-                if (caps[j].token == targets[i]) limited = true;
-            }
-            if (metered && !limited) meteredWithoutLimit = true;
         }
         uint48 validUntil = _below(10) == 0 ? 0 : uint48(1_900_000_000 + _below(100));
         uint48 validAfter = _below(10) == 0 ? validUntil : uint48(_below(2) * 1_800_000_000);
@@ -856,12 +833,6 @@ contract PolicyFuzzDifferential is PolicyFuzzBase {
         for (uint256 round; round < 3; round++) {
             uint256 roundSeed = uint256(keccak256(abi.encode(seed, round)));
             bool ok1 = _installs(fresh, _mandate(fresh, roundSeed));
-            if (meteredWithoutLimit) {
-                // where the two differ by design: the source refuses it; the
-                // deployed instance is not asked, so that both stay alike
-                assertFalse(ok1, "a metered function without a limit installed");
-                continue;
-            }
             bool ok2 = _installs(deployed, _mandate(deployed, roundSeed));
             assertEq(ok1, ok2, "one installs what the other refuses");
             assertEq(_mandateViews(fresh), _mandateViews(deployed), "the installed mandate reads differently");
