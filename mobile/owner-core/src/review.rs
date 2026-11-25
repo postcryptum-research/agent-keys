@@ -1400,7 +1400,7 @@ fn operator_grant(sel: [u8; 4]) -> Option<&'static str> {
             "allow (Compound III): lets the agent make an address a manager of the account's position in that market; the policy does not read this call, so the grant stands after the operation and after a revoke of the mandate",
         ),
         SELECTOR_APPROVE_DELEGATION => Some(
-            "approveDelegation (Aave): lets the agent let an address borrow against the account's collateral, up to an amount the agent picks; the policy does not read this call, so the grant stands after the operation and after a revoke of the mandate",
+            "approveDelegation (Aave): lets the agent let an address borrow against the account's collateral, up to an amount the agent picks, and the debt is the account's; the policy does not read this call, so the grant stands after the operation and after a revoke of the mandate",
         ),
         _ => None,
     }
