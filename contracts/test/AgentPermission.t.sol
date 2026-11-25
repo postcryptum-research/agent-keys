@@ -1571,8 +1571,7 @@ contract AgentPermissionTest is Test {
         for (uint256 n; n < 16; n++) {
             uint256 r = uint256(keccak256(abi.encode(seed, n)));
             // the first is always the plain layout, so that every run has one accepted
-            if (n == 0) r = (r & ((1 << 40) - 1)) | (1 << 40) | (8 << 56) | (1 << 110);
-            (bool ok, bool plain) = _oneLayout(kernel, r);
+            (bool ok, bool plain) = _oneLayout(kernel, r, n == 0);
             if (plain) assertTrue(ok, "the plain layout of allowed legs passes");
             else odd++;
             if (ok) accepted++;
@@ -1582,10 +1581,10 @@ contract AgentPermissionTest is Test {
         assertGt(odd, 2, "too few odd layouts");
     }
 
-    function _oneLayout(KernelReads kernel, uint256 r) internal returns (bool ok, bool plain) {
+    function _oneLayout(KernelReads kernel, uint256 r, bool asEncoded) internal returns (bool ok, bool plain) {
         bytes32 id = bytes32(PermissionId.unwrap(AGENT_ID));
         bytes memory callData;
-        (callData, plain) = _batchLaidOut(r);
+        (callData, plain) = _batchLaidOut(r, asEncoded);
         bytes memory paymasterAndData =
             (r >> 200) % 3 == 0 ? abi.encodePacked(address(0xbeef), uint128(1), uint128(1), r) : bytes("");
         uint256 snap = vm.snapshotState();
@@ -1637,7 +1636,7 @@ contract AgentPermissionTest is Test {
     /// A batch of one to three allowed legs (an increment, or a few wei to
     /// the counter) as `execute` calldata; `plain` when laid out as
     /// `abi.encode` would.
-    function _batchLaidOut(uint256 r) internal view returns (bytes memory callData, bool plain) {
+    function _batchLaidOut(uint256 r, bool asEncoded) internal view returns (bytes memory callData, bool plain) {
         Execution[] memory legs = new Execution[](1 + r % 3);
         for (uint256 i; i < legs.length; i++) {
             uint256 k = (r >> (8 + 8 * i)) % 4;
@@ -1646,6 +1645,12 @@ contract AgentPermissionTest is Test {
                 : Execution(address(counter), k, "");
         }
         bytes memory body = ExecLib.encodeBatch(legs);
+        if (asEncoded) {
+            return (
+                abi.encodeWithSelector(Kernel.execute.selector, ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))), body),
+                true
+            );
+        }
         uint256 between = (r >> 40) % 4 == 0 ? (r >> 48) % 4 : 0; // words between the offset and the length
         uint256 offset = 0x40 + 32 * between;
         uint256 length = body.length;
