@@ -1,8 +1,9 @@
 name: kontrol
-# The budget proof of contracts/test/BudgetProof.t.sol under Kontrol (KEVM),
-# issue #130. It takes about ten minutes, so it does not run on every pull
-# request: by hand, once a week, and on a pull request that changes the
-# policy, the harness, the compiler settings or this file.
+# The budget proofs of contracts/test/BudgetProof.t.sol under Kontrol (KEVM),
+# issue #130, and each rule of the policy broken alone to see its proof fail.
+# It takes about half an hour, so it does not run on every pull request: by
+# hand, once a week, and on a pull request that changes the policy, the
+# harness, the breaks, the compiler settings or this file.
 on:
   workflow_dispatch:
   schedule:
@@ -11,6 +12,7 @@ on:
     paths:
       - contracts/src/AgentPolicy.sol
       - contracts/test/BudgetProof.t.sol
+      - scripts/kontrol-break.py
       - contracts/foundry.toml
       - .github/workflows/kontrol.yml
 permissions:
@@ -48,4 +50,64 @@ jobs:
             -e KPROFILE_TELEMETRY_DISABLED=true \
             -v "$RUNNER_TEMP/proof:/home/user/workspace" -w /home/user/workspace \
             "$KONTROL_IMAGE" \
-            bash -c 'kontrol version && time kontrol build && time kontrol prove --match-test "BudgetProof.check_" --workers 3'
+            bash -c 'kontrol version && time kontrol build && time kontrol prove --match-test "BudgetProof.check_" --workers 3' \
+            2>&1 | tee "$RUNNER_TEMP/prove.log"
+          # a proof none of whose paths reach its end proves nothing
+          if grep -Eq '(^|[^0-9])[1-9][0-9]* vacuous' "$RUNNER_TEMP/prove.log"; then
+            echo "a proof is vacuous"; exit 1
+          fi
+
+  # The names of the breaks, from the script that makes them
+  breaks:
+    runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.list.outputs.list }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: list
+        run: echo "list=$(python3 scripts/kontrol-break.py --list | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+
+  # Each rule broken alone, in a copy of the policy: its proof must fail with
+  # a counterexample. A proof that passed with its rule broken would not be
+  # about that rule (issue #130, item 3).
+  bites:
+    needs: breaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        break: ${{ fromJSON(needs.breaks.outputs.list) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: The policy with ${{ matrix.break }} broken, and the harness
+        id: copy
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/proof"
+          mkdir -p "$dir/test"
+          cp -R contracts/src contracts/lib contracts/foundry.toml "$dir/"
+          cp contracts/test/BudgetProof.t.sol "$dir/test/"
+          proof="$(python3 scripts/kontrol-break.py "${{ matrix.break }}" "$dir/src/AgentPolicy.sol")"
+          git diff --no-index contracts/src/AgentPolicy.sol "$dir/src/AgentPolicy.sol" || true
+          echo "proof=$proof" >> "$GITHUB_OUTPUT"
+          chmod -R a+rwX "$dir"
+      - name: ${{ steps.copy.outputs.proof }} must fail
+        run: |
+          set -uo pipefail
+          docker run --rm \
+            -e KPROFILE_TELEMETRY_DISABLED=true \
+            -v "$RUNNER_TEMP/proof:/home/user/workspace" -w /home/user/workspace \
+            "$KONTROL_IMAGE" \
+            bash -c 'kontrol build && kontrol prove --match-test "BudgetProof.${{ steps.copy.outputs.proof }}"' \
+            > "$RUNNER_TEMP/prove.log" 2>&1
+          cat "$RUNNER_TEMP/prove.log"
+          # failed with a failing node (a counterexample), not timed out or crashed
+          grep -q "PROOF FAILED" "$RUNNER_TEMP/prove.log" \
+            && grep -Eq '(^|[^0-9])[1-9][0-9]* failing' "$RUNNER_TEMP/prove.log" \
+            || { echo "the proof did not fail with ${{ matrix.break }} broken"; exit 1; }

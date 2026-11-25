@@ -345,11 +345,38 @@ generator tried. Kontrol (KEVM, by Runtime Verification) proves it. Halmos
 cannot run this codebase: its symbolic EVM has no MCOPY, which the
 bytecode needs.
 
-| Proof | What holds, for any amount |
+| Proof | What holds, for any amounts |
 |---|---|
 | `check_tokenTransfer_oneOp` | a token `transfer` in one operation is accepted only within the token's cap per operation; the token's counter then equals the amount and stays within the budget; a refused one books nothing |
 | `check_nativeTransfer_oneOp` | the same for a plain native transfer and the native cap and budget |
 | `check_tokenTransfer_twoOps` | two token transfers in a row add up without wrapping and without passing the budget |
+| `check_nativeTransfer_twoOps` | the same for two native transfers |
+| `check_tokenBatch_twoLegs` | two token transfers in one account batch: the cap per operation holds for their sum, so splitting does not escape it |
+| `check_nativeBatch_twoLegs` | the same for two native transfers in one batch |
+| `check_safe_innerValue` | the value a nonce-guarded Safe transaction sends from the Safe is capped and booked as the account's |
+| `check_safe_multiSend_twoLegs` | a Safe delegatecalling multiSend with two legs: their sum is capped and booked |
+| `check_faithful_single` | value-faithfulness: an accepted token transfer, executed as Kernel v3.3 executes it, delivers exactly what was booked |
+| `check_faithful_batch` | the same for a batch of a token transfer and a native transfer |
+
+[V] (`contracts/test/BudgetProof.t.sol`, `contracts/lib/kernel/src/Kernel.sol:330-332`, `contracts/lib/account-abstraction/contracts/core/EntryPoint.sol:571-573`):
+- Kernel's `execute` is `ExecLib.execute(mode, data)` behind its access check. The harness's account runs exactly that on the `callData` the policy judged, so the faithfulness proofs execute what was validated.
+- A refusal is modelled as the EntryPoint handles it: `handleOps` reverts with `FailedOp` ("AA24 signature error"). That revert also undoes what the policy booked for the earlier legs of a refused batch. The policy books leg by leg and returns its refusal without reverting, so this undo is the EntryPoint's.
+
+**Each rule broken alone** (`scripts/kontrol-break.py`): the workflow breaks one rule at a time in a copy of the policy and requires its proof to fail with a counterexample.
+
+| Break | Proof that must fail |
+|---|---|
+| `token-cap`: the token's cap per operation off by one | `check_tokenTransfer_oneOp` |
+| `token-budget`: the token budget off by one | `check_tokenTransfer_twoOps` |
+| `native-cap`: the native cap per operation off by one | `check_nativeTransfer_oneOp` |
+| `native-budget`: the native budget off by one | `check_nativeTransfer_twoOps` |
+| `token-sum-per-operation`: each leg counted alone | `check_tokenBatch_twoLegs` |
+| `batch-legs-summed`: a batch's value is its last leg's | `check_nativeBatch_twoLegs` |
+| `safe-inner-value`: a Safe transaction's inner value not counted | `check_safe_innerValue` |
+| `multisend-legs-summed`: a multiSend's value is its last leg's | `check_safe_multiSend_twoLegs` |
+| `call-value-counted`: a call's value not counted | `check_faithful_batch` |
+
+What breaking them one at a time found: with the budgets set at first (a token cap of 100 and a token budget of 250, a native cap of 1 ether and a native budget of 5 ether), two operations could never reach the budget. A broken budget check could not show. The run below caught the token budget's break only because the cap was broken with it. The budgets are now 150 and 1.5 ether, reachable within two operations.
 
 **The run of 2026-11-24** ([issue #124](https://github.com/postcryptum-research/agent-keys/issues/124#issuecomment-7131857893)):
 - Setup: image `runtimeverificationinc/kontrol:ubuntu-jammy-1.0.255`, a copy of `contracts/` with this one test, the container limited to 12 CPUs and 11 GB.
@@ -357,9 +384,9 @@ bytecode needs.
 - `kontrol prove` with three workers: 6 min 41 s of wall time, about 4 GB of memory at the peak seen. The three proofs took 2 min 52 s, 2 min 42 s and 4 min 37 s.
 - With three rules broken at once (the token budget off by one, the token's cap not checked, the native cap off by one), every proof fails, with the counterexamples `amount = 101` and `value = 1000000000000000001`, in 10 min 56 s.
 
-**In CI:** `.github/workflows/kontrol.yml` runs the same by hand, once a week, and on a pull request that changes `AgentPolicy.sol`, the harness, `foundry.toml` or the workflow. The image is pinned by digest. Kontrol sends anonymous usage data unless `KPROFILE_TELEMETRY_DISABLED=true` is set, as the workflow does. The command to run it by hand is in the harness's header. Its first run, on GitHub's `ubuntu-latest` runner on 2026-11-24 ([#135](https://github.com/postcryptum-research/agent-keys/pull/135)), passed all three proofs: pulling the image took 45 s, `kontrol build` 2 min 9 s, and `kontrol prove` with three workers 6 min 49 s, about 10 min 30 s for the whole job.
+**In CI:** `.github/workflows/kontrol.yml` runs the proofs, and each break in a job of its own, by hand, once a week, and on a pull request that changes `AgentPolicy.sol`, the harness, the breaks, `foundry.toml` or the workflow. A proof reported vacuous fails the run. The image is pinned by digest. Kontrol sends anonymous usage data unless `KPROFILE_TELEMETRY_DISABLED=true` is set, as the workflow does. The command to run it by hand is in the harness's header. Its first run, on GitHub's `ubuntu-latest` runner on 2026-11-24 ([#135](https://github.com/postcryptum-research/agent-keys/pull/135)), passed all three proofs: pulling the image took 45 s, `kontrol build` 2 min 9 s, and `kontrol prove` with three workers 6 min 49 s, about 10 min 30 s for the whole job.
 
 **What it does not prove** ([#130](https://github.com/postcryptum-research/agent-keys/issues/130)):
-- **The batch, Safe and MultiSend paths.** Their loops run over a length the caller sets; they stay with the fuzzing above.
-- **Value-faithfulness.** That the executed call moves no more than the policy counted needs a model of Kernel's `execute`; the differential tests are the evidence for it.
-- **The breaks one at a time.** In the run above the three rules were broken together, not one at a time.
+- **Any number of legs.** The batch, Safe and multiSend proofs fix the number of legs at two. A loop over a length the caller chooses stays with the fuzzing above.
+- **Any encoding.** The shapes are well-formed encodings with symbolic amounts. Symbolic offsets, short or trailing bytes stay with the parsers' tests and the fuzzing.
+- **Faithfulness inside a Safe.** The faithfulness proofs execute the account's single and batch paths. A Safe executing its transaction is not modelled; the differential tests are the evidence there.
