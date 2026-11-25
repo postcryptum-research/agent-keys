@@ -341,6 +341,9 @@ contract AgentPolicy is IPolicy {
     bytes4 public constant MULTI_SEND = 0x8d80ff0a;
     /// `SafeNonceAssert.check(address,uint256)`
     bytes4 public constant NONCE_CHECK = SafeNonceAssert.check.selector;
+    /// `executeUserOp(PackedUserOperation,bytes32)`: the prefix Kernel requires
+    /// of the `callData` of a permission that carries an execution hook
+    bytes4 internal constant EXECUTE_USER_OP = 0x8dd7712f;
 
     // The four ERC-20 functions the policy meters (`_chargeToken`), the only
     // ones a token with a limit may be called through.
@@ -1385,12 +1388,18 @@ contract AgentPolicy is IPolicy {
 
     /// @dev Accepts `execute(mode, executionCalldata)` with a single call or a
     /// batch, default exec type, and judges every call; returns the native
-    /// value the operation moves.
+    /// value the operation moves. Also in Kernel's form for a permission that
+    /// carries an execution hook, `executeUserOp`'s selector before that call:
+    /// Kernel requires it there and then runs the `execute(...)` after it as it
+    /// is (Kernel.sol:264-271, 300), so the hook adds checks around the call
+    /// and never takes the mandate's place.
     /// @param m The mandate key.
     /// @param callData The operation's `callData`.
     /// @return True if every call passes.
     /// @return The native value the operation moves, Safe transactions and batch legs included.
     function _judgeExecute(bytes32 m, bytes calldata callData) internal returns (bool, uint256) {
+        // The hooked form: one `executeUserOp` selector, then the call itself
+        if (callData.length >= 4 && bytes4(callData[0:4]) == EXECUTE_USER_OP) callData = callData[4:];
         // selector + mode + offset + length is the smallest well-formed call
         if (callData.length < 100 || bytes4(callData[0:4]) != IERC7579Account.execute.selector) return (false, 0);
         // The mode's first byte is the call type, its second the exec type

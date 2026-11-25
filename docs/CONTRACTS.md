@@ -434,6 +434,16 @@ which refuses the operation all the same [I].
   `test_safe_refusesDelegatecallRefundsAndNesting`,
   `test_trading_aVenuePlaceIsNoLongerASafesBatcher`,
   `test_batch_everyLegIsJudged`).
+- *A permission with an execution hook.* Kernel requires such a
+  permission's `callData` to be `executeUserOp`'s selector followed by the
+  `execute(...)` call, and runs that call as it is (`Kernel.sol:264-271`,
+  `300`). The policy strips that one prefix and judges the call as any
+  other, so a hook (a price check, say) adds checks around the call and
+  never replaces the mandate. A second prefix is refused
+  (`test_hook_aHookedPermissionIsHeldToTheMandate`). [V source, test]
+  Today the phone's review refuses an install that carries a hook and
+  the CLI builds the plain form only; a hook needs those two, not a new
+  policy.
 
 **Instances.** Both predate master: each is recorded with the commit
 named in `docs/DEPLOYMENTS.md`, and master's source no longer builds it.
