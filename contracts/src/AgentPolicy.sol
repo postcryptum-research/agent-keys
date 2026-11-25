@@ -1566,8 +1566,11 @@ contract AgentPolicy is IPolicy {
         if (value != 0 || data.length != 68 || bytes4(data[0:4]) != NONCE_CHECK || i + 1 >= pointers.length) {
             return (false, 0);
         }
-        // The Safe it guards: the low 160 bits of its first argument
-        // (`check` reverts at execution on anything above them)
+        // The Safe it guards: its first argument, a whole address word. With
+        // anything above the low 160 bits `check` reverts at execution, after
+        // validation has charged the operation: refused here, as a payee's
+        // address word is (`_chargeToken`)
+        if (uint256(bytes32(data[4:36])) >> 160 != 0) return (false, 0);
         address guarded = address(uint160(uint256(bytes32(data[4:36]))));
         // The next leg must be that Safe's `execTransaction`
         (address safe, uint256 safeValue, bytes calldata safeData) = LibERC7579.getExecution(pointers, i + 1);
