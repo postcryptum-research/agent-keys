@@ -1,12 +1,17 @@
 //! End-to-end tests of the `agent-signer` CLI on a local chain.
 //!
 //! Each test starts its own `anvil`, installs the account-abstraction stack
-//! and this project's modules from `fixtures/chain-code.json` (runtime bytecode
-//! taken from Base Sepolia: EntryPoint v0.7, Kernel v3.3 + factory,
-//! P256Validator, P256RecoveryValidator, P256Signer, AgentPolicy v6,
-//! SafeNonceAssert, the demo counter, Solady's P-256 verifier) and runs the
+//! and this project's modules from `fixtures/chain-code.json` and runs the
 //! real binary against it -- config parsing, operation building, signing,
 //! `handleOps`, and the contracts' verdicts, together.
+//!
+//! The fixture's code of this project's contracts (P256Validator,
+//! P256RecoveryValidator, P256Signer, AgentPolicy, SafeNonceAssert, the demo
+//! counter) is built from this repository's sources:
+//! `scripts/test-fixtures.py --write` rewrites it, and CI fails a pull
+//! request whose contracts and fixtures disagree. The EntryPoint v0.7, Kernel
+//! v3.3 and its factory, Solady's P-256 verifier and Safe are runtime
+//! bytecode read from Base Sepolia.
 //!
 //! The keys are software keys, which only a build with the test-only
 //! `insecure-software-keys` feature accepts:

@@ -33,6 +33,7 @@ cargo clippy                                      # in signer/ and in mobile/own
 cd scripts/erc7562 && npm install && npm run check
 gitleaks git . --redact --log-opts="--all" --exit-code 1    # what CI runs, over the whole history
 scripts/source-record.sh                          # every contract's bytecode and VERSION against origin/master (house rules 3 and 9)
+scripts/test-fixtures.py                          # the contract code in the CLI's test fixtures against the build; --write after changing a contract
 ```
 
 - Rust 1.94.1 or newer.

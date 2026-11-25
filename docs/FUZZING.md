@@ -256,6 +256,18 @@ cargo test -p agent-signer --features insecure-software-keys --test anvil_cli th
 MANDATE_DIFFERENTIAL_CASES=20000 cargo test ...    # more mandates than the 400 of a normal run
 ```
 
+**Which policy it reads against.** The `AgentPolicy` of the local chain is
+the one built from this repository's sources, held as bytecode in
+`tests/fixtures/chain-code.json`. `scripts/test-fixtures.py` compares the
+fixtures with the build and CI fails a pull request where they differ, so a
+change to `onInstall` cannot leave this test on an earlier policy;
+`scripts/test-fixtures.py --write` brings them up. Until 2026-11-25 the
+fixture was the policy deployed to Base Sepolia on 2026-11-21, and the test
+did not see the changes made to `onInstall` after it (issue #170). [V the
+first run against master's policy, 2026-11-25: the test passes.] It says
+nothing of an instance on a chain: comparing a deployed instance's
+bytecode with the build's is a step of a redeploy, not of this test.
+
 Mandates come from a seed: mostly well-formed and near what an install
 must refuse, a quarter of them damaged (a bit flipped, the end cut off, a
 word added, a word's top bit set). Each one goes two ways. The phone
