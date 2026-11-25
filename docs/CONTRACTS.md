@@ -405,7 +405,13 @@ which refuses the operation all the same [I].
   four metered functions. A protocol's own operator grant under another
   name is a call the policy allows or refuses and does not read, as any
   unmetered selector, and what it grants can stand. The phone's review
-  names the grants it knows on the entry. An allowance or a grant that has
+  names the grants it knows on the entry: beside the standards' own,
+  Morpho Blue's `setAuthorization(address,bool)` (`0xeecea000`), Compound
+  III's `allow(address,bool)` (`0x110496e5`) and Aave's
+  `approveDelegation(address,uint256)` (`0xc04a8a10`), each with the line
+  that the policy does not read it and the grant stands [V
+  `an_operator_grant_is_named_on_the_screen`; the selectors by `cast sig`].
+  A function the build does not know is shown by its selector alone. An allowance or a grant that has
   to stand across operations is the owner's to make.
   What the rule reads is the calls of the operation, and validation cannot
   see how they end. A call that reverts takes the whole operation's
