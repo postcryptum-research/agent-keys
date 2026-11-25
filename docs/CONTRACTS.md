@@ -367,7 +367,7 @@ which refuses the operation all the same [I].
   payee list and no x402: the agent picks the receiver and the spender.
   An id's limit is kept as a token's, under a key made of the contract
   and the id (the low 160 bits of a tagged hash; `idAsset`). The
-  contract's runtime size with this is 23,630 bytes of the 24,576 a
+  contract's runtime size is 23,678 bytes of the 24,576 a
   contract may have [V `forge build --sizes`, 2026-11-25].
   An approval is charged like a transfer; what the spender later pulls is
   not seen.
@@ -507,7 +507,18 @@ which refuses the operation all the same [I].
   `refundReceiver`): a Safe whose decoder validates them would revert at
   execution (`test_safe_theTransactionsAddressesAreWholeWords`). The call
   inside is judged against the same mandate; `gasPrice` must be 0, or the
-  Safe would pay a refund to a receiver the agent picks; Safes do not
+  Safe would pay a refund to a receiver the agent picks; `safeTxGas` and
+  `baseGas` must be 0 too, since a Safe given a `safeTxGas` does not
+  revert when its inner call does, and validation would have counted a
+  call that was not made, the withdrawal of an allowance among them
+  (#190, `test_safe_aTransactionThatMayFailQuietlyIsRefused`) [V
+  `contracts/lib/safe-smart-account/contracts/Safe.sol`, the `GS013`
+  rule]. A Safe's guard can only add a refusal to this. A module enabled
+  on the Safe is another matter: `execTransactionFromModule` runs without
+  `execTransaction`'s rules, so a mandate that lets the agent reach a
+  module of the Safe rests on that module's own checks, and enabling one
+  is the owner's to weigh [I from `ModuleManager.sol` in the same tree].
+  Safes do not
   nest; a DELEGATECALL goes only into an allow-listed `multiSend` that is
   still a target the agent may reach (not made a venue's place since, by
   another mandate of the account), whose every leg is a CALL that passes

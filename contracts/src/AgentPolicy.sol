@@ -2042,9 +2042,15 @@ contract AgentPolicy is IPolicy {
         value = uint256(bytes32(d[36:68]));
         uint256 dataOffset = uint256(bytes32(d[68:100]));
         operation = uint256(bytes32(d[100:132]));
-        // Head word 6, gasPrice: non-zero, the Safe would pay a refund out of
-        // its own funds to a receiver the agent picks
-        if (uint256(bytes32(d[196:228])) != 0) return (false, address(0), 0, 0, inner); // gasPrice: no refunds
+        // Head words 4 to 6: safeTxGas, baseGas, gasPrice, all 0. With a
+        // gasPrice the Safe would pay a refund out of its own funds to a
+        // receiver the agent picks. With a safeTxGas (or a gasPrice) the Safe
+        // does not revert when its inner call does, and validation would have
+        // counted a call that was not made: a withdrawal of an allowance, say.
+        // With all three 0 the Safe's transaction fails with its inner call.
+        if ((uint256(bytes32(d[132:164])) | uint256(bytes32(d[164:196])) | uint256(bytes32(d[196:228]))) != 0) {
+            return (false, address(0), 0, 0, inner);
+        }
 
         // The data: its offset bounded before any sum, then its length and bytes within the calldata
         if (dataOffset > d.length) return (false, address(0), 0, 0, inner);
