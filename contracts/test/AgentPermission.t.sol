@@ -148,6 +148,39 @@ contract Counter {
     receive() external payable {}
 }
 
+/// An execution hook that only counts: Kernel calls it around an operation
+/// of the permission it is installed with.
+contract CountingHook is IHook {
+    uint256 public pre;
+    uint256 public post;
+    mapping(address => bool) internal installed;
+
+    function onInstall(bytes calldata) external payable {
+        installed[msg.sender] = true;
+    }
+
+    function onUninstall(bytes calldata) external payable {
+        installed[msg.sender] = false;
+    }
+
+    function isModuleType(uint256 moduleTypeId) external pure returns (bool) {
+        return moduleTypeId == 4;
+    }
+
+    function isInitialized(address account) external view returns (bool) {
+        return installed[account];
+    }
+
+    function preCheck(address, uint256, bytes calldata) external payable returns (bytes memory) {
+        pre++;
+        return "";
+    }
+
+    function postCheck(bytes calldata) external payable {
+        post++;
+    }
+}
+
 /// Phase 1b / 3.3: the agent's hardware key is a *permission*, not the root.
 ///
 /// Account layout:
@@ -1257,6 +1290,86 @@ contract AgentPermissionTest is Test {
         // and cannot replay it: the token's nonce is used
         vm.expectRevert();
         usdc.transferWithAuthorization(acct, PAYEE, 500_000, 0, before, bytes32(uint256(1)), sig);
+    }
+
+    // --- a permission with an execution hook ---
+
+    PermissionId internal constant HOOK_ID = PermissionId.wrap(0x686f6f6b); // "hook"
+
+    /// The agent's mandate (the counter, and value to it) on a permission that
+    /// carries `hook`.
+    function _withHook(CountingHook hook) internal {
+        address[] memory targets = new address[](2);
+        bytes4[] memory selectors = new bytes4[](2);
+        (targets[0], selectors[0]) = (address(counter), Counter.increment.selector);
+        (targets[1], selectors[1]) = (address(counter), bytes4(0));
+        bytes[] memory entries = new bytes[](2);
+        entries[0] = _policyEntry(targets, selectors, new AgentPolicy.TokenCap[](0));
+        entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(agentX, agentY));
+        ValidationId vId = ValidatorLib.permissionToIdentifier(HOOK_ID);
+        ValidationId[] memory vIds = new ValidationId[](1);
+        vIds[0] = vId;
+        ValidationManager.ValidationConfig[] memory cfgs = new ValidationManager.ValidationConfig[](1);
+        cfgs[0] = ValidationManager.ValidationConfig({nonce: Kernel(payable(acct)).currentNonce(), hook: IHook(address(hook))});
+        bytes[] memory vData = new bytes[](1);
+        vData[0] = abi.encode(entries);
+        bytes[] memory hData = new bytes[](1);
+        hData[0] = hex"ff"; // Kernel's flag: call the hook's onInstall
+        Execution[] memory batch = new Execution[](2);
+        batch[0] = Execution(acct, 0, abi.encodeCall(Kernel.installValidations, (vIds, cfgs, vData, hData)));
+        batch[1] = Execution(acct, 0, abi.encodeCall(Kernel.grantAccess, (vId, Kernel.execute.selector, true)));
+        _send(
+            _rootOp(
+                abi.encodeWithSelector(
+                    Kernel.execute.selector, ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))), ExecLib.encodeBatch(batch)
+                )
+            )
+        );
+    }
+
+    /// An agent operation on the hooked permission, its `callData` prefixed
+    /// `times` times with `executeUserOp`'s selector.
+    function _hookedOp(uint256 times, address target, uint256 value, bytes memory data)
+        internal
+        view
+        returns (PackedUserOperation memory op)
+    {
+        bytes memory callData = _singleCall(target, value, data);
+        for (uint256 i; i < times; i++) {
+            callData = abi.encodePacked(Kernel.executeUserOp.selector, callData);
+        }
+        op = _op(_permissionNonce(HOOK_ID), callData);
+        op.signature = abi.encodePacked(bytes1(0xff), _sign(AGENT, entryPoint.getUserOpHash(op)));
+    }
+
+    /// A permission with an execution hook runs under the same mandate:
+    /// Kernel requires `executeUserOp ‖ execute(...)` of it, the policy judges
+    /// the `execute(...)` inside, and the hook runs around the call.
+    function test_hook_aHookedPermissionIsHeldToTheMandate() public {
+        CountingHook hook = new CountingHook();
+        _withHook(hook);
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+        // Kernel refuses the plain form for a hooked permission
+        PackedUserOperation memory plain = _op(_permissionNonce(HOOK_ID), _singleCall(address(counter), 0, inc));
+        plain.signature = abi.encodePacked(bytes1(0xff), _sign(AGENT, entryPoint.getUserOpHash(plain)));
+        _expectRefused(plain);
+        // the hooked form passes the mandate, and the hook runs around it
+        _send(_hookedOp(1, address(counter), 0, inc));
+        assertEq(counter.count(), 1);
+        assertEq(hook.pre(), 1);
+        assertEq(hook.post(), 1);
+        // held to the mandate in that form: a target outside it, a value over the cap
+        _expectRefused(_hookedOp(1, address(forbidden), 0, inc));
+        _expectRefused(_hookedOp(1, address(counter), MAX_VALUE + 1, ""));
+        // one prefix only
+        _expectRefused(_hookedOp(2, address(counter), 0, inc));
+        assertEq(counter.count(), 1);
+        assertEq(hook.pre(), 1);
+    }
+
+    /// The selector the policy strips is Kernel's.
+    function test_hook_thePrefixIsKernelsExecuteUserOp() public pure {
+        assertEq(Kernel.executeUserOp.selector, bytes4(0x8dd7712f));
     }
 
     /// An authorization without an end is refused: its `validBefore` of 0
