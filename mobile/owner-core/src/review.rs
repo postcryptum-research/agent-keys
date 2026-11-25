@@ -98,6 +98,8 @@ pub struct Facts {
     /// The policy modules that hold a budget per period and venues (issue
     /// #80). An earlier instance refuses such a mandate at install.
     pub trading_policy_modules: Vec<Address>,
+    /// `AgentPolicy` instances known to hold limits per id of an ERC-6909 contract.
+    pub id_policy_modules: Vec<Address>,
     /// The venue decoders this build can read, by address.
     pub venues: BTreeMap<Address, Venue>,
 }
@@ -725,6 +727,9 @@ pub struct MandateTerms {
     /// In the ten-word form: the budget period in seconds, never zero, and
     /// the venues as `(decoder, code hash, hash of the venue's terms)`.
     pub trading: Option<(u32, Vec<(Address, B256, B256)>)>,
+    /// In the eleven-word form: `(ERC-6909 contract, token id, maxPerOp,
+    /// budget)`, at least one. Empty in the other forms.
+    pub ids: Vec<(Address, U256, U256, U256)>,
 }
 
 /// Where a mandate is being installed: what `mandate_terms` needs to refuse
@@ -739,6 +744,8 @@ pub struct MandatePlace {
     pub payees_enforced: bool,
     /// That module is known to hold a budget period and venues.
     pub trading_enforced: bool,
+    /// That module is known to hold limits per id of an ERC-6909 contract.
+    pub ids_enforced: bool,
 }
 
 /// Reads `init`, a policy entry's bytes behind `flag ‖ module`, or says why
@@ -766,11 +773,55 @@ pub fn mandate_terms(init: &[u8], place: &MandatePlace, name: &dyn Fn(Address) -
         u32,
         Venues,
     );
-    // Three forms, told apart as the policy tells them: by the first head
-    // word, the offset of `targets` behind seven, eight or ten head words.
+    type Ids = Vec<(Address, U256, U256, U256)>;
+    type PolicyInitIds = (
+        Vec<Address>,
+        Vec<FixedBytes<4>>,
+        U256,
+        U256,
+        U256,
+        Vec<(Address, U256, U256, B256)>,
+        U256,
+        Vec<(Address, Vec<Address>)>,
+        u32,
+        Venues,
+        Ids,
+    );
+    // Four forms, told apart as the policy tells them: by the first head
+    // word, the offset of `targets` behind seven, eight, ten or eleven head words.
     let head = init.get(..32).map(U256::from_be_slice).ok_or("policy parameters shorter than a word; refused")?;
     let mut trading: Option<(u32, Venues)> = None;
-    let (targets, selectors, max_value, budget, until, tokens, after, payees) = if head == U256::from(10 * 32) {
+    let mut ids: Ids = Vec::new();
+    let (targets, selectors, max_value, budget, until, tokens, after, payees) = if head == U256::from(11 * 32) {
+        let d = PolicyInitIds::abi_decode_params_validate(init).map_err(|e| format!("policy parameters: {e}"))?;
+        if d.abi_encode_params() != init {
+            return Err("policy parameters are not canonical; refused".into());
+        }
+        // an earlier policy refuses these parameters at install; a module this build
+        // does not know to hold limits per id is not shown as holding them
+        if !place.ids_enforced {
+            return Err("this mandate carries limits per token id, and the policy module it goes to is not known to enforce them; refused".into());
+        }
+        // the form exists to carry a limit per id
+        if d.10.is_empty() {
+            return Err("policy parameters in the form for limits per token id without one; refused".into());
+        }
+        // a period and venues as in the ten-word form; here there may be neither
+        if (d.8 != 0 || !d.9.is_empty()) && !place.trading_enforced {
+            return Err("this mandate carries a budget period or trading venues, and the policy module it goes to is not known to enforce them; refused".into());
+        }
+        if d.8 == 0 && !d.9.is_empty() {
+            return Err("this mandate names trading venues and no budget period: an order's charge would never come back, and the policy does not install it; refused".into());
+        }
+        if !d.7.is_empty() && !payees_enforced {
+            return Err("this mandate carries payee lists, and the policy module it goes to is not known to enforce them; refused".into());
+        }
+        if d.8 != 0 {
+            trading = Some((d.8, d.9));
+        }
+        ids = d.10;
+        (d.0, d.1, d.2, d.3, d.4, d.5, d.6, d.7)
+    } else if head == U256::from(10 * 32) {
         let d = PolicyInitTrading::abi_decode_params_validate(init).map_err(|e| format!("policy parameters: {e}"))?;
         if d.abi_encode_params() != init {
             return Err("policy parameters are not canonical; refused".into());
@@ -835,11 +886,56 @@ pub fn mandate_terms(init: &[u8], place: &MandatePlace, name: &dyn Fn(Address) -
     // mandate at install, and an earlier AgentPolicy would let the
     // entry through unmetered, so it is refused here for either.
     const METERED: [[u8; 4]; 4] = [[0xa9, 0x05, 0x9c, 0xbb], [0x09, 0x5e, 0xa7, 0xb3], [0x39, 0x50, 0x93, 0x51], [0x23, 0xb8, 0x72, 0xdd]];
+    // The same for an ERC-6909 contract with limits per id and its three
+    // functions that carry an id and an amount (#186)
+    const ID_METERED: [[u8; 4]; 3] = [SELECTOR_ERC6909_TRANSFER, SELECTOR_ERC6909_TRANSFER_FROM, SELECTOR_ERC6909_APPROVE];
+    for (i, id) in ids.iter().enumerate() {
+        if id.0.is_zero() || ids[..i].iter().any(|other| (other.0, other.1) == (id.0, id.1)) {
+            return Err("a limit per token id for the zero address, or two for one id; refused".into());
+        }
+        if tokens.iter().any(|token| token.0 == id.0) {
+            return Err(format!("{} has a token limit and limits per token id in one mandate; refused", name(id.0)));
+        }
+    }
     for (t, sel) in targets.iter().zip(&selectors) {
+        let has_ids = ids.iter().any(|id| id.0 == *t);
+        if has_ids && !ID_METERED.contains(&sel.0) {
+            return Err(format!(
+                "this mandate limits token ids of {} and also allows {} on it; a contract with limits per id may only be called through ERC-6909's transfer, transferFrom and approve, anything else (an operator among them) would move its tokens past the limits; refused",
+                name(*t),
+                selector_name(sel.0)
+            ));
+        }
+        if !has_ids && ID_METERED.contains(&sel.0) {
+            return Err(format!(
+                "this mandate allows {} (ERC-6909) on {} but sets no limit per token id for it; AgentPolicy refuses the mandate at install; refused",
+                selector_name(sel.0),
+                name(*t)
+            ));
+        }
         // Permit2 at its usual address (the constant AgentPolicy carries): its own
         // `approve` names who may pull a token, and no policy reads that call
         if *t == alloy_primitives::address!("000000000022D473030F116dDEE9F6B43aC78BA3") {
             return Err("this mandate lets the agent call Permit2, through which a token's allowance can be handed to any address, past its limits and payee list; refused".into());
+        }
+        // ERC-777's authorizeOperator is withdrawn by another function, which
+        // AgentPolicy does not pair with it: it refuses the mandate at install,
+        // and an earlier AgentPolicy would let the grant stand
+        if sel.0 == SELECTOR_AUTHORIZE_OPERATOR {
+            return Err(format!(
+                "this mandate allows authorizeOperator (ERC-777) on {}: an operator over all the account's tokens there, which no AgentPolicy makes the agent withdraw; AgentPolicy refuses the mandate at install; refused",
+                name(*t)
+            ));
+        }
+        // and the mirror: one of the four on a target the mandate sets no limit
+        // for is refused at every operation, a mandate that cannot do what it
+        // lists; AgentPolicy refuses it at install (#175)
+        if METERED.contains(&sel.0) && !tokens.iter().any(|token| token.0 == *t) {
+            return Err(format!(
+                "this mandate allows {} on {} but sets no limit for it; such an entry is refused at every operation, and AgentPolicy refuses the mandate at install; refused",
+                selector_name(sel.0),
+                name(*t)
+            ));
         }
         if tokens.iter().any(|token| token.0 == *t) && !METERED.contains(&sel.0) {
             return Err(format!(
@@ -858,7 +954,7 @@ pub fn mandate_terms(init: &[u8], place: &MandatePlace, name: &dyn Fn(Address) -
         return Err("a mandate that is never valid (validUntil is zero, or not after validAfter); refused".into());
     }
     let fits = |v: &U256| *v <= U256::from(u128::MAX);
-    if !fits(&max_value) || !fits(&budget) || tokens.iter().any(|t| !fits(&t.1) || !fits(&t.2)) {
+    if !fits(&max_value) || !fits(&budget) || tokens.iter().any(|t| !fits(&t.1) || !fits(&t.2)) || ids.iter().any(|i| !fits(&i.2) || !fits(&i.3)) {
         return Err("a limit larger than the policy can hold (128 bits); refused".into());
     }
     if targets.is_empty() {
@@ -887,7 +983,7 @@ pub fn mandate_terms(init: &[u8], place: &MandatePlace, name: &dyn Fn(Address) -
             return Err("this mandate lets the agent call the policy outside its x402 and order entries; refused".into());
         }
     }
-    Ok(MandateTerms { allow: targets.into_iter().zip(selectors).collect(), max_value, budget, valid_until: until, valid_after: after, tokens, payees, trading })
+    Ok(MandateTerms { allow: targets.into_iter().zip(selectors).collect(), max_value, budget, valid_until: until, valid_after: after, tokens, payees, trading, ids })
 }
 
 /// Kernel's `PermissionEnableDataFormat` as `permission_data` builds it:
@@ -944,14 +1040,18 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
                 policy: module,
                 payees_enforced: b.facts.payee_policy_modules.contains(&module),
                 trading_enforced: b.facts.trading_policy_modules.contains(&module),
+                ids_enforced: b.facts.id_policy_modules.contains(&module),
             };
             let b = &*b;
             mandate_terms(&p[22..], &place, &|a| b.name(a))?
         };
-        let MandateTerms { allow, max_value, budget, valid_until: until, valid_after: after, tokens, payees, trading } = terms;
+        let MandateTerms { allow, max_value, budget, valid_until: until, valid_after: after, tokens, payees, trading, ids } = terms;
         let (targets, selectors): (Vec<Address>, Vec<FixedBytes<4>>) = allow.into_iter().unzip();
         for (t, sel) in targets.iter().zip(&selectors) {
             b.row(s, "Allow", format!("{} · {}", b.name(*t), selector_name(sel.0)));
+            if let Some(what) = operator_grant(sel.0) {
+                b.bold(s, "Operator grant", format!("{} · {what}", b.name(*t)));
+            }
         }
         b.row(s, "Max value per operation", format!("{} ETH", format_ether(max_value)));
         b.row(s, "Budget", format!("{} ETH", format_ether(budget)));
@@ -990,6 +1090,19 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
                 }
                 None => b.row(s, "Token payee", format!("{}: anyone — the agent picks the recipient and the spender", b.name(*token))),
             }
+        }
+        // Limits per id of an ERC-6909 contract. The amounts are raw: this build
+        // knows no decimals of an id. And no payee list exists for an id.
+        for (token, id, max, budget) in &ids {
+            b.row(s, "Token id cap", format!("{} id {id}: max {max} per operation, budget {budget} (raw units, unverified decimals)", b.name(*token)));
+        }
+        let mut id_contracts: Vec<Address> = ids.iter().map(|id| id.0).collect();
+        id_contracts.dedup();
+        for (i, token) in id_contracts.iter().enumerate() {
+            if id_contracts[..i].contains(token) {
+                continue;
+            }
+            b.bold(s, "Token id payee", format!("{}: anyone — the agent picks the recipient and the spender; an id has no payee list", b.name(*token)));
         }
         // A venue's own contract, its decoder or its spender is no target under any
         // mandate, with venues of its own or without: at the venue an order can be
@@ -1267,6 +1380,34 @@ fn vid_text(vid: FixedBytes<21>) -> String {
     }
 }
 
+/// What an allow-list entry for a known approval-like function lets the agent
+/// grant (#176): rights another address keeps after the call, which a revoke
+/// of the mandate does not end unless the policy reads the function.
+fn operator_grant(sel: [u8; 4]) -> Option<&'static str> {
+    match sel {
+        SELECTOR_SET_APPROVAL_FOR_ALL => Some(
+            "lets the agent make an address the operator of all its tokens there; the agent must withdraw it in the same operation (an AgentPolicy from before 2026-11-25 lets it stand)",
+        ),
+        SELECTOR_SET_OPERATOR => Some(
+            "setOperator (ERC-6909): lets the agent make an address the operator of all its tokens there; the agent must withdraw it in the same operation (an AgentPolicy built before this rule lets it stand)",
+        ),
+        _ => None,
+    }
+}
+
+/// `setApprovalForAll(address,bool)` of ERC-721 and ERC-1155.
+const SELECTOR_SET_APPROVAL_FOR_ALL: [u8; 4] = [0xa2, 0x2c, 0xb4, 0x65];
+/// `setOperator(address,bool)` of ERC-6909.
+const SELECTOR_SET_OPERATOR: [u8; 4] = [0x55, 0x8a, 0x72, 0x97];
+/// `approve(address,uint256,uint256)` of ERC-6909.
+const SELECTOR_ERC6909_APPROVE: [u8; 4] = [0x42, 0x6a, 0x84, 0x93];
+/// `transfer(address,uint256,uint256)` of ERC-6909.
+const SELECTOR_ERC6909_TRANSFER: [u8; 4] = [0x09, 0x5b, 0xcd, 0xb6];
+/// `transferFrom(address,address,uint256,uint256)` of ERC-6909.
+const SELECTOR_ERC6909_TRANSFER_FROM: [u8; 4] = [0xfe, 0x99, 0x04, 0x9a];
+/// `authorizeOperator(address)` of ERC-777: no mandate lists it.
+const SELECTOR_AUTHORIZE_OPERATOR: [u8; 4] = [0x95, 0x9b, 0x8c, 0x3f];
+
 fn selector_name(sel: [u8; 4]) -> String {
     let name = match sel {
         s if s == IKernel::executeCall::SELECTOR => Some("execute"),
@@ -1277,6 +1418,11 @@ fn selector_name(sel: [u8; 4]) -> String {
         SELECTOR_INCREMENT => Some("increment"),
         SELECTOR_ERC20_TRANSFER => Some("transfer"),
         SELECTOR_ERC20_APPROVE => Some("approve"),
+        [0x39, 0x50, 0x93, 0x51] => Some("increaseAllowance"),
+        [0x23, 0xb8, 0x72, 0xdd] => Some("transferFrom"),
+        SELECTOR_SET_APPROVAL_FOR_ALL => Some("setApprovalForAll"),
+        [0x95, 0x9b, 0x8c, 0x3f] => Some("authorizeOperator"),
+        [0x55, 0x8a, 0x72, 0x97] => Some("setOperator"),
         [0x27, 0xdd, 0xae, 0x76] => Some("orderRegister"),
         [0, 0, 0, 0] => Some("plain value transfer"),
         _ => None,
@@ -1390,6 +1536,7 @@ mod tests {
             tokens: BTreeMap::new(),
             entry_point: None,
             trading_policy_modules: vec![POLICY],
+            id_policy_modules: vec![POLICY],
             venues: BTreeMap::new(),
         }
     }
@@ -1479,7 +1626,168 @@ mod tests {
     }
 
     fn one_venue(config: &Bytes) -> kernel::Trading {
-        kernel::Trading { period: 86_400, venues: vec![(DECODER, DECODER_CODE, alloy_primitives::keccak256(config))] }
+        kernel::Trading { period: 86_400, venues: vec![(DECODER, DECODER_CODE, alloy_primitives::keccak256(config))], ids: vec![] }
+    }
+
+    /// #186: limits per id of an ERC-6909 contract. The screen shows each
+    /// limit and says that an id has no payee list; a mandate the policy
+    /// would not install is refused, one case for each rule.
+    #[test]
+    fn limits_per_token_id_are_shown_and_held_to_the_policys_rules() {
+        let f = facts();
+        let pool = Address::with_last_byte(0x69);
+        let (transfer, transfer_from, approve) = ([0x09, 0x5b, 0xcd, 0xb6], [0xfe, 0x99, 0x04, 0x9a], [0x42, 0x6a, 0x84, 0x93]);
+        let params = |selectors: Vec<[u8; 4]>| kernel::PolicyParams {
+            targets: vec![pool; selectors.len()],
+            selectors: selectors.into_iter().map(FixedBytes::from).collect(),
+            max_value_per_op: 0,
+            budget: 10u128.pow(16),
+            valid_until: NOW + 30 * 86_400,
+            tokens: vec![],
+            valid_after: 0,
+            payees: vec![],
+        };
+        let ids = |ids: Vec<(Address, U256, u128, u128)>| kernel::Trading { period: 0, venues: vec![], ids };
+        let seven = ids(vec![(pool, U256::from(7), 5, 8)]);
+        let all = vec![transfer, transfer_from, approve];
+
+        let r = open_trading(&params(all.clone()), &seven, vec![], &f);
+        assert!(!matches!(r.verdict, Verdict::Refuse(_)), "{:?}", r.verdict);
+        let rows: Vec<(String, String, bool)> = r.sections.iter().flat_map(|s| &s.rows).map(|r| (r.label.clone(), r.value.clone(), r.emphasis)).collect();
+        assert!(rows.iter().any(|(l, v, _)| l == "Token id cap" && v.contains("id 7: max 5 per operation, budget 8")), "{rows:?}");
+        assert!(rows.iter().any(|(l, v, bold)| l == "Token id payee" && v.contains("an id has no payee list") && *bold), "{rows:?}");
+        // approve is charged to the id's limit here: not an open grant
+        assert!(!rows.iter().any(|(l, _, _)| l == "Operator grant"), "{rows:?}");
+        // without a period nothing renews
+        assert!(!rows.iter().any(|(l, _, _)| l == "Budgets renew"), "{rows:?}");
+        // with one, the row is there
+        let r = open_trading(&params(all.clone()), &kernel::Trading { period: 86_400, ..seven.clone() }, vec![], &f);
+        assert!(r.sections.iter().flat_map(|s| &s.rows).any(|r| r.label == "Budgets renew"), "{:?}", r.verdict);
+
+        let no = |r: Review, why: &str| match r.verdict {
+            Verdict::Refuse(said) => assert!(said.contains(why), "{said}"),
+            other => panic!("not refused ({why}): {other:?}"),
+        };
+        // a module not known to hold the limits
+        let mut old = facts();
+        old.id_policy_modules.clear();
+        no(open_trading(&params(all.clone()), &seven, vec![], &old), "not known to enforce them");
+        // any other function on the contract, an operator among them
+        let mut more = all.clone();
+        more.push([0x55, 0x8a, 0x72, 0x97]);
+        no(open_trading(&params(more), &seven, vec![], &f), "may only be called through ERC-6909's transfer, transferFrom and approve");
+        // one of the three on a contract without a limit per id
+        let other = ids(vec![(Address::with_last_byte(0x70), U256::from(7), 5, 8)]);
+        let mut p = params(all.clone());
+        p.targets.push(Address::with_last_byte(0x70));
+        p.selectors.push(FixedBytes::from(transfer));
+        p.targets.swap(0, 3);
+        p.targets.truncate(3);
+        p.selectors.truncate(3);
+        no(open_trading(&p, &other, vec![], &f), "sets no limit per token id");
+        no(open_trading(&params(vec![transfer]), &kernel::Trading::default(), vec![], &f), "sets no limit per token id");
+        // the same id twice, the zero address, a contract that also has a token limit
+        no(open_trading(&params(all.clone()), &ids(vec![(pool, U256::from(7), 5, 8), (pool, U256::from(7), 1, 1)]), vec![], &f), "two for one id");
+        no(open_trading(&params(all.clone()), &ids(vec![(pool, U256::from(7), 5, 8), (Address::ZERO, U256::from(7), 1, 1)]), vec![], &f), "zero address");
+        let mut capped = params(all.clone());
+        capped.tokens = vec![(pool, 1, 1, B256::ZERO)];
+        no(open_trading(&capped, &seven, vec![], &f), "a token limit and limits per token id");
+
+        // What only raw bytes can say: the form without a limit, and a limit wider than 128 bits
+        let place = MandatePlace { account: ACCOUNT, entry_point: ENTRY, policy: POLICY, payees_enforced: true, trading_enforced: true, ids_enforced: true };
+        type Init = (
+            Vec<Address>,
+            Vec<FixedBytes<4>>,
+            U256,
+            U256,
+            U256,
+            Vec<(Address, U256, U256, B256)>,
+            U256,
+            Vec<(Address, Vec<Address>)>,
+            u32,
+            Vec<(Address, B256, B256)>,
+            Vec<(Address, U256, U256, U256)>,
+        );
+        let good = || -> Init {
+            (
+                vec![pool],
+                vec![FixedBytes::from(transfer)],
+                U256::ZERO,
+                U256::from(1),
+                U256::from(NOW + 3600),
+                vec![],
+                U256::ZERO,
+                vec![],
+                0,
+                vec![],
+                vec![(pool, U256::MAX, U256::from(u128::MAX), U256::from(u128::MAX))],
+            )
+        };
+        let read = |m: Init| mandate_terms(&m.abi_encode_params(), &place, &|a| a.to_string());
+        assert_eq!(read(good()).unwrap().ids, good().10);
+        let mut m = good();
+        m.10.clear();
+        assert!(read(m).unwrap_err().contains("without one"));
+        let mut m = good();
+        m.10[0].3 = U256::from(u128::MAX) + U256::from(1);
+        assert!(read(m).unwrap_err().contains("128 bits"));
+        // venues without a period, as in the ten-word form
+        let mut m = good();
+        m.9 = vec![(DECODER, DECODER_CODE, B256::repeat_byte(1))];
+        assert!(read(m).unwrap_err().contains("no budget period"));
+        // a byte after the end is not canonical
+        let mut bytes = good().abi_encode_params();
+        bytes.push(0);
+        assert!(mandate_terms(&bytes, &place, &|a| a.to_string()).unwrap_err().contains("not canonical"));
+    }
+
+    /// An entry for a known approval-like function is named for what it lets
+    /// the agent grant (#176), beside the entry itself.
+    #[test]
+    fn an_operator_grant_is_named_on_the_screen() {
+        let nft = Address::with_last_byte(0x71);
+        for (sel, said) in [
+            ([0xa2, 0x2c, 0xb4, 0x65], "must withdraw it in the same operation"),
+            ([0x55, 0x8a, 0x72, 0x97], "setOperator (ERC-6909)"),
+        ] {
+            let params = kernel::PolicyParams {
+                targets: vec![COUNTER, nft],
+                selectors: vec![FixedBytes::from(SELECTOR_INCREMENT), FixedBytes::from(sel)],
+                max_value_per_op: 1000,
+                budget: 10u128.pow(18),
+                valid_until: NOW + 86_400,
+                tokens: vec![],
+                valid_after: 0,
+                payees: vec![],
+            };
+            let perm = FixedBytes::from([0x6f, 0x70, 0x72, 0x73]);
+            let pdata = kernel::permission_data(POLICY, &params, SIGNER, &key(2));
+            let mut o = op(kernel::execute_batch_calldata(vec![
+                (ACCOUNT, U256::ZERO, kernel::install_permission_calldata(perm, pdata, 1)),
+                (ACCOUNT, U256::ZERO, kernel::grant_execute_calldata(perm)),
+            ]));
+            o.gas_fees = kernel::pack_gas(1, 1);
+            let t = open(&o).text();
+            assert!(t.contains("! Operator grant") && t.contains(said), "{t}");
+        }
+        // an ordinary entry carries no such line
+        let params = kernel::PolicyParams {
+            targets: vec![COUNTER],
+            selectors: vec![FixedBytes::from(SELECTOR_INCREMENT)],
+            max_value_per_op: 1000,
+            budget: 10u128.pow(18),
+            valid_until: NOW + 86_400,
+            tokens: vec![],
+            valid_after: 0,
+            payees: vec![],
+        };
+        let perm = FixedBytes::from([0x6f, 0x70, 0x72, 0x74]);
+        let mut o = op(kernel::execute_batch_calldata(vec![
+            (ACCOUNT, U256::ZERO, kernel::install_permission_calldata(perm, kernel::permission_data(POLICY, &params, SIGNER, &key(2)), 1)),
+            (ACCOUNT, U256::ZERO, kernel::grant_execute_calldata(perm)),
+        ]));
+        o.gas_fees = kernel::pack_gas(1, 1);
+        assert!(!open(&o).text().contains("Operator grant"));
     }
 
     #[test]
@@ -1503,7 +1811,7 @@ mod tests {
         assert!(t.find("Proceeds go to").unwrap() < t.find("May sell").unwrap());
 
         // a period alone, no venue: nothing of the laptop's is needed
-        let r = open_trading(&trading_params(), &kernel::Trading { period: 3_600, venues: vec![] }, vec![], &trading_facts());
+        let r = open_trading(&trading_params(), &kernel::Trading { period: 3_600, venues: vec![], ids: vec![] }, vec![], &trading_facts());
         assert_eq!(r.verdict, Verdict::Sign, "{}", r.text());
         assert!(r.text().contains("Budgets renew: every hour"), "{}", r.text());
         assert!(!r.text().contains("Trading on"));
@@ -1651,9 +1959,9 @@ mod tests {
         let mut plain = trading_params();
         plain.targets = vec![COUNTER, SETTLEMENT];
         plain.selectors = vec![FixedBytes::from(SELECTOR_INCREMENT), FixedBytes::from([0xec, 0x6c, 0xb1, 0x3f])];
-        refused(open_trading(&plain, &kernel::Trading { period: 3_600, venues: vec![] }, vec![], &f), "could sign any order");
+        refused(open_trading(&plain, &kernel::Trading { period: 3_600, venues: vec![], ids: vec![] }, vec![], &f), "could sign any order");
         let spender = kernel::PolicyParams { targets: vec![COUNTER, RELAYER], ..clone_params(&plain) };
-        refused(open_trading(&spender, &kernel::Trading { period: 3_600, venues: vec![] }, vec![], &f), "CoW Swap's spender");
+        refused(open_trading(&spender, &kernel::Trading { period: 3_600, venues: vec![], ids: vec![] }, vec![], &f), "CoW Swap's spender");
         refused(
             {
                 let pdata = kernel::permission_data(POLICY, &plain, SIGNER, &key(2));
@@ -2357,7 +2665,7 @@ mod tests {
             payees: vec![],
         };
         let show = |chain: u64, policy: Address, code_hash: B256| {
-            let trading = kernel::Trading { period: 86_400, venues: vec![(decoder, code_hash, alloy_primitives::keccak256(&config))] };
+            let trading = kernel::Trading { period: 86_400, venues: vec![(decoder, code_hash, alloy_primitives::keccak256(&config))], ids: vec![] };
             let perm = FixedBytes::from([0x74, 0x72, 0x64, 0x31]);
             let pdata = kernel::permission_data_with_trading(policy, &params(policy), &trading, signer, &key(2));
             let mut approve = SELECTOR_ERC20_APPROVE.to_vec();
@@ -2407,7 +2715,7 @@ mod tests {
     /// two sides together over mandates from a seed.
     #[test]
     fn a_mandate_the_policy_would_not_install_is_not_shown() {
-        let place = MandatePlace { account: ACCOUNT, entry_point: ENTRY, policy: POLICY, payees_enforced: true, trading_enforced: false };
+        let place = MandatePlace { account: ACCOUNT, entry_point: ENTRY, policy: POLICY, payees_enforced: true, trading_enforced: false, ids_enforced: false };
         let token = address!("a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1");
         let transfer = FixedBytes::from([0xa9, 0x05, 0x9c, 0xbb]);
         type Init = (Vec<Address>, Vec<FixedBytes<4>>, U256, U256, U256, Vec<(Address, U256, U256, B256)>, U256);
@@ -2430,7 +2738,17 @@ mod tests {
             ("a token twice", Box::new(move |m| m.5.extend([(token, U256::from(1), U256::from(1), B256::ZERO); 2])), "two for one token"),
             ("the account as a target", Box::new(|m| (m.0.push(ACCOUNT), m.1.push(FixedBytes::ZERO)).0), "the account itself"),
             ("the EntryPoint as a target", Box::new(|m| (m.0.push(ENTRY), m.1.push(FixedBytes::ZERO)).0), "EntryPoint"),
-            ("the policy outside x402", Box::new(move |m| (m.0.push(POLICY), m.1.push(transfer)).0), "outside its x402 and order entries"),
+            ("the policy outside x402", Box::new(move |m| (m.0.push(POLICY), m.1.push(x402("pause()"))).0), "outside its x402 and order entries"),
+            (
+                "an ERC-777 operator grant",
+                Box::new(|m| (m.0.push(Address::with_last_byte(0x78)), m.1.push(FixedBytes::from([0x95, 0x9b, 0x8c, 0x3f]))).0),
+                "authorizeOperator (ERC-777)",
+            ),
+            (
+                "a metered function without a limit",
+                Box::new(move |m| (m.0.push(Address::with_last_byte(0x77)), m.1.push(transfer)).0),
+                "sets no limit for it",
+            ),
         ];
         for (what, change, why) in cases {
             let mut m = good();

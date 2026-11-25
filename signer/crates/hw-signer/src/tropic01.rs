@@ -184,6 +184,27 @@ fn backend(e: ChipError) -> SignerError {
 // ---------------------------------------------------------------------------
 // USB DevKit transport: `embedded_hal::spi::SpiDevice` over the serial bridge.
 
+/// The longest line the devkit's bridge is read for. Its answers are hex of
+/// an SPI transfer; the longest L2 frame is a few hundred bytes.
+const MAX_LINE: usize = 4096;
+
+/// One line from the bridge, its newline included, at most `MAX_LINE` bytes.
+/// The port's timeout is per byte, so a bridge that streams without a
+/// newline never times out: without the cap the line grew until the process
+/// ran out of memory (#178).
+fn read_line_from(port: &mut impl std::io::Read) -> Result<String, UsbDongleError> {
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    while byte[0] != b'\n' {
+        port.read_exact(&mut byte)?;
+        if line.len() >= MAX_LINE {
+            return Err(UsbDongleError::Protocol(format!("a line of more than {MAX_LINE} bytes from the devkit")));
+        }
+        line.push(byte[0]);
+    }
+    String::from_utf8(line).map_err(|e| UsbDongleError::Protocol(e.to_string()))
+}
+
 #[derive(Debug)]
 pub enum UsbDongleError {
     Io(std::io::Error),
@@ -273,13 +294,7 @@ impl UsbDongle {
     }
 
     fn read_line(&mut self) -> Result<String, UsbDongleError> {
-        let mut line = Vec::new();
-        let mut byte = [0u8; 1];
-        while byte[0] != b'\n' {
-            self.port.read_exact(&mut byte)?;
-            line.push(byte[0]);
-        }
-        String::from_utf8(line).map_err(|e| UsbDongleError::Protocol(e.to_string()))
+        read_line_from(&mut self.port)
     }
 }
 
@@ -321,6 +336,18 @@ impl spi::SpiDevice for UsbDongle {
 mod tests {
     use super::*;
     use crate::verify_p256;
+
+    /// #178: needs no device. A line ends at its newline; a stream without
+    /// one is refused at the cap, where it used to grow without bound.
+    #[test]
+    fn a_line_from_the_bridge_is_bounded() {
+        assert_eq!(read_line_from(&mut &b"0A0B\r\nrest"[..]).unwrap(), "0A0B\r\n");
+        let longest = [vec![b'A'; MAX_LINE - 1], vec![b'\n']].concat();
+        assert_eq!(read_line_from(&mut &longest[..]).unwrap().len(), MAX_LINE);
+        let endless = std::io::repeat(b'A');
+        let refused = read_line_from(&mut { endless }).unwrap_err().to_string();
+        assert!(refused.contains("a line of more than 4096 bytes"), "{refused}");
+    }
 
     /// High slot so the test never touches a key in real use.
     const TEST_SLOT: u16 = 31;

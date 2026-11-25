@@ -60,6 +60,11 @@ const PAYEE_POLICIES: &[Address] =
 /// word that it was unfilled, which a filled order's record can be made to say.
 const TRADING_POLICIES: &[Address] = &[address!("2511FF556aa1534676A34F9B715232917e04FE5e")];
 
+/// `AgentPolicy` instances that hold limits per id of an ERC-6909 contract
+/// (issue #186). None is deployed; the first instance built with them is
+/// listed here when `deployments/<chainId>.json` names it.
+const ID_POLICIES: &[Address] = &[];
+
 /// `(chain, decoder, venue name, the decoder's code hash, the venue's own
 /// contract, who takes the sold tokens, that address's name)`. CoW Swap on
 /// Sepolia: the decoder deployed on 2026-11-21 from
@@ -130,6 +135,19 @@ fn from_deployments(json: &str, chain_id: u64, canonical: bool) -> Facts {
                 }
                 if TRADING_POLICIES.contains(&addr) {
                     f.trading_policy_modules.push(addr);
+                }
+                if ID_POLICIES.contains(&addr) {
+                    f.id_policy_modules.push(addr);
+                }
+                // The local test chain runs this build's contracts at these addresses
+                // (the CLI's fixtures, held to the build by scripts/test-fixtures.py):
+                // the policy there holds everything the current source does.
+                if chain_id == 31337 {
+                    for list in [&mut f.payee_policy_modules, &mut f.trading_policy_modules, &mut f.id_policy_modules] {
+                        if !list.contains(&addr) {
+                            list.push(addr);
+                        }
+                    }
                 }
             }
             "p256Signer" => f.signer_modules.push(addr),

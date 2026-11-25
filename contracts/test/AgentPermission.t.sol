@@ -148,6 +148,93 @@ contract Counter {
     receive() external payable {}
 }
 
+/// An execution hook that only counts: Kernel calls it around an operation
+/// of the permission it is installed with.
+contract CountingHook is IHook {
+    uint256 public pre;
+    uint256 public post;
+    mapping(address => bool) internal installed;
+
+    function onInstall(bytes calldata) external payable {
+        installed[msg.sender] = true;
+    }
+
+    function onUninstall(bytes calldata) external payable {
+        installed[msg.sender] = false;
+    }
+
+    function isModuleType(uint256 moduleTypeId) external pure returns (bool) {
+        return moduleTypeId == 4;
+    }
+
+    function isInitialized(address account) external view returns (bool) {
+        return installed[account];
+    }
+
+    function preCheck(address, uint256, bytes calldata) external payable returns (bytes memory) {
+        pre++;
+        return "";
+    }
+
+    function postCheck(bytes calldata) external payable {
+        post++;
+    }
+}
+
+/// An ERC-721/1155-style operator registry: `setApprovalForAll` only.
+contract MockOperators {
+    mapping(address => mapping(address => bool)) public isApprovedForAll;
+
+    function setApprovalForAll(address operator, bool approved) external {
+        isApprovedForAll[msg.sender][operator] = approved;
+    }
+
+    /// ERC-6909
+    mapping(address => mapping(address => bool)) public isOperator;
+
+    function setOperator(address operator, bool approved) external returns (bool) {
+        isOperator[msg.sender][operator] = approved;
+        return true;
+    }
+
+    mapping(address => mapping(address => mapping(uint256 => uint256))) public allowance;
+
+    function approve(address spender, uint256 id, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender][id] = amount;
+        return true;
+    }
+
+    mapping(address => mapping(uint256 => uint256)) public balanceOf;
+
+    function mint(address to, uint256 id, uint256 amount) external {
+        balanceOf[to][id] += amount;
+    }
+
+    function transfer(address receiver, uint256 id, uint256 amount) external returns (bool) {
+        balanceOf[msg.sender][id] -= amount;
+        balanceOf[receiver][id] += amount;
+        return true;
+    }
+
+    function transferFrom(address sender, address receiver, uint256 id, uint256 amount) external returns (bool) {
+        require(sender == msg.sender, "this mock moves the caller's own");
+        balanceOf[sender][id] -= amount;
+        balanceOf[receiver][id] += amount;
+        return true;
+    }
+
+    /// ERC-777
+    mapping(address => mapping(address => bool)) public authorized;
+
+    function authorizeOperator(address operator) external {
+        authorized[msg.sender][operator] = true;
+    }
+
+    function revokeOperator(address operator) external {
+        authorized[msg.sender][operator] = false;
+    }
+}
+
 /// Phase 1b / 3.3: the agent's hardware key is a *permission*, not the root.
 ///
 /// Account layout:
@@ -259,13 +346,12 @@ contract AgentPermissionTest is Test {
     /// The agent's mandate with a given signer key: increment the counter,
     /// send it small amounts, transfer and approve the token within limits.
     function _permissionData(bytes32 keyX, bytes32 keyY) internal view returns (bytes memory) {
-        address[] memory targets = new address[](5);
-        bytes4[] memory selectors = new bytes4[](5);
+        address[] memory targets = new address[](4);
+        bytes4[] memory selectors = new bytes4[](4);
         (targets[0], selectors[0]) = (address(counter), Counter.increment.selector);
         (targets[1], selectors[1]) = (address(counter), bytes4(0)); // plain value transfer
         (targets[2], selectors[2]) = (address(token), MockToken.transfer.selector);
         (targets[3], selectors[3]) = (address(token), MockToken.approve.selector);
-        (targets[4], selectors[4]) = (address(forbidden), MockToken.transfer.selector); // no token limit
         bytes[] memory entries = new bytes[](2);
         entries[0] = _policyEntry(targets, selectors, _tokenCaps());
         entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(keyX, keyY));
@@ -791,14 +877,475 @@ contract AgentPermissionTest is Test {
     function test_token_unlimitedApproveIsRefused() public {
         address spender = makeAddr("spender");
         _expectRefused(_agentOp(address(token), 0, abi.encodeCall(MockToken.approve, (spender, type(uint256).max))));
-        _send(_agentOp(address(token), 0, abi.encodeCall(MockToken.approve, (spender, 5 ether))));
-        assertEq(token.allowance(acct, spender), 5 ether);
+        // a capped approval passes, withdrawn in the same operation (no standing allowances)
+        _send(_agentBatchWith(AGENT, AGENT_ID, _grantAndWithdraw(spender, 5 ether)));
+        assertEq(token.allowance(acct, spender), 0);
     }
 
+    /// `approve(spender, amount)` and then `approve(spender, 0)`, on the mock token.
+    function _grantAndWithdraw(address spender, uint256 amount) internal view returns (Execution[] memory calls) {
+        calls = new Execution[](2);
+        calls[0] = Execution(address(token), 0, abi.encodeCall(MockToken.approve, (spender, amount)));
+        calls[1] = Execution(address(token), 0, abi.encodeCall(MockToken.approve, (spender, 0)));
+    }
+
+    // --- no standing allowances: what the agent grants, it withdraws in the same operation ---
+
+    /// An allowance outlives a revoke of the mandate: the spender pulls from
+    /// it whenever it likes. So an allowance the agent grants must be
+    /// withdrawn with `approve(spender, 0)` later in the same operation.
+    function test_allowances_noneOutlivesTheOperation() public {
+        address spender = makeAddr("spender");
+        address other = makeAddr("other spender");
+        bytes memory grant = abi.encodeCall(MockToken.approve, (spender, 5 ether));
+        // alone, it would stand: refused
+        _expectRefused(_agentOp(address(token), 0, grant));
+        // withdrawn: passes, and nothing stands after it
+        _send(_agentBatchWith(AGENT, AGENT_ID, _grantAndWithdraw(spender, 5 ether)));
+        assertEq(token.allowance(acct, spender), 0);
+        // withdrawn for another spender only: refused
+        Execution[] memory calls = _grantAndWithdraw(spender, 5 ether);
+        calls[1] = Execution(address(token), 0, abi.encodeCall(MockToken.approve, (other, 0)));
+        _expectRefused(_agentBatchWith(AGENT, AGENT_ID, calls));
+        // granted again after the withdrawal: refused
+        Execution[] memory three = new Execution[](3);
+        (three[0], three[1]) = (calls[0], Execution(address(token), 0, abi.encodeCall(MockToken.approve, (spender, 0))));
+        three[2] = Execution(address(token), 0, abi.encodeCall(MockToken.approve, (spender, 3 ether)));
+        _expectRefused(_agentBatchWith(AGENT, AGENT_ID, three));
+        // withdrawing an allowance granted earlier (by the owner, say) passes on its own
+        vm.prank(acct);
+        token.approve(other, 1 ether);
+        _send(_agentOp(address(token), 0, abi.encodeCall(MockToken.approve, (other, 0))));
+        assertEq(token.allowance(acct, other), 0);
+    }
+
+    /// An operator grant (`setApprovalForAll` of ERC-721 and ERC-1155) is an
+    /// allowance over every token of the contract: withdrawn in the same
+    /// operation, or refused (#176).
+    /// A mandate without token limits, installed by the owner under `id`.
+    function _installOperatorMandate(PermissionId id, address[] memory targets, bytes4[] memory selectors) internal {
+        bytes[] memory entries = new bytes[](2);
+        entries[0] = _policyEntry(targets, selectors, new AgentPolicy.TokenCap[](0));
+        entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(agentX, agentY));
+        ValidationId vId = ValidatorLib.permissionToIdentifier(id);
+        Execution[] memory install = new Execution[](2);
+        install[0] = Execution(acct, 0, _installCall(vId, Kernel(payable(acct)).currentNonce(), abi.encode(entries)));
+        install[1] = Execution(acct, 0, abi.encodeCall(Kernel.grantAccess, (vId, Kernel.execute.selector, true)));
+        _send(
+            _rootOp(
+                abi.encodeWithSelector(
+                    Kernel.execute.selector, ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))), ExecLib.encodeBatch(install)
+                )
+            )
+        );
+    }
+
+    /// The eleven-word form: a mandate with limits per id of an ERC-6909
+    /// contract, installed by the owner under `id`.
+    function _installIdMandate(
+        PermissionId id,
+        address[] memory targets,
+        bytes4[] memory selectors,
+        AgentPolicy.IdCap[] memory caps,
+        uint32 period
+    ) internal {
+        bytes[] memory entries = new bytes[](2);
+        entries[0] = abi.encodePacked(bytes2(0), address(policy), _idParams(targets, selectors, caps, period));
+        entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(agentX, agentY));
+        ValidationId vId = ValidatorLib.permissionToIdentifier(id);
+        Execution[] memory install = new Execution[](2);
+        install[0] = Execution(acct, 0, _installCall(vId, Kernel(payable(acct)).currentNonce(), abi.encode(entries)));
+        install[1] = Execution(acct, 0, abi.encodeCall(Kernel.grantAccess, (vId, Kernel.execute.selector, true)));
+        _send(
+            _rootOp(
+                abi.encodeWithSelector(
+                    Kernel.execute.selector, ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))), ExecLib.encodeBatch(install)
+                )
+            )
+        );
+    }
+
+    function _idParams(address[] memory targets, bytes4[] memory selectors, AgentPolicy.IdCap[] memory caps, uint32 period)
+        internal
+        view
+        returns (bytes memory)
+    {
+        return abi.encode(
+            targets,
+            selectors,
+            MAX_VALUE,
+            BUDGET,
+            expiry,
+            new AgentPolicy.TokenCap[](0),
+            uint48(0),
+            new AgentPolicy.TokenPayees[](0),
+            period,
+            new AgentPolicy.Venue[](0),
+            caps
+        );
+    }
+
+    function _idTargets(address t) internal pure returns (address[] memory targets, bytes4[] memory selectors) {
+        targets = new address[](3);
+        selectors = new bytes4[](3);
+        (targets[0], selectors[0]) = (t, bytes4(0x095bcdb6)); // transfer(address,uint256,uint256)
+        (targets[1], selectors[1]) = (t, bytes4(0xfe99049a)); // transferFrom(address,address,uint256,uint256)
+        (targets[2], selectors[2]) = (t, bytes4(0x426a8493)); // approve(address,uint256,uint256)
+    }
+
+    function _idMove(MockOperators t, address to, uint256 tokenId, uint256 amount) internal pure returns (Execution memory) {
+        return Execution(address(t), 0, abi.encodeWithSelector(bytes4(0x095bcdb6), to, tokenId, amount));
+    }
+
+    /// #186: an id of an ERC-6909 contract is held to its cap per operation
+    /// and its budget; an id without a limit is not moved at all.
+    function test_ids_anIdIsHeldToItsLimits() public {
+        MockOperators t = new MockOperators();
+        t.mint(acct, 7, 100);
+        t.mint(acct, 8, 100);
+        PermissionId id = PermissionId.wrap(0x69643031); // "id01"
+        (address[] memory targets, bytes4[] memory selectors) = _idTargets(address(t));
+        AgentPolicy.IdCap[] memory caps = new AgentPolicy.IdCap[](1);
+        caps[0] = AgentPolicy.IdCap(address(t), 7, 5, 8);
+        _installIdMandate(id, targets, selectors, caps, 0);
+        address to = makeAddr("receiver");
+        // above the cap per operation, in one call and summed over two
+        _expectRefused(_agentOpWith(AGENT, id, address(t), 0, _idMove(t, to, 7, 6).callData));
+        Execution[] memory calls = new Execution[](2);
+        (calls[0], calls[1]) = (_idMove(t, to, 7, 3), _idMove(t, to, 7, 3));
+        _expectRefused(_agentBatchWith(AGENT, id, calls));
+        // an id without a limit
+        _expectRefused(_agentOpWith(AGENT, id, address(t), 0, _idMove(t, to, 8, 1).callData));
+        // within both: 3, then 5 by transferFrom, which is the whole budget
+        _send(_agentOpWith(AGENT, id, address(t), 0, _idMove(t, to, 7, 3).callData));
+        _send(_agentOpWith(AGENT, id, address(t), 0, abi.encodeWithSelector(bytes4(0xfe99049a), acct, to, 7, 5)));
+        assertEq(t.balanceOf(to, 7), 8);
+        // the id's limit is read as a token's, under the id's key
+        AgentPolicy.TokenLimit memory limit =
+            policy.tokenLimit(acct, bytes32(PermissionId.unwrap(id)), policy.idAsset(address(t), 7));
+        assertEq(limit.spent, 8);
+        assertEq(limit.budget, 8);
+        assertTrue(limit.set);
+        assertFalse(policy.tokenLimit(acct, bytes32(PermissionId.unwrap(id)), policy.idAsset(address(t), 8)).set);
+        // the budget is spent
+        _expectRefused(_agentOpWith(AGENT, id, address(t), 0, _idMove(t, to, 7, 1).callData));
+        // a short call is refused
+        _expectRefused(_agentOpWith(AGENT, id, address(t), 0, abi.encodePacked(bytes4(0x095bcdb6), bytes32(uint256(uint160(to))), uint256(7))));
+        assertEq(t.balanceOf(to, 7), 8);
+        assertEq(t.balanceOf(to, 8), 0);
+    }
+
+    /// The same limits one call deeper: ids a Safe holds, moved by its
+    /// `execTransaction` and by the legs of a MultiSend batch. The cap per
+    /// operation sums the legs.
+    function test_ids_heldThroughASafeAndItsBatch() public {
+        (Safe safe, MockOperators t) = _safeWithIds();
+        address to = makeAddr("receiver");
+        // one inner call above the cap, and an id without a limit
+        _expectRefused(_idViaSafe(safe, _safeExec(safe, address(t), 0, _idMove(t, to, 7, 6).callData, Enum.Operation.Call, 0)));
+        _expectRefused(_idViaSafe(safe, _safeExec(safe, address(t), 0, _idMove(t, to, 8, 1).callData, Enum.Operation.Call, 0)));
+        // two legs of a batch that are above the cap together
+        bytes memory three = _legOf(0, address(t), 0, _idMove(t, to, 7, 3).callData);
+        _expectRefused(_idViaSafe(safe, _batch(safe, address(multiSend), bytes.concat(three, three), Enum.Operation.DelegateCall)));
+        // a leg for an id without a limit, beside one that is fine
+        bytes memory other = _legOf(0, address(t), 0, _idMove(t, to, 8, 1).callData);
+        _expectRefused(_idViaSafe(safe, _batch(safe, address(multiSend), bytes.concat(three, other), Enum.Operation.DelegateCall)));
+        assertEq(t.balanceOf(to, 7), 0);
+        // within the cap: 3 and 2 in a batch, then 3 alone, which is the whole budget
+        bytes memory two = _legOf(0, address(t), 0, _idMove(t, to, 7, 2).callData);
+        _send(_idViaSafe(safe, _batch(safe, address(multiSend), bytes.concat(three, two), Enum.Operation.DelegateCall)));
+        _send(_idViaSafe(safe, _safeExec(safe, address(t), 0, _idMove(t, to, 7, 3).callData, Enum.Operation.Call, 0)));
+        assertEq(t.balanceOf(to, 7), 8);
+        _expectRefused(_idViaSafe(safe, _safeExec(safe, address(t), 0, _idMove(t, to, 7, 1).callData, Enum.Operation.Call, 0)));
+        assertEq(t.balanceOf(to, 8), 0);
+    }
+
+    PermissionId internal constant SAFE_IDS = PermissionId.wrap(0x69643033); // "id03"
+
+    /// A Safe of the account's that holds ids 7 and 8, and a mandate with a
+    /// limit for id 7: 5 per operation, 8 in all.
+    function _safeWithIds() internal returns (Safe safe, MockOperators t) {
+        bytes memory setup =
+            abi.encodeCall(Safe.setup, (_one(acct), 1, address(0), "", address(0), address(0), 0, payable(address(0))));
+        safe = Safe(payable(address(new SafeProxyFactory().createProxyWithNonce(address(new Safe()), setup, 0))));
+        multiSend = new MultiSendCallOnly();
+        t = new MockOperators();
+        t.mint(address(safe), 7, 100);
+        t.mint(address(safe), 8, 100);
+        address[] memory targets = new address[](3);
+        bytes4[] memory selectors = new bytes4[](3);
+        (targets[0], selectors[0]) = (address(safe), Safe.execTransaction.selector);
+        (targets[1], selectors[1]) = (address(multiSend), MultiSendCallOnly.multiSend.selector);
+        (targets[2], selectors[2]) = (address(t), bytes4(0x095bcdb6));
+        AgentPolicy.IdCap[] memory caps = new AgentPolicy.IdCap[](1);
+        caps[0] = AgentPolicy.IdCap(address(t), 7, 5, 8);
+        _installIdMandate(SAFE_IDS, targets, selectors, caps, 0);
+    }
+
+    function _one(address a) internal pure returns (address[] memory list) {
+        list = new address[](1);
+        list[0] = a;
+    }
+
+    function _idViaSafe(Safe safe, bytes memory execData) internal view returns (PackedUserOperation memory) {
+        Execution[] memory calls = new Execution[](2);
+        calls[0] = Execution(address(nonceAssert), 0, abi.encodeCall(SafeNonceAssert.check, (address(safe), safe.nonce())));
+        calls[1] = Execution(address(safe), 0, execData);
+        return _agentBatchWith(AGENT, SAFE_IDS, calls);
+    }
+
+    /// What install refuses in the eleven-word form, and around it.
+    function test_ids_installRules() public {
+        MockOperators t = new MockOperators();
+        (address[] memory targets, bytes4[] memory selectors) = _idTargets(address(t));
+        AgentPolicy.IdCap[] memory caps = new AgentPolicy.IdCap[](1);
+        caps[0] = AgentPolicy.IdCap(address(t), 7, 5, 8);
+        // the control installs
+        this.installAsAccount(1, _idParams(targets, selectors, caps, 0));
+        // no id limit in the form that exists to carry one
+        _installRefused(2, _idParams(targets, selectors, new AgentPolicy.IdCap[](0), 0));
+        // the same id twice
+        AgentPolicy.IdCap[] memory twice = new AgentPolicy.IdCap[](2);
+        (twice[0], twice[1]) = (caps[0], caps[0]);
+        _installRefused(3, _idParams(targets, selectors, twice, 0));
+        // the zero address
+        AgentPolicy.IdCap[] memory zero = new AgentPolicy.IdCap[](1);
+        zero[0] = AgentPolicy.IdCap(address(0), 7, 5, 8);
+        _installRefused(4, _idParams(targets, selectors, zero, 0));
+        // any other function on a contract with id limits: an operator moves every id
+        address[] memory more = new address[](4);
+        bytes4[] memory moreSelectors = new bytes4[](4);
+        for (uint256 i; i < 3; i++) {
+            (more[i], moreSelectors[i]) = (targets[i], selectors[i]);
+        }
+        (more[3], moreSelectors[3]) = (address(t), MockOperators.setOperator.selector);
+        _installRefused(5, _idParams(more, moreSelectors, caps, 0));
+        // one of the three on a contract without an id limit, in a mandate that has none
+        _installRefused(
+            6,
+            abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, new AgentPolicy.TokenCap[](0), uint48(0))
+        );
+        // and in one whose limits are another contract's
+        AgentPolicy.IdCap[] memory other = new AgentPolicy.IdCap[](1);
+        other[0] = AgentPolicy.IdCap(address(counter), 7, 5, 8);
+        _installRefused(7, _idParams(targets, selectors, other, 0));
+        // a cap wider than its type
+        bytes memory wide = _idParams(targets, selectors, caps, 0);
+        uint256 at = wide.length - 32; // the last word: the one cap's budget
+        assembly {
+            mstore(add(add(wide, 32), at), shl(128, 1))
+        }
+        _installRefused(8, wide);
+    }
+
+    function installAsAccount(uint256 n, bytes calldata params) external {
+        vm.prank(acct);
+        policy.onInstall(abi.encodePacked(bytes32((uint256(0x69640000) + n) << 224), params));
+    }
+
+    function _installRefused(uint256 n, bytes memory params) internal {
+        vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+        this.installAsAccount(n, params);
+    }
+
+    function test_allowances_anOperatorGrantIsWithdrawnInTheSameOperation() public {
+        MockOperators nft = new MockOperators();
+        PermissionId id = PermissionId.wrap(0x6f707273); // "oprs"
+        address[] memory targets = new address[](1);
+        bytes4[] memory selectors = new bytes4[](1);
+        (targets[0], selectors[0]) = (address(nft), MockOperators.setApprovalForAll.selector);
+        _installOperatorMandate(id, targets, selectors);
+        address op = makeAddr("operator");
+        Execution memory grant = Execution(address(nft), 0, abi.encodeCall(MockOperators.setApprovalForAll, (op, true)));
+        Execution memory withdraw = Execution(address(nft), 0, abi.encodeCall(MockOperators.setApprovalForAll, (op, false)));
+        // alone, it would stand: refused
+        _expectRefused(_agentOpWith(AGENT, id, address(nft), 0, grant.callData));
+        // withdrawn in the same operation: passes, and nothing stands
+        Execution[] memory calls = new Execution[](2);
+        (calls[0], calls[1]) = (grant, withdraw);
+        _send(_agentBatchWith(AGENT, id, calls));
+        assertFalse(nft.isApprovedForAll(acct, op));
+        // withdrawn for another operator only: refused
+        calls[1] = Execution(address(nft), 0, abi.encodeCall(MockOperators.setApprovalForAll, (makeAddr("other"), false)));
+        _expectRefused(_agentBatchWith(AGENT, id, calls));
+        // withdrawing a grant made earlier passes on its own; a short call is refused
+        vm.prank(acct);
+        nft.setApprovalForAll(op, true);
+        _send(_agentOpWith(AGENT, id, address(nft), 0, withdraw.callData));
+        assertFalse(nft.isApprovedForAll(acct, op));
+        _expectRefused(_agentOpWith(AGENT, id, address(nft), 0, abi.encodePacked(MockOperators.setApprovalForAll.selector, bytes32(uint256(uint160(op))))));
+    }
+
+    /// ERC-6909's `setOperator(operator, bool)` is held as `setApprovalForAll`
+    /// is, and a grant is withdrawn by its own function only: on a contract
+    /// that has both, one does not close what the other opened.
+    function test_allowances_anERC6909OperatorIsWithdrawnByItsOwnFunction() public {
+        MockOperators nft = new MockOperators();
+        PermissionId id = PermissionId.wrap(0x6f707236); // "opr6"
+        address[] memory targets = new address[](2);
+        bytes4[] memory selectors = new bytes4[](2);
+        (targets[0], selectors[0]) = (address(nft), MockOperators.setOperator.selector);
+        (targets[1], selectors[1]) = (address(nft), MockOperators.setApprovalForAll.selector);
+        _installOperatorMandate(id, targets, selectors);
+        address op = makeAddr("operator");
+        Execution memory grant = Execution(address(nft), 0, abi.encodeCall(MockOperators.setOperator, (op, true)));
+        Execution memory withdraw = Execution(address(nft), 0, abi.encodeCall(MockOperators.setOperator, (op, false)));
+        // alone, it would stand: refused
+        _expectRefused(_agentOpWith(AGENT, id, address(nft), 0, grant.callData));
+        // withdrawn in the same operation: passes, and nothing stands
+        Execution[] memory calls = new Execution[](2);
+        (calls[0], calls[1]) = (grant, withdraw);
+        _send(_agentBatchWith(AGENT, id, calls));
+        assertFalse(nft.isOperator(acct, op));
+        // "withdrawn" with the other function: the ERC-6909 grant would stand, refused
+        calls[1] = Execution(address(nft), 0, abi.encodeCall(MockOperators.setApprovalForAll, (op, false)));
+        _expectRefused(_agentBatchWith(AGENT, id, calls));
+        // and the other way round
+        calls[0] = Execution(address(nft), 0, abi.encodeCall(MockOperators.setApprovalForAll, (op, true)));
+        calls[1] = withdraw;
+        _expectRefused(_agentBatchWith(AGENT, id, calls));
+        // a short call is refused
+        _expectRefused(_agentOpWith(AGENT, id, address(nft), 0, abi.encodePacked(MockOperators.setOperator.selector, bytes32(uint256(uint160(op))))));
+        assertFalse(nft.isOperator(acct, op));
+        assertFalse(nft.isApprovedForAll(acct, op));
+    }
+
+    /// An ERC-6909 allowance of one id, `approve(spender, id, amount)`, is
+    /// withdrawn with amount 0 for the same spender and the same id.
+    function test_allowances_anERC6909AllowanceIsWithdrawnForItsId() public {
+        MockOperators t = new MockOperators();
+        PermissionId id = PermissionId.wrap(0x61703639); // "ap69"
+        address[] memory targets = new address[](1);
+        bytes4[] memory selectors = new bytes4[](1);
+        (targets[0], selectors[0]) = (address(t), bytes4(0x426a8493)); // approve(address,uint256,uint256)
+        AgentPolicy.IdCap[] memory caps = new AgentPolicy.IdCap[](3);
+        for (uint256 i; i < 3; i++) {
+            caps[i] = AgentPolicy.IdCap(address(t), 7 + i, 10 ether, 100 ether);
+        }
+        _installIdMandate(id, targets, selectors, caps, 0);
+        address spender = makeAddr("spender");
+        bytes4 approve3 = bytes4(0x426a8493);
+        Execution memory grant = Execution(address(t), 0, abi.encodeWithSelector(approve3, spender, 7, 5 ether));
+        // alone, it would stand: refused
+        _expectRefused(_agentOpWith(AGENT, id, address(t), 0, grant.callData));
+        // withdrawn for the same id: passes, nothing stands
+        Execution[] memory calls = new Execution[](2);
+        calls[0] = grant;
+        calls[1] = Execution(address(t), 0, abi.encodeWithSelector(approve3, spender, 7, 0));
+        _send(_agentBatchWith(AGENT, id, calls));
+        assertEq(t.allowance(acct, spender, 7), 0);
+        // withdrawn for another id, or for another spender: refused
+        calls[1] = Execution(address(t), 0, abi.encodeWithSelector(approve3, spender, 8, 0));
+        _expectRefused(_agentBatchWith(AGENT, id, calls));
+        calls[1] = Execution(address(t), 0, abi.encodeWithSelector(approve3, makeAddr("other"), 7, 0));
+        _expectRefused(_agentBatchWith(AGENT, id, calls));
+        // an allowance the owner made is withdrawn on its own; a short call is refused
+        vm.prank(acct);
+        t.approve(spender, 9, 1 ether);
+        _send(_agentOpWith(AGENT, id, address(t), 0, abi.encodeWithSelector(approve3, spender, 9, 0)));
+        assertEq(t.allowance(acct, spender, 9), 0);
+        _expectRefused(_agentOpWith(AGENT, id, address(t), 0, abi.encodePacked(approve3, bytes32(uint256(uint160(spender))), uint256(7))));
+        assertEq(t.allowance(acct, spender, 7), 0);
+    }
+
+    /// ERC-777's `authorizeOperator(operator)` is withdrawn by another
+    /// function, which the policy does not pair with it: no mandate lists it.
+    /// `revokeOperator` alone only takes a grant away and may be listed.
+    function test_allowances_noMandateListsAnERC777OperatorGrant() public {
+        MockOperators t777 = new MockOperators();
+        address[] memory targets = new address[](1);
+        bytes4[] memory selectors = new bytes4[](1);
+        (targets[0], selectors[0]) = (address(t777), MockOperators.authorizeOperator.selector);
+        vm.prank(acct);
+        vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+        policy.onInstall(
+            abi.encodePacked(
+                bytes32(uint256(0x6f703737) << 224),
+                abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, new AgentPolicy.TokenCap[](0), uint48(0))
+            )
+        );
+        // the control: the same mandate with the withdrawing function installs
+        selectors[0] = MockOperators.revokeOperator.selector;
+        PermissionId id = PermissionId.wrap(0x6f703738); // "op78"
+        _installOperatorMandate(id, targets, selectors);
+        address op = makeAddr("operator");
+        vm.prank(acct);
+        t777.authorizeOperator(op);
+        _send(_agentOpWith(AGENT, id, address(t777), 0, abi.encodeCall(MockOperators.revokeOperator, (op))));
+        assertFalse(t777.authorized(acct, op));
+    }
+
+    /// A Safe's allowances are the Safe's: one the account grants is not
+    /// withdrawn by the Safe's `approve(spender, 0)`, nor the other way round;
+    /// inside a Safe's batch a grant and its withdrawal pass together.
+    function test_allowances_theHolderWithdrawsWhatItGranted() public {
+        Safe safe = _withSafeApprovals();
+        address spender = makeAddr("spender");
+        bytes memory grant = abi.encodeCall(MockToken.approve, (spender, 5 ether));
+        bytes memory withdraw = abi.encodeCall(MockToken.approve, (spender, 0));
+        // the Safe grants and leaves it standing: refused
+        _expectRefused(_agentViaSafe(safe, _safeExec(safe, address(token), 0, grant, Enum.Operation.Call, 0)));
+        // granted and withdrawn in the Safe's batch: passes
+        bytes memory txs = bytes.concat(_legOf(0, address(token), 0, grant), _legOf(0, address(token), 0, withdraw));
+        _send(_agentViaSafe(safe, _batch(safe, address(multiSend), txs, Enum.Operation.DelegateCall)));
+        assertEq(token.allowance(address(safe), spender), 0);
+        // the account grants, the Safe withdraws: refused
+        Execution[] memory calls = new Execution[](3);
+        calls[0] = Execution(address(token), 0, grant);
+        calls[1] = Execution(address(nonceAssert), 0, abi.encodeCall(SafeNonceAssert.check, (address(safe), safe.nonce())));
+        calls[2] = Execution(address(safe), 0, _safeExec(safe, address(token), 0, withdraw, Enum.Operation.Call, 0));
+        _expectRefused(_agentBatchWith(AGENT, SAFE_ID, calls));
+        // the Safe grants, the account withdraws: refused
+        calls[0] = Execution(address(nonceAssert), 0, abi.encodeCall(SafeNonceAssert.check, (address(safe), safe.nonce())));
+        calls[1] = Execution(address(safe), 0, _safeExec(safe, address(token), 0, grant, Enum.Operation.Call, 0));
+        calls[2] = Execution(address(token), 0, withdraw);
+        _expectRefused(_agentBatchWith(AGENT, SAFE_ID, calls));
+        // increaseAllowance grants as approve does
+        bytes memory increase = abi.encodeWithSelector(bytes4(0x39509351), spender, uint256(1 ether));
+        _expectRefused(_agentOpWith(AGENT, SAFE_ID, address(token), 0, increase));
+        assertEq(token.allowance(acct, spender), 0);
+        assertEq(token.allowance(address(safe), spender), 0);
+    }
+
+    /// The Safe mandate of `_withSafe`, with approvals of the mock token
+    /// (approve, increaseAllowance) within its limits.
+    function _withSafeApprovals() internal returns (Safe safe) {
+        Safe singleton = new Safe();
+        SafeProxyFactory safeFactory = new SafeProxyFactory();
+        address[] memory owners = new address[](1);
+        owners[0] = acct;
+        bytes memory setup = abi.encodeCall(
+            Safe.setup, (owners, 1, address(0), "", address(0), address(0), 0, payable(address(0)))
+        );
+        safe = Safe(payable(address(safeFactory.createProxyWithNonce(address(singleton), setup, 0))));
+        multiSend = new MultiSendCallOnly();
+        address[] memory targets = new address[](4);
+        bytes4[] memory selectors = new bytes4[](4);
+        (targets[0], selectors[0]) = (address(safe), Safe.execTransaction.selector);
+        (targets[1], selectors[1]) = (address(multiSend), MultiSendCallOnly.multiSend.selector);
+        (targets[2], selectors[2]) = (address(token), MockToken.approve.selector);
+        (targets[3], selectors[3]) = (address(token), bytes4(0x39509351)); // increaseAllowance(address,uint256)
+        bytes[] memory entries = new bytes[](2);
+        entries[0] = _policyEntry(targets, selectors, _tokenCaps());
+        entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(agentX, agentY));
+        ValidationId vId = ValidatorLib.permissionToIdentifier(SAFE_ID);
+        Execution[] memory batch = new Execution[](2);
+        batch[0] = Execution(acct, 0, _installCall(vId, Kernel(payable(acct)).currentNonce(), abi.encode(entries)));
+        batch[1] = Execution(acct, 0, abi.encodeCall(Kernel.grantAccess, (vId, Kernel.execute.selector, true)));
+        _send(
+            _rootOp(
+                abi.encodeWithSelector(
+                    Kernel.execute.selector, ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))), ExecLib.encodeBatch(batch)
+                )
+            )
+        );
+    }
+
+    /// A metered function on a contract without a token limit: refused at
+    /// install (#175; `test_probe2_installRefusesAMeteredFunctionWithoutALimit`),
+    /// and, for a mandate an earlier instance installed, at every operation.
+    /// Here the entry is not on the mandate at all.
     function test_token_selectorWithoutLimitIsRefused() public {
-        // (forbidden, transfer) is allow-listed, but no token limit exists for
-        // it: refused even for a zero amount — without a limit the policy
-        // does not know what that selector means on that contract
         _expectRefused(_agentOp(address(forbidden), 0, abi.encodeCall(MockToken.transfer, (address(1), 0))));
     }
 
@@ -827,6 +1374,58 @@ contract AgentPermissionTest is Test {
         calls[1] = Execution(address(safe), 0, exec);
         _expectRefused(_agentBatchWith(AGENT, SAFE_ID, calls));
         assertEq(counter.count(), 0);
+    }
+
+    /// The assertion's address is a whole word. With a bit above the low 160
+    /// the policy used to judge the low 160 bits and pass the operation;
+    /// `check` then reverted at execution, and the operation was charged its
+    /// gas for nothing. Refused in validation now.
+    function test_safe_theGuardedAddressIsAWholeWord() public {
+        Safe safe = _withSafe();
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+        bytes memory exec = _safeExec(safe, address(counter), 0, inc, Enum.Operation.Call, 0);
+        Execution[] memory calls = new Execution[](2);
+        calls[1] = Execution(address(safe), 0, exec);
+        for (uint256 bit = 160; bit < 256; bit += 19) {
+            calls[0] = Execution(
+                address(nonceAssert),
+                0,
+                abi.encodeWithSelector(SafeNonceAssert.check.selector, uint256(uint160(address(safe))) | (1 << bit), safe.nonce())
+            );
+            _expectRefused(_agentBatchWith(AGENT, SAFE_ID, calls));
+        }
+        assertEq(_spent(SAFE_ID), 0, "a refused operation is charged nothing");
+        // the control: the same pair with the plain address
+        calls[0] = Execution(address(nonceAssert), 0, abi.encodeCall(SafeNonceAssert.check, (address(safe), safe.nonce())));
+        _send(_agentBatchWith(AGENT, SAFE_ID, calls));
+        assertEq(counter.count(), 1);
+    }
+
+    /// The same one call deeper: the address words of `execTransaction`
+    /// itself (`to`, `gasToken`, `refundReceiver`). The policy judged the low
+    /// 160 bits of `to`; this Safe, built with a decoder that validates the
+    /// word, reverted at execution with the operation charged.
+    function test_safe_theTransactionsAddressesAreWholeWords() public {
+        Safe safe = _withSafe();
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+        // head words 0, 7 and 8, after the selector
+        uint256[3] memory words = [uint256(0), 7, 8];
+        for (uint256 w; w < words.length; w++) {
+            for (uint256 bit = 160; bit < 256; bit += 31) {
+                bytes memory exec = _safeExec(safe, address(counter), 0, inc, Enum.Operation.Call, 0);
+                uint256 at = 32 + 4 + 32 * words[w];
+                uint256 mask = 1 << bit;
+                assembly {
+                    mstore(add(exec, at), or(mload(add(exec, at)), mask))
+                }
+                _expectRefused(_agentViaSafe(safe, exec));
+            }
+        }
+        assertEq(_spent(SAFE_ID), 0, "a refused operation is charged nothing");
+        assertEq(counter.count(), 0);
+        // the control
+        _send(_agentViaSafe(safe, _safeExec(safe, address(counter), 0, inc, Enum.Operation.Call, 0)));
+        assertEq(counter.count(), 1);
     }
 
     function test_safe_replayCannotExecuteTwice() public {
@@ -1259,6 +1858,103 @@ contract AgentPermissionTest is Test {
         usdc.transferWithAuthorization(acct, PAYEE, 500_000, 0, before, bytes32(uint256(1)), sig);
     }
 
+    // --- a permission with an execution hook ---
+
+    PermissionId internal constant HOOK_ID = PermissionId.wrap(0x686f6f6b); // "hook"
+
+    /// The agent's mandate (the counter, and value to it) on a permission that
+    /// carries `hook`.
+    function _withHook(CountingHook hook) internal {
+        address[] memory targets = new address[](2);
+        bytes4[] memory selectors = new bytes4[](2);
+        (targets[0], selectors[0]) = (address(counter), Counter.increment.selector);
+        (targets[1], selectors[1]) = (address(counter), bytes4(0));
+        bytes[] memory entries = new bytes[](2);
+        entries[0] = _policyEntry(targets, selectors, new AgentPolicy.TokenCap[](0));
+        entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(agentX, agentY));
+        ValidationId vId = ValidatorLib.permissionToIdentifier(HOOK_ID);
+        ValidationId[] memory vIds = new ValidationId[](1);
+        vIds[0] = vId;
+        ValidationManager.ValidationConfig[] memory cfgs = new ValidationManager.ValidationConfig[](1);
+        cfgs[0] = ValidationManager.ValidationConfig({nonce: Kernel(payable(acct)).currentNonce(), hook: IHook(address(hook))});
+        bytes[] memory vData = new bytes[](1);
+        vData[0] = abi.encode(entries);
+        bytes[] memory hData = new bytes[](1);
+        hData[0] = hex"ff"; // Kernel's flag: call the hook's onInstall
+        Execution[] memory batch = new Execution[](2);
+        batch[0] = Execution(acct, 0, abi.encodeCall(Kernel.installValidations, (vIds, cfgs, vData, hData)));
+        batch[1] = Execution(acct, 0, abi.encodeCall(Kernel.grantAccess, (vId, Kernel.execute.selector, true)));
+        _send(
+            _rootOp(
+                abi.encodeWithSelector(
+                    Kernel.execute.selector, ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))), ExecLib.encodeBatch(batch)
+                )
+            )
+        );
+    }
+
+    /// An agent operation on the hooked permission, its `callData` prefixed
+    /// `times` times with `executeUserOp`'s selector.
+    function _hookedOp(uint256 times, address target, uint256 value, bytes memory data)
+        internal
+        view
+        returns (PackedUserOperation memory op)
+    {
+        bytes memory callData = _singleCall(target, value, data);
+        for (uint256 i; i < times; i++) {
+            callData = abi.encodePacked(Kernel.executeUserOp.selector, callData);
+        }
+        op = _op(_permissionNonce(HOOK_ID), callData);
+        op.signature = abi.encodePacked(bytes1(0xff), _sign(AGENT, entryPoint.getUserOpHash(op)));
+    }
+
+    /// A permission with an execution hook runs under the same mandate:
+    /// Kernel requires `executeUserOp ‖ execute(...)` of it, the policy judges
+    /// the `execute(...)` inside, and the hook runs around the call.
+    function test_hook_aHookedPermissionIsHeldToTheMandate() public {
+        CountingHook hook = new CountingHook();
+        _withHook(hook);
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+        // Kernel refuses the plain form for a hooked permission
+        PackedUserOperation memory plain = _op(_permissionNonce(HOOK_ID), _singleCall(address(counter), 0, inc));
+        plain.signature = abi.encodePacked(bytes1(0xff), _sign(AGENT, entryPoint.getUserOpHash(plain)));
+        _expectRefused(plain);
+        // the hooked form passes the mandate, and the hook runs around it
+        _send(_hookedOp(1, address(counter), 0, inc));
+        assertEq(counter.count(), 1);
+        assertEq(hook.pre(), 1);
+        assertEq(hook.post(), 1);
+        // held to the mandate in that form: a target outside it, a value over the cap
+        _expectRefused(_hookedOp(1, address(forbidden), 0, inc));
+        _expectRefused(_hookedOp(1, address(counter), MAX_VALUE + 1, ""));
+        // one prefix only
+        _expectRefused(_hookedOp(2, address(counter), 0, inc));
+        assertEq(counter.count(), 1);
+        assertEq(hook.pre(), 1);
+    }
+
+    /// The selector the policy strips is Kernel's.
+    function test_hook_thePrefixIsKernelsExecuteUserOp() public pure {
+        assertEq(Kernel.executeUserOp.selector, bytes4(0x8dd7712f));
+    }
+
+    /// An authorization without an end is refused: its `validBefore` of 0
+    /// would be vouched for as Kernel reads a `validUntil` of 0, without end,
+    /// past the mandate's own `validUntil`.
+    function test_x402_anAuthorizationWithoutAnEndIsRefused() public {
+        _withX402();
+        bytes32 id = bytes32(PermissionId.unwrap(PAY_ID));
+        bytes32 digest = usdc.digestOf(acct, PAYEE, 500_000, 0, 0, bytes32(uint256(9)));
+        _expectRefused(_agentOpWith(AGENT, PAY_ID, address(policy), 0, _authorizeCall(500_000, 0, bytes32(uint256(9)))));
+        assertFalse(_isValid(digest));
+        assertEq(policy.tokenLimit(acct, id, address(usdc)).spent, 0);
+        // the control: the same authorization with an end registers
+        uint256 before = block.timestamp + 1 hours;
+        _send(_agentOpWith(AGENT, PAY_ID, address(policy), 0, _authorizeCall(500_000, before, bytes32(uint256(9)))));
+        assertTrue(_isValid(usdc.digestOf(acct, PAYEE, 500_000, 0, before, bytes32(uint256(9)))));
+        assertEq(policy.tokenLimit(acct, id, address(usdc)).spent, 500_000);
+    }
+
     function test_x402_onlyRegisteredDigestsAreVouchedFor() public {
         _withX402();
         uint256 before = block.timestamp + 1 hours;
@@ -1565,9 +2261,10 @@ contract AgentPermissionTest is Test {
     /// An approval and a transfer of one token in one operation share the cap.
     function test_tokenCapPerOperation_approveAndTransferShareIt() public {
         _withPayees();
-        Execution[] memory calls = new Execution[](2);
+        Execution[] memory calls = new Execution[](3);
         calls[0] = Execution(address(token), 0, abi.encodeCall(MockToken.approve, (PAYEE, 6 ether)));
         calls[1] = _transferLeg(6 ether);
+        calls[2] = Execution(address(token), 0, abi.encodeCall(MockToken.approve, (PAYEE, 0))); // no standing allowance
         _expectRefused(_agentBatchWith(AGENT, PYE_ID, calls));
         calls[1] = _transferLeg(4 ether);
         _send(_agentBatchWith(AGENT, PYE_ID, calls));
@@ -1637,9 +2334,16 @@ contract AgentPermissionTest is Test {
 
     function test_payees_spenderAndTransferFromAreBound() public {
         _withPayees();
-        _send(_payeeOp(address(token), abi.encodeCall(MockToken.approve, (PAYEE, 2 ether))));
-        assertEq(token.allowance(acct, PAYEE), 2 ether);
-        _expectRefused(_payeeOp(address(token), abi.encodeCall(MockToken.approve, (STRANGER, 1))));
+        // to a listed spender (withdrawn in the same operation: no standing allowances)
+        Execution[] memory calls = new Execution[](2);
+        calls[0] = Execution(address(token), 0, abi.encodeCall(MockToken.approve, (PAYEE, 2 ether)));
+        calls[1] = Execution(address(token), 0, abi.encodeCall(MockToken.approve, (PAYEE, 0)));
+        _send(_agentBatchWith(AGENT, PYE_ID, calls));
+        assertEq(_tokenSpent(address(token)), 2 ether);
+        // to a spender not listed: refused, withdrawn or not
+        calls[0] = Execution(address(token), 0, abi.encodeCall(MockToken.approve, (STRANGER, 1)));
+        calls[1] = Execution(address(token), 0, abi.encodeCall(MockToken.approve, (STRANGER, 0)));
+        _expectRefused(_agentBatchWith(AGENT, PYE_ID, calls));
         // transferFrom: the recipient is the second argument, whoever `from` is
         _expectRefused(_payeeOp(address(token), abi.encodeCall(MockToken.transferFrom, (PAYEE, STRANGER, 1))));
         _expectRefused(_payeeOp(address(token), abi.encodeCall(MockToken.transferFrom, (STRANGER, STRANGER, 1))));
@@ -1670,6 +2374,21 @@ contract AgentPermissionTest is Test {
     /// a payee list on the token and without one, since through that entry
     /// the token would pass neither its caps nor its list. The same entry on
     /// a token the mandate sets no limit for installs.
+    /// The payee mandate's x402 and USDC entries, `fn` on the mock token, and a
+    /// limit for USDC only.
+    function _installWithoutTheTokensLimit(bytes32 id, bytes4 fn, AgentPolicy.TokenCap memory usdcCap) internal {
+        (address[] memory payeeTargets, bytes4[] memory payeeSelectors) = _payeeTargets();
+        address[] memory targets = new address[](3);
+        bytes4[] memory selectors = new bytes4[](3);
+        for (uint256 i; i < 2; i++) {
+            (targets[i], selectors[i]) = (payeeTargets[i], payeeSelectors[i]);
+        }
+        (targets[2], selectors[2]) = (address(token), fn);
+        AgentPolicy.TokenCap[] memory caps = new AgentPolicy.TokenCap[](1);
+        caps[0] = usdcCap;
+        policy.onInstall(abi.encodePacked(id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0))));
+    }
+
     function test_token_otherFunctionsOfACappedTokenAreRefusedAtInstall() public {
         usdc = new MockUSDC();
         bytes4[2] memory careless = [MockToken.mint.selector, bytes4(0)];
@@ -1695,11 +2414,8 @@ contract AgentPermissionTest is Test {
             vm.expectRevert(AgentPolicy.InvalidConfig.selector);
             policy.onInstall(data);
             // no limit for that token in this mandate: the entry is an ordinary call
-            AgentPolicy.TokenCap[] memory usdcOnly = new AgentPolicy.TokenCap[](1);
-            usdcOnly[0] = caps[0];
-            policy.onInstall(
-                abi.encodePacked(id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, usdcOnly, uint48(0)))
-            );
+            // (the token's metered entries go with its limit, #175)
+            _installWithoutTheTokensLimit(id, careless[k], caps[0]);
             assertTrue(policy.isAllowed(address(this), id, address(token), careless[k]));
         }
         // and on an installed mandate nothing but the four functions reaches a capped token

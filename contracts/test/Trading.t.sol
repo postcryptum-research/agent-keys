@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {AgentPermissionTest, MockToken, MockUSDC, Counter} from "./AgentPermission.t.sol";
+import {AgentPermissionTest, MockToken, MockUSDC, MockOperators, Counter} from "./AgentPermission.t.sol";
 import {AgentPolicy} from "../src/AgentPolicy.sol";
 import {CowSwapDecoder} from "../src/venues/CowSwapDecoder.sol";
 import {IVenueDecoder} from "../src/venues/IVenueDecoder.sol";
@@ -13,6 +13,8 @@ import {CALLTYPE_BATCH} from "kernel/src/types/Constants.sol";
 import {CallType} from "kernel/src/types/Types.sol";
 import {ValidatorLib} from "kernel/src/utils/ValidationTypeLib.sol";
 import {ExecLib} from "kernel/src/utils/ExecLib.sol";
+import {Safe} from "safe-smart-account/Safe.sol";
+import {Enum} from "safe-smart-account/common/Enum.sol";
 
 interface IERC1271 {
     function isValidSignature(bytes32 hash, bytes calldata signature) external view returns (bytes4);
@@ -388,6 +390,27 @@ contract TradingTest is AgentPermissionTest {
         assertTrue(policy.venuePlace(acct, address(relayer)));
         assertTrue(policy.venuePlace(acct, address(settlement)));
         assertTrue(policy.venuePlace(acct, address(relayed)));
+    }
+
+    /// A venue takes its places out of the agent's reach under every mandate
+    /// of the account, a Safe's delegatecalled batcher included: an earlier
+    /// mandate that allow-listed the batcher cannot delegatecall it once a
+    /// later venue made it one of its places.
+    function test_trading_aVenuePlaceIsNoLongerASafesBatcher() public {
+        _world();
+        expiry = tradingExpiry; // the Safe's mandate lives in the trading world's time
+        Safe safe = _withSafe();
+        bytes memory txs = _legOf(0, address(counter), 0, abi.encodeWithSelector(Counter.increment.selector));
+        // the control: before the venue the batch runs
+        _send(_agentViaSafe(safe, _batch(safe, address(multiSend), txs, Enum.Operation.DelegateCall)));
+        assertEq(counter.count(), 1);
+        // a venue whose spender is that batcher, under another mandate
+        CowSwapDecoder relayed = _decoderWithSpender(address(multiSend));
+        _install(TRD_ID, _params(DAY, _venues(address(relayed), address(relayed).codehash, keccak256(_cowConfig()))));
+        assertTrue(policy.venuePlace(acct, address(multiSend)));
+        // refused now under the Safe's mandate too
+        _expectRefused(_agentViaSafe(safe, _batch(safe, address(multiSend), txs, Enum.Operation.DelegateCall)));
+        assertEq(counter.count(), 1);
     }
 
     // --- an order, end to end ---
@@ -853,6 +876,29 @@ contract TradingTest is AgentPermissionTest {
         vm.stopPrank();
     }
 
+    /// With a period of one second the highest index would make the count of
+    /// periods seen 2^48, which does not fit 48 bits: it is refused before
+    /// anything is written, so the count never wraps to 0 and walks back
+    /// (#175). Asked directly, as the account asks: a refusal returns without
+    /// reverting, so what it wrote would stay.
+    function test_period_theCountOfPeriodsNeverWrapsToZero() public {
+        _world();
+        PermissionId id = PermissionId.wrap(0x70657231); // "per1"
+        _install(id, _params(1, _venues(address(decoder), address(decoder).codehash, keccak256(_cowConfig()))));
+        bytes32 key = bytes32(PermissionId.unwrap(id));
+        PackedUserOperation memory op = _op(_permissionNonce(id), _singleCall(address(counter), 0, abi.encodeWithSelector(Counter.increment.selector)));
+        vm.startPrank(acct);
+        op.signature = abi.encodePacked(bytes6(uint48(100)));
+        policy.checkUserOpPolicy(key, op);
+        (, uint48 seen) = policy.period(acct, key);
+        assertEq(seen, 101, "the control: index 100 seen");
+        op.signature = abi.encodePacked(bytes6(type(uint48).max));
+        assertEq(policy.checkUserOpPolicy(key, op), 1, "the highest index");
+        (, seen) = policy.period(acct, key);
+        assertEq(seen, 101, "the count did not wrap");
+        vm.stopPrank();
+    }
+
     function test_period_budgetsStartAfreshEachPeriod() public {
         _with(DAY);
         _register(_order(200e6, _soon()));
@@ -871,6 +917,42 @@ contract TradingTest is AgentPermissionTest {
         vm.warp((uint256(_today()) + 1) * DAY + 1 hours);
         _send(_tradeOp(_today(), address(counter), 0.1 ether, ""));
         assertEq(_spentOf(), afterOne, "each period starts at zero");
+    }
+
+    /// #186: with a period, the budget of an ERC-6909 id is one per period, as
+    /// a token's is.
+    function test_period_anIdsBudgetIsPerPeriod() public {
+        _world();
+        MockOperators t = new MockOperators();
+        t.mint(acct, 7, 100);
+        PermissionId id = PermissionId.wrap(0x69643032); // "id02"
+        (address[] memory targets, bytes4[] memory selectors) = _idTargets(address(t));
+        AgentPolicy.IdCap[] memory caps = new AgentPolicy.IdCap[](1);
+        caps[0] = AgentPolicy.IdCap(address(t), 7, 5, 5);
+        _send(
+            _installOp(
+                id,
+                abi.encode(
+                    targets,
+                    selectors,
+                    MAX_VALUE,
+                    BUDGET,
+                    tradingExpiry,
+                    new AgentPolicy.TokenCap[](0),
+                    uint48(0),
+                    new AgentPolicy.TokenPayees[](0),
+                    DAY,
+                    new AgentPolicy.Venue[](0),
+                    caps
+                )
+            )
+        );
+        address to = makeAddr("receiver");
+        _send(_periodOp(id, _today(), address(t), 0, _idMove(t, to, 7, 5).callData));
+        _expectRefused(_periodOp(id, _today(), address(t), 0, _idMove(t, to, 7, 1).callData));
+        vm.warp((uint256(_today()) + 1) * DAY + 1 hours);
+        _send(_periodOp(id, _today(), address(t), 0, _idMove(t, to, 7, 5).callData));
+        assertEq(t.balanceOf(to, 7), 10);
     }
 
     function _spentOf() internal view returns (uint128 spent) {

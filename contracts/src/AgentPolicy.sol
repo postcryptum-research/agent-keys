@@ -218,6 +218,20 @@ contract AgentPolicy is IPolicy {
         bytes32 domainSeparator;
     }
 
+    /// Install-time limit for one id of an ERC-6909 contract: what `TokenCap`
+    /// is for an ERC-20 token, per `(token, id)`. No x402 and no payee list.
+    struct IdCap {
+        // The ERC-6909 contract; not zero, and not a token with a `TokenCap`
+        address token;
+        // The token id; one cap per `(token, id)`
+        uint256 id;
+        // The most of the id one operation may move, summed over its calls
+        uint128 maxPerOp;
+        // The most of the id the mandate may move: over its whole life, or
+        // in each period
+        uint128 budget;
+    }
+
     /// Install-time list of the only addresses a token's transfers,
     /// allowances and x402 payments may name. The token needs a `TokenCap`.
     struct TokenPayees {
@@ -341,6 +355,31 @@ contract AgentPolicy is IPolicy {
     bytes4 public constant MULTI_SEND = 0x8d80ff0a;
     /// `SafeNonceAssert.check(address,uint256)`
     bytes4 public constant NONCE_CHECK = SafeNonceAssert.check.selector;
+    /// `setApprovalForAll(address,bool)` of ERC-721 and ERC-1155: an operator
+    /// grant over every token of the contract, withdrawn like an allowance.
+    /// Each kind of grant has its own open flag (`_noteAllowance`), so one
+    /// function cannot close what another opened; install also keeps this
+    /// and `approve` on different targets (`approve` needs a limit on its
+    /// target, and this is refused on a target with one).
+    bytes4 internal constant SET_APPROVAL_FOR_ALL = 0xa22cb465;
+    /// `setOperator(address,bool)` of ERC-6909: the same grant in the same
+    /// shape, held the same way
+    bytes4 internal constant SET_OPERATOR = 0x558a7297;
+    /// `approve(address,uint256,uint256)` of ERC-6909: an allowance of one
+    /// token id, withdrawn with the same function and amount 0
+    bytes4 internal constant ERC6909_APPROVE = 0x426a8493;
+    /// The tag of `idAsset`'s hash
+    bytes32 internal constant ID_ASSET = keccak256("agent-keys.AgentPolicy.idAsset");
+    /// `transfer(address,uint256,uint256)` of ERC-6909
+    bytes4 internal constant ERC6909_TRANSFER = 0x095bcdb6;
+    /// `transferFrom(address,address,uint256,uint256)` of ERC-6909
+    bytes4 internal constant ERC6909_TRANSFER_FROM = 0xfe99049a;
+    /// `authorizeOperator(address)` of ERC-777: an operator grant withdrawn
+    /// by another function (`revokeOperator`). No mandate may list it.
+    bytes4 internal constant AUTHORIZE_OPERATOR = 0x959b8c3f;
+    /// `executeUserOp(PackedUserOperation,bytes32)`: the prefix Kernel requires
+    /// of the `callData` of a permission that carries an execution hook
+    bytes4 internal constant EXECUTE_USER_OP = 0x8dd7712f;
 
     // The four ERC-20 functions the policy meters (`_chargeToken`), the only
     // ones a token with a limit may be called through.
@@ -408,6 +447,10 @@ contract AgentPolicy is IPolicy {
     // counts for, plus one. Beside `TokenLimit` and not in it, so that what
     // `tokenLimit()` returns keeps its shape.
     mapping(bytes32 key => mapping(address account => uint48)) internal _tokenPeriod;
+    // Map of key => account => whether the mandate limits ids of the
+    // ERC-6909 contract. key: `keccak256(mandate, token)`. The limits
+    // themselves are `TokenLimit`s in `_tokens`, under `idAsset(token, id)`.
+    mapping(bytes32 key => mapping(address account => bool)) internal _idContracts;
     // key: `keccak256(mandate, digest)`. The window a registered
     // authorization or order was charged in, plus one; 0 without periods.
     mapping(bytes32 key => mapping(address account => uint48)) internal _chargedIn;
@@ -552,6 +595,10 @@ contract AgentPolicy is IPolicy {
     /// venues or without; one without a period is encoded in a shorter form
     /// and has no venues.
     uint256 internal constant HEAD_WITH_TRADING = 10 * 32;
+    /// Eleven words: the ten, then `IdCap[] ids`, which must not be empty
+    /// then. `payees` and `venues` may be empty and `period` may be 0 here
+    /// (with no venues): the form exists to carry the id limits.
+    uint256 internal constant HEAD_WITH_IDS = 11 * 32;
 
     /// @dev Installs a mandate under a permission of the account. Kernel calls
     /// it when the account installs a permission with this policy (an
@@ -609,12 +656,23 @@ contract AgentPolicy is IPolicy {
         _installPayees(m, data[32:]);
         // The period and venues of the ten-word form; no period otherwise
         c.period = _installTrading(m, data[32:], targets);
+        // The id limits of the eleven-word form
+        _installIds(m, data[32:]);
         // A token with a limit is callable through the four metered
         // functions only (`_chargeToken`). Any other entry on it would pass
         // neither its caps nor its payee list, so the limit the owner wrote
-        // down would not be one: such a mandate is refused whole.
+        // down would not be one. And a metered function is allowed on a token
+        // with a limit only: on any other target validation refuses it every
+        // time, a mandate that cannot do what it lists. Either is refused whole.
+        // The same for an ERC-6909 contract with id limits and its three
+        // metered functions. Any other entry on it is refused, `setOperator`
+        // among them: an operator may move every id, which no limit bounds.
         for (uint256 i; i < targets.length; i++) {
-            if (_token(msg.sender, m, targets[i]).set && !_isMetered(selectors[i])) revert InvalidConfig();
+            if (_token(msg.sender, m, targets[i]).set != _isMetered(selectors[i])) revert InvalidConfig();
+            if (_hasIds(m, targets[i]) != _isIdMetered(selectors[i])) revert InvalidConfig();
+            // An ERC-777 operator grant stands until `revokeOperator`, which
+            // this policy does not pair with it: no mandate lists it
+            if (selectors[i] == AUTHORIZE_OPERATOR) revert InvalidConfig();
         }
         // The window and the native limits; the counters from zero, since an
         // earlier installation of the id left its own in this `Config`
@@ -627,6 +685,63 @@ contract AgentPolicy is IPolicy {
         // Count the permission and record the install
         usedIds[msg.sender]++;
         emit AgentPolicySet(msg.sender, id, validUntil, maxValuePerOp, budget);
+    }
+
+    /// @dev The id limits of the eleven-word form: one per `(token, id)`, on
+    /// a contract that is not itself a token with a limit.
+    /// @param m The mandate key.
+    /// @param params The mandate's parameters, after the permission id.
+    function _installIds(bytes32 m, bytes calldata params) internal {
+        if (uint256(bytes32(params[0:32])) != HEAD_WITH_IDS) return;
+        // The eleventh word: the offset of `IdCap[]`, a dynamic array of static
+        // tuples. Decoded on its own: eleven types at once do not fit the stack.
+        uint256 offset = uint256(bytes32(params[320:352]));
+        if (offset > params.length || params.length - offset < 32) revert InvalidConfig();
+        uint256 count = uint256(bytes32(params[offset:offset + 32]));
+        // the form exists to carry a limit: without one, use another
+        if (count == 0 || count > (params.length - offset - 32) / 128) revert InvalidConfig();
+        for (uint256 i; i < count; i++) {
+            // One `IdCap`: four words, each within its type's width
+            bytes calldata cap = params[offset + 32 + 128 * i:offset + 160 + 128 * i];
+            uint256 token = uint256(bytes32(cap[0:32]));
+            uint256 maxPerOp = uint256(bytes32(cap[64:96]));
+            uint256 budget = uint256(bytes32(cap[96:128]));
+            if (token == 0 || token >> 160 != 0 || (maxPerOp | budget) >> 128 != 0) revert InvalidConfig();
+            TokenLimit storage t = _token(msg.sender, m, idAsset(address(uint160(token)), uint256(bytes32(cap[32:64]))));
+            if (t.set || _token(msg.sender, m, address(uint160(token))).set) revert InvalidConfig();
+            (t.maxPerOp, t.budget, t.set) = (uint128(maxPerOp), uint128(budget), true);
+            _idContracts[keccak256(abi.encode(m, address(uint160(token))))][msg.sender] = true;
+        }
+    }
+
+    /// @notice The key an id's limit is kept under, in the place of a token's
+    /// address: `tokenLimit(account, permissionId, idAsset(token, id))` is
+    /// the id's limit and what it has spent.
+    /// @dev The low 160 bits of a tagged hash of `(token, id)`. Everything a
+    /// token's limit has (the sum per operation, the budget, its period) is
+    /// then the id's too. To use a limit meant for another id, or a token's,
+    /// takes a second preimage of 160 bits.
+    /// @param token The ERC-6909 contract.
+    /// @param id The token id.
+    /// @return The key, as an address.
+    function idAsset(address token, uint256 id) public pure returns (address) {
+        return address(uint160(uint256(keccak256(abi.encode(ID_ASSET, token, id)))));
+    }
+
+    /// @dev Whether the mandate limits ids of the contract.
+    /// @param m The mandate key.
+    /// @param token The contract.
+    /// @return True if the mandate has an `IdCap` for it.
+    function _hasIds(bytes32 m, address token) internal view returns (bool) {
+        return _idContracts[keccak256(abi.encode(m, token))][msg.sender];
+    }
+
+    /// @dev Whether a selector is one of the three ERC-6909 functions
+    /// `_chargeId` meters.
+    /// @param selector The selector.
+    /// @return True for ERC-6909's `transfer`, `transferFrom` and `approve`.
+    function _isIdMetered(bytes4 selector) internal pure returns (bool) {
+        return selector == ERC6909_TRANSFER || selector == ERC6909_TRANSFER_FROM || selector == ERC6909_APPROVE;
     }
 
     /// @dev Whether a selector is one of the four ERC-20 functions
@@ -655,7 +770,8 @@ contract AgentPolicy is IPolicy {
                 abi.decode(params, (address[], bytes4[], uint128, uint128, uint48, TokenCap[], uint48, TokenPayees[]));
             // the eight-word form exists to carry a list: without one, use the other
             if (lists.length == 0) revert InvalidConfig();
-        } else if (head == HEAD_WITH_TRADING) {
+        } else if (head == HEAD_WITH_TRADING || head == HEAD_WITH_IDS) {
+            // the eleven-word form's first ten words are the ten-word form's
             (,,,,,,, lists,,) = abi.decode(
                 params,
                 (address[], bytes4[], uint128, uint128, uint48, TokenCap[], uint48, TokenPayees[], uint32, Venue[])
@@ -692,8 +808,9 @@ contract AgentPolicy is IPolicy {
         internal
         returns (uint32 period_)
     {
-        // Only the ten-word form carries a period and venues
-        if (uint256(bytes32(params[0:32])) != HEAD_WITH_TRADING) return 0;
+        // Only the ten- and eleven-word forms carry a period and venues
+        uint256 head = uint256(bytes32(params[0:32]));
+        if (head != HEAD_WITH_TRADING && head != HEAD_WITH_IDS) return 0;
         Venue[] memory venues;
         (,,,,,,,, period_, venues) = abi.decode(
             params, (address[], bytes4[], uint128, uint128, uint48, TokenCap[], uint48, TokenPayees[], uint32, Venue[])
@@ -701,7 +818,8 @@ contract AgentPolicy is IPolicy {
         // The ten-word form carries a period, with venues or without. A mandate
         // with venues needs one: an order's charge is never given back, so the
         // period is what returns an unfilled order's part of the budget.
-        if (period_ == 0) revert InvalidConfig();
+        // The eleven-word form may have neither: it is there for the id limits.
+        if (period_ == 0 && (head == HEAD_WITH_TRADING || venues.length != 0)) revert InvalidConfig();
         for (uint256 i; i < venues.length; i++) {
             // Each decoder once, with a config, and with the code the owner pinned
             address decoder = venues[i].decoder;
@@ -833,6 +951,8 @@ contract AgentPolicy is IPolicy {
         // Judge every call; token amounts are charged on the way
         (bool ok, uint256 value) = _judgeExecute(_mandate(id, c.epoch), userOp.callData);
         if (!ok || value > c.maxValuePerOp) return SIG_VALIDATION_FAILED_UINT;
+        // No allowance the agent granted outlives the operation
+        if (_tload(_thisOperation(OPEN_ALLOWANCES)) != 0) return SIG_VALIDATION_FAILED_UINT;
 
         // Without a paymaster the account pays for gas out of its own
         // deposit: count the most it can be charged against the budget.
@@ -901,7 +1021,9 @@ contract AgentPolicy is IPolicy {
             // Its first and last second, which must fit the 48-bit window
             uint256 start = index * c.period;
             uint256 end = start + c.period - 1;
-            if (end > type(uint48).max) return (false, 0, 0);
+            // Strictly below the 48-bit maximum, so that `seen` (index + 1) and
+            // the next period's start (end + 1) fit in 48 bits too
+            if (end >= type(uint48).max) return (false, 0, 0);
             // A new period starts the native budget afresh
             if (seen > c.periodSeen) {
                 c.periodSeen = uint48(seen);
@@ -1274,7 +1396,8 @@ contract AgentPolicy is IPolicy {
     /// @param m The mandate key.
     /// @param digest The digest `checkSignaturePolicy` will vouch for.
     /// @param value The amount charged; never 0 here.
-    /// @param validBefore The last second it is vouched for.
+    /// @param validBefore The last second it is vouched for; never 0, which
+    /// `checkSignaturePolicy` would hand Kernel as "no end".
     /// @param token The token charged.
     /// @return True if recorded.
     function _recordX402(bytes32 m, bytes32 digest, uint256 value, uint256 validBefore, address token)
@@ -1286,6 +1409,8 @@ contract AgentPolicy is IPolicy {
         if (p.value != 0) return false;
         // Never truncated
         if (value > type(uint128).max) return false;
+        // An end of 0 would be vouched for without end, past the mandate's own
+        if (validBefore == 0) return false;
         // The record, and the period it was charged in (0 without periods)
         (p.value, p.validBefore, p.token) = (uint128(value), uint48(validBefore), token);
         _chargedIn[keccak256(abi.encode(m, digest))][msg.sender] = uint48(_perOperation(PERIOD_NOW));
@@ -1341,6 +1466,95 @@ contract AgentPolicy is IPolicy {
         }
     }
 
+    // No standing allowances: an allowance the agent grants (`approve` or
+    // `increaseAllowance` of more than 0) must be withdrawn with
+    // `approve(spender, 0)` later in the same operation, and an operator grant
+    // (`setApprovalForAll(operator, true)` of ERC-721 and ERC-1155,
+    // `setOperator(operator, true)` of ERC-6909) with the same function and
+    // `false`, an ERC-6909 allowance of an id (`approve(spender, id, amount)`)
+    // with the same function and 0, by the same holder
+    // (the account, or the Safe whose transaction grants it). Otherwise it
+    // would outlive a revoke of the mandate: the spender could pull from it
+    // whenever it likes. Allowances the owner grants are not the agent's and
+    // are not counted. Kept in transient slots of this operation.
+    /// How many allowances the operation has granted and not withdrawn.
+    bytes32 internal constant OPEN_ALLOWANCES = keccak256("agent-keys.AgentPolicy.openAllowances");
+    /// One allowance granted and not withdrawn: under `(kind, holder, token, spender)`.
+    bytes32 internal constant OPEN_ALLOWANCE = keccak256("agent-keys.AgentPolicy.openAllowance");
+    /// The Safe whose transaction is being judged; 0 while it is the account's own call.
+    bytes32 internal constant ALLOWANCE_HOLDER = keccak256("agent-keys.AgentPolicy.allowanceHolder");
+
+    /// @dev A transient slot of this operation of the account: keyed by the
+    /// account and the operation counter (`keccak256(account ‖ x)`), so that
+    /// nothing in it carries over to the account's next operation.
+    /// @param what The note's name.
+    /// @return slot The slot.
+    function _thisOperation(bytes32 what) internal view returns (uint256 slot) {
+        uint256 seq = _tload(uint256(keccak256(abi.encode(msg.sender, OPERATION_SEQ))));
+        slot = uint256(keccak256(abi.encode(msg.sender, keccak256(abi.encode(seq, what)))));
+    }
+
+    /// @dev Reads a transient slot.
+    /// @param slot The slot.
+    /// @return value Its value; 0 if never written in this transaction.
+    function _tload(uint256 slot) internal view returns (uint256 value) {
+        assembly ("memory-safe") {
+            value := tload(slot)
+        }
+    }
+
+    /// @dev Writes a transient slot.
+    /// @param slot The slot.
+    /// @param value The value.
+    function _tstore(uint256 slot, uint256 value) internal {
+        assembly ("memory-safe") {
+            tstore(slot, value)
+        }
+    }
+
+    /// @dev Opens or withdraws one allowance of the current holder, and keeps
+    /// the count of those open.
+    /// @param kind What withdraws it: `approve` for an ERC-20 allowance, the
+    /// grant's own selector for an operator grant, the selector with the
+    /// token id for an ERC-6909 allowance. A grant is withdrawn only by its
+    /// own kind.
+    /// @param token The token.
+    /// @param spender The spender.
+    /// @param open True for a grant, false for its withdrawal.
+    function _noteAllowance(bytes32 kind, address token, address spender, bool open) internal {
+        uint256 holder = _tload(_thisOperation(ALLOWANCE_HOLDER));
+        uint256 flag = _thisOperation(keccak256(abi.encode(OPEN_ALLOWANCE, kind, holder, token, spender)));
+        uint256 count = _thisOperation(OPEN_ALLOWANCES);
+        bool wasOpen = _tload(flag) != 0;
+        if (open && !wasOpen) {
+            _tstore(flag, 1);
+            _tstore(count, _tload(count) + 1);
+        } else if (!open && wasOpen) {
+            // open, so counted: at least one
+            _tstore(flag, 0);
+            _tstore(count, _tload(count) - 1);
+        }
+    }
+
+    /// @dev `_judgeSafe` with the Safe noted as the holder of the allowances
+    /// its transaction grants.
+    /// @param m The mandate key.
+    /// @param safe The Safe.
+    /// @param value The value the account sends with the transaction.
+    /// @param data The `execTransaction` calldata.
+    /// @param from Where the call comes from.
+    /// @return ok True if the transaction passes.
+    /// @return moved The native value it moves.
+    function _judgeSafeAs(bytes32 m, address safe, uint256 value, bytes calldata data, uint8 from)
+        internal
+        returns (bool ok, uint256 moved)
+    {
+        uint256 holder = _thisOperation(ALLOWANCE_HOLDER);
+        _tstore(holder, uint160(safe));
+        (ok, moved) = _judgeSafe(m, value, data, from);
+        _tstore(holder, 0);
+    }
+
     /// @dev Adds `amount` to what this operation has moved of `token` so far
     /// (transfers, approvals and x402 registrations alike, in every leg) and
     /// returns the total, for the caller to hold against `maxPerOp`: the cap
@@ -1382,12 +1596,18 @@ contract AgentPolicy is IPolicy {
 
     /// @dev Accepts `execute(mode, executionCalldata)` with a single call or a
     /// batch, default exec type, and judges every call; returns the native
-    /// value the operation moves.
+    /// value the operation moves. Also in Kernel's form for a permission that
+    /// carries an execution hook, `executeUserOp`'s selector before that call:
+    /// Kernel requires it there and then runs the `execute(...)` after it as it
+    /// is (Kernel.sol:264-271, 300), so the hook adds checks around the call
+    /// and never takes the mandate's place.
     /// @param m The mandate key.
     /// @param callData The operation's `callData`.
     /// @return True if every call passes.
     /// @return The native value the operation moves, Safe transactions and batch legs included.
     function _judgeExecute(bytes32 m, bytes calldata callData) internal returns (bool, uint256) {
+        // The hooked form: one `executeUserOp` selector, then the call itself
+        if (callData.length >= 4 && bytes4(callData[0:4]) == EXECUTE_USER_OP) callData = callData[4:];
         // selector + mode + offset + length is the smallest well-formed call
         if (callData.length < 100 || bytes4(callData[0:4]) != IERC7579Account.execute.selector) return (false, 0);
         // The mode's first byte is the call type, its second the exec type
@@ -1458,8 +1678,11 @@ contract AgentPolicy is IPolicy {
         if (value != 0 || data.length != 68 || bytes4(data[0:4]) != NONCE_CHECK || i + 1 >= pointers.length) {
             return (false, 0);
         }
-        // The Safe it guards: the low 160 bits of its first argument
-        // (`check` reverts at execution on anything above them)
+        // The Safe it guards: its first argument, a whole address word. With
+        // anything above the low 160 bits `check` reverts at execution, after
+        // validation has charged the operation: refused here, as a payee's
+        // address word is (`_chargeToken`)
+        if (uint256(bytes32(data[4:36])) >> 160 != 0) return (false, 0);
         address guarded = address(uint160(uint256(bytes32(data[4:36]))));
         // The next leg must be that Safe's `execTransaction`
         (address safe, uint256 safeValue, bytes calldata safeData) = LibERC7579.getExecution(pointers, i + 1);
@@ -1501,7 +1724,7 @@ contract AgentPolicy is IPolicy {
         // any other way its legs would run as the batch contract.
         if (selector == MULTI_SEND) return (false, 0);
         // A Safe transaction: the call inside it is what is judged
-        if (selector == SAFE_EXEC_TRANSACTION) return _judgeSafe(m, value, data, from);
+        if (selector == SAFE_EXEC_TRANSACTION) return _judgeSafeAs(m, target, value, data, from);
         // x402: registering an authorization is the account's own call only
         // (the records are kept for the account, not for a Safe)
         if (target == address(this) && selector == this.x402Authorize.selector) {
@@ -1512,8 +1735,64 @@ contract AgentPolicy is IPolicy {
             return (from == FROM_ACCOUNT && value == 0 && _registerOrder(m, data)) ? (true, 0) : (false, 0);
         }
         // Any other call: the ERC-20 rules, if the target is a token with a limit
+        // An operator grant (ERC-721 and ERC-1155 `setApprovalForAll`, ERC-6909
+        // `setOperator`) is open until the same function with `false`, in the
+        // same operation, withdraws it, as an allowance is
+        if (selector == SET_APPROVAL_FOR_ALL || selector == SET_OPERATOR) {
+            if (data.length < 68) return (false, 0);
+            _noteAllowance(
+                bytes32(selector), target, address(uint160(uint256(bytes32(data[4:36])))), uint256(bytes32(data[36:68])) != 0
+            );
+        }
+        // An ERC-6909 allowance of one id: open until the same function, for
+        // the same spender and id, sets it to 0 in the same operation
+        if (selector == ERC6909_APPROVE) {
+            if (data.length < 100) return (false, 0);
+            _noteAllowance(
+                keccak256(abi.encode(selector, bytes32(data[36:68]))),
+                target,
+                address(uint160(uint256(bytes32(data[4:36])))),
+                uint256(bytes32(data[68:100])) != 0
+            );
+        }
+        // Install refuses it; refused again here, as the account and the
+        // policy are as targets
+        if (selector == AUTHORIZE_OPERATOR) return (false, 0);
+        // An ERC-6909 contract with id limits: its three metered functions,
+        // each against the limit of the id it names, and nothing else
+        if (_hasIds(m, target) || _isIdMetered(selector)) {
+            return _chargeId(m, target, selector, data) ? (true, value) : (false, 0);
+        }
         if (!_chargeToken(m, target, selector, data)) return (false, 0);
         return (true, value);
+    }
+
+    /// @dev Charges an ERC-6909 call to the limit of the id it names. The
+    /// amount is the last argument and the id the one before it, in all
+    /// three functions.
+    /// @param m The mandate key.
+    /// @param token The ERC-6909 contract.
+    /// @param selector The call's selector.
+    /// @param data The call's calldata.
+    /// @return True if the call is one of the three and within the id's limits.
+    function _chargeId(bytes32 m, address token, bytes4 selector, bytes calldata data) internal returns (bool) {
+        // Not one of the three, or on a contract without id limits (a
+        // mandate from before the install rule could list it): refused
+        if (!_isIdMetered(selector) || !_hasIds(m, token)) return false;
+        uint256 end = selector == ERC6909_TRANSFER_FROM ? 132 : 100;
+        if (data.length < end) return false;
+        uint256 amount = uint256(bytes32(data[end - 32:end]));
+        address asset = idAsset(token, uint256(bytes32(data[end - 64:end - 32])));
+        // The id's limit; an id without one is refused
+        TokenLimit storage t = _token(msg.sender, m, asset);
+        if (!t.set) return false;
+        // The cap per operation, over all of the operation's calls
+        if (_movedThisOperation(asset, amount) > t.maxPerOp) return false;
+        // The id's budget, in the current period if there is one
+        uint256 spent = _tokenSpent(m, asset, t) + amount;
+        if (spent > t.budget) return false;
+        t.spent = uint128(spent);
+        return true;
     }
 
     /// @dev Uniswap's Permit2 where it is deployed by the usual CREATE2
@@ -1577,11 +1856,16 @@ contract AgentPolicy is IPolicy {
         (bool decoded, address to, uint256 innerValue, uint256 operation, bytes calldata inner) = _decodeSafeExec(data);
         if (!decoded) return (false, 0);
         // CALL (0): the inner call is judged like any other, from the Safe.
-        // DELEGATECALL (1): only into an allow-listed MultiSend batch, with no
-        // value named, and every leg judged. Any other operation is refused.
+        // DELEGATECALL (1): only into an allow-listed MultiSend batch that is
+        // still a target the agent may reach (not since made a venue place),
+        // with no value named, and every leg judged. Any other operation is
+        // refused.
         if (operation == 0) {
             (ok, moved) = _judge(m, to, innerValue, inner, FROM_SAFE);
-        } else if (operation == 1 && innerValue == 0 && _selector(inner) == MULTI_SEND && _allowed[_allowedKey(m, to, MULTI_SEND)][msg.sender]) {
+        } else if (
+            operation == 1 && innerValue == 0 && _selector(inner) == MULTI_SEND
+                && _allowed[_allowedKey(m, to, MULTI_SEND)][msg.sender] && _targetAllowed(to, MULTI_SEND)
+        ) {
             (ok, moved) = _judgeBatch(m, inner);
         }
         return ok ? (true, value + moved) : (false, 0);
@@ -1634,6 +1918,12 @@ contract AgentPolicy is IPolicy {
         if (spent > t.budget) return false;
         // Charge it
         t.spent = uint128(spent);
+        // An allowance granted is open until `approve(spender, 0)` in the same
+        // operation withdraws it; the spender is the low 160 bits the token reads
+        if (selector == ERC20_APPROVE || (selector == ERC20_INCREASE_ALLOWANCE && amount != 0)) {
+            // `approve(spender, 0)` withdraws what either function granted: one kind
+            _noteAllowance(bytes32(ERC20_APPROVE), token, address(uint160(uint256(bytes32(data[4:36])))), amount != 0);
+        }
         return true;
     }
 
@@ -1740,6 +2030,13 @@ contract AgentPolicy is IPolicy {
         inner = d[0:0];
         // selector + ten head words
         if (d.length < 324) return (false, address(0), 0, 0, inner);
+        // Head words 0, 7 and 8 are addresses (to, gasToken, refundReceiver):
+        // whole words only. A Safe built with a decoder that masks the word
+        // would call the address judged here; one built with a decoder that
+        // validates it reverts at execution, with the operation charged
+        if ((uint256(bytes32(d[4:36])) | uint256(bytes32(d[228:260])) | uint256(bytes32(d[260:292]))) >> 160 != 0) {
+            return (false, address(0), 0, 0, inner);
+        }
         // Head words 0 to 3: to, value, the data's offset, operation
         to = address(uint160(uint256(bytes32(d[4:36]))));
         value = uint256(bytes32(d[36:68]));

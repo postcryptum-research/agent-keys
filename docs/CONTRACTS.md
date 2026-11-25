@@ -247,7 +247,7 @@ operation has moved of each token, and its notes (its period, its orders'
 window), are kept in transient storage, in the account's slots too [V
 source; `test_senderStorage_transientTotalsAreInTheAccountsSlots`].
 
-**Install data.** `bytes32(id) ‖ abi.encode(...)` in one of three forms,
+**Install data.** `bytes32(id) ‖ abi.encode(...)` in one of four forms,
 told apart by the first word, the offset of `targets`; a mandate is
 encoded in the shortest form that holds it [V source]:
 
@@ -256,11 +256,13 @@ encoded in the shortest form that holds it [V source]:
 | seven | `address[] targets, bytes4[] selectors, uint128 maxValuePerOp, uint128 budget, uint48 validUntil, TokenCap[] tokens, uint48 validAfter` | a plain mandate |
 | eight | the seven, then `TokenPayees[] payees`, not empty | payee lists |
 | ten | the eight (`payees` may be empty), then `uint32 period, Venue[] venues` | a budget per period, with venues or without |
+| eleven | the ten (`period` may be 0 when there are no venues), then `IdCap[] ids`, not empty | limits per id of an ERC-6909 contract (#186) |
 
 `TokenCap` is `(token, maxPerOp, budget, domainSeparator)`, the token's
 EIP-712 domain separator non-zero to allow x402 payments in it;
 `TokenPayees` is `(token, payees)`; `Venue` is `(decoder, codeHash,
-configHash)`. A first word that is none of the three is refused. The
+configHash)`; `IdCap` is `(token, id, maxPerOp, budget)`. A first word
+that is none of the four is refused. The
 contract decodes as loosely as `abi.decode` does; that the owner sees
 exactly what is installed rests on the reviewing app, which accepts
 canonical encodings only [V source].
@@ -294,7 +296,9 @@ canonical encodings only [V source].
 - `orderRegister(decoder, config, order)`: emits `OrderRegistered`.
 - Views: `configs(account, id)` (the first six fields of `Config`),
   `period(account, id)`, `isAllowed(account, id, target, selector)`,
-  `tokenLimit(account, id, token)`, `payeeAllowed(account, id, token,
+  `tokenLimit(account, id, token)`, `idAsset(token, tokenId)` (the key an
+  ERC-6909 id's limit is read under: `tokenLimit(account, id,
+  idAsset(token, tokenId))`), `payeeAllowed(account, id, token,
   payee)`, `x402Pending(account, id, digest)`, `venue(account, id,
   decoder)`, `venuePlace(account, place)`, `usedIds(account)`,
   `isModuleType(t)` (true only for `MODULE_TYPE_POLICY`) and
@@ -336,9 +340,81 @@ which refuses the operation all the same [I].
   with another entry on it, and validation such a call
   (`test_token_selectorWithoutLimitIsRefused`,
   `test_tokenCapPerOperation_legsAddUp`,
-  `test_probe2_installRefusesEveryUnmeteredFunctionOnALimitedToken`). An
-  approval is charged like a transfer; what the spender later pulls is not
-  seen.
+  `test_probe2_installRefusesEveryUnmeteredFunctionOnALimitedToken`). And
+  the four go to a token with a limit only: such an entry on any other
+  target would be refused at every operation, so install refuses the
+  mandate (#175, `test_probe2_installRefusesAMeteredFunctionWithoutALimit`).
+  ERC-721's `approve(to, tokenId)` and `transferFrom` carry the ERC-20
+  selectors, so on an NFT contract they are metered functions and need a
+  limit, which an NFT contract does not meaningfully have: they cannot be
+  listed for one.
+- *Ids of an ERC-6909 contract (#186).* `transfer(receiver, id, amount)`,
+  `transferFrom(sender, receiver, id, amount)` and `approve(spender, id,
+  amount)` need a limit for the id they name (`IdCap`, in the eleven-word
+  form). The amounts, summed over the operation's calls, are at most the
+  id's `maxPerOp` and are charged to its budget, which follows the
+  mandate's period as a token's does; an id without a limit is refused. A
+  contract with limits per id is callable through these three functions
+  only, so not through `setOperator`, whose operator could move every id
+  past the limits; and the three go to a contract with such limits only.
+  Install refuses a mandate that breaks either, and one whose contract
+  also has a `TokenCap`, an id listed twice, the zero address or a limit
+  wider than 128 bits (`test_ids_anIdIsHeldToItsLimits`,
+  `test_ids_installRules`, `test_period_anIdsBudgetIsPerPeriod`; through a
+  Safe and the legs of its batch, `test_ids_heldThroughASafeAndItsBatch`). An
+  allowance of an id still has to be withdrawn in the same operation,
+  as below, and its amount is charged when it is given. An id has no
+  payee list and no x402: the agent picks the receiver and the spender.
+  An id's limit is kept as a token's, under a key made of the contract
+  and the id (the low 160 bits of a tagged hash; `idAsset`). The
+  contract's runtime size with this is 23,630 bytes of the 24,576 a
+  contract may have [V `forge build --sizes`, 2026-11-25].
+  An approval is charged like a transfer; what the spender later pulls is
+  not seen.
+- *No standing allowances.* An allowance the agent grants (`approve` or
+  `increaseAllowance` of more than 0) must be withdrawn with
+  `approve(spender, 0)` later in the same operation, by the same holder:
+  the account for its own calls, the Safe for calls inside its
+  transaction. An operation that ends with one open is refused. So nothing
+  the agent granted outlives the operation, and a revoke leaves no spender
+  able to pull. Allowances the owner grants (a venue's spender, say) are
+  not the agent's and are not counted (`test_allowances_noneOutlivesTheOperation`,
+  `test_allowances_theHolderWithdrawsWhatItGranted`; the fuzzing model
+  holds it too). [V source, tests] The same holds for an operator grant,
+  `setApprovalForAll(operator, true)` of ERC-721 and ERC-1155: it must be
+  withdrawn with `setApprovalForAll(operator, false)` in the same operation
+  (`test_allowances_anOperatorGrantIsWithdrawnInTheSameOperation`, #176).
+  ERC-6909 is held whole: `setOperator(operator, true)` is withdrawn with
+  `setOperator(operator, false)`, and an allowance of one id,
+  `approve(spender, id, amount)`, with the same function, spender and id
+  and amount 0; `setOperator` can be listed only for a contract without
+  limits per id, and `approve(spender, id, amount)` only for one with them
+  (`test_allowances_anERC6909OperatorIsWithdrawnByItsOwnFunction`,
+  `test_allowances_anERC6909AllowanceIsWithdrawnForItsId`). A grant is
+  withdrawn by its own function only: each kind has its own flag, so on a
+  contract that has two of these functions one does not close what the
+  other opened. ERC-777's `authorizeOperator` is withdrawn by a different
+  function, `revokeOperator`, and the policy does not pair them: a mandate
+  that lists `authorizeOperator` is refused at install
+  (`test_allowances_noMandateListsAnERC777OperatorGrant`); `revokeOperator`
+  only takes a grant away and may be listed. An ERC-777 token is best
+  listed, if at all, as an ERC-20 with a limit, which confines it to the
+  four metered functions. A protocol's own operator grant under another
+  name is a call the policy allows or refuses and does not read, as any
+  unmetered selector, and what it grants can stand. The phone's review
+  names the grants it knows on the entry. An allowance or a grant that has
+  to stand across operations is the owner's to make.
+  What the rule reads is the calls of the operation, and validation cannot
+  see how they end. A call that reverts takes the whole operation's
+  execution with it, the grant included (only the default execution type
+  is admitted, and a Safe's batch is one `multiSend`). A token whose
+  `approve(spender, 0)` returns `false` and changes nothing, where its
+  `approve(spender, x)` took effect, would leave that allowance standing:
+  the account does not read a token's return value. So a token given a
+  limit must be one whose `approve(spender, 0)` clears the allowance; the
+  widely used ones do. The same is assumed of an allow-listed contract's
+  `setApprovalForAll(operator, false)`. [I: no such token is known to us; the requirement
+  is on the owner's choice of tokens]
 - *Window.* The operation is valid from `validAfter` up to and at
   `validUntil`; the policy returns the window and the EntryPoint enforces
   it (`test_schedule_windowIsEnforced`). The window `checkUserOpPolicy`
@@ -355,10 +431,13 @@ which refuses the operation all the same [I].
 - *x402.* `x402Authorize` in an operation registers an EIP-3009
   authorization: the account's own call (not from a Safe), paying from the
   account, in a token with a limit and a domain separator, judged like a
-  transfer, recorded once under its EIP-712 digest.
+  transfer, recorded once under its EIP-712 digest. A `validBefore` of 0
+  is refused, here and for orders (their `validTo` is recorded the same
+  way): Kernel reads an end of 0 as no end at all.
   `checkSignaturePolicy` vouches for that digest only, within the
   mandate's window and up to `validBefore`. `x402Reclaim` gives back the
   charge of one that expired unused (`test_x402_registrationIsHeldToTheMandate`,
+  `test_x402_anAuthorizationWithoutAnEndIsRefused`,
   `test_x402_notFromInsideASafe`,
   `test_x402_reclaimReturnsBudgetOfExpiredUnused`; `docs/ERC1271.md`).
 - *Orders through a venue's decoder.* `orderRegister` in an operation is
@@ -419,15 +498,35 @@ which refuses the operation all the same [I].
   (zkSync-style chains differ), so the constant is to be checked before
   the policy goes to a new chain [V source].
 - *Safes.* `(safe, execTransaction)` is admitted only as the leg right
-  after `SafeNonceAssert.check(safe, n)` in the account's batch. The call
+  after `SafeNonceAssert.check(safe, n)` in the account's batch, with
+  `safe` a whole address word: a word with bits above the low 160 is
+  refused in validation, since `check` would revert on it at execution
+  with the operation already charged
+  (`test_safe_theGuardedAddressIsAWholeWord`). The same is asked of the
+  address words of `execTransaction` itself (`to`, `gasToken`,
+  `refundReceiver`): a Safe whose decoder validates them would revert at
+  execution (`test_safe_theTransactionsAddressesAreWholeWords`). The call
   inside is judged against the same mandate; `gasPrice` must be 0, or the
   Safe would pay a refund to a receiver the agent picks; Safes do not
-  nest; a DELEGATECALL goes only into an allow-listed `multiSend` whose
-  every leg is a CALL that passes the mandate. One allow-list entry admits
+  nest; a DELEGATECALL goes only into an allow-listed `multiSend` that is
+  still a target the agent may reach (not made a venue's place since, by
+  another mandate of the account), whose every leg is a CALL that passes
+  the mandate. One allow-list entry admits
   its call directly, through a Safe and as a batch leg alike
   (`test_safe_unguardedIsRefused`,
   `test_safe_refusesDelegatecallRefundsAndNesting`,
+  `test_trading_aVenuePlaceIsNoLongerASafesBatcher`,
   `test_batch_everyLegIsJudged`).
+- *A permission with an execution hook.* Kernel requires such a
+  permission's `callData` to be `executeUserOp`'s selector followed by the
+  `execute(...)` call, and runs that call as it is (`Kernel.sol:264-271`,
+  `300`). The policy strips that one prefix and judges the call as any
+  other, so a hook (a price check, say) adds checks around the call and
+  never replaces the mandate. A second prefix is refused
+  (`test_hook_aHookedPermissionIsHeldToTheMandate`). [V source, test]
+  Today the phone's review refuses an install that carries a hook and
+  the CLI builds the plain form only; a hook needs those two, not a new
+  policy.
 
 **Instances.** Both predate master: each is recorded with the commit
 named in `docs/DEPLOYMENTS.md`, and master's source no longer builds it.

@@ -17,7 +17,9 @@ use alloy::primitives::{Address, Bytes, U256};
 use alloy::sol_types::SolCall;
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use hw_signer::{software::SoftwareSigner, verify_p256, HardwareSigner, PublicKey, Signature};
+#[cfg(feature = "insecure-software-keys")]
+use hw_signer::software::SoftwareSigner;
+use hw_signer::{verify_p256, HardwareSigner, PublicKey, Signature};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -414,6 +416,14 @@ enum OwnerCmd {
         /// Required: says that the account is to be left without a recovery key.
         #[arg(long)]
         leave_no_recovery: bool,
+        /// Remove the key from this earlier recovery validator, one the
+        /// deployments file keeps as `p256RecoveryValidatorV<n>` after a
+        /// redeploy, instead of from the current one. After `owner
+        /// add-recovery` has installed the key on the current validator, this
+        /// leaves the account with that one and needs no --leave-no-recovery
+        /// (docs/REDEPLOY.md).
+        #[arg(long)]
+        earlier: Option<Address>,
         #[arg(long)]
         sponsored: bool,
     },
@@ -567,10 +577,15 @@ enum KeyCmd {
         #[command(flatten)]
         key: KeyRef,
     },
-    /// Remove the key from the secure element.
+    /// Remove the key from the secure element. It cannot be undone, so the
+    /// key at the place named is shown first and removed only with `--yes`.
     Evict {
         #[command(flatten)]
         key: KeyRef,
+        /// Remove the key shown. Without it the command shows the key and
+        /// removes nothing.
+        #[arg(long)]
+        yes: bool,
     },
     /// Health check: open the key, sign a random digest and verify it — no
     /// transaction. For a key file this proves the passphrase still opens it.
@@ -707,7 +722,16 @@ fn parse_permission_id(s: &str) -> Result<kernel::PermissionId> {
 
 fn open_backend(backend: Backend, parent: u32, label: Option<String>, slot: u16) -> Result<Box<dyn HardwareSigner>> {
     match backend {
-        Backend::Software => Ok(Box::new(SoftwareSigner::random())),
+        Backend::Software => {
+            #[cfg(feature = "insecure-software-keys")]
+            {
+                Ok(Box::new(SoftwareSigner::random()))
+            }
+            #[cfg(not(feature = "insecure-software-keys"))]
+            {
+                bail!("the software backend is not in this build (tests only: `--features insecure-software-keys`); name a hardware one with --backend")
+            }
+        }
         Backend::Tpm => {
             #[cfg(feature = "tpm")]
             {
@@ -775,8 +799,26 @@ fn print_key(key: String, pk: &PublicKey) -> Result<()> {
 enum KeyOp {
     Create { parent: u32, pcrs: Vec<u8>, auth_file: Option<PathBuf> },
     Show,
-    Evict,
+    Evict { yes: bool },
     Check { auth_file: Option<PathBuf>, pcrs: Vec<u8> },
+}
+
+/// Whether `key evict` goes on. Removing a key from a device cannot be
+/// undone, and a mistyped handle or label names another key: the key at
+/// `name` is shown, and it is removed only when the command carries `--yes`.
+/// A place whose key cannot be read is not evicted at all, `--yes` or not:
+/// what is there was not shown, so nothing was agreed to.
+#[cfg_attr(not(any(feature = "tpm", feature = "tropic01", feature = "secure-enclave", feature = "windows-tpm")), allow(dead_code))]
+fn may_evict(name: &str, key: Result<PublicKey>, yes: bool) -> Result<bool> {
+    match key {
+        Ok(pk) => eprintln!("the key at {name}:\n  {}", chain::key_text(&pk, "  ")),
+        Err(e) if yes => bail!("the key at {name} could not be read ({e:#}): nothing was removed, since --yes agrees to a key that was shown"),
+        Err(e) => eprintln!("the key at {name} could not be read ({e:#})"),
+    }
+    if !yes {
+        eprintln!("nothing was removed. Removing a key cannot be undone: if this is the key you mean, run the command again with --yes");
+    }
+    Ok(yes)
 }
 
 /// Sign a random digest with `signer` and verify it against its public key.
@@ -910,7 +952,7 @@ fn run_key(cmd: KeyCmd) -> Result<()> {
             (key, KeyOp::Create { parent, pcrs, auth_file })
         }
         KeyCmd::Show { key } => (key, KeyOp::Show),
-        KeyCmd::Evict { key } => (key, KeyOp::Evict),
+        KeyCmd::Evict { key, yes } => (key, KeyOp::Evict { yes }),
         KeyCmd::Check { key, auth_file, pcrs, session } => {
             session.configure();
             (key, KeyOp::Check { auth_file, pcrs })
@@ -1084,7 +1126,7 @@ fn phone_key(label: &str, cfg_path: &Path, op: KeyOp) -> Result<()> {
             }
         }
         KeyOp::Create { .. } => unreachable!("handled by phone_enroll"),
-        KeyOp::Evict => bail!(
+        KeyOp::Evict { .. } => bail!(
             "a phone key is deleted on the phone, after a `set-root` away from it: in the owner app, Delete on that enrollment \
              (it asks twice, then for the biometric check). Look at `owner status` first: a key that is still the root key \
              takes the account with it"
@@ -1108,7 +1150,7 @@ fn yubikey_key(slot: &str, serial: Option<u32>, op: KeyOp) -> Result<()> {
              policies for the life of the key:\n  ykman piv keys generate -a ECCP256 --pin-policy ALWAYS \
              --touch-policy ALWAYS {slot} <pubkey.pem>\n(docs/YUBIKEY.md)"
         ),
-        KeyOp::Evict => bail!("a PIV slot cannot be emptied, only overwritten: generate a new key into it with ykman"),
+        KeyOp::Evict { .. } => bail!("a PIV slot cannot be emptied, only overwritten: generate a new key into it with ykman"),
         KeyOp::Show => {
             let s = agent::open_yubikey(serial, slot, Role::Owner, false)?;
             print_key(yubikey_name(&s), &s.public_key()?)
@@ -1165,9 +1207,12 @@ fn tropic01_key(port: &str, slot: u16, op: KeyOp) -> Result<()> {
         KeyOp::Create { .. } => print_key(name, &Tropic01Signer::create(port, slot)?.public_key()?),
         KeyOp::Show => print_key(name, &Tropic01Signer::open(port, slot)?.public_key()?),
         KeyOp::Check { .. } => check_signer(name, &Tropic01Signer::open(port, slot)?),
-        KeyOp::Evict => {
-            Tropic01Signer::open(port, slot)?.erase()?;
-            println!("erased {name}");
+        KeyOp::Evict { yes } => {
+            let signer = Tropic01Signer::open(port, slot)?;
+            if may_evict(&name, signer.public_key().map_err(Into::into), yes)? {
+                signer.erase()?;
+                println!("erased {name}");
+            }
             Ok(())
         }
     }
@@ -1185,9 +1230,12 @@ fn cng_key(name: &str, op: KeyOp) -> Result<()> {
         KeyOp::Create { .. } => print_key(name.into(), &CngSigner::create(name)?.public_key()?),
         KeyOp::Show => print_key(name.into(), &CngSigner::open(name)?.public_key()?),
         KeyOp::Check { .. } => check_signer(name.into(), &CngSigner::open(name)?),
-        KeyOp::Evict => {
-            CngSigner::open(name)?.delete()?;
-            println!("deleted {name}");
+        KeyOp::Evict { yes } => {
+            let signer = CngSigner::open(name)?;
+            if may_evict(name, signer.public_key().map_err(Into::into), yes)? {
+                signer.delete()?;
+                println!("deleted {name}");
+            }
             Ok(())
         }
     }
@@ -1239,9 +1287,13 @@ fn tpm_key(handle: u32, op: KeyOp) -> Result<()> {
             (None, true) => check_signer(name, &TpmSigner::open_persistent(handle)?),
             (Some(_), false) => bail!("--auth-file and --pcrs do not combine"),
         },
-        KeyOp::Evict => {
-            TpmSigner::evict(handle)?;
-            println!("evicted {name}");
+        KeyOp::Evict { yes } => {
+            // a handle is typed by hand: show which key is there before it is gone for good (#178)
+            let key = TpmSigner::open_persistent(handle).and_then(|s| s.public_key()).map_err(Into::into);
+            if may_evict(&name, key, yes)? {
+                TpmSigner::evict(handle)?;
+                println!("evicted {name}");
+            }
             Ok(())
         }
     }
@@ -1269,7 +1321,7 @@ fn keyfile_key(path: &std::path::Path, op: KeyOp) -> Result<()> {
             let passphrase = keyfile::prompt(false)?;
             check_signer(name, &keyfile::open(path, passphrase.as_bytes())?)
         }
-        KeyOp::Evict => bail!("a key file is not stored in a device: delete {name} yourself if you mean to"),
+        KeyOp::Evict { .. } => bail!("a key file is not stored in a device: delete {name} yourself if you mean to"),
     }
 }
 
@@ -1280,9 +1332,12 @@ fn enclave_key(label: &str, op: KeyOp) -> Result<()> {
         KeyOp::Create { .. } => print_key(label.into(), &SecureEnclaveSigner::create(label)?.public_key()?),
         KeyOp::Show => print_key(label.into(), &SecureEnclaveSigner::open(label)?.public_key()?),
         KeyOp::Check { .. } => check_signer(label.into(), &SecureEnclaveSigner::open(label)?),
-        KeyOp::Evict => {
-            SecureEnclaveSigner::open(label)?.delete()?;
-            println!("deleted {label}");
+        KeyOp::Evict { yes } => {
+            let signer = SecureEnclaveSigner::open(label)?;
+            if may_evict(label, signer.public_key().map_err(Into::into), yes)? {
+                signer.delete()?;
+                println!("deleted {label}");
+            }
             Ok(())
         }
     }
@@ -1303,8 +1358,24 @@ async fn session(args: &AgentArgs) -> Result<Session> {
 /// `Safe.execTransaction(...)` selector.
 const SAFE_EXEC_TRANSACTION: [u8; 4] = [0x6a, 0x76, 0x12, 0x02];
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// The stack the CLI runs on. An unoptimized build needs more than 1 MiB for
+/// the command dispatch below, and 1 MiB is all a Windows process's main
+/// thread has: there a debug build overflowed its stack on every command,
+/// `key show` included. The work therefore runs on a thread whose stack is
+/// stated here, the same on every platform.
+const STACK_BYTES: usize = 16_777_216;
+
+fn main() -> Result<()> {
+    let work = std::thread::Builder::new().stack_size(STACK_BYTES).spawn(|| {
+        tokio::runtime::Builder::new_multi_thread().enable_all().build().context("starting the runtime")?.block_on(run())
+    })?;
+    match work.join() {
+        Ok(result) => result,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+async fn run() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Vector { message, backend, parent, label, slot } => {
             let signer = open_backend(backend, parent, label, slot)?;
@@ -1425,7 +1496,15 @@ async fn main() -> Result<()> {
                 let inc = s.replace_recovery(&key, sponsored).await?;
                 println!("recovery key replaced: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
             }
-            OwnerCmd::RemoveRecovery { agent, leave_no_recovery, sponsored } => {
+            OwnerCmd::RemoveRecovery { agent, leave_no_recovery, earlier: Some(earlier), sponsored } => {
+                let s = session(&agent).await?;
+                let inc = s.remove_earlier_recovery(earlier, leave_no_recovery, sponsored).await?;
+                println!(
+                    "recovery key removed from the earlier validator {earlier}: tx {} (block {}, {} gas)",
+                    inc.tx, inc.block, inc.gas_used
+                );
+            }
+            OwnerCmd::RemoveRecovery { agent, leave_no_recovery, earlier: None, sponsored } => {
                 if !leave_no_recovery {
                     bail!(
                         "this leaves the account without a recovery key: losing the owner key then loses the account. \

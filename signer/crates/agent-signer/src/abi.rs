@@ -142,6 +142,14 @@ sol! {
         event OrderRegistered(address indexed account, address indexed decoder, bytes order);
     }
 
+    /// AgentPolicy's limits per id of an ERC-6909 contract (issue #186): the
+    /// key an id's limit is read under through `tokenLimit`. An AgentPolicy
+    /// without them reverts.
+    #[sol(rpc)]
+    interface IAgentPolicyIds {
+        function idAsset(address token, uint256 id) external pure returns (address);
+    }
+
     #[sol(rpc)]
     interface IErc20Allowance {
         function allowance(address owner, address spender) external view returns (uint256);

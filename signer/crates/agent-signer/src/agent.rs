@@ -43,12 +43,43 @@ pub struct Deployments {
     /// The P256Validator instance that holds a cold recovery key.
     #[serde(default)]
     pub p256_recovery_validator: Option<Address>,
-    /// Earlier instances, still root on some accounts: the CLI reads their
-    /// keys for the pre-signature checks but installs nothing new on them.
-    #[serde(default)]
-    pub p256_validator_v1: Option<Address>,
-    #[serde(default)]
-    pub p256_recovery_validator_v1: Option<Address>,
+    /// The keys not named above: the compiler settings and the earlier
+    /// instances a redeploy keeps as `<name>V<n>` (`p256ValidatorV2`, …),
+    /// still in use on accounts until the owner moves them. Read through
+    /// [`Deployments::superseded`].
+    #[serde(flatten)]
+    pub other: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+impl Deployments {
+    /// Every earlier instance of `name` the file keeps (`<name>V<n>`): the
+    /// CLI reads their keys for the pre-signature checks and refuses them as
+    /// targets, but installs nothing new on them.
+    pub fn superseded(&self, name: &str) -> Vec<Address> {
+        self.other
+            .iter()
+            .filter(|(key, _)| version_of(key).is_some_and(|(base, _)| base == name))
+            .filter_map(|(_, v)| v.as_str()?.parse().ok())
+            .collect()
+    }
+
+    /// A versioned key whose value is not an address would drop an earlier
+    /// instance from the checks without a word: refused when the file is read.
+    pub(crate) fn check_superseded(&self) -> Result<()> {
+        for (key, value) in &self.other {
+            if version_of(key).is_some() && value.as_str().and_then(|s| s.parse::<Address>().ok()).is_none() {
+                anyhow::bail!("deployments: {key} is not an address");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `<name>V<n>` as the deploy script writes a superseded key: a name, `V`,
+/// and a number without a leading zero (`Deploy.s.sol`, `versionOf`).
+fn version_of(key: &str) -> Option<(&str, &str)> {
+    let (base, n) = key.rsplit_once('V')?;
+    (!base.is_empty() && !n.is_empty() && !n.starts_with('0') && n.bytes().all(|b| b.is_ascii_digit())).then_some((base, n))
 }
 
 /// A TPM key: `"0x81010010"`; `{"handle": "0x81010011", "pcrs": [0, 2, 4, 7]}`
@@ -188,6 +219,27 @@ pub struct PolicyConfig {
     /// Where the agent may place orders (issue #80), and on what terms.
     #[serde(default)]
     pub venues: Vec<VenueEntry>,
+    /// Limits per token id of an ERC-6909 contract (issue #186), for its
+    /// `transfer`, `transferFrom` and `approve`; an allow-listed one of the
+    /// three needs a limit on its target, and that target may list nothing
+    /// else. Needs an `AgentPolicy` that knows them.
+    #[serde(default)]
+    pub token_ids: Vec<TokenIdEntry>,
+}
+
+/// A limit for one id of an ERC-6909 contract. An id has no payee list and
+/// no x402: the agent picks who receives it.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TokenIdEntry {
+    /// The ERC-6909 contract.
+    pub token: Address,
+    /// The token id: a decimal string, or hex with `0x`.
+    pub id: String,
+    /// The id's units, decimal string
+    pub max_per_op: String,
+    /// The id's units, decimal string
+    pub budget: String,
 }
 
 /// A trading venue of the mandate: its decoder contract and the terms the
@@ -320,21 +372,71 @@ pub struct AgentConfig {
     /// `{"keyfile": "/media/…/recovery.json"}` on a USB drive.
     #[serde(default)]
     pub recovery: Option<KeySpec>,
+    /// Widens the one bound on a bundler's `preVerificationGas` by this whole
+    /// factor, for a chain whose bundlers fold the L1 data fee into that
+    /// figure, for the agent's operations only. Absent is 1; see
+    /// [`AgentConfig::pre_verification_factor`].
+    #[serde(default)]
+    pub bundler_pre_verification_factor: Option<u64>,
     pub policy: PolicyConfig,
 }
+
+/// The largest `bundlerPreVerificationFactor` the CLI takes. With it a
+/// bundler may be paid up to this many times the ordinary ceiling for an
+/// operation's bytes, from the mandate's budget.
+pub const MAX_PRE_VERIFICATION_FACTOR: u64 = 64;
 
 impl AgentConfig {
     pub fn load(path: &Path) -> Result<(Self, PathBuf)> {
         let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
         let cfg: Self = serde_json::from_slice(&bytes).context("parsing agent config")?;
+        cfg.check_listed_once()?;
+        cfg.pre_verification_factor()?;
         let base = path.parent().map(Path::to_path_buf).unwrap_or_default();
         Ok((cfg, base))
+    }
+
+    /// A token or a venue listed twice is refused here. The phone's review
+    /// refuses such a mandate and the policy reverts on it, so nothing wrong
+    /// could be installed; without this the CLI read the first entry, sent
+    /// both, and the mistake showed only at the install (#178).
+    pub fn check_listed_once(&self) -> Result<()> {
+        let mut tokens = std::collections::BTreeSet::new();
+        for t in &self.policy.tokens {
+            if !tokens.insert(t.token) {
+                anyhow::bail!("policy.tokens lists {} twice: one entry per token", t.token);
+            }
+        }
+        let mut venues = std::collections::BTreeSet::new();
+        for v in &self.policy.venues {
+            if !venues.insert(v.decoder) {
+                anyhow::bail!("policy.venues lists the decoder {} twice: one entry per venue", v.decoder);
+            }
+        }
+        Ok(())
+    }
+
+    /// `bundlerPreVerificationFactor`, 1 when the file does not set it.
+    /// Refused outside 1..=[`MAX_PRE_VERIFICATION_FACTOR`]: zero would refuse
+    /// every operation, and there is no fraction, since a factor below 1
+    /// would only tighten a bound that honest bundlers already sit near.
+    pub fn pre_verification_factor(&self) -> Result<u128> {
+        match self.bundler_pre_verification_factor {
+            None => Ok(1),
+            Some(f) if (1..=MAX_PRE_VERIFICATION_FACTOR).contains(&f) => Ok(u128::from(f)),
+            Some(f) => anyhow::bail!(
+                "bundlerPreVerificationFactor is {f}: it is a whole number from 1 to {MAX_PRE_VERIFICATION_FACTOR} \
+                 (docs/AGENT_CONFIG.md)"
+            ),
+        }
     }
 
     pub fn load_deployments(&self, base: &Path) -> Result<Deployments> {
         let path = base.join(&self.deployments);
         let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-        serde_json::from_slice(&bytes).context("parsing deployments")
+        let dep: Deployments = serde_json::from_slice(&bytes).context("parsing deployments")?;
+        dep.check_superseded()?;
+        Ok(dep)
     }
 
     pub fn permission_id(&self) -> Result<PermissionId> {
@@ -376,7 +478,20 @@ impl AgentConfig {
                 Ok((v.decoder, code, alloy::primitives::keccak256(v.config()?)))
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(owner_core::kernel::Trading { period: self.policy.period, venues })
+        Ok(owner_core::kernel::Trading { period: self.policy.period, venues, ids: self.token_ids()? })
+    }
+
+    /// The limits per token id as the policy takes them: `(contract, id,
+    /// maxPerOp, budget)`.
+    pub fn token_ids(&self) -> Result<Vec<(Address, U256, u128, u128)>> {
+        self.policy
+            .token_ids
+            .iter()
+            .map(|t| -> Result<_> {
+                let id: U256 = t.id.parse().with_context(|| format!("tokenIds.id: {}", t.id))?;
+                Ok((t.token, id, t.max_per_op.parse().context("tokenIds.maxPerOp")?, t.budget.parse().context("tokenIds.budget")?))
+            })
+            .collect()
     }
 
     /// The venues' configs, for the phone: the mandate carries their hashes.
@@ -468,6 +583,62 @@ impl AgentConfig {
         // limits and payee list are checked on. Anything else on that token
         // would pass neither, and AgentPolicy refuses the mandate at install.
         const METERED: [&str; 4] = ["a9059cbb", "095ea7b3", "39509351", "23b872dd"];
+        // ERC-777's authorizeOperator: AgentPolicy refuses a mandate that lists it
+        if let Some(a) = self.policy.allow.iter().find(|a| a.selector.trim_start_matches("0x").eq_ignore_ascii_case("959b8c3f")) {
+            anyhow::bail!(
+                "allow: {} {} is refused: authorizeOperator (ERC-777) makes an address the operator of all the account's tokens there, \
+                 and nothing makes the agent withdraw it; AgentPolicy refuses the mandate at install. If the grant is needed, it is the owner's to make",
+                a.target,
+                a.selector
+            );
+        }
+        // and the mirror: one of the four on a target with no limit here is
+        // refused at every operation, and AgentPolicy refuses it at install (#175)
+        if let Some(a) = self.policy.allow.iter().find(|a| {
+            METERED.contains(&a.selector.trim_start_matches("0x").to_lowercase().as_str())
+                && !self.policy.tokens.iter().any(|t| t.token == a.target)
+        }) {
+            anyhow::bail!(
+                "allow: {} {} is refused: transfer, transferFrom, approve and increaseAllowance are checked against a token's limits, and {} has none in `tokens`; add its limits, or remove the entry",
+                a.target,
+                a.selector,
+                a.target
+            );
+        }
+        // The same for an ERC-6909 contract with limits per id (#186), and its
+        // transfer, transferFrom and approve
+        const ID_METERED: [&str; 3] = ["095bcdb6", "fe99049a", "426a8493"];
+        let ids = self.token_ids()?;
+        for (i, id) in ids.iter().enumerate() {
+            if id.0.is_zero() || ids.iter().take(i).any(|other| (other.0, other.1) == (id.0, id.1)) {
+                anyhow::bail!("tokenIds: {} id {} is listed twice, or its contract is the zero address", id.0, id.1);
+            }
+            if self.policy.tokens.iter().any(|t| t.token == id.0) {
+                anyhow::bail!("tokenIds: {} also has limits in `tokens`; a contract has a token limit or limits per id, not both", id.0);
+            }
+        }
+        for a in self.policy.allow.iter() {
+            let has_ids = ids.iter().any(|id| id.0 == a.target);
+            let metered = ID_METERED.contains(&a.selector.trim_start_matches("0x").to_lowercase().as_str());
+            if has_ids && !metered {
+                anyhow::bail!(
+                    "allow: {} {} is refused: {} has limits per id in `tokenIds`, and such a contract is callable only through ERC-6909's transfer, transferFrom and approve — \
+                     anything else (setOperator among them) would move its tokens past the limits; AgentPolicy refuses the mandate at install",
+                    a.target,
+                    a.selector,
+                    a.target
+                );
+            }
+            if !has_ids && metered {
+                anyhow::bail!(
+                    "allow: {} {} is refused: ERC-6909's transfer, transferFrom and approve are checked against a limit per token id, and {} has none in `tokenIds`; \
+                     add its limits, or remove the entry",
+                    a.target,
+                    a.selector,
+                    a.target
+                );
+            }
+        }
         for t in self.policy.tokens.iter() {
             if let Some(a) = self.policy.allow.iter().find(|a| {
                 a.target == t.token && !METERED.contains(&a.selector.trim_start_matches("0x").to_lowercase().as_str())
@@ -727,6 +898,34 @@ mod payee_tests {
     }
 
     #[test]
+    fn a_token_or_a_venue_listed_twice_is_refused_at_load() {
+        let text = include_str!("../../../agent.x402.base-sepolia.json");
+        let v: serde_json::Value = serde_json::from_str(text).unwrap();
+        serde_json::from_value::<AgentConfig>(v.clone()).unwrap().check_listed_once().unwrap();
+
+        let mut twice = v.clone();
+        let token = twice["policy"]["tokens"][0].clone();
+        twice["policy"]["tokens"].as_array_mut().unwrap().push(token);
+        let refused = serde_json::from_value::<AgentConfig>(twice).unwrap().check_listed_once().unwrap_err().to_string();
+        assert!(refused.contains("policy.tokens lists") && refused.contains("twice"), "{refused}");
+
+        let venue = serde_json::json!({
+            "kind": "cowswap", "decoder": "0x00000000000000000000000000000000000000c0",
+            "appData": "0x0000000000000000000000000000000000000000000000000000000000000000", "maxLife": 600, "pairs": []
+        });
+        let mut twice = v;
+        twice["policy"]["period"] = serde_json::json!(86400);
+        twice["policy"]["venues"] = serde_json::json!([venue.clone(), venue]);
+        match serde_json::from_value::<AgentConfig>(twice) {
+            Ok(cfg) => {
+                let refused = cfg.check_listed_once().unwrap_err().to_string();
+                assert!(refused.contains("policy.venues lists the decoder") && refused.contains("twice"), "{refused}");
+            }
+            Err(e) => panic!("the venue of this test does not parse: {e}"),
+        }
+    }
+
+    #[test]
     fn a_capped_token_takes_only_the_four_functions() {
         for listed in [true, false] {
             config_with(listed, None).check_payees_stated().unwrap();
@@ -737,6 +936,79 @@ mod payee_tests {
                 assert!(refused.contains("callable only through"), "{refused}");
             }
         }
+    }
+
+    /// ERC-777's `authorizeOperator` in the allow-list is refused, as the
+    /// policy refuses it at install.
+    #[test]
+    fn an_erc777_operator_grant_is_not_listed() {
+        for selector in ["0x959b8c3f", "0x959B8C3F"] {
+            let mut v: serde_json::Value = serde_json::from_str(include_str!("../../../agent.x402.base-sepolia.json")).unwrap();
+            v["policy"]["allow"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!({"target": "0x00000000000000000000000000000000000000e7", "selector": selector}));
+            let cfg: AgentConfig = serde_json::from_value(v).unwrap();
+            let refused = cfg.check_payees_stated().unwrap_err().to_string();
+            assert!(refused.contains("authorizeOperator (ERC-777)"), "{selector}: {refused}");
+        }
+    }
+
+    /// #186: limits per id of an ERC-6909 contract. The config gives them to
+    /// the mandate, and is refused where the policy would refuse the install.
+    #[test]
+    fn limits_per_token_id_follow_the_policys_rules() {
+        let pool = "0x0000000000000000000000000000000000006909";
+        let with = |allow: &[&str], ids: serde_json::Value| -> AgentConfig {
+            let mut v: serde_json::Value = serde_json::from_str(include_str!("../../../agent.x402.base-sepolia.json")).unwrap();
+            for selector in allow {
+                v["policy"]["allow"].as_array_mut().unwrap().push(serde_json::json!({"target": pool, "selector": selector}));
+            }
+            v["policy"]["tokenIds"] = ids;
+            serde_json::from_value(v).unwrap()
+        };
+        let seven = serde_json::json!([{"token": pool, "id": "7", "maxPerOp": "5", "budget": "8"}, {"token": pool, "id": "0x10", "maxPerOp": "1", "budget": "2"}]);
+        let cfg = with(&["0x095bcdb6", "0xfe99049a", "0x426a8493"], seven.clone());
+        cfg.check_payees_stated().unwrap();
+        let pool_address: Address = pool.parse().unwrap();
+        assert_eq!(cfg.token_ids().unwrap(), vec![(pool_address, U256::from(7), 5, 8), (pool_address, U256::from(16), 1, 2)]);
+        assert_eq!(cfg.trading(&Default::default()).unwrap().ids.len(), 2);
+        let refused = |cfg: AgentConfig, why: &str| {
+            let said = cfg.check_payees_stated().unwrap_err().to_string();
+            assert!(said.contains(why), "{said}");
+        };
+        // anything else on the contract, an operator among them
+        refused(with(&["0x095bcdb6", "0x558a7297"], seven.clone()), "callable only through ERC-6909's transfer, transferFrom and approve");
+        // one of the three without a limit per id
+        for selector in ["0x095bcdb6", "0xFE99049A", "0x426a8493"] {
+            refused(with(&[selector], serde_json::json!([])), "has none in `tokenIds`");
+        }
+        // the same id twice, in two spellings
+        let twice = serde_json::json!([{"token": pool, "id": "16", "maxPerOp": "5", "budget": "8"}, {"token": pool, "id": "0x10", "maxPerOp": "1", "budget": "2"}]);
+        refused(with(&["0x095bcdb6"], twice), "listed twice");
+        // a contract with a token limit too
+        let usdc = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+        refused(with(&[], serde_json::json!([{"token": usdc, "id": "7", "maxPerOp": "5", "budget": "8"}])), "not both");
+        // an id that is not a number
+        assert!(with(&[], serde_json::json!([{"token": pool, "id": "seven", "maxPerOp": "5", "budget": "8"}])).check_payees_stated().is_err());
+    }
+
+    /// #175: one of the four metered functions on a target without a limit
+    /// would be refused at every operation; the config is refused.
+    #[test]
+    fn a_metered_function_needs_a_limit_for_its_target() {
+        for selector in ["0xa9059cbb", "0x095ea7b3", "0x39509351", "0x23b872dd"] {
+            let mut v: serde_json::Value = serde_json::from_str(include_str!("../../../agent.x402.base-sepolia.json")).unwrap();
+            v["policy"]["allow"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!({"target": "0x00000000000000000000000000000000000000e1", "selector": selector}));
+            let cfg: AgentConfig = serde_json::from_value(v).unwrap();
+            let refused = cfg.check_payees_stated().unwrap_err().to_string();
+            assert!(refused.contains("has none in `tokens`"), "{selector}: {refused}");
+        }
+        // the control: the same entry on the config's limited token
+        config_with(false, Some("0x095ea7b3")).check_payees_stated().unwrap();
     }
 }
 

@@ -82,7 +82,9 @@ compromise. What it does guarantee:
    key on removable media (a USB drive), under all of these conditions:
    - encrypted with a memory-hard KDF (scrypt N ≥ 2^18, or argon2id with
      ≥ 256 MiB) and an AEAD cipher (`agent-signer` implements scrypt with
-     AES-256-GCM; argon2id is not implemented);
+     AES-256-GCM; argon2id is not implemented). A file whose KDF asks
+     for more than N = 2^22, r = 32 or p = 8 is refused as damaged, before
+     any memory is asked for;
    - the passphrase is typed when the key is used and never stored;
    - it is decrypted only on a machine that is not the agent's host
      (preferably an offline one), held in locked memory and zeroized after
@@ -167,8 +169,9 @@ If any item fails, the owner key is as reachable as the agent key.
   feature (`insecure-software-keys`) that release builds never enable.
   Without it a software key is refused in every role; with it any role may
   use one, on any chain: the code does not check the chain, and the
-  integration tests use a local one. The `vector` command's throwaway
-  software key is in every build and is no role's key. Keep the
+  integration tests use a local one. The software backend is linked only by
+  that feature: a regular build contains no code that holds a key in the
+  clear, and `vector --backend software` is refused there. Keep the
   flag on the command line only: never in a manifest dependency, a default,
   a cargo alias or config, or a release/deploy pipeline (Cargo unifies
   features across a build, so any of those would leak it into a shipped

@@ -175,7 +175,7 @@ added [V].
 | Reboot, OS/kernel update | alive | persistent handle |
 | `TPM2_Clear` (tpm2_clear, "Clear TPM" in Windows Security / tpm.msc / UEFI, PPI request from the OS) | **destroyed** | new SPS, persistent objects removed [V] |
 | SPS change — only via Clear | **destroyed** | "regenerating the SRK" with the same template without Clear yields the same SRK [I per the specification: primary keys are deterministic from the seed and the template] |
-| Accidental `key evict` / `tpm2_evictcontrol` | **destroyed** | we do not store the blob, nothing to restore from [V: `KeyCmd::Evict` exists in the CLI, main.rs:481] |
+| Accidental `key evict` / `tpm2_evictcontrol` | **destroyed** | we do not store the blob, nothing to restore from [V: `KeyCmd::Evict` in the CLI, `signer/crates/agent-signer/src/main.rs`]. The CLI shows the key at the handle and removes it only with `--yes`, and it removes only an unrestricted ECC signing key: a handle it cannot read, a storage parent or another tool's object is refused. `tpm2_evictcontrol` asks nothing |
 | BIOS update on a machine with **fTPM** | vendor-dependent; **often destroyed** | §1.2 |
 | Update of the **TPM's own firmware** (dTPM or fTPM) | often destroyed | Intel NUC: "TPM firmware update clears all data in the TPM" [V https://www.intel.com/content/dam/support/us/en/documents/mini-pcs/NUC5i3MY-TPM-Firmware-Update.pdf]; Infineon updates (ROCA) required a clear [V https://www.getac.com/uploads/2023/01/infineon_tpm_security_update_20230116.pdf, I details] |
 | CPU replacement (AMD fTPM) | **destroyed** when answering "Y" | §1.2 |
@@ -867,6 +867,10 @@ list as written at the time of the study:
   (2026-11-24, issue #114): the owner key replaces the installed recovery key
   in one operation, or removes it. Before them the first recovery key an
   account got was the one it kept.
+- `owner remove-recovery --earlier <address>` (2026-11-25): after a redeploy
+  the key comes off the earlier recovery validator, once `owner
+  add-recovery` has put it on the current one. Until then the earlier
+  validator can still take root.
 - `owner recover --new-owner <spec>`:
   - step 1: recovery-op `changeRootValidator(recoveryVId)`; with a timelock —
     first `recover initiate`, then `recover execute` after `D`;

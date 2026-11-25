@@ -256,6 +256,18 @@ cargo test -p agent-signer --features insecure-software-keys --test anvil_cli th
 MANDATE_DIFFERENTIAL_CASES=20000 cargo test ...    # more mandates than the 400 of a normal run
 ```
 
+**Which policy it reads against.** The `AgentPolicy` of the local chain is
+the one built from this repository's sources, held as bytecode in
+`tests/fixtures/chain-code.json`. `scripts/test-fixtures.py` compares the
+fixtures with the build and CI fails a pull request where they differ, so a
+change to `onInstall` cannot leave this test on an earlier policy;
+`scripts/test-fixtures.py --write` brings them up. Until 2026-11-25 the
+fixture was the policy deployed to Base Sepolia on 2026-11-21, and the test
+did not see the changes made to `onInstall` after it (issue #170). [V the
+first run against master's policy, 2026-11-25: the test passes.] It says
+nothing of an instance on a chain: comparing a deployed instance's
+bytecode with the build's is a step of a redeploy, not of this test.
+
 Mandates come from a seed: mostly well-formed and near what an install
 must refuse, a quarter of them damaged (a bit flipped, the end cut off, a
 word added, a word's top bit set). Each one goes two ways. The phone
@@ -271,20 +283,30 @@ same bytes; Kernel's `installValidations` is not run here.
 - A mandate the review lets the owner sign is one the policy installs.
 - For such a mandate the policy's views give back what the review read,
   and within the probes nothing more. The probes are the generator's pools
-  (9 targets by 9 functions, 3 tokens, 3 payees) and every target,
-  function, token and payee the review read in that case. Compared: the
+  (11 targets by 12 functions, 3 tokens, 3 payees, 3 ERC-6909 contracts
+  by 4 ids) and every target, function, token, payee and id the review
+  read in that case. Compared: the
   window and the two native limits (`configs`); every probed call allowed
   exactly when the review lists it (`isAllowed`); for each token whether
   it is limited, its two limits, its x402 domain and whether it has a
   payee list (`tokenLimit`); every probed payee reachable exactly when
-  the review says so (`payeeAllowed`).
+  the review says so (`payeeAllowed`); the budget period (`period`); for
+  each probed id whether it is limited and its two limits (`tokenLimit`
+  under `idAsset`). The generator reaches all four forms of the install
+  data: a normal run of 400 has 17 mandates shown and installed in the
+  ten-word form and 12 in the eleven-word one [V the run of 2026-11-25];
+  a venue it does not reach, since the local chain has none. The policy
+  reads the eleven-word form's last word and its array by hand, so one
+  such mandate in six is damaged there: the word replaced by another
+  array's offset, or the count of limits one more or one less.
 - The review refuses a mandate the policy installs for one reason only:
   bytes the policy decodes although they are not the one encoding of
   their values. Any other reason fails the test, so a review that refuses
   too much is caught as well.
 - The generator reaches all three outcomes, or the test fails: at least a
-  fifth shown and installed, a fifth refused by both, one in a hundred
-  installed and not shown.
+  sixth shown and installed (a fifth until the longer forms brought more
+  ways to be refused), a fifth refused by both, one in a hundred installed
+  and not shown.
 
 **That it bites.** Sixteen rules were broken in the review's reader one at
 a time: fourteen refusals (the account or its EntryPoint as a target; the

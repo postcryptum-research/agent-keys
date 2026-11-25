@@ -68,6 +68,9 @@ const MAX_UNAUTHENTICATED: u32 = 200;
 /// A sign response is well under 4 KiB (§3.3); an enrollment answer carries
 /// an attestation chain of a few certificates, so the cap is 64 KiB.
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
+/// How long the session's loop waits for a new request before it looks for
+/// an answer whose body has arrived.
+const POLL: Duration = Duration::from_millis(50);
 
 /// When a request made at `now` stops being good: `--phone-timeout` later.
 pub fn expiry(now: u64) -> Result<u64, SignerError> {
@@ -324,11 +327,11 @@ pub fn laptop_pins(dep: &crate::agent::Deployments) -> std::collections::BTreeMa
         (Some(dep.demo_counter), "counter (config)"),
         (dep.whitelist_paymaster, "paymaster (config)"),
         (dep.p256_recovery_validator, "recovery validator (config)"),
-        (dep.p256_validator_v1, "old owner validator (config)"),
-        (dep.p256_recovery_validator_v1, "old recovery validator (config)"),
         (dep.safe_nonce_assert, "safe nonce guard (config)"),
     ]
     .into_iter()
+    .chain(dep.superseded("p256Validator").into_iter().map(|a| (Some(a), "old owner validator (config)")))
+    .chain(dep.superseded("p256RecoveryValidator").into_iter().map(|a| (Some(a), "old recovery validator (config)")))
     .filter_map(|(a, name)| a.map(|a| (a, name.to_string())))
     .filter(|(a, _)| !known.contains_key(a))
     .collect()
@@ -401,7 +404,10 @@ impl From<RequestError> for Rejection {
 /// whatever it says — a forged refusal included. An authenticated answer
 /// that `verify` rejects gets a 400 and the session waits on; the phone's
 /// own refusal ends it. Wrong tokens and rejected answers count against one
-/// cap, unauthenticated answers against a larger one of their own. An
+/// cap, unauthenticated answers against a larger one of their own. A body
+/// is read apart from the loop, so an answer opened and never sent holds
+/// its own connection and not the session; while it is being read it
+/// counts against the cap of the unauthenticated ones. An
 /// accepted answer is answered with `confirmation_mac`, which only the
 /// laptop can produce: the phone takes nothing else as "the laptop has it".
 fn lan_session<T>(
@@ -453,78 +459,98 @@ fn lan_session<T>(
         Ok(())
     };
     let remaining = || opts.timeout.checked_sub(started.elapsed());
+    // Bodies are read off this loop, each on its own thread, and come back
+    // here when whole: a client that opens an answer and sends nothing holds
+    // one thread and nothing else, and the phone is served meanwhile (#178).
+    let (read, bodies) = std::sync::mpsc::channel::<Answer>();
+    let mut reading = 0u32;
     loop {
         let Some(left) = remaining() else {
             return Err(SessionError::Backend(format!("no answer from the phone within {}s", opts.timeout.as_secs())));
         };
-        let Some(req) = server.recv_timeout(left).map_err(|e| SessionError::Backend(format!("session: {e}")))? else {
-            continue;
+        let (req, mac, body) = match bodies.try_recv() {
+            Ok(answer) => {
+                reading = reading.saturating_sub(1);
+                answer
+            }
+            Err(_) => {
+                let Some(req) = server.recv_timeout(left.min(POLL)).map_err(|e| SessionError::Backend(format!("session: {e}")))?
+                else {
+                    continue;
+                };
+                if !eq_ct(req.url().as_bytes(), path.as_bytes()) {
+                    let _ = req.respond(tiny_http::Response::empty(404));
+                    strike(&mut strikes)?;
+                    continue;
+                }
+                match req.method() {
+                    tiny_http::Method::Get => {
+                        let r = tiny_http::Response::from_data(request.to_vec())
+                            .with_header(tiny_http::Header::from_bytes("Content-Type", "application/json").expect("header"));
+                        let _ = req.respond(r);
+                    }
+                    tiny_http::Method::Post => {
+                        // an answer still being read has not shown this session's secret: it is
+                        // held to the cap of the answers that never do
+                        reading = reading.saturating_add(1);
+                        if reading.saturating_add(unauthenticated) >= MAX_UNAUTHENTICATED {
+                            return Err(SessionError::Backend(
+                                "too many answers without this session's secret; session closed".into(),
+                            ));
+                        }
+                        let mac =
+                            req.headers().iter().find(|h| h.field.equiv(MAC_HEADER)).map(|h| h.value.as_str().to_string());
+                        read_body(req, mac, read.clone());
+                    }
+                    _ => {
+                        let _ = req.respond(tiny_http::Response::empty(405));
+                    }
+                }
+                continue;
+            }
         };
-        if !eq_ct(req.url().as_bytes(), path.as_bytes()) {
-            let _ = req.respond(tiny_http::Response::empty(404));
-            strike(&mut strikes)?;
+        let body = match body {
+            Ok(b) => b,
+            Err(why) => {
+                let _ = req.respond(tiny_http::Response::from_string(why).with_status_code(400));
+                strike(&mut strikes)?;
+                continue;
+            }
+        };
+        // not from the device that scanned the QR: whatever it says, it is not the phone's answer
+        if !mac.is_some_and(|m| verify_answer_mac(&secret, &body, &m)) {
+            eprintln!("an answer without this session's secret was ignored (not the phone that scanned the QR); still waiting for the phone");
+            let _ = req.respond(tiny_http::Response::from_string("no valid MAC for this session").with_status_code(401));
+            unauthenticated = unauthenticated.saturating_add(1);
+            if unauthenticated >= MAX_UNAUTHENTICATED {
+                return Err(SessionError::Backend("too many answers without this session's secret; session closed".into()));
+            }
             continue;
         }
-        match req.method() {
-            tiny_http::Method::Get => {
-                let r = tiny_http::Response::from_data(request.to_vec())
-                    .with_header(tiny_http::Header::from_bytes("Content-Type", "application/json").expect("header"));
-                let _ = req.respond(r);
-            }
-            tiny_http::Method::Post => {
-                let Some(left) = remaining() else { continue };
-                let mac = req.headers().iter().find(|h| h.field.equiv(MAC_HEADER)).map(|h| h.value.as_str().to_string());
-                let Some((req, body)) = read_body(req, left) else {
-                    eprintln!("a client opened an answer and stalled past the session's deadline; dropped");
-                    continue;
-                };
-                let body = match body {
-                    Ok(b) => b,
-                    Err(why) => {
-                        let _ = req.respond(tiny_http::Response::from_string(why).with_status_code(400));
-                        strike(&mut strikes)?;
-                        continue;
-                    }
-                };
-                // not from the device that scanned the QR: whatever it says, it is not the phone's answer
-                if !mac.is_some_and(|m| verify_answer_mac(&secret, &body, &m)) {
-                    eprintln!("an answer without this session's secret was ignored (not the phone that scanned the QR); still waiting for the phone");
-                    let _ = req.respond(tiny_http::Response::from_string("no valid MAC for this session").with_status_code(401));
-                    unauthenticated = unauthenticated.saturating_add(1);
-                    if unauthenticated >= MAX_UNAUTHENTICATED {
-                        return Err(SessionError::Backend("too many answers without this session's secret; session closed".into()));
-                    }
-                    continue;
+        match verify(&body) {
+            Ok(t) => {
+                // the phone keeps its key only on this: a bare 200 could come from anyone in the path
+                let confirmation = confirmation_mac(&secret, &body).map_err(|e| SessionError::Backend(e.to_string()))?;
+                // a write the system reports as failed is one the phone did not get; a write it
+                // reports as done may still not have arrived, which no side can see from here
+                if let Err(e) = req.respond(tiny_http::Response::from_string(confirmation)) {
+                    eprintln!("the answer was accepted, but the confirmation could not be written back to the phone ({e}): the phone will show it as not confirmed");
                 }
-                match verify(&body) {
-                    Ok(t) => {
-                        // the phone keeps its key only on this: a bare 200 could come from anyone in the path
-                        let confirmation = confirmation_mac(&secret, &body).map_err(|e| SessionError::Backend(e.to_string()))?;
-                        // a write the system reports as failed is one the phone did not get; a write it
-                        // reports as done may still not have arrived, which no side can see from here
-                        if let Err(e) = req.respond(tiny_http::Response::from_string(confirmation)) {
-                            eprintln!("the answer was accepted, but the confirmation could not be written back to the phone ({e}): the phone will show it as not confirmed");
-                        }
-                        drop(server); // the port closes; later requests get nothing
-                        return Ok(t);
-                    }
-                    Err(Rejection::Wait(e @ RequestError::Refused { .. })) => {
-                        let _ = req.respond(tiny_http::Response::from_string("ok"));
-                        return Err(SessionError::Refused(e));
-                    }
-                    Err(Rejection::Wait(e)) => {
-                        eprintln!("an answer was rejected ({e}); still waiting for the phone");
-                        let _ = req.respond(tiny_http::Response::from_string(e.to_string()).with_status_code(400));
-                        strike(&mut strikes)?;
-                    }
-                    Err(Rejection::End(why)) => {
-                        let _ = req.respond(tiny_http::Response::from_string(why.clone()).with_status_code(400));
-                        return Err(SessionError::Rejected(why));
-                    }
-                }
+                drop(server); // the port closes; later requests get nothing
+                return Ok(t);
             }
-            _ => {
-                let _ = req.respond(tiny_http::Response::empty(405));
+            Err(Rejection::Wait(e @ RequestError::Refused { .. })) => {
+                let _ = req.respond(tiny_http::Response::from_string("ok"));
+                return Err(SessionError::Refused(e));
+            }
+            Err(Rejection::Wait(e)) => {
+                eprintln!("an answer was rejected ({e}); still waiting for the phone");
+                let _ = req.respond(tiny_http::Response::from_string(e.to_string()).with_status_code(400));
+                strike(&mut strikes)?;
+            }
+            Err(Rejection::End(why)) => {
+                let _ = req.respond(tiny_http::Response::from_string(why.clone()).with_status_code(400));
+                return Err(SessionError::Rejected(why));
             }
         }
     }
@@ -534,12 +560,19 @@ fn no_network() -> SessionError {
     SessionError::Backend("no network interface for the LAN session (no default route); give one with --listen <ip:port>".into())
 }
 
-/// The POST body, at most `MAX_RESPONSE_BYTES`, within `deadline`. The read
-/// runs on its own thread: a client that opens the POST and stalls must not
-/// hold the session past its timeout. `None` on the deadline; the thread
-/// then ends with the connection, and the request is answered by nobody.
-fn read_body(mut req: tiny_http::Request, deadline: Duration) -> Option<(tiny_http::Request, Result<Vec<u8>, String>)> {
-    let (tx, rx) = std::sync::mpsc::channel();
+/// A POST whose body has been read: the request to answer, its MAC header,
+/// and the body or why it was not taken.
+type Answer = (tiny_http::Request, Option<String>, Result<Vec<u8>, String>);
+
+/// Reads a POST body, at most `MAX_RESPONSE_BYTES`, on a thread of its own,
+/// and hands it to the session's loop over `done` when it is whole. The loop
+/// never waits on a body: a client that opens the POST and stalls holds this
+/// thread until it closes the connection or the process ends, and nothing
+/// else. If the session ended meanwhile the body goes nowhere. The loop
+/// counts a read in progress against `MAX_UNAUTHENTICATED`, so there are
+/// never more than that many of these threads; each ends when its client
+/// closes the connection or the CLI exits.
+fn read_body(mut req: tiny_http::Request, mac: Option<String>, done: std::sync::mpsc::Sender<Answer>) {
     std::thread::spawn(move || {
         let mut buf = Vec::new();
         let result = req
@@ -554,9 +587,8 @@ fn read_body(mut req: tiny_http::Request, deadline: Duration) -> Option<(tiny_ht
                     Ok(buf)
                 }
             });
-        let _ = tx.send((req, result));
+        let _ = done.send((req, mac, result));
     });
-    rx.recv_timeout(deadline).ok()
 }
 
 /// The address of the interface that carries the default route — where a

@@ -118,9 +118,13 @@ It does **not** check who receives:
   `approve(B's contract, amount)` within the cap. From then on B pulls
   the tokens with `transferFrom` from its own address, with no agent key
   and no mandate involved. The amount is capped by the token budget.
-  But the allowance **survives a revoke**: B can still pull it after A has
-  revoked the bot. Resetting the allowance "after the trade" does not
-  help, because B chooses when that happens.
+  An allowance granted in one operation and left standing would **survive
+  a revoke**: B could still pull it after A has revoked the bot.
+  Resetting the allowance in a later operation would not help, because B
+  chooses when to pull. The policy therefore refuses an operation that
+  leaves an allowance of the agent's standing: it must be withdrawn
+  (`approve(spender, 0)`) in the same operation (item 9). The spender
+  itself is still unconstrained during that operation.
 
 What needs to be built:
 
@@ -215,17 +219,24 @@ orders (`orderRegister`), and for nothing else.
 Every extension must keep it that way: **the agent key can never produce a
 valid approval-style signature.**
 
-### 9. Bounded token approvals — [EXISTS for the amount; the spender is item 4]
+### 9. Bounded token approvals — [EXISTS for the amount and the lifetime; the spender is item 4]
 
-The token caps already limit the **amount** of every `approve`. That is
-not the same as approvals being safe. The **spender** is unconstrained
-today (item 4), and an allowance outlives a revoke.
+The token caps already limit the **amount** of every `approve`, and no
+allowance the agent grants outlives the operation: the policy refuses an
+operation that does not withdraw it (`approve(spender, 0)`) by its end.
+The pattern is approve exactly the trade's amount, trade, withdraw, in
+one batch. An operator grant of ERC-721 and ERC-1155
+(`setApprovalForAll`) is held to the same rule, and so are ERC-6909's
+`setOperator` and its allowance of one id (`approve(spender, id, amount)`);
+the amounts of an id's transfers and allowances are bounded by limits per
+id (`docs/CONTRACTS.md`, #186).
+ERC-777's `authorizeOperator` cannot be listed in a mandate at all. Allowances and grants the
+owner makes, such as a venue's spender's allowance, are not the agent's
+and are not counted.
 
 What remains:
 
-- spender allow-listing (item 4);
-- preferably, no standing allowances: approve exactly the trade's amount
-  to a vetted router within the same batch as the trade.
+- spender allow-listing (item 4).
 
 ### 10. Profit sharing for B (performance fee) — [IMPLEMENT once NAV is resolved (items 6–7)]
 
@@ -334,7 +345,7 @@ oracle reads at validation. These are requirements, not open questions:
 
 | # | Item | Status |
 |---|---|---|
-| 1 | Funds stay with A; the bot gets a key and a mandate | EXISTS (allowances outlive a revoke — item 4) |
+| 1 | Funds stay with A; the bot gets a key and a mandate | EXISTS (no allowance of the bot's outlives its operation — item 9) |
 | 2 | Bot key in hardware | EXISTS |
 | 3 | Mandate proposal and a review A understands | IMPLEMENT — idea clear; security-relevant |
 | 4a | Recipient / spender checks | IMPLEMENT — idea clear |
@@ -343,7 +354,7 @@ oracle reads at validation. These are requirements, not open questions:
 | 6 | Maximum drawdown via an execution hook | DISCUSS — idea unclear |
 | 7 | NAV / oracle as an attack surface | DISCUSS — idea unclear |
 | 8 | No approval-style signatures (permit, Permit2) | EXISTS — must stay an invariant |
-| 9 | Bounded approvals | EXISTS for amounts; spender → item 4 |
+| 9 | Bounded approvals | EXISTS for amounts and lifetime (withdrawn in the same operation); spender → item 4 |
 | 10 | Performance fee with a high-water mark | IMPLEMENT once NAV is resolved |
 | 11 | Strategy stays secret | EXISTS as a property |
 | 12 | Pinning the bot's code (attestation) | DISCUSS — idea unclear |

@@ -70,7 +70,7 @@
 | `operator/src/erc8004/validation.ts:145,185` | `validationRequest` / `validationResponse` |
 | `operator/src/solvernets/daemon-init.ts:223` | metadata publisher (IdentityRegistry) |
 | `operator/src/earning/bootstrap.ts:2114,2153` | self-bond: top-up Safe, деплой Safe (protocol-kit deployment tx) |
-| `operator/src/earning/bootstrap.ts:2219-2463` | self-bond: create/activate/registerAgents/deploy/approve/stake через `executeSafeTxBatch`/`executeSafeTxDirect` |
+| `operator/src/earning/bootstrap.ts:2219-2463` | self-bond: create/activate/registerAgents/deploy/approve/stake через `executeSafeTxBatch`/`executeSafeTxDirect`. Под мандатом батч должен кончаться `approve(spender, 0)`, даже если stake уже израсходовал allowance: `AgentPolicy` отклоняет операцию, после которой остаётся allowance агента (`docs/CONTRACTS.md`, no standing allowances) |
 | `operator/src/earning/bootstrap.ts:1749` | mech `MechMarketplace.create` через Safe (`executeSafeTxDirect`) |
 | `operator/src/earning/orphan-sweep.ts:175,251,284`, `withdraw/run-withdraw-plan.ts:150` | sweep/withdraw от агента |
 | `operator/src/earning/migrate-agent-id.ts:226`, `earning/steps/fleet-identity-register.ts:43` | миграции/регистрация identity |
