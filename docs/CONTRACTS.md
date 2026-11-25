@@ -82,7 +82,7 @@ what `P256RecoveryValidator` is.
 
 **Rules.** A signature is exactly 64 bytes; `s` is in the low half; the key
 is on P-256 with both coordinates below p, checked once at install; the
-install data is the key and nothing more, from 0.1.1 (#154): the Base
+install data is the key and nothing more, since #154: the Base
 Sepolia instances, older, refuse only shorter data and ignore bytes past
 the 64 [V source, `test_validatorInstallDataIsExactlyTheKey`].
 
@@ -170,7 +170,7 @@ are `keccak256(account ‖ keccak256(id ‖ slot))` (+1) and
   and `usedIds(account)`.
 
 **Rules.** As `P256Validator`'s: 64-byte signature, low `s`, a key on P-256
-checked at install, install data of exactly the id and the key from 0.1.1
+checked at install, install data of exactly the id and the key since #154
 (the Base Sepolia instances ignore bytes past the 96). Keys are scoped per
 (permission id, account) [V source,
 `test_signerInstallDataIsExactlyTheIdAndTheKey`].
@@ -300,7 +300,7 @@ and `spender()` when a mandate that trades at the venue is installed [V
 - `spender()`: who takes the sell token from the account; the owner's tools
   approve it (the allowance). Like the venue's contract and the decoder, a
   mandate may not name it as a target, since through it the allowance
-  would move (`AgentPolicy` 0.1.1, issue #149).
+  would move (issue #149).
 
 ## CowSwapDecoder
 

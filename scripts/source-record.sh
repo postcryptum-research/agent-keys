@@ -8,7 +8,9 @@
 # - No bytecode differs: comments and blank lines changed at most. Passes.
 # - A contract's bytecode differs and its VERSION differs from the base's (a
 #   contract that gains its first VERSION among them): passes, and names both.
-# - A contract's bytecode differs and its VERSION is the base's: fails.
+# - A contract's bytecode differs and its VERSION is the base's: fails once
+#   the repository has a release tag (v*). Before the first release every
+#   contract stays at 0.1.0 (rule 9): the difference is named, and passes.
 # - A contract's bytecode differs and it carries no VERSION: the rule from
 #   before versions holds it. Some deployments file must change its key
 #   (`agentPolicy` for AgentPolicy); a contract no deployments file records is
@@ -28,6 +30,8 @@ base="${1:-origin/master}"
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
 merge_base="$(git merge-base "$base" HEAD)"
+# versions are raised from the first release on (rule 9); before it they stay 0.1.0
+released="$(git tag -l 'v[0-9]*' | head -1)"
 
 grep -Eq '^bytecode_hash *= *"none"' contracts/foundry.toml \
   || { echo "contracts/foundry.toml does not set bytecode_hash = \"none\": with metadata in the bytecode a comment changes it, and this comparison cannot stand"; exit 1; }
@@ -103,6 +107,9 @@ while read -r id c r; do
     then_="$(version_of "$work/base" "$id")"
     if [ -n "$now" ] && [ "$now" != "$then_" ]; then
       echo "DIFFERS   $id (VERSION ${then_:-none} -> $now)"
+    elif [ -n "$now" ] && [ -z "$released" ]; then
+      echo "DIFFERS   $id (VERSION $now kept: no release tag yet, rule 9)"
+      kept=1
     elif [ -n "$now" ]; then
       echo "DIFFERS   $id and its VERSION is still $now"
       failed=1
@@ -130,4 +137,8 @@ if [ "$failed" = 1 ]; then
   echo "A change to a contract's bytecode raises its VERSION; a contract without one changes only with its deployments record (house rules 3 and 9)."
   exit 1
 fi
-echo "Every contract whose bytecode differs has a new VERSION, or its key changed in a deployments file."
+if [ "${kept:-0}" = 1 ]; then
+  echo "No release tag yet: every contract stays at 0.1.0, and the test networks are redeployed to carry a fix (rule 9)."
+else
+  echo "Every contract whose bytecode differs has a new VERSION, or its key changed in a deployments file."
+fi
