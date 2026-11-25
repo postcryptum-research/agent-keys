@@ -841,6 +841,15 @@ pub fn mandate_terms(init: &[u8], place: &MandatePlace, name: &dyn Fn(Address) -
         if *t == alloy_primitives::address!("000000000022D473030F116dDEE9F6B43aC78BA3") {
             return Err("this mandate lets the agent call Permit2, through which a token's allowance can be handed to any address, past its limits and payee list; refused".into());
         }
+        // ERC-777's authorizeOperator is withdrawn by another function, which
+        // AgentPolicy does not pair with it: it refuses the mandate at install,
+        // and an earlier AgentPolicy would let the grant stand
+        if sel.0 == SELECTOR_AUTHORIZE_OPERATOR {
+            return Err(format!(
+                "this mandate allows authorizeOperator (ERC-777) on {}: an operator over all the account's tokens there, which no AgentPolicy makes the agent withdraw; AgentPolicy refuses the mandate at install; refused",
+                name(*t)
+            ));
+        }
         // and the mirror: one of the four on a target the mandate sets no limit
         // for is refused at every operation, a mandate that cannot do what it
         // lists; AgentPolicy refuses it at install (#175)
@@ -1288,11 +1297,11 @@ fn operator_grant(sel: [u8; 4]) -> Option<&'static str> {
         SELECTOR_SET_APPROVAL_FOR_ALL => Some(
             "lets the agent make an address the operator of all its tokens there; the agent must withdraw it in the same operation (an AgentPolicy from before 2026-11-25 lets it stand)",
         ),
-        [0x95, 0x9b, 0x8c, 0x3f] => Some(
-            "authorizeOperator (ERC-777): lets the agent make an address the operator of all its tokens there; no AgentPolicy reads it, so the grant outlives a revoke",
+        SELECTOR_SET_OPERATOR => Some(
+            "setOperator (ERC-6909): lets the agent make an address the operator of all its tokens there; the agent must withdraw it in the same operation (an AgentPolicy built before this rule lets it stand)",
         ),
-        [0x55, 0x8a, 0x72, 0x97] => Some(
-            "setOperator (ERC-6909): lets the agent make an address the operator of all its tokens there; no AgentPolicy reads it, so the grant outlives a revoke",
+        SELECTOR_ERC6909_APPROVE => Some(
+            "approve (ERC-6909): lets the agent give an address an allowance of one token id there; the agent must withdraw it in the same operation (an AgentPolicy built before this rule lets it stand)",
         ),
         _ => None,
     }
@@ -1300,6 +1309,12 @@ fn operator_grant(sel: [u8; 4]) -> Option<&'static str> {
 
 /// `setApprovalForAll(address,bool)` of ERC-721 and ERC-1155.
 const SELECTOR_SET_APPROVAL_FOR_ALL: [u8; 4] = [0xa2, 0x2c, 0xb4, 0x65];
+/// `setOperator(address,bool)` of ERC-6909.
+const SELECTOR_SET_OPERATOR: [u8; 4] = [0x55, 0x8a, 0x72, 0x97];
+/// `approve(address,uint256,uint256)` of ERC-6909.
+const SELECTOR_ERC6909_APPROVE: [u8; 4] = [0x42, 0x6a, 0x84, 0x93];
+/// `authorizeOperator(address)` of ERC-777: no mandate lists it.
+const SELECTOR_AUTHORIZE_OPERATOR: [u8; 4] = [0x95, 0x9b, 0x8c, 0x3f];
 
 fn selector_name(sel: [u8; 4]) -> String {
     let name = match sel {
@@ -1528,8 +1543,8 @@ mod tests {
         let nft = Address::with_last_byte(0x71);
         for (sel, said) in [
             ([0xa2, 0x2c, 0xb4, 0x65], "must withdraw it in the same operation"),
-            ([0x95, 0x9b, 0x8c, 0x3f], "authorizeOperator (ERC-777)"),
             ([0x55, 0x8a, 0x72, 0x97], "setOperator (ERC-6909)"),
+            ([0x42, 0x6a, 0x84, 0x93], "an allowance of one token id"),
         ] {
             let params = kernel::PolicyParams {
                 targets: vec![COUNTER, nft],
@@ -2520,6 +2535,11 @@ mod tests {
             ("the account as a target", Box::new(|m| (m.0.push(ACCOUNT), m.1.push(FixedBytes::ZERO)).0), "the account itself"),
             ("the EntryPoint as a target", Box::new(|m| (m.0.push(ENTRY), m.1.push(FixedBytes::ZERO)).0), "EntryPoint"),
             ("the policy outside x402", Box::new(move |m| (m.0.push(POLICY), m.1.push(x402("pause()"))).0), "outside its x402 and order entries"),
+            (
+                "an ERC-777 operator grant",
+                Box::new(|m| (m.0.push(Address::with_last_byte(0x78)), m.1.push(FixedBytes::from([0x95, 0x9b, 0x8c, 0x3f]))).0),
+                "authorizeOperator (ERC-777)",
+            ),
             (
                 "a metered function without a limit",
                 Box::new(move |m| (m.0.push(Address::with_last_byte(0x77)), m.1.push(transfer)).0),

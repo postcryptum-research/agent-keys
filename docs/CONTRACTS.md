@@ -359,12 +359,25 @@ which refuses the operation all the same [I].
   `setApprovalForAll(operator, true)` of ERC-721 and ERC-1155: it must be
   withdrawn with `setApprovalForAll(operator, false)` in the same operation
   (`test_allowances_anOperatorGrantIsWithdrawnInTheSameOperation`, #176).
-  Another approval-like function the owner allow-lists (ERC-777's
-  `authorizeOperator`, ERC-6909's `setOperator`, a protocol's own operator
-  grant) is a call the policy allows or refuses and does not read, as any
-  unmetered selector, and what it grants can stand; the phone's review names
-  the known ones on the entry. An allowance or a grant that has to stand
-  across operations is the owner's to make.
+  ERC-6909 is held whole: `setOperator(operator, true)` is withdrawn with
+  `setOperator(operator, false)`, and an allowance of one id,
+  `approve(spender, id, amount)`, with the same function, spender and id
+  and amount 0
+  (`test_allowances_anERC6909OperatorIsWithdrawnByItsOwnFunction`,
+  `test_allowances_anERC6909AllowanceIsWithdrawnForItsId`). A grant is
+  withdrawn by its own function only: each kind has its own flag, so on a
+  contract that has two of these functions one does not close what the
+  other opened. ERC-777's `authorizeOperator` is withdrawn by a different
+  function, `revokeOperator`, and the policy does not pair them: a mandate
+  that lists `authorizeOperator` is refused at install
+  (`test_allowances_noMandateListsAnERC777OperatorGrant`); `revokeOperator`
+  only takes a grant away and may be listed. An ERC-777 token is best
+  listed, if at all, as an ERC-20 with a limit, which confines it to the
+  four metered functions. A protocol's own operator grant under another
+  name is a call the policy allows or refuses and does not read, as any
+  unmetered selector, and what it grants can stand. The phone's review
+  names the grants it knows on the entry. An allowance or a grant that has
+  to stand across operations is the owner's to make.
   What the rule reads is the calls of the operation, and validation cannot
   see how they end. A call that reverts takes the whole operation's
   execution with it, the grant included (only the default execution type

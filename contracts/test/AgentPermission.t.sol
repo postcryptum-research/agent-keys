@@ -188,6 +188,32 @@ contract MockOperators {
     function setApprovalForAll(address operator, bool approved) external {
         isApprovedForAll[msg.sender][operator] = approved;
     }
+
+    /// ERC-6909
+    mapping(address => mapping(address => bool)) public isOperator;
+
+    function setOperator(address operator, bool approved) external returns (bool) {
+        isOperator[msg.sender][operator] = approved;
+        return true;
+    }
+
+    mapping(address => mapping(address => mapping(uint256 => uint256))) public allowance;
+
+    function approve(address spender, uint256 id, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender][id] = amount;
+        return true;
+    }
+
+    /// ERC-777
+    mapping(address => mapping(address => bool)) public authorized;
+
+    function authorizeOperator(address operator) external {
+        authorized[msg.sender][operator] = true;
+    }
+
+    function revokeOperator(address operator) external {
+        authorized[msg.sender][operator] = false;
+    }
 }
 
 /// Phase 1b / 3.3: the agent's hardware key is a *permission*, not the root.
@@ -877,12 +903,8 @@ contract AgentPermissionTest is Test {
     /// An operator grant (`setApprovalForAll` of ERC-721 and ERC-1155) is an
     /// allowance over every token of the contract: withdrawn in the same
     /// operation, or refused (#176).
-    function test_allowances_anOperatorGrantIsWithdrawnInTheSameOperation() public {
-        MockOperators nft = new MockOperators();
-        PermissionId id = PermissionId.wrap(0x6f707273); // "oprs"
-        address[] memory targets = new address[](1);
-        bytes4[] memory selectors = new bytes4[](1);
-        (targets[0], selectors[0]) = (address(nft), MockOperators.setApprovalForAll.selector);
+    /// A mandate without token limits, installed by the owner under `id`.
+    function _installOperatorMandate(PermissionId id, address[] memory targets, bytes4[] memory selectors) internal {
         bytes[] memory entries = new bytes[](2);
         entries[0] = _policyEntry(targets, selectors, new AgentPolicy.TokenCap[](0));
         entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(agentX, agentY));
@@ -897,6 +919,15 @@ contract AgentPermissionTest is Test {
                 )
             )
         );
+    }
+
+    function test_allowances_anOperatorGrantIsWithdrawnInTheSameOperation() public {
+        MockOperators nft = new MockOperators();
+        PermissionId id = PermissionId.wrap(0x6f707273); // "oprs"
+        address[] memory targets = new address[](1);
+        bytes4[] memory selectors = new bytes4[](1);
+        (targets[0], selectors[0]) = (address(nft), MockOperators.setApprovalForAll.selector);
+        _installOperatorMandate(id, targets, selectors);
         address op = makeAddr("operator");
         Execution memory grant = Execution(address(nft), 0, abi.encodeCall(MockOperators.setApprovalForAll, (op, true)));
         Execution memory withdraw = Execution(address(nft), 0, abi.encodeCall(MockOperators.setApprovalForAll, (op, false)));
@@ -916,6 +947,101 @@ contract AgentPermissionTest is Test {
         _send(_agentOpWith(AGENT, id, address(nft), 0, withdraw.callData));
         assertFalse(nft.isApprovedForAll(acct, op));
         _expectRefused(_agentOpWith(AGENT, id, address(nft), 0, abi.encodePacked(MockOperators.setApprovalForAll.selector, bytes32(uint256(uint160(op))))));
+    }
+
+    /// ERC-6909's `setOperator(operator, bool)` is held as `setApprovalForAll`
+    /// is, and a grant is withdrawn by its own function only: on a contract
+    /// that has both, one does not close what the other opened.
+    function test_allowances_anERC6909OperatorIsWithdrawnByItsOwnFunction() public {
+        MockOperators nft = new MockOperators();
+        PermissionId id = PermissionId.wrap(0x6f707236); // "opr6"
+        address[] memory targets = new address[](2);
+        bytes4[] memory selectors = new bytes4[](2);
+        (targets[0], selectors[0]) = (address(nft), MockOperators.setOperator.selector);
+        (targets[1], selectors[1]) = (address(nft), MockOperators.setApprovalForAll.selector);
+        _installOperatorMandate(id, targets, selectors);
+        address op = makeAddr("operator");
+        Execution memory grant = Execution(address(nft), 0, abi.encodeCall(MockOperators.setOperator, (op, true)));
+        Execution memory withdraw = Execution(address(nft), 0, abi.encodeCall(MockOperators.setOperator, (op, false)));
+        // alone, it would stand: refused
+        _expectRefused(_agentOpWith(AGENT, id, address(nft), 0, grant.callData));
+        // withdrawn in the same operation: passes, and nothing stands
+        Execution[] memory calls = new Execution[](2);
+        (calls[0], calls[1]) = (grant, withdraw);
+        _send(_agentBatchWith(AGENT, id, calls));
+        assertFalse(nft.isOperator(acct, op));
+        // "withdrawn" with the other function: the ERC-6909 grant would stand, refused
+        calls[1] = Execution(address(nft), 0, abi.encodeCall(MockOperators.setApprovalForAll, (op, false)));
+        _expectRefused(_agentBatchWith(AGENT, id, calls));
+        // and the other way round
+        calls[0] = Execution(address(nft), 0, abi.encodeCall(MockOperators.setApprovalForAll, (op, true)));
+        calls[1] = withdraw;
+        _expectRefused(_agentBatchWith(AGENT, id, calls));
+        // a short call is refused
+        _expectRefused(_agentOpWith(AGENT, id, address(nft), 0, abi.encodePacked(MockOperators.setOperator.selector, bytes32(uint256(uint160(op))))));
+        assertFalse(nft.isOperator(acct, op));
+        assertFalse(nft.isApprovedForAll(acct, op));
+    }
+
+    /// An ERC-6909 allowance of one id, `approve(spender, id, amount)`, is
+    /// withdrawn with amount 0 for the same spender and the same id.
+    function test_allowances_anERC6909AllowanceIsWithdrawnForItsId() public {
+        MockOperators t = new MockOperators();
+        PermissionId id = PermissionId.wrap(0x61703639); // "ap69"
+        address[] memory targets = new address[](1);
+        bytes4[] memory selectors = new bytes4[](1);
+        (targets[0], selectors[0]) = (address(t), bytes4(0x426a8493)); // approve(address,uint256,uint256)
+        _installOperatorMandate(id, targets, selectors);
+        address spender = makeAddr("spender");
+        bytes4 approve3 = bytes4(0x426a8493);
+        Execution memory grant = Execution(address(t), 0, abi.encodeWithSelector(approve3, spender, 7, 5 ether));
+        // alone, it would stand: refused
+        _expectRefused(_agentOpWith(AGENT, id, address(t), 0, grant.callData));
+        // withdrawn for the same id: passes, nothing stands
+        Execution[] memory calls = new Execution[](2);
+        calls[0] = grant;
+        calls[1] = Execution(address(t), 0, abi.encodeWithSelector(approve3, spender, 7, 0));
+        _send(_agentBatchWith(AGENT, id, calls));
+        assertEq(t.allowance(acct, spender, 7), 0);
+        // withdrawn for another id, or for another spender: refused
+        calls[1] = Execution(address(t), 0, abi.encodeWithSelector(approve3, spender, 8, 0));
+        _expectRefused(_agentBatchWith(AGENT, id, calls));
+        calls[1] = Execution(address(t), 0, abi.encodeWithSelector(approve3, makeAddr("other"), 7, 0));
+        _expectRefused(_agentBatchWith(AGENT, id, calls));
+        // an allowance the owner made is withdrawn on its own; a short call is refused
+        vm.prank(acct);
+        t.approve(spender, 9, 1 ether);
+        _send(_agentOpWith(AGENT, id, address(t), 0, abi.encodeWithSelector(approve3, spender, 9, 0)));
+        assertEq(t.allowance(acct, spender, 9), 0);
+        _expectRefused(_agentOpWith(AGENT, id, address(t), 0, abi.encodePacked(approve3, bytes32(uint256(uint160(spender))), uint256(7))));
+        assertEq(t.allowance(acct, spender, 7), 0);
+    }
+
+    /// ERC-777's `authorizeOperator(operator)` is withdrawn by another
+    /// function, which the policy does not pair with it: no mandate lists it.
+    /// `revokeOperator` alone only takes a grant away and may be listed.
+    function test_allowances_noMandateListsAnERC777OperatorGrant() public {
+        MockOperators t777 = new MockOperators();
+        address[] memory targets = new address[](1);
+        bytes4[] memory selectors = new bytes4[](1);
+        (targets[0], selectors[0]) = (address(t777), MockOperators.authorizeOperator.selector);
+        vm.prank(acct);
+        vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+        policy.onInstall(
+            abi.encodePacked(
+                bytes32(uint256(0x6f703737) << 224),
+                abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, new AgentPolicy.TokenCap[](0), uint48(0))
+            )
+        );
+        // the control: the same mandate with the withdrawing function installs
+        selectors[0] = MockOperators.revokeOperator.selector;
+        PermissionId id = PermissionId.wrap(0x6f703738); // "op78"
+        _installOperatorMandate(id, targets, selectors);
+        address op = makeAddr("operator");
+        vm.prank(acct);
+        t777.authorizeOperator(op);
+        _send(_agentOpWith(AGENT, id, address(t777), 0, abi.encodeCall(MockOperators.revokeOperator, (op))));
+        assertFalse(t777.authorized(acct, op));
     }
 
     /// A Safe's allowances are the Safe's: one the account grants is not

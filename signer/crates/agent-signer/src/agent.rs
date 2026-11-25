@@ -549,6 +549,15 @@ impl AgentConfig {
         // limits and payee list are checked on. Anything else on that token
         // would pass neither, and AgentPolicy refuses the mandate at install.
         const METERED: [&str; 4] = ["a9059cbb", "095ea7b3", "39509351", "23b872dd"];
+        // ERC-777's authorizeOperator: AgentPolicy refuses a mandate that lists it
+        if let Some(a) = self.policy.allow.iter().find(|a| a.selector.trim_start_matches("0x").eq_ignore_ascii_case("959b8c3f")) {
+            anyhow::bail!(
+                "allow: {} {} is refused: authorizeOperator (ERC-777) makes an address the operator of all the account's tokens there, \
+                 and nothing makes the agent withdraw it; AgentPolicy refuses the mandate at install. If the grant is needed, it is the owner's to make",
+                a.target,
+                a.selector
+            );
+        }
         // and the mirror: one of the four on a target with no limit here is
         // refused at every operation, and AgentPolicy refuses it at install (#175)
         if let Some(a) = self.policy.allow.iter().find(|a| {
@@ -858,6 +867,22 @@ mod payee_tests {
                 let refused = config_with(listed, Some(other)).check_payees_stated().unwrap_err().to_string();
                 assert!(refused.contains("callable only through"), "{refused}");
             }
+        }
+    }
+
+    /// ERC-777's `authorizeOperator` in the allow-list is refused, as the
+    /// policy refuses it at install.
+    #[test]
+    fn an_erc777_operator_grant_is_not_listed() {
+        for selector in ["0x959b8c3f", "0x959B8C3F"] {
+            let mut v: serde_json::Value = serde_json::from_str(include_str!("../../../agent.x402.base-sepolia.json")).unwrap();
+            v["policy"]["allow"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!({"target": "0x00000000000000000000000000000000000000e7", "selector": selector}));
+            let cfg: AgentConfig = serde_json::from_value(v).unwrap();
+            let refused = cfg.check_payees_stated().unwrap_err().to_string();
+            assert!(refused.contains("authorizeOperator (ERC-777)"), "{selector}: {refused}");
         }
     }
 
