@@ -5,6 +5,13 @@ agent-keys runs on test networks only and has had no external audit
 are deployed, chain by chain, with every earlier instance that is still
 recorded. How a redeploy is done and recorded: [`docs/REDEPLOY.md`](REDEPLOY.md).
 
+**An account set up before 2026-11-25 still uses instances this page lists
+as earlier ones.** A permission keeps its policy and signer, and an account
+its root validator, until the owner moves them (`REDEPLOY.md`, "After: the
+owner's steps"). Until then the phone names those instances as superseded
+and reads no mandate on them, and a config written before that date names
+them too.
+
 The record itself is `contracts/deployments/<chainId>.json`: the CLI reads
 it, the phone's build embeds them, and
 `contracts/test/DeploymentsRecord.t.sol` fails when an address in it is
