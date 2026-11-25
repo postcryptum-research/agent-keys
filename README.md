@@ -148,7 +148,8 @@ What runs today, phase by phase and backend by backend, with the transactions:
 [`docs/STATUS.md`](docs/STATUS.md).
 Where the contracts are deployed, chain by chain, with every earlier instance:
 [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md). How a redeploy is done and
-recorded: [`docs/REDEPLOY.md`](docs/REDEPLOY.md).
+recorded: [`docs/REDEPLOY.md`](docs/REDEPLOY.md). The third-party code it
+builds on, with versions and audits: [`docs/THIRD_PARTIES.md`](docs/THIRD_PARTIES.md).
 
 ## Docs
 

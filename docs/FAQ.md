@@ -544,6 +544,10 @@ Not by a third party. The reviews are internal — an AI auditor working with
 the author — at testnet depth on Base Sepolia with no real funds, and are
 not a professional third-party audit.
 
+The code of others it builds on (Kernel, the EntryPoint, Safe, Solady, the
+Rust crates, the phone libraries), with each one's version, latest release
+and latest audit: [`THIRD_PARTIES.md`](THIRD_PARTIES.md).
+
 An internal review on 2026-10-20 by a separate AI session found eight
 issues: six fixed in code, one fixed in its code part (where the owner key
 lives stays the deployer's choice), one documented; the fixes were
