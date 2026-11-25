@@ -152,18 +152,21 @@ pub struct PolicyParams {
     pub payees: Vec<(Address, Vec<Address>)>,
 }
 
-/// What a mandate for trading adds (issue #80): the budgets' window and the
-/// venues. `period` in seconds, 0 for one budget for the mandate's life;
-/// `venues` as `(decoder, code hash, config hash)`.
+/// What the longer forms of a mandate add: the budgets' window and the
+/// venues (issue #80), and limits per id of an ERC-6909 contract (issue
+/// #186). `period` in seconds, 0 for one budget for the mandate's life;
+/// `venues` as `(decoder, code hash, config hash)`; `ids` as `(contract,
+/// token id, maxPerOp, budget)`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Trading {
     pub period: u32,
     pub venues: Vec<(Address, B256, B256)>,
+    pub ids: Vec<(Address, U256, u128, u128)>,
 }
 
 impl Trading {
     pub fn is_none(&self) -> bool {
-        self.period == 0 && self.venues.is_empty()
+        self.period == 0 && self.venues.is_empty() && self.ids.is_empty()
     }
 }
 
@@ -189,7 +192,8 @@ pub fn permission_data(
 
 /// The same with a budget period, venues or both: then the policy's
 /// parameters take their ten-word form, payee lists included even when
-/// empty. Without either, the bytes are those of `permission_data`.
+/// empty. With limits per id, their eleven-word form: the ten, then the
+/// limits. Without any of the three, the bytes are those of `permission_data`.
 pub fn permission_data_with_trading(
     policy: Address,
     params: &PolicyParams,
@@ -217,7 +221,12 @@ pub fn permission_data_with_trading(
     // without them the bytes, and so a counterfactual account's address, are
     // what they were before lists existed. The policy tells the two forms
     // apart by the first head word.
-    let policy_init = if !trading.is_none() {
+    let policy_init = if !trading.ids.is_empty() {
+        let (a, b, c, d, e, f, g) = seven;
+        let ids: Vec<_> =
+            trading.ids.iter().map(|&(token, id, max, budget)| (token, id, U256::from(max), U256::from(budget))).collect();
+        (a, b, c, d, e, f, g, params.payees.clone(), trading.period, trading.venues.clone(), ids).abi_encode_params()
+    } else if !trading.is_none() {
         let (a, b, c, d, e, f, g) = seven;
         (a, b, c, d, e, f, g, params.payees.clone(), trading.period, trading.venues.clone()).abi_encode_params()
     } else if params.payees.is_empty() {
@@ -549,10 +558,10 @@ mod tests {
             let entries = Vec::<Bytes>::abi_decode(&data).unwrap();
             alloy_primitives::keccak256(&entries[0][22..])
         };
-        let venue = Trading { period: 86_400, venues: vec![(decoder, h1, h2)] };
+        let venue = Trading { period: 86_400, venues: vec![(decoder, h1, h2)], ids: vec![] };
         assert_eq!(init(vec![], &venue), b256!("ba3c12e045cea07ebf5cfc7acdaff2f76915c3e30222ae34034753d9e41e2307"));
         let payees = vec![(token, vec![address!("00000000000000000000000000000000000000d1")])];
-        let period_only = Trading { period: 3_600, venues: vec![] };
+        let period_only = Trading { period: 3_600, venues: vec![], ids: vec![] };
         assert_eq!(init(payees, &period_only), b256!("f93f7ce6c4f1c164c7b5679505e3cfa19809b46a575654ea843af386bb408144"));
         // neither: the bytes of the seven-word form
         assert_eq!(init(vec![], &Trading::default()), b256!("6af2f27ba0bcd1851dc4161b2e4a9ff02f3b02f4d5bb1b48c9a5691d77ad0d6a"));
