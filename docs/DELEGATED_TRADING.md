@@ -209,8 +209,9 @@ A smart account makes such signatures through ERC-1271 (`isValidSignature`).
 If the agent key could produce one, B would get the same persistent drain
 as in item 4, off the books.
 
-Today the agent's account vouches only for x402 payment authorizations the
-agent registered within the mandate (since AgentPolicy v6), and for nothing else.
+Today the agent's account vouches only for what the agent registered within
+the mandate: x402 payment authorizations (since AgentPolicy v6) and venue
+orders (`orderRegister`), and for nothing else.
 Every extension must keep it that way: **the agent key can never produce a
 valid approval-style signature.**
 
