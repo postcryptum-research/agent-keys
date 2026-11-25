@@ -120,6 +120,8 @@ abstract contract PolicyFuzzBase is Test {
 
     FuzzAccount internal account;
     uint256 internal rng;
+    /// Approvals carry an amount of 0 (see `PolicyFuzzDifferential.setUp`).
+    bool internal zeroApprovals;
 
     function _next() internal returns (uint256) {
         rng = uint256(keccak256(abi.encode(rng)));
@@ -199,6 +201,12 @@ abstract contract PolicyFuzzBase is Test {
         return _below(MAX_VALUE / 2);
     }
 
+    /// An approval's amount: drawn as any amount is, 0 under `zeroApprovals`.
+    function _approval(uint256 cap, address target) internal returns (uint256 amount) {
+        amount = _amount(cap, target);
+        if (zeroApprovals) amount = 0;
+    }
+
     /// A token call through one of the four metered functions, now and then
     /// cut short, or through `permit`.
     function _tokenLeg() internal returns (Leg memory leg) {
@@ -207,8 +215,8 @@ abstract contract PolicyFuzzBase is Test {
         uint256 cap = leg.target == TOKEN_B ? B_MAX : A_MAX;
         uint256 s = _below(20);
         if (s < 8) leg.data = abi.encodeWithSelector(TRANSFER, _payee(), _amount(cap, leg.target));
-        else if (s < 12) leg.data = abi.encodeWithSelector(APPROVE, _payee(), _amount(cap, leg.target));
-        else if (s < 15) leg.data = abi.encodeWithSelector(INCREASE, _payee(), _amount(cap, leg.target));
+        else if (s < 12) leg.data = abi.encodeWithSelector(APPROVE, _payee(), _approval(cap, leg.target));
+        else if (s < 15) leg.data = abi.encodeWithSelector(INCREASE, _payee(), _approval(cap, leg.target));
         else if (s < 18) leg.data = abi.encodeWithSelector(TRANSFER_FROM, _payee(), _payee(), _amount(cap, leg.target));
         else if (s == 18) leg.data = abi.encodeWithSelector(PERMIT, _payee(), _payee(), _amount(cap, leg.target));
         else leg.data = abi.encodeWithSelector(DEPOSIT, _amount(cap, leg.target));
@@ -319,6 +327,7 @@ contract PolicyFuzzModel is PolicyFuzzBase {
     function _modelAccepts(Leg[] memory legs, PackedUserOperation memory op) internal returns (bool) {
         movedSeq++;
         uint256 value;
+        uint256 open; // allowances granted in the operation and not withdrawn
         uint256 aSpent = tokenSpent[TOKEN_A];
         uint256 bSpent = tokenSpent[TOKEN_B];
         for (uint256 i; i < legs.length; i++) {
@@ -347,7 +356,19 @@ contract PolicyFuzzModel is PolicyFuzzBase {
                 bSpent += amount;
                 if (bSpent > B_BUDGET) return false;
             }
+            // no standing allowances: a grant stays open until approve(spender, 0) in the same operation
+            if (selector == APPROVE || (selector == INCREASE && amount != 0)) {
+                bytes32 k = keccak256(abi.encode(movedSeq, leg.target, uint160(_word(leg.data, 0))));
+                if (amount != 0 && !_open[k]) {
+                    _open[k] = true;
+                    open++;
+                } else if (amount == 0 && _open[k]) {
+                    _open[k] = false;
+                    open--;
+                }
+            }
         }
+        if (open != 0) return false;
         if (value > MAX_VALUE) return false;
         uint256 charged = value + (op.paymasterAndData.length == 0 ? _maxGasCost(op) : 0);
         if (spent + charged > BUDGET) return false;
@@ -357,6 +378,27 @@ contract PolicyFuzzModel is PolicyFuzzBase {
     }
 
     mapping(bytes32 => uint256) internal _moved;
+    mapping(bytes32 => bool) internal _open;
+
+    /// Now and then the withdrawal of an allowance a leg grants, at the end
+    /// of the operation: with it the grant passes, without it it stands.
+    function _withWithdrawals(Leg[] memory legs) internal returns (Leg[] memory out) {
+        out = new Leg[](legs.length * 2);
+        uint256 n;
+        for (uint256 i; i < legs.length; i++) {
+            out[n++] = legs[i];
+        }
+        for (uint256 i; i < legs.length; i++) {
+            bytes memory d = legs[i].data;
+            bool grants = d.length >= 68 && (bytes4(d) == APPROVE || bytes4(d) == INCREASE);
+            if (grants && legs[i].target == TOKEN_A && _below(2) == 0) {
+                out[n++] = Leg(TOKEN_A, 0, abi.encodeWithSelector(APPROVE, address(uint160(_word(d, 0))), uint256(0)));
+            }
+        }
+        assembly {
+            mstore(out, n)
+        }
+    }
 
     function _spentOnChain() internal view returns (uint256 s) {
         (,,,, s,) = policy.configs(address(account), ID);
@@ -375,6 +417,7 @@ contract PolicyFuzzModel is PolicyFuzzBase {
             for (uint256 i; i < legs.length; i++) {
                 legs[i] = _plainLeg();
             }
+            legs = _withWithdrawals(legs);
             PackedUserOperation memory op = _op(_execute(legs, _below(2) == 0));
             bool expected = _modelAccepts(legs, op);
             (bool ok,) = _try(policy, op);
@@ -449,6 +492,11 @@ contract PolicyFuzzDifferential is PolicyFuzzBase {
         assertEq(deployed.NONCE_ASSERT(), NONCE_ASSERT, "the vector is not the instance it is taken for");
         account.install(fresh, _installData(fresh));
         account.install(deployed, _installData(deployed));
+        // The instance leaves an allowance standing; the source refuses one
+        // (no standing allowances), so the two differ there by design. The
+        // generator's approvals carry 0 until the vector is a policy with
+        // that rule, the next deployed one (docs/REDEPLOY.md).
+        zeroApprovals = true;
     }
 
     // --- legs the model does not cover ---

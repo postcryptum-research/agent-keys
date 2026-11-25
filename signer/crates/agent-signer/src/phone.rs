@@ -324,11 +324,11 @@ pub fn laptop_pins(dep: &crate::agent::Deployments) -> std::collections::BTreeMa
         (Some(dep.demo_counter), "counter (config)"),
         (dep.whitelist_paymaster, "paymaster (config)"),
         (dep.p256_recovery_validator, "recovery validator (config)"),
-        (dep.p256_validator_v1, "old owner validator (config)"),
-        (dep.p256_recovery_validator_v1, "old recovery validator (config)"),
         (dep.safe_nonce_assert, "safe nonce guard (config)"),
     ]
     .into_iter()
+    .chain(dep.superseded("p256Validator").into_iter().map(|a| (Some(a), "old owner validator (config)")))
+    .chain(dep.superseded("p256RecoveryValidator").into_iter().map(|a| (Some(a), "old recovery validator (config)")))
     .filter_map(|(a, name)| a.map(|a| (a, name.to_string())))
     .filter(|(a, _)| !known.contains_key(a))
     .collect()

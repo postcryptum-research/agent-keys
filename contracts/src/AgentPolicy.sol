@@ -341,6 +341,9 @@ contract AgentPolicy is IPolicy {
     bytes4 public constant MULTI_SEND = 0x8d80ff0a;
     /// `SafeNonceAssert.check(address,uint256)`
     bytes4 public constant NONCE_CHECK = SafeNonceAssert.check.selector;
+    /// `executeUserOp(PackedUserOperation,bytes32)`: the prefix Kernel requires
+    /// of the `callData` of a permission that carries an execution hook
+    bytes4 internal constant EXECUTE_USER_OP = 0x8dd7712f;
 
     // The four ERC-20 functions the policy meters (`_chargeToken`), the only
     // ones a token with a limit may be called through.
@@ -833,6 +836,8 @@ contract AgentPolicy is IPolicy {
         // Judge every call; token amounts are charged on the way
         (bool ok, uint256 value) = _judgeExecute(_mandate(id, c.epoch), userOp.callData);
         if (!ok || value > c.maxValuePerOp) return SIG_VALIDATION_FAILED_UINT;
+        // No allowance the agent granted outlives the operation
+        if (_tload(_thisOperation(OPEN_ALLOWANCES)) != 0) return SIG_VALIDATION_FAILED_UINT;
 
         // Without a paymaster the account pays for gas out of its own
         // deposit: count the most it can be charged against the budget.
@@ -1344,6 +1349,87 @@ contract AgentPolicy is IPolicy {
         }
     }
 
+    // No standing allowances: an allowance the agent grants (`approve` or
+    // `increaseAllowance` of more than 0) must be withdrawn with
+    // `approve(spender, 0)` later in the same operation, by the same holder
+    // (the account, or the Safe whose transaction grants it). Otherwise it
+    // would outlive a revoke of the mandate: the spender could pull from it
+    // whenever it likes. Allowances the owner grants are not the agent's and
+    // are not counted. Kept in transient slots of this operation.
+    /// How many allowances the operation has granted and not withdrawn.
+    bytes32 internal constant OPEN_ALLOWANCES = keccak256("agent-keys.AgentPolicy.openAllowances");
+    /// One allowance granted and not withdrawn: under `(holder, token, spender)`.
+    bytes32 internal constant OPEN_ALLOWANCE = keccak256("agent-keys.AgentPolicy.openAllowance");
+    /// The Safe whose transaction is being judged; 0 while it is the account's own call.
+    bytes32 internal constant ALLOWANCE_HOLDER = keccak256("agent-keys.AgentPolicy.allowanceHolder");
+
+    /// @dev A transient slot of this operation of the account: keyed by the
+    /// account and the operation counter (`keccak256(account ‖ x)`), so that
+    /// nothing in it carries over to the account's next operation.
+    /// @param what The note's name.
+    /// @return slot The slot.
+    function _thisOperation(bytes32 what) internal view returns (uint256 slot) {
+        uint256 seq = _tload(uint256(keccak256(abi.encode(msg.sender, OPERATION_SEQ))));
+        slot = uint256(keccak256(abi.encode(msg.sender, keccak256(abi.encode(seq, what)))));
+    }
+
+    /// @dev Reads a transient slot.
+    /// @param slot The slot.
+    /// @return value Its value; 0 if never written in this transaction.
+    function _tload(uint256 slot) internal view returns (uint256 value) {
+        assembly ("memory-safe") {
+            value := tload(slot)
+        }
+    }
+
+    /// @dev Writes a transient slot.
+    /// @param slot The slot.
+    /// @param value The value.
+    function _tstore(uint256 slot, uint256 value) internal {
+        assembly ("memory-safe") {
+            tstore(slot, value)
+        }
+    }
+
+    /// @dev Opens or withdraws one allowance of the current holder, and keeps
+    /// the count of those open.
+    /// @param token The token.
+    /// @param spender The spender.
+    /// @param open True for a grant, false for `approve(spender, 0)`.
+    function _noteAllowance(address token, address spender, bool open) internal {
+        uint256 holder = _tload(_thisOperation(ALLOWANCE_HOLDER));
+        uint256 flag = _thisOperation(keccak256(abi.encode(OPEN_ALLOWANCE, holder, token, spender)));
+        uint256 count = _thisOperation(OPEN_ALLOWANCES);
+        bool wasOpen = _tload(flag) != 0;
+        if (open && !wasOpen) {
+            _tstore(flag, 1);
+            _tstore(count, _tload(count) + 1);
+        } else if (!open && wasOpen) {
+            // open, so counted: at least one
+            _tstore(flag, 0);
+            _tstore(count, _tload(count) - 1);
+        }
+    }
+
+    /// @dev `_judgeSafe` with the Safe noted as the holder of the allowances
+    /// its transaction grants.
+    /// @param m The mandate key.
+    /// @param safe The Safe.
+    /// @param value The value the account sends with the transaction.
+    /// @param data The `execTransaction` calldata.
+    /// @param from Where the call comes from.
+    /// @return ok True if the transaction passes.
+    /// @return moved The native value it moves.
+    function _judgeSafeAs(bytes32 m, address safe, uint256 value, bytes calldata data, uint8 from)
+        internal
+        returns (bool ok, uint256 moved)
+    {
+        uint256 holder = _thisOperation(ALLOWANCE_HOLDER);
+        _tstore(holder, uint160(safe));
+        (ok, moved) = _judgeSafe(m, value, data, from);
+        _tstore(holder, 0);
+    }
+
     /// @dev Adds `amount` to what this operation has moved of `token` so far
     /// (transfers, approvals and x402 registrations alike, in every leg) and
     /// returns the total, for the caller to hold against `maxPerOp`: the cap
@@ -1385,12 +1471,18 @@ contract AgentPolicy is IPolicy {
 
     /// @dev Accepts `execute(mode, executionCalldata)` with a single call or a
     /// batch, default exec type, and judges every call; returns the native
-    /// value the operation moves.
+    /// value the operation moves. Also in Kernel's form for a permission that
+    /// carries an execution hook, `executeUserOp`'s selector before that call:
+    /// Kernel requires it there and then runs the `execute(...)` after it as it
+    /// is (Kernel.sol:264-271, 300), so the hook adds checks around the call
+    /// and never takes the mandate's place.
     /// @param m The mandate key.
     /// @param callData The operation's `callData`.
     /// @return True if every call passes.
     /// @return The native value the operation moves, Safe transactions and batch legs included.
     function _judgeExecute(bytes32 m, bytes calldata callData) internal returns (bool, uint256) {
+        // The hooked form: one `executeUserOp` selector, then the call itself
+        if (callData.length >= 4 && bytes4(callData[0:4]) == EXECUTE_USER_OP) callData = callData[4:];
         // selector + mode + offset + length is the smallest well-formed call
         if (callData.length < 100 || bytes4(callData[0:4]) != IERC7579Account.execute.selector) return (false, 0);
         // The mode's first byte is the call type, its second the exec type
@@ -1504,7 +1596,7 @@ contract AgentPolicy is IPolicy {
         // any other way its legs would run as the batch contract.
         if (selector == MULTI_SEND) return (false, 0);
         // A Safe transaction: the call inside it is what is judged
-        if (selector == SAFE_EXEC_TRANSACTION) return _judgeSafe(m, value, data, from);
+        if (selector == SAFE_EXEC_TRANSACTION) return _judgeSafeAs(m, target, value, data, from);
         // x402: registering an authorization is the account's own call only
         // (the records are kept for the account, not for a Safe)
         if (target == address(this) && selector == this.x402Authorize.selector) {
@@ -1642,6 +1734,11 @@ contract AgentPolicy is IPolicy {
         if (spent > t.budget) return false;
         // Charge it
         t.spent = uint128(spent);
+        // An allowance granted is open until `approve(spender, 0)` in the same
+        // operation withdraws it; the spender is the low 160 bits the token reads
+        if (selector == ERC20_APPROVE || (selector == ERC20_INCREASE_ALLOWANCE && amount != 0)) {
+            _noteAllowance(token, address(uint160(uint256(bytes32(data[4:36])))), amount != 0);
+        }
         return true;
     }
 
