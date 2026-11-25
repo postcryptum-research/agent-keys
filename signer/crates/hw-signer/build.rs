@@ -66,7 +66,8 @@ fn swift_runtime_paths(target: &str) -> Vec<String> {
     let Some(start) = info.find("\"runtimeLibraryPaths\"") else { return Vec::new() };
     let rest = &info[start..];
     let (Some(open), Some(close)) = (rest.find('['), rest.find(']')) else { return Vec::new() };
-    rest[open + 1..close]
+    rest.get(open.saturating_add(1)..close)
+        .unwrap_or("")
         .split(',')
         .map(|s| s.trim().trim_matches('"').to_string())
         .filter(|s| !s.is_empty())

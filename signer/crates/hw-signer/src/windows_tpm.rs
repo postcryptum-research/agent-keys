@@ -124,7 +124,7 @@ impl HardwareSigner for CngSigner {
         }
         let magic = u32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]);
         let len = u32::from_le_bytes([blob[4], blob[5], blob[6], blob[7]]) as usize;
-        if magic != BCRYPT_ECDSA_PUBLIC_P256_MAGIC || len != 32 || blob.len() < 8 + 2 * len {
+        if magic != BCRYPT_ECDSA_PUBLIC_P256_MAGIC || len != 32 || blob.len() < len.saturating_mul(2).saturating_add(8) {
             return Err(SignerError::Key(format!("not a P-256 public key blob (magic {magic:#x}, cbKey {len})")));
         }
         let mut pk = PublicKey { x: [0; 32], y: [0; 32] };

@@ -23,6 +23,7 @@ cd contracts && forge test --evm-version osaka    # Foundry 1.8 or later: the P-
 cd ../signer && cargo test                        # Rust 1.94.1 or later; software backend, no hardware
 cargo test -p agent-signer --features insecure-software-keys --test anvil_cli   # the CLI end to end on a local anvil
 cd ../mobile/owner-core && cargo test             # the core shared with the phone apps
+cargo clippy                                      # in signer/ and in mobile/owner-core/: unchecked arithmetic fails
 cd ../../scripts/erc7562 && npm install && npm run check
 ```
 
@@ -45,6 +46,9 @@ cd ../../scripts/erc7562 && npm install && npm run check
 5. **Claims with their source.** In docs, `[V]` is verified with the source given and `[I]` is inferred. Dates
    are UTC. Addresses and transaction hashes are written in full, never cut.
 6. **Files staged by path.** Build outputs never go in.
+7. **Checked arithmetic in Rust.** In the code that ships (not in tests or fuzz targets) no bare `+`, `-`, `*`,
+   no division or shift by a variable, and no `as` between integer types: `checked_*` with a refusal, and
+   `try_from`. `cargo clippy` fails on a violation, and CI runs it.
 
 Never in a commit, a pull request or an issue: keys, seed phrases, PINs, `.env` files and RPC URLs that carry a
 key; a person's name or account handle; serial numbers, device names, local network addresses and

@@ -241,10 +241,10 @@ impl UsbDongle {
 
         let line = self.read_line()?;
         let hex = line.trim_end_matches('\n').trim_end_matches('\r');
-        if hex.len() != data.len() * 2 {
+        let expected = data.len().saturating_mul(2);
+        if hex.len() != expected {
             return Err(UsbDongleError::Protocol(format!(
-                "expected {} hex chars, got {}",
-                data.len() * 2,
+                "expected {expected} hex chars, got {}",
                 hex.len()
             )));
         }

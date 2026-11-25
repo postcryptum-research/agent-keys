@@ -69,6 +69,12 @@ const MAX_UNAUTHENTICATED: u32 = 200;
 /// an attestation chain of a few certificates, so the cap is 64 KiB.
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
+/// When a request made at `now` stops being good: `--phone-timeout` later.
+pub fn expiry(now: u64) -> Result<u64, SignerError> {
+    now.checked_add(options().timeout.as_secs())
+        .ok_or_else(|| SignerError::Backend("--phone-timeout is beyond any timestamp".into()))
+}
+
 impl HardwareSigner for PhoneSigner {
     fn public_key(&self) -> Result<PublicKey, SignerError> {
         Ok(self.public_key)
@@ -171,7 +177,7 @@ pub fn enroll(
     let mut challenge = [0u8; 32];
     OsRng.fill_bytes(&mut challenge);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| SignerError::Backend(e.to_string()))?;
-    let expires = now.as_secs() + options().timeout.as_secs();
+    let expires = expiry(now.as_secs())?;
     let request = EnrollRequest::new(chain_id, entry_point, account, label, B256::from(challenge), expires).with_pins(pins).to_bytes();
     let headline = format!(
         "enrolling phone owner key {label:?} for account {account} on chain {chain_id}: scan this with the owner app, \
@@ -285,7 +291,7 @@ pub fn prove_possession(label: &str, chain_id: u64, account: Address, key: &Publ
     let mut nonce = [0u8; 32];
     OsRng.fill_bytes(&mut nonce);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| SignerError::Backend(e.to_string()))?;
-    let request = HealthRequest::new(chain_id, account, key, B256::from(nonce), now.as_secs() + options().timeout.as_secs()).to_bytes();
+    let request = HealthRequest::new(chain_id, account, key, B256::from(nonce), expiry(now.as_secs())?).to_bytes();
     let headline = format!(
         "phone key {label:?} for account {account} on chain {chain_id}: scan this with the owner app and confirm there. \
          The phone shows that it holds the key {}; nothing goes to the chain.",
@@ -440,7 +446,7 @@ fn lan_session<T>(
     let mut strikes = 0u32;
     let mut unauthenticated = 0u32;
     let strike = |strikes: &mut u32| -> Result<(), SessionError> {
-        *strikes += 1;
+        *strikes = strikes.saturating_add(1);
         if *strikes >= MAX_WRONG_TOKENS {
             return Err(SessionError::Backend("too many wrong or rejected requests; session closed".into()));
         }
@@ -484,7 +490,7 @@ fn lan_session<T>(
                 if !mac.is_some_and(|m| verify_answer_mac(&secret, &body, &m)) {
                     eprintln!("an answer without this session's secret was ignored (not the phone that scanned the QR); still waiting for the phone");
                     let _ = req.respond(tiny_http::Response::from_string("no valid MAC for this session").with_status_code(401));
-                    unauthenticated += 1;
+                    unauthenticated = unauthenticated.saturating_add(1);
                     if unauthenticated >= MAX_UNAUTHENTICATED {
                         return Err(SessionError::Backend("too many answers without this session's secret; session closed".into()));
                     }
@@ -538,7 +544,7 @@ fn read_body(mut req: tiny_http::Request, deadline: Duration) -> Option<(tiny_ht
         let mut buf = Vec::new();
         let result = req
             .as_reader()
-            .take(MAX_RESPONSE_BYTES as u64 + 1)
+            .take((MAX_RESPONSE_BYTES as u64).saturating_add(1))
             .read_to_end(&mut buf)
             .map_err(|e| format!("reading the answer: {e}"))
             .and_then(|n| {

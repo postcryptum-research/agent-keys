@@ -242,7 +242,8 @@ impl SignRequest {
 
     /// The upper 192 bits of the nonce: 0 is the root path (§6.2 check 5).
     pub fn nonce_key(&self) -> Result<U256, RequestError> {
-        Ok(self.user_op.to_packed()?.nonce >> 64)
+        // the upper 192 bits; a shift below the word's width loses nothing but the sequence
+        Ok(self.user_op.to_packed()?.nonce.wrapping_shr(64))
     }
 }
 

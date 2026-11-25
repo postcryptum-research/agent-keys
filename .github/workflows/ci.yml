@@ -42,10 +42,33 @@ jobs:
 
   rust:
     runs-on: ubuntu-latest
+    env:
+      CLIPPY_TOOLCHAIN: "1.95.0"
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      # House rule 10: no unchecked arithmetic and no narrowing cast in the
+      # code that ships. The lints are in the Cargo.toml files. Clippy is
+      # pinned, so that a newer one seeing more sites does not turn a pull
+      # request red with no change of code; raise the pin in its own change.
+      # The Linux TPM backend builds here and is linted; the other hardware
+      # backends are linted on the machines that build them.
+      - name: the pinned clippy and the TPM library
+        run: |
+          rustup toolchain install "$CLIPPY_TOOLCHAIN" --profile minimal --component clippy
+          sudo apt-get update -q && sudo apt-get install -y -q libtss2-dev
+      - name: checked arithmetic, signer
+        working-directory: signer
+        run: |
+          cargo "+$CLIPPY_TOOLCHAIN" clippy --locked -p hw-signer -p agent-signer
+          cargo "+$CLIPPY_TOOLCHAIN" clippy --locked -p hw-signer -p agent-signer --features insecure-software-keys
+          cargo "+$CLIPPY_TOOLCHAIN" clippy --locked -p hw-signer -p agent-signer --features tpm
+      - name: checked arithmetic, owner-core
+        working-directory: mobile/owner-core
+        run: |
+          cargo "+$CLIPPY_TOOLCHAIN" clippy --locked --features ffi
+          cargo "+$CLIPPY_TOOLCHAIN" clippy --locked --features ffi,test-chains
       - name: hw-signer
         working-directory: signer
         run: cargo test --locked -p hw-signer

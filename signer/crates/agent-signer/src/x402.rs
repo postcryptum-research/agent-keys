@@ -150,14 +150,10 @@ impl Session {
         }
         let mut valid_before = now().saturating_add(lifetime(timeout));
         if let Some(next) = self.period_next().await? {
-            let chain_now = self.chain_time().await?;
-            const LEAST_LIFE_SECS: u64 = 60;
-            if next - chain_now <= LEAST_LIFE_SECS {
-                bail!("this budget period ends in {} s, and a payment authorization ends with the period it is charged in: pay after the renewal", next - chain_now);
-            }
-            if valid_before > next {
-                valid_before = next;
-                eprintln!("x402:           the authorization ends with this budget period, in {} s", next - chain_now);
+            let (capped, left) = end_with_period(valid_before, next, self.chain_time().await?)?;
+            if capped < valid_before {
+                valid_before = capped;
+                eprintln!("x402:           the authorization ends with this budget period, in {left} s");
             }
         }
         let auth = Authorization {
@@ -363,11 +359,14 @@ where
     let mut chunk = FIRST_CHUNK;
     let mut lo = start;
     while lo <= end {
-        let hi = (lo + chunk - 1).min(end);
+        // `chunk` blocks from `lo`; the range's last block is never below its first
+        let hi = lo.saturating_add(chunk.saturating_sub(1)).min(end);
         match fetch(lo, hi).await {
             Ok(mut logs) => {
                 out.append(&mut logs);
-                lo = hi + 1;
+                // the last block there can be: nothing after it to read
+                let Some(next) = hi.checked_add(1) else { break };
+                lo = next;
             }
             // a node's range limit: narrow and retry; its error text is not printed each time
             Err(_) if chunk > MIN_CHUNK => chunk = (chunk / 2).max(MIN_CHUNK),
@@ -377,6 +376,20 @@ where
     Ok((out, (chunk < FIRST_CHUNK).then_some(chunk)))
 }
 
+/// An authorization under a budget per period ends with the period it is
+/// charged in: `valid_before` is cut to `next`, the next period's first
+/// second. Answers with the cut value and the period's seconds left. Refused
+/// when a minute or less is left, which is also the case where the period
+/// turned between the two reads of the chain's time (`next <= chain_now`).
+fn end_with_period(valid_before: u64, next: u64, chain_now: u64) -> Result<(u64, u64)> {
+    const LEAST_LIFE_SECS: u64 = 60;
+    let left = next.saturating_sub(chain_now);
+    if left <= LEAST_LIFE_SECS {
+        bail!("this budget period ends in {left} s, and a payment authorization ends with the period it is charged in: pay after the renewal");
+    }
+    Ok((valid_before.min(next), left))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,6 +397,21 @@ mod tests {
 
     fn block_on<F: std::future::Future>(f: F) -> F::Output {
         tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(f)
+    }
+
+    #[test]
+    fn an_authorization_ends_with_its_budget_period() {
+        // well inside the period: cut to the period's end, or left alone when it ends earlier
+        assert_eq!(end_with_period(2_000, 1_500, 1_000).unwrap(), (1_500, 500));
+        assert_eq!(end_with_period(1_200, 1_500, 1_000).unwrap(), (1_200, 500));
+        // a minute or less left: refused
+        assert!(end_with_period(2_000, 1_060, 1_000).unwrap_err().to_string().contains("ends in 60 s"));
+        assert_eq!(end_with_period(2_000, 1_061, 1_000).unwrap(), (1_061, 61));
+        // the period turned between the two reads of the chain's time: refused, no wrap
+        for (next, chain_now) in [(1_000, 1_000), (1_000, 1_001), (0, u64::MAX)] {
+            let refused = end_with_period(u64::MAX, next, chain_now).unwrap_err().to_string();
+            assert!(refused.contains("ends in 0 s"), "{next} {chain_now}: {refused}");
+        }
     }
 
     #[test]
@@ -442,5 +470,8 @@ mod tests {
         assert_eq!((found.len(), *calls.borrow()), (3, 3));
         // nothing narrowed, nothing to say
         assert_eq!(narrowed, None);
+        // the last block a chain can have: read once, and the scan ends
+        let (found, _) = block_on(scan_in_chunks(u64::MAX - 1, u64::MAX, |lo, hi| async move { Ok(vec![(lo, hi)]) })).unwrap();
+        assert_eq!(found, vec![(u64::MAX - 1, u64::MAX)]);
     }
 }

@@ -17,8 +17,9 @@ pub fn fingerprint(pk: &PublicKey) -> String {
     }
     bits >>= 4; // keep the top 100 of the 104 bits
     let mut chars = Vec::with_capacity(20);
-    for i in (0..20).rev() {
-        chars.push(ALPHABET[((bits >> (5 * i)) & 31) as usize]);
+    // the shifts 95, 90, … 0, most significant group first
+    for shift in (0u32..100).step_by(5).rev() {
+        chars.push(ALPHABET[(bits.checked_shr(shift).unwrap_or(0) & 31) as usize]);
     }
     let s = String::from_utf8(chars).expect("ascii");
     format!("{}-{}-{}-{}", &s[..5], &s[5..10], &s[10..15], &s[15..20])
