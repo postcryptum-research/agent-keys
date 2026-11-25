@@ -47,6 +47,21 @@ What the deployed contracts are compiled from, and what the accounts call.
    line in production use. Asking ZeroDev for the v3.3 report is the owner's
    step before an audit of this project. Moving to v4 means EntryPoint v0.9
    and a redeploy.
+
+   **What is deployed is that source.** The deployed implementation
+   `0xd6CEDDe84be40893d153Be9d467CD6aD37875b28` and factory
+   `0x2577507b78c2008Ff367261CB6285d44ba5eF2E9` are built from tag v3.3
+   (`contracts/lib/kernel`) with via-IR, `prague`, the optimizer at 200 runs
+   and no metadata. solc 0.8.28 and 0.8.29 both give that code; Kernel's
+   repository records no compiler. ZeroDev deploys through the CREATE2
+   deployer with salt 0, so the build's CREATE2 address being the deployed
+   one means the creation code is the same; and on Base Sepolia and Sepolia
+   the runtime code equals the build outside its immutable slots. Without
+   via-IR the build gives other addresses. The build uses Kernel's own
+   remappings, so the deployed Kernel decodes with the pinned Solady of
+   point 2 [V `scripts/third-party-code.sh`, 2026-11-25]. The FactoryStaker
+   `0xd703aaE79538628d27099B8c4f621bE4CCd142d5` is not reproduced: its owner
+   and salt are not those of Kernel's deploy script.
 2. **`AgentPolicy` decodes calls with Kernel's own `LibERC7579`, on
    purpose** [V `contracts/foundry.toml`: `lib/kernel/:solady/=lib/kernel/lib/solady/src/`;
    `AgentPolicy.sol` imports `kernel/lib/solady/src/accounts/LibERC7579.sol`;
@@ -166,8 +181,12 @@ the Android and npm packages, and GitHub's advisories [V].
 - The audit reports were read for scope, dates, commits and the findings
   named here, not end to end.
 - Whether ZeroDev holds an unpublished report on Kernel v3.2 or v3.3.
-- Whether the deployed Kernel v3.3 implementation and the P-256 verifier's
-  code equal a build of their sources. Only Kernel's `accountId` was read.
+- The FactoryStaker against its source (its owner and salt are unknown).
+- The P-256 verifier against its source: its salt is unknown, so its
+  address cannot be derived. Its code is the same on both chains, 2,066
+  bytes with the keccak hash
+  `0x9933b3f70809361dcfebe1f731b129890454cc29af5b32840dcae92400a8826b`
+  [V 2026-11-25].
 - Every arrangement of a batch whose pointer words lie past the end of
   `callData` (point 2 of the on-chain list): two are tested, the rest
   argued.
