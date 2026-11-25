@@ -71,7 +71,7 @@ Legend: **[V]** — verified by reading the code (file:line), **[I]** — infere
 | `operator/src/erc8004/validation.ts:145,185` | `validationRequest` / `validationResponse` |
 | `operator/src/solvernets/daemon-init.ts:223` | metadata publisher (IdentityRegistry) |
 | `operator/src/earning/bootstrap.ts:2114,2153` | self-bond: top-up Safe, deploy Safe (protocol-kit deployment tx) |
-| `operator/src/earning/bootstrap.ts:2219-2463` | self-bond: create/activate/registerAgents/deploy/approve/stake via `executeSafeTxBatch`/`executeSafeTxDirect` |
+| `operator/src/earning/bootstrap.ts:2219-2463` | self-bond: create/activate/registerAgents/deploy/approve/stake via `executeSafeTxBatch`/`executeSafeTxDirect`. Under a mandate the batch must end with `approve(spender, 0)`, even when the stake has used the allowance up: `AgentPolicy` refuses an operation that leaves an allowance of the agent's standing (`docs/CONTRACTS.md`, no standing allowances) |
 | `operator/src/earning/bootstrap.ts:1749` | mech `MechMarketplace.create` through the Safe (`executeSafeTxDirect`) |
 | `operator/src/earning/orphan-sweep.ts:175,251,284`, `withdraw/run-withdraw-plan.ts:150` | sweep/withdraw from the agent |
 | `operator/src/earning/migrate-agent-id.ts:226`, `earning/steps/fleet-identity-register.ts:43` | identity migrations/registration |

@@ -824,8 +824,112 @@ contract AgentPermissionTest is Test {
     function test_token_unlimitedApproveIsRefused() public {
         address spender = makeAddr("spender");
         _expectRefused(_agentOp(address(token), 0, abi.encodeCall(MockToken.approve, (spender, type(uint256).max))));
-        _send(_agentOp(address(token), 0, abi.encodeCall(MockToken.approve, (spender, 5 ether))));
-        assertEq(token.allowance(acct, spender), 5 ether);
+        // a capped approval passes, withdrawn in the same operation (no standing allowances)
+        _send(_agentBatchWith(AGENT, AGENT_ID, _grantAndWithdraw(spender, 5 ether)));
+        assertEq(token.allowance(acct, spender), 0);
+    }
+
+    /// `approve(spender, amount)` and then `approve(spender, 0)`, on the mock token.
+    function _grantAndWithdraw(address spender, uint256 amount) internal view returns (Execution[] memory calls) {
+        calls = new Execution[](2);
+        calls[0] = Execution(address(token), 0, abi.encodeCall(MockToken.approve, (spender, amount)));
+        calls[1] = Execution(address(token), 0, abi.encodeCall(MockToken.approve, (spender, 0)));
+    }
+
+    // --- no standing allowances: what the agent grants, it withdraws in the same operation ---
+
+    /// An allowance outlives a revoke of the mandate: the spender pulls from
+    /// it whenever it likes. So an allowance the agent grants must be
+    /// withdrawn with `approve(spender, 0)` later in the same operation.
+    function test_allowances_noneOutlivesTheOperation() public {
+        address spender = makeAddr("spender");
+        address other = makeAddr("other spender");
+        bytes memory grant = abi.encodeCall(MockToken.approve, (spender, 5 ether));
+        // alone, it would stand: refused
+        _expectRefused(_agentOp(address(token), 0, grant));
+        // withdrawn: passes, and nothing stands after it
+        _send(_agentBatchWith(AGENT, AGENT_ID, _grantAndWithdraw(spender, 5 ether)));
+        assertEq(token.allowance(acct, spender), 0);
+        // withdrawn for another spender only: refused
+        Execution[] memory calls = _grantAndWithdraw(spender, 5 ether);
+        calls[1] = Execution(address(token), 0, abi.encodeCall(MockToken.approve, (other, 0)));
+        _expectRefused(_agentBatchWith(AGENT, AGENT_ID, calls));
+        // granted again after the withdrawal: refused
+        Execution[] memory three = new Execution[](3);
+        (three[0], three[1]) = (calls[0], Execution(address(token), 0, abi.encodeCall(MockToken.approve, (spender, 0))));
+        three[2] = Execution(address(token), 0, abi.encodeCall(MockToken.approve, (spender, 3 ether)));
+        _expectRefused(_agentBatchWith(AGENT, AGENT_ID, three));
+        // withdrawing an allowance granted earlier (by the owner, say) passes on its own
+        vm.prank(acct);
+        token.approve(other, 1 ether);
+        _send(_agentOp(address(token), 0, abi.encodeCall(MockToken.approve, (other, 0))));
+        assertEq(token.allowance(acct, other), 0);
+    }
+
+    /// A Safe's allowances are the Safe's: one the account grants is not
+    /// withdrawn by the Safe's `approve(spender, 0)`, nor the other way round;
+    /// inside a Safe's batch a grant and its withdrawal pass together.
+    function test_allowances_theHolderWithdrawsWhatItGranted() public {
+        Safe safe = _withSafeApprovals();
+        address spender = makeAddr("spender");
+        bytes memory grant = abi.encodeCall(MockToken.approve, (spender, 5 ether));
+        bytes memory withdraw = abi.encodeCall(MockToken.approve, (spender, 0));
+        // the Safe grants and leaves it standing: refused
+        _expectRefused(_agentViaSafe(safe, _safeExec(safe, address(token), 0, grant, Enum.Operation.Call, 0)));
+        // granted and withdrawn in the Safe's batch: passes
+        bytes memory txs = bytes.concat(_legOf(0, address(token), 0, grant), _legOf(0, address(token), 0, withdraw));
+        _send(_agentViaSafe(safe, _batch(safe, address(multiSend), txs, Enum.Operation.DelegateCall)));
+        assertEq(token.allowance(address(safe), spender), 0);
+        // the account grants, the Safe withdraws: refused
+        Execution[] memory calls = new Execution[](3);
+        calls[0] = Execution(address(token), 0, grant);
+        calls[1] = Execution(address(nonceAssert), 0, abi.encodeCall(SafeNonceAssert.check, (address(safe), safe.nonce())));
+        calls[2] = Execution(address(safe), 0, _safeExec(safe, address(token), 0, withdraw, Enum.Operation.Call, 0));
+        _expectRefused(_agentBatchWith(AGENT, SAFE_ID, calls));
+        // the Safe grants, the account withdraws: refused
+        calls[0] = Execution(address(nonceAssert), 0, abi.encodeCall(SafeNonceAssert.check, (address(safe), safe.nonce())));
+        calls[1] = Execution(address(safe), 0, _safeExec(safe, address(token), 0, grant, Enum.Operation.Call, 0));
+        calls[2] = Execution(address(token), 0, withdraw);
+        _expectRefused(_agentBatchWith(AGENT, SAFE_ID, calls));
+        // increaseAllowance grants as approve does
+        bytes memory increase = abi.encodeWithSelector(bytes4(0x39509351), spender, uint256(1 ether));
+        _expectRefused(_agentOpWith(AGENT, SAFE_ID, address(token), 0, increase));
+        assertEq(token.allowance(acct, spender), 0);
+        assertEq(token.allowance(address(safe), spender), 0);
+    }
+
+    /// The Safe mandate of `_withSafe`, with approvals of the mock token
+    /// (approve, increaseAllowance) within its limits.
+    function _withSafeApprovals() internal returns (Safe safe) {
+        Safe singleton = new Safe();
+        SafeProxyFactory safeFactory = new SafeProxyFactory();
+        address[] memory owners = new address[](1);
+        owners[0] = acct;
+        bytes memory setup = abi.encodeCall(
+            Safe.setup, (owners, 1, address(0), "", address(0), address(0), 0, payable(address(0)))
+        );
+        safe = Safe(payable(address(safeFactory.createProxyWithNonce(address(singleton), setup, 0))));
+        multiSend = new MultiSendCallOnly();
+        address[] memory targets = new address[](4);
+        bytes4[] memory selectors = new bytes4[](4);
+        (targets[0], selectors[0]) = (address(safe), Safe.execTransaction.selector);
+        (targets[1], selectors[1]) = (address(multiSend), MultiSendCallOnly.multiSend.selector);
+        (targets[2], selectors[2]) = (address(token), MockToken.approve.selector);
+        (targets[3], selectors[3]) = (address(token), bytes4(0x39509351)); // increaseAllowance(address,uint256)
+        bytes[] memory entries = new bytes[](2);
+        entries[0] = _policyEntry(targets, selectors, _tokenCaps());
+        entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(agentX, agentY));
+        ValidationId vId = ValidatorLib.permissionToIdentifier(SAFE_ID);
+        Execution[] memory batch = new Execution[](2);
+        batch[0] = Execution(acct, 0, _installCall(vId, Kernel(payable(acct)).currentNonce(), abi.encode(entries)));
+        batch[1] = Execution(acct, 0, abi.encodeCall(Kernel.grantAccess, (vId, Kernel.execute.selector, true)));
+        _send(
+            _rootOp(
+                abi.encodeWithSelector(
+                    Kernel.execute.selector, ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))), ExecLib.encodeBatch(batch)
+                )
+            )
+        );
     }
 
     function test_token_selectorWithoutLimitIsRefused() public {
@@ -1695,9 +1799,10 @@ contract AgentPermissionTest is Test {
     /// An approval and a transfer of one token in one operation share the cap.
     function test_tokenCapPerOperation_approveAndTransferShareIt() public {
         _withPayees();
-        Execution[] memory calls = new Execution[](2);
+        Execution[] memory calls = new Execution[](3);
         calls[0] = Execution(address(token), 0, abi.encodeCall(MockToken.approve, (PAYEE, 6 ether)));
         calls[1] = _transferLeg(6 ether);
+        calls[2] = Execution(address(token), 0, abi.encodeCall(MockToken.approve, (PAYEE, 0))); // no standing allowance
         _expectRefused(_agentBatchWith(AGENT, PYE_ID, calls));
         calls[1] = _transferLeg(4 ether);
         _send(_agentBatchWith(AGENT, PYE_ID, calls));
@@ -1767,9 +1872,16 @@ contract AgentPermissionTest is Test {
 
     function test_payees_spenderAndTransferFromAreBound() public {
         _withPayees();
-        _send(_payeeOp(address(token), abi.encodeCall(MockToken.approve, (PAYEE, 2 ether))));
-        assertEq(token.allowance(acct, PAYEE), 2 ether);
-        _expectRefused(_payeeOp(address(token), abi.encodeCall(MockToken.approve, (STRANGER, 1))));
+        // to a listed spender (withdrawn in the same operation: no standing allowances)
+        Execution[] memory calls = new Execution[](2);
+        calls[0] = Execution(address(token), 0, abi.encodeCall(MockToken.approve, (PAYEE, 2 ether)));
+        calls[1] = Execution(address(token), 0, abi.encodeCall(MockToken.approve, (PAYEE, 0)));
+        _send(_agentBatchWith(AGENT, PYE_ID, calls));
+        assertEq(_tokenSpent(address(token)), 2 ether);
+        // to a spender not listed: refused, withdrawn or not
+        calls[0] = Execution(address(token), 0, abi.encodeCall(MockToken.approve, (STRANGER, 1)));
+        calls[1] = Execution(address(token), 0, abi.encodeCall(MockToken.approve, (STRANGER, 0)));
+        _expectRefused(_agentBatchWith(AGENT, PYE_ID, calls));
         // transferFrom: the recipient is the second argument, whoever `from` is
         _expectRefused(_payeeOp(address(token), abi.encodeCall(MockToken.transferFrom, (PAYEE, STRANGER, 1))));
         _expectRefused(_payeeOp(address(token), abi.encodeCall(MockToken.transferFrom, (STRANGER, STRANGER, 1))));
