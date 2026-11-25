@@ -21,25 +21,23 @@ contract SettlementForVersion {
 }
 
 /// @dev Every deployable contract answers `VERSION()` with its version, so that
-/// an instance on chain says which code it is. All started at 0.1.0; a
-/// change to a contract's bytecode raises its version (CLAUDE.md, versions
-/// and releases), and that contract's line here then names its own.
+/// an instance on chain says which code it is. Every contract stays at 0.1.0
+/// until the first audited release; from then on a change to a contract's
+/// bytecode raises its version (CLAUDE.md, rule 9), and that contract's line
+/// here then names its own.
 contract VersionsTest is Test {
     string internal constant FIRST = "0.1.0";
-    // install data of exactly the expected length (#154)
-    string internal constant P256_MODULES = "0.1.1";
 
     function test_everyDeployableContractCarriesItsVersion() public {
         // Contracts without constructor arguments
-        assertEq(new P256Validator().VERSION(), P256_MODULES, "P256Validator");
-        assertEq(new P256RecoveryValidator().VERSION(), P256_MODULES, "P256RecoveryValidator");
-        assertEq(new P256Signer().VERSION(), P256_MODULES, "P256Signer");
+        assertEq(new P256Validator().VERSION(), FIRST, "P256Validator");
+        assertEq(new P256RecoveryValidator().VERSION(), FIRST, "P256RecoveryValidator");
+        assertEq(new P256Signer().VERSION(), FIRST, "P256Signer");
         assertEq(new SafeNonceAssert().VERSION(), FIRST, "SafeNonceAssert");
         assertEq(new DemoCounter().VERSION(), FIRST, "DemoCounter");
         assertEq(new Logger(address(this), address(this), bytes32(0), bytes32(0)).VERSION(), FIRST, "Logger");
         // Contracts with constructor arguments, given stand-ins
-        // 0.1.1: a venue's spender is refused as a target (issue #149)
-        assertEq(new AgentPolicy(address(new SafeNonceAssert())).VERSION(), "0.1.1", "AgentPolicy");
+        assertEq(new AgentPolicy(address(new SafeNonceAssert())).VERSION(), FIRST, "AgentPolicy");
         assertEq(new CowSwapDecoder(address(new SettlementForVersion())).VERSION(), FIRST, "CowSwapDecoder");
         IAAEntryPoint entryPoint = IAAEntryPoint(EntryPointLib.deploy());
         assertEq(new WhitelistPaymaster(entryPoint, address(this)).VERSION(), FIRST, "WhitelistPaymaster");

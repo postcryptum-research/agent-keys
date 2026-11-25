@@ -33,7 +33,7 @@ import {P256Point} from "./P256Point.sol";
 contract P256Signer is ISigner {
     /// @dev The version of this contract's code (semantic versioning), raised with
     /// any change to its bytecode. A release tag names the versions it carries.
-    string public constant VERSION = "0.1.1";
+    string public constant VERSION = "0.1.0";
 
     // A P-256 public key in affine coordinates, each below the field prime p
     struct PublicKey {

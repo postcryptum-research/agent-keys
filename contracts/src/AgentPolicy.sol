@@ -102,7 +102,7 @@ interface IERC3009State {
 contract AgentPolicy is IPolicy {
     /// @dev The version of this contract's code (semantic versioning), raised with
     /// any change to its bytecode. A release tag names the versions it carries.
-    string public constant VERSION = "0.1.1";
+    string public constant VERSION = "0.1.0";
 
     struct Config {
         uint48 validUntil; // 0 = not installed

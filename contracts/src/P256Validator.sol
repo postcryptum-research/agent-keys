@@ -34,7 +34,7 @@ contract P256Validator is IValidator {
     /// any change to its bytecode. A release tag names the versions it carries.
     /// `P256RecoveryValidator` inherits it (a constant cannot be redeclared), so
     /// a change to either contract raises it.
-    string public constant VERSION = "0.1.1";
+    string public constant VERSION = "0.1.0";
 
     // A P-256 public key in affine coordinates, each below the field prime p
     struct PublicKey {

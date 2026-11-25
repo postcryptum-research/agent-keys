@@ -81,9 +81,12 @@ scripts/source-record.sh                          # every contract's bytecode an
    elsewhere gets its cut values restored from the link target or the chain.
 9. **Versions and releases.** Every deployable contract carries
    `string public constant VERSION = "x.y.z"` (semantic versioning, per
-   contract, from `0.1.0`), and a change to a contract's bytecode raises
-   its version: CI's `source-record` job fails a pull request where a
-   contract's bytecode differs from the base's and its version does not. A
+   contract, from `0.1.0`). Until the first audited release every contract
+   stays at `0.1.0`: a fix changes the code and not the version, and the
+   test networks are redeployed to carry it. From the first release tag on,
+   a change to a contract's bytecode raises its version: CI's
+   `source-record` job then fails a pull request where a contract's
+   bytecode differs from the base's and its version does not. A
    release is tagged at each stage: `vX.Y.Z-pre-internal-audit`,
    `vX.Y.Z-pre-external-audit` (the commit given to the auditors),
    `vX.Y.Z-post-external-audit` (after the fix review), and `vX.Y.Z` (the
