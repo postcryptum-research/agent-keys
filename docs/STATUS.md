@@ -60,8 +60,10 @@ tx [`0x785332105fd8085d50e542ff9f677eba964399bbc0d71333ddd71fed03e669bb`](https:
   the pool's own code on a fork of Base Sepolia; a swap at Uniswap's
   router within the owner's pairs and lowest prices, as a call a venue's
   decoder judged, shown against the router's own code on the same fork and
-  not on a chain yet; which calls of Aave, Compound, Lido and others can go
-  on a mandate, and which never: [`docs/DAPPS.md`](DAPPS.md).
+  not on a chain yet; a pool's functions that name a beneficiary, each
+  argument held to a rule the owner wrote, shown against Aave's pool there
+  too; which calls of Aave, Compound, Lido and others can go on a mandate,
+  and which never: [`docs/DAPPS.md`](DAPPS.md).
 - Existing agent frameworks on top — Coinbase AgentKit, a Claude Code /
   OpenClaw skill, Jinn, Olas and ElizaOS, each run on Base Sepolia; the
   ElizaOS agent also pays for APIs with x402

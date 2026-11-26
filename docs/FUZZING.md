@@ -358,6 +358,60 @@ was not broken on purpose: no test has a decoder that builds other bytes.
 fork run is of one pool on one test network at one block. No swap was sent
 to a chain, and no chain has the decoder or this policy yet.
 
+## Contracts: calls with a rule for each argument
+
+`contracts/test/CallRules.t.sol` holds `CallRulesDecoder` on its own, under
+the policy with a stand-in pool, and against Aave V3's pool as deployed
+([#80](https://github.com/postcryptum-research/agent-keys/issues/80)).
+
+| Test | What must hold |
+|---|---|
+| `testFuzz_rules_acceptedMeansEveryRuleHolds` | for any four words of a supply: the call passes exactly when its three fixed words are what the rules say, and it is then charged the fourth |
+| `test_rules_eachWordIsHeldToItsRule` | each kind of rule at its boundary: the account as a whole word, a set value, a bound at and over it, a free word |
+| `test_rules_theCallIsItsFunctionsShape` | a listed selector, and exactly as many words as its rules: a word or a byte more or less is refused |
+| `test_rules_aBrokenConfigAllowsNothing`, `test_rules_checkConfig` | a function twice, an unknown kind, a value where none belongs, two charged words, a charge in no token, nine functions, seventeen words |
+| `test_rules_aConfigAtTheLimitsIsJudgedWithinTheGasBound` | 8 functions of 16 words, the last one called: 70,135 gas, of the 150,000 the policy gives a decoder |
+| `test_poolRules_*` (5) | under a mandate: a supply for the account is made and charged, a withdrawal to it is not charged; for somebody else each is refused, at the registration and at the pairing; an unlisted function, another asset, native value; the cap and the shared budget; the pool off every allow-list |
+
+**Against Aave's pool.** `PoolForkTest` runs on a fork of Base Sepolia with
+the pool `0x8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27`, by the pool's
+functions that name a beneficiary: the agent's supply and withdrawal go
+through the policy to the pool, a supply for somebody else, a withdrawal to
+somebody else and a borrow are refused, and two tests show on the pool's
+own code why the rules are what they are (the pool credits whoever the
+caller names; it takes a supply from its caller only).
+
+```sh
+cd contracts
+FORK_BASE_SEPOLIA_RPC_URL=<a Base Sepolia RPC> \
+  forge test --evm-version osaka --match-contract PoolForkTest
+```
+
+Run on 2026-11-26: 4 tests pass. Without the variable they are skipped.
+
+**That it bites.** Thirty-seven parts of the decoder were broken in the
+source one at a time, and each is found by a test, on the first run:
+
+- **the call's shape:** a selector; found by its selector; listed; not
+  listed twice; not longer and not shorter than its rules;
+- **each kind:** the account's word, as a whole word; a set value; a bound,
+  and that it is inclusive; a free word;
+- **the charge:** one charged word, in a token, which is an address; the
+  amount is the word; the token is the rule's;
+- **the answer:** a call and not an order; no native value;
+- **a broken config in `judge`:** the limits of functions and words, a value
+  where none belongs (two kinds), an unknown kind;
+- **`checkConfig`:** each of its conditions, the code at the charged token
+  among them;
+- **the constructor and the rest:** code at the venue and at the spender,
+  which is which, `untouched`.
+
+**What it does not cover.** The decoder reads words and not the protocol:
+that a rule list is the right one for a function is the owner's reading of
+that protocol, and each recipe in `docs/DAPPS.md` is held by a test of its
+own or marked `[I]`. The fork run is of one asset on one test network. No
+call was sent to a chain.
+
 ## Rust
 
 Coverage-guided fuzzing with `cargo-fuzz` (libFuzzer, a nightly toolchain)
