@@ -320,9 +320,9 @@ before it branches on call or order.
 budget were run again on this policy on 2026-11-26, and each of the ten
 breaks (`scripts/kontrol-break.py`) with them: all eleven pass and every
 break fails its proof (the record is under "Beyond fuzzing" below). The
-rule for a decoder's call has no proof of its own yet
-([#225](https://github.com/postcryptum-research/agent-keys/issues/225));
-the tests and the breaks above hold it.
+rule for a decoder's call has four proofs of its own since
+[#225](https://github.com/postcryptum-research/agent-keys/issues/225),
+listed there too.
 
 **The CLI swaps, and the phone reads the venue's terms as the decoder
 does.** Two of the CLI's local-chain tests run the policy and the decoder
@@ -754,8 +754,28 @@ What breaking them one at a time found: with the budgets set at first (a token c
 - **The policy deployed since 2026-11-26** adds the batch rule of #206. Kontrol ran on it in that pull request's checks ([run 45702180453](https://github.com/postcryptum-research/agent-keys/actions/runs/45702180453)): the eleven proofs passed and each of the ten breaks failed its proof.
 - **The policy that admits a decoder's call** (#80, the section "a call a decoder judged" above): run on 2026-11-26 on a workstation of 24 cores with the same image. The eleven proofs passed, none vacuous, in 17 min 41 s with the build and eight workers; each of the ten breaks made its proof fail. The source proved differs from the committed one in sixteen comment lines, and comments are not in the bytecode (`bytecode_hash = "none"`).
 
+**A call a venue's decoder judged** ([#225](https://github.com/postcryptum-research/agent-keys/issues/225)). `contracts/test/VenueCallProof.t.sol` states the rule of #222 with symbolic amounts, under a mandate with one venue whose decoder answers what its order says:
+
+| Proof | What holds, for any amounts |
+|---|---|
+| `check_venueCall_valueCounted` | the native value of a call a decoder judged is accepted only within the cap per operation and booked exactly; a refusal books nothing |
+| `check_venueCall_priced` | the price a decoder puts on a call is accepted only within the token's cap per operation and booked exactly |
+| `check_venueCall_onlyThatCall` | the leg after a registration made with another value than the one registered is refused |
+| `check_venueCall_aRegistrationAlone` | a registration without its call is refused, as the only leg of a batch and as a single call, whatever it registers, and books nothing |
+
+| Break | Proof that must fail |
+|---|---|
+| `venue-call-value-counted`: the judged call's value not counted | `check_venueCall_valueCounted` |
+| `venue-call-price-capped`: the token's cap off by one for a registration | `check_venueCall_priced` |
+| `venue-call-is-the-registered-one`: the leg's hash not compared | `check_venueCall_onlyThatCall` |
+| `venue-call-registration-alone`: the check where validation ends removed | `check_venueCall_aRegistrationAlone` |
+
+The third proof rests on the prover treating the hash as free of collisions. `contracts/test/VenueCallProofSamples.t.sol` runs the four statements on sample values under `forge test`, and holds that the cases they are about are accepted at all.
+
+**The run of 2026-11-26**, on a workstation of 24 cores with the pinned image, on the policy of #228: the four proofs pass, none vacuous, in 13 min 2 s with the build and four workers; each of the four breaks makes its proof fail with a failing node. CI's `kontrol` workflow now builds both harnesses, proves all fifteen statements and runs all fourteen breaks.
+
 **What it does not prove** ([#130](https://github.com/postcryptum-research/agent-keys/issues/130)):
-- **A decoder's call.** That a call a venue's decoder judged is admitted only as the leg after its registration, only at that decoder's venue, with its value counted: tests and breaks hold it, no proof ([#225](https://github.com/postcryptum-research/agent-keys/issues/225)).
+- **Of a decoder's call, the target and the calldata.** The four proofs below hold its value, its price, that it is the registered call as far as its value goes, and that a registration alone is refused. That the hash also binds the venue and the calldata is a matter of fixed shapes and not of amounts: the tests hold it (`VenueCallPairing.t.sol`). Nothing is proven of any real decoder's judgment: the harness's decoder answers what it is told.
 - **Any number of legs.** The batch, Safe and multiSend proofs fix the number of legs at two. A loop over a length the caller chooses stays with the fuzzing above.
 - **Any encoding.** The shapes are well-formed encodings with symbolic amounts. Symbolic offsets, short or trailing bytes stay with the parsers' tests and the fuzzing.
 - **Faithfulness inside a Safe.** The faithfulness proofs execute the account's single and batch paths. A Safe executing its transaction is not modelled; the differential tests are the evidence there, and that evidence missed #190: a Safe transaction with a nonzero `safeTxGas` does not revert when its inner call fails, so a call the policy judged could go unmade, a withdrawal of an allowance among them. The fuzzing and this harness built Safe transactions with `safeTxGas` and `baseGas` at 0 and varied only `gasPrice`. The policy refuses both words other than 0 since #191. Since #193 the differential in `PolicyFuzz.t.sol` draws each of the three words other than 0 now and then (1, or any word) and requires the refusal, not only that the source and the recorded instance agree. This harness still builds them at 0, and neither runs a Safe's execution. A unit test does: `test_safe_aFailingInnerCallFailsTheOperation` (`AgentPermission.t.sol`) sends #190's operation with all three words at 0 through the EntryPoint, Kernel's batch, a Safe and the token. Validation accepts it, the withdrawal reverts at execution, the Safe reverts with it, and the operation's execution fails: no allowance stands and the Safe's nonce does not move. With the rule on `safeTxGas` removed and the withdrawal given a `safeTxGas` of 1, that test fails [V 2026-11-25]. That is one shape of Safe transaction run, not a proof over all of them.
