@@ -26,6 +26,8 @@ commit `e48b93e001f34f460bd4845d231b8e0ee5d26ad6` builds them, every contract at
 | `WhitelistPaymaster` | a gas sponsor with a budget per account | the EntryPoint; its owner | `0x657792557C1D40f2Da031FD7aB277078D2c0a4cb` |
 | `IVenueDecoder` | what a trading venue is to the policy (interface) | the policy; the owner's tools | none: an interface |
 | `CowSwapDecoder` | CoW Protocol's orders under that interface | the policy; the owner's tools | `0x42F62bF7134F5eF6d46d4BC07d806E77D1Df641a` |
+| `VenuePairs` | the listed pairs and their lowest prices (library) | the 1inch decoder | none: compiled into it |
+| `OneInchLimitOrderDecoder` | plain 1inch limit orders under that interface | the policy; the owner's tools | not deployed yet |
 | `DemoCounter` | a demo target | anyone; the agent in demos | `0x29da894F3E456CAC92b3EC76710524E74411E99f` |
 
 The addresses are the file's current entries [V `contracts/deployments/84532.json`].
@@ -768,6 +770,107 @@ domain separator it keeps names the chain [V
 `contracts/deployments/84532.json`, `docs/DEPLOYMENTS.md`]. Sepolia's
 earlier decoder is `cowSwapDecoderV1` in
 `contracts/deployments/11155111.json`.
+
+## VenuePairs
+
+`contracts/src/venues/VenuePairs.sol`. A library of internal functions: the
+pairs an owner lets an agent trade, each one way with a lowest price, and
+the two checks every decoder makes of them [V source]. The rules are those
+of `CowSwapDecoder`, which keeps its own copy: its deployed code does not
+change when a second venue arrives.
+
+- `check(pairs, sellToken, buyToken, sellAmount, buyAmount)` reverts unless
+  the pair is listed exactly once (`PairNotListed`, `PairListedTwice`), with
+  two different tokens and a price, and
+  `buyAmount · perSell ≥ sellAmount · minBuy` in 512 bits
+  (`BelowTheLowestPrice`). A list of more than `MAX_PAIRS` = 16 allows
+  nothing (`InvalidConfig`). It does not rest on `checkList`.
+- `checkList(pairs)` reverts `InvalidConfig` unless the list has one to
+  `MAX_PAIRS` pairs, non-zero and distinct tokens, a price in both terms and
+  no pair twice.
+
+## OneInchLimitOrderDecoder
+
+`contracts/src/venues/OneInchLimitOrderDecoder.sol`. `IVenueDecoder` for a
+plain order of 1inch's Limit Order Protocol v4, which is part of 1inch's
+router, AggregationRouterV6, at `0x111111125421cA6dc452d289314280a0f8842A65`
+[V source]. The CLI and the phone do not know this venue yet: the decoder
+and its tests are the first step.
+
+**State.** None: no storage, no upgrade path, no `delegatecall`, no
+`selfdestruct`. The router's address and its EIP-712 domain separator are
+kept as immutables (`venue`, `spender`, `domainSeparator`). The router
+pulls the sold token itself, so it is both the venue's contract and the
+spender [V source].
+
+**The constructor asks the router twice** [V source;
+`test_constructor_refusesARouterItDoesNotHashLike`]:
+
+- `eip712Domain()`: the domain must have a name, a version, this chain and
+  this router, and no other field (`NotTheRoutersDomain`). The separator is
+  built from the name and version the router gives.
+- `hashOrder(probe)`: the router's own hash of an order with a different
+  number in every word must be the one built here (`NotTheRoutersHash`). A
+  decoder cannot be deployed for a router that hashes otherwise.
+
+**Config.** `abi.encode(Config)`: `maxLife` (the most seconds between
+registering an order and its expiration) and up to 16 pairs (`VenuePairs`).
+
+**Rules of `judge`**, each with what it rests on in the router [V source;
+V `contracts/test/OneInchTrading.t.sol` `OneInchRealRouterTest`, run against
+the router's code from Ethereum, Base, Sepolia and Base Sepolia]:
+
+| Rule | Error | Why |
+|---|---|---|
+| The order is exactly eight ABI words, read as numbers | `NotAnOrder` | the router hashes the eight words as the taker hands them over |
+| The maker's word is the account's address, with nothing above it | `NotTheAccountsOrder` | the router reads an address from a word's low 160 bits and hashes the whole word: a word with high bits is the same maker under another hash (`test_real_aDirtyMakerWordIsTheSameMakerUnderAnotherHash`) |
+| `receiver` is zero or the maker's word | `ProceedsLeaveTheAccount` | the router pays the receiver, and reads zero as the maker |
+| Both token words are addresses | `NotAnAddress` | the pair is compared by address |
+| No partial fills (bit 255 of `makerTraits`) | `PartiallyFillable` | of an order filled in parts the router asks the maker on the first fill only (`test_real_anOrderFilledInPartsIsAskedOnce`); an order filled whole fills once, by a bit per maker and nonce |
+| Bits 160 to 254 of `makerTraits` are zero: no extension, no call before or after the fill, no Permit2, no unwrapping, no epoch, no several fills | `NotAPlainOrder` | without the extension flag the router refuses any extension, so no amount getter, predicate or transfer suffix runs; the two call flags would still call the maker itself (`test_real_theInteractionFlagsCallTheMaker`) |
+| The expiration (bits 80 to 119) is not zero | `NeverExpires` | zero is "never" to the router (`test_real_anOrderWithoutAnExpirationNeverEnds`) |
+| `makingAmount` is not zero; both amounts fit 128 bits | `NothingToSell`, `AmountTooLarge` | the range the router's own arithmetic is written for |
+| The pair is listed, at no less than its lowest price | `VenuePairs` errors | as at every venue |
+
+The agent picks the salt, the nonce (bits 120 to 159) and the one taker
+allowed (bits 0 to 79) freely. It returns `mostSold = makingAmount` (the
+router adds no fee to a plain order), `validTo` = the expiration,
+`notBefore = expiration − maxLife` (zero if the expiration is not above
+`maxLife`) and the EIP-712 digest of the eight words under the router's
+domain. The digest is held to forge's EIP-712, and to the router's own
+`hashOrder` on four chains [V `test_digest_agreesWithAnIndependentEip712`,
+`test_digest_isTheOneTheRouterGave`].
+
+**Other functions.**
+
+- `untouched(account, order)` reads the order's one-fill bit at the router
+  (`bitInvalidatorForOrder`). The bit belongs to the maker and the nonce:
+  another order of the account with the same nonce sets it too, and a fill
+  and a cancellation set it alike [V `test_untouched_readsTheOrdersBit`,
+  `test_oneInch_ordersOfOneNonceFillOnce`].
+- `checkConfig(config)` (a view) returns true or reverts `InvalidConfig`: a
+  non-zero `maxLife`, a list `VenuePairs.checkList` accepts, and code at
+  every token's address. The router takes a transfer at an address without
+  code for done, so an order that buys such a "token" gives the sold amount
+  away (`test_real_aTokenWithoutCodeIsTakenForPaid`). `judge` cannot ask
+  for code inside validation; the owner's tools ask here before the mandate
+  is made.
+
+**What the owner accepts with this venue.**
+
+- **The allowance is to the whole router.** Its other functions pull from
+  their own caller only; the agent cannot call the router, which is a
+  venue's place [V `test_oneInch_theRouterIsNotATarget`,
+  `test_oneInch_theOwnerCancelsAtTheRouter`]. The router's code was read
+  for the order path, not audited by us [I].
+- **The router's owner can pause fills** [V source: `_fill` is
+  `whenNotPaused`]. A paused router fills nothing; the charge of a
+  registered order stays until the budget renews.
+- **Who fills a plain order.** Any taker that has the order and its
+  signature can fill it at the router. 1inch's own order book builds orders
+  with a fee extension, which this decoder refuses; whether it lists a plain
+  order was not tested [I]. Until a decoder reads that extension, a plain
+  order is filled by a taker the agent's operator hands it to.
 
 ## DemoCounter
 

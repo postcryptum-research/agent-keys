@@ -9,6 +9,8 @@ import {P256Signer} from "../src/P256Signer.sol";
 import {SafeNonceAssert} from "../src/SafeNonceAssert.sol";
 import {WhitelistPaymaster} from "../src/WhitelistPaymaster.sol";
 import {CowSwapDecoder} from "../src/venues/CowSwapDecoder.sol";
+import {OneInchLimitOrderDecoder} from "../src/venues/OneInchLimitOrderDecoder.sol";
+import {RouterStandIn} from "./OneInchLimitOrderDecoder.t.sol";
 import {DemoCounter} from "../src/demo/DemoCounter.sol";
 import {Logger} from "../src/demo/Logger.sol";
 import {IEntryPoint as IAAEntryPoint} from "account-abstraction/interfaces/IEntryPoint.sol";
@@ -39,6 +41,9 @@ contract VersionsTest is Test {
         // Contracts with constructor arguments, given stand-ins
         assertEq(new AgentPolicy(address(new SafeNonceAssert())).VERSION(), FIRST, "AgentPolicy");
         assertEq(new CowSwapDecoder(address(new SettlementForVersion())).VERSION(), FIRST, "CowSwapDecoder");
+        assertEq(
+            new OneInchLimitOrderDecoder(address(new RouterStandIn())).VERSION(), FIRST, "OneInchLimitOrderDecoder"
+        );
         IAAEntryPoint entryPoint = IAAEntryPoint(EntryPointLib.deploy());
         assertEq(new WhitelistPaymaster(entryPoint, address(this)).VERSION(), FIRST, "WhitelistPaymaster");
     }
