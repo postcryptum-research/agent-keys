@@ -340,9 +340,10 @@ path adds nothing to it.
 4. **A review row to reword** (step 5): "Token payee: … anyone — the agent
    picks the recipient and the spender" is shown for a token on which this
    mandate lets the agent call nothing. It errs on the careful side.
-5. **The app shows nothing visible when it cannot reach the laptop's
-   session:** the error is printed under the buttons. It should be a
-   dialog.
+5. **The app showed nothing visible when it could not reach the laptop's
+   session:** the error was printed under the buttons. From app 0.4.4 a
+   failure opens a dialog
+   ([#217](https://github.com/postcryptum-research/agent-keys/pull/217)).
 
 They are recorded on
 [#80](https://github.com/postcryptum-research/agent-keys/issues/80).

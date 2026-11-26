@@ -69,6 +69,10 @@ key, unconfirmed, say so at the top of its screen, show the key when the
 handover asks, and go on; the script checks the app's own log and the
 robot's record of that notice.
 
+Last, a session that fails (issue #215): the robot hands the app a QR that
+is no session. The app must put the reason at the top of its screen, the
+same one as in its log, and take it away on OK.
+
 `ROBOT=0 ./run-simulator.sh` leaves the taps to you, in the Simulator
 window. By default a UI test is the owner's hands. It taps what a person
 would and checks what only the screen can show:
@@ -154,9 +158,14 @@ biometrics, Touch ID, and everything about distribution.
 
 ## A failure is shown at the top of the screen (version 0.4.4, issue #215)
 
-A failure of a session or of an action is shown as the notice at the top of
-the screen, "That did not work: …", until it is dismissed, and stays in the
-log as before. What is accepted or refused does not change.
+A failure is shown at the top of the screen, under "That did not work",
+until it is dismissed, and stays in the log as before: an error of a
+session or of an action, a key the phone cannot show when the handover asks
+for it, an enrollment that could not be deleted, and stored enrollments
+that could not be read at start. What is accepted or refused does not
+change. The simulator run
+checks it: its robot hands the app a QR that is no session and looks for
+the reason on the screen (`testAFailedSessionIsShown`).
 
 ## Deleting an enrollment (version 0.4.2, issue #40)
 

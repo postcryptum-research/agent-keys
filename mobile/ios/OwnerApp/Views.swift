@@ -34,6 +34,12 @@ struct ContentView: View {
     private var accounts: some View {
         NavigationStack {
             List {
+                if let failure = model.failure {
+                    Section("That did not work") {
+                        Text(failure).bold().accessibilityIdentifier("failure")
+                        Button("OK") { model.failure = nil }.accessibilityIdentifier("failure-ok")
+                    }
+                }
                 if let notice = model.notice {
                     Section("Not confirmed") {
                         Text(notice).bold().accessibilityIdentifier("notice")

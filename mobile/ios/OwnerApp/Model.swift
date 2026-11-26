@@ -53,6 +53,8 @@ final class Model: ObservableObject {
     @Published var fingerprint: ShownFingerprint?
     /// Something the owner must not miss, kept at the top of the screen until acknowledged.
     @Published var notice: String?
+    /// The last failure of a session or an action, shown until dismissed (#215).
+    @Published var failure: String?
 
     private var app: FfiApp { FfiApp(platform: "ios", version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") }
     private var now: UInt64 { UInt64(Date().timeIntervalSince1970) }
@@ -61,18 +63,18 @@ final class Model: ObservableObject {
         let stored = Store.load()
         enrollments = stored.enrollments
         say("owner-core \(coreVersion()) loaded; key tier on this device: \(OwnerKey.tier)")
-        if let problem = stored.problem { say("ERROR \(problem)") }
+        if let problem = stored.problem { fail(problem) }
         #if targetEnvironment(simulator)
         watchQrFile()
         #endif
     }
 
-    /// A failure the owner has to see (#215): in the log as before, and as the
-    /// notice at the top of the screen, which stays until it is dismissed.
-    func fail(_ error: Error) {
-        let reason = error.localizedDescription
+    /// A failure the owner has to see (#215): in the log as before, and at the
+    /// top of the screen under "That did not work", until it is dismissed.
+    func fail(_ error: Error) { fail(error.localizedDescription) }
+    func fail(_ reason: String) {
         say("ERROR \(reason)")
-        notice = "That did not work: \(reason)"
+        failure = reason
     }
 
     func say(_ line: String) {
@@ -266,7 +268,8 @@ final class Model: ObservableObject {
             FfiHeldKey(chainId: $0.chainId, account: $0.account, publicKey: $0.publicKey)
         })
         if let why = health.cannot() {
-            say("CANNOT SHOW the key \(health.fingerprint()) for \(health.account()): \(why) — telling the laptop")
+            failure = "CANNOT SHOW the key \(health.fingerprint()) for \(health.account()): \(why) — telling the laptop"
+            say(failure ?? "")
             let refusal = health.refuseAsUnable(app: app)
             Task { _ = try? await Http.post(qr, refusal) }
             return
@@ -340,7 +343,7 @@ final class Model: ObservableObject {
                 say("deleted the key \((try? fingerprintOf(publicKey: e.publicKey)) ?? "?") and its record (account \(e.account), chain \(e.chainId))")
             } catch {
                 enrollments = kept
-                say("ERROR the key and its record could not be removed (\(error.localizedDescription)): nothing was deleted")
+                fail("the key and its record could not be removed (\(error.localizedDescription)): nothing was deleted")
             }
         }
     }
