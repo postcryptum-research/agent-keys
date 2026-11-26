@@ -48,6 +48,13 @@ tx [`0x785332105fd8085d50e542ff9f677eba964399bbc0d71333ddd71fed03e669bb`](https:
   paid an x402 API through the public x402.org facilitator
   (settlement tx [`0xd3535c28f33cc63de48733332e8c37c9ca9b2d559097b56b5d4b81e06379a31d`](https://sepolia.basescan.org/tx/0xd3535c28f33cc63de48733332e8c37c9ca9b2d559097b56b5d4b81e06379a31d))
   ([`docs/ERC1271.md`](ERC1271.md#x402--registered-authorizations-implemented-since-agentpolicy-v6)).
+- Trading — the agent places orders at a venue within terms the owner set:
+  a pair, a lowest price, a cap per order and a budget per period. On
+  Sepolia an agent key sold 0.001 WETH for 47.258592 USDC through CoW Swap,
+  under a mandate approved in the Android owner app
+  (settlement tx [`0xc7cc5d07e3156edde4cb85ac264544f508f931e4f1fdaf1eb0811622a3f98fa0`](https://sepolia.etherscan.io/tx/0xc7cc5d07e3156edde4cb85ac264544f508f931e4f1fdaf1eb0811622a3f98fa0));
+  the whole run, step by step:
+  [`docs/TRADING_WALKTHROUGH.md`](TRADING_WALKTHROUGH.md).
 - Existing agent frameworks on top — Coinbase AgentKit, a Claude Code /
   OpenClaw skill, Jinn, Olas and ElizaOS, each run on Base Sepolia; the
   ElizaOS agent also pays for APIs with x402

@@ -4,6 +4,11 @@
 (verdict: sound with changes; the changes are folded in). Nothing here is
 built yet beyond what is marked EXISTS.*
 
+*What is built of it, in a run on a test network: a trading mandate with a
+venue, a lowest price and budgets per period, approved on the owner's
+phone, and an order filled on CoW Swap, in
+[`TRADING_WALKTHROUGH.md`](TRADING_WALKTHROUGH.md).*
+
 ## The idea
 
 - **A** owns the capital.
