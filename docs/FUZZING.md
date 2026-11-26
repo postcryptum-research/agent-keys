@@ -143,6 +143,71 @@ window (`validAfter`, `validUntil`) is wide open here and is held by the
 earlier tests. The Safe paths and x402 are not mixed in: x402 under a
 period is held by examples in `Trading.t.sol`, not by the model.
 
+## Contracts: the 1inch decoder
+
+`contracts/test/OneInchLimitOrderDecoder.t.sol` holds
+`OneInchLimitOrderDecoder` on its own, and
+`contracts/test/OneInchTrading.t.sol` under the policy, with a Kernel
+account and a mandate of two venues
+([#80](https://github.com/postcryptum-research/agent-keys/issues/80)).
+
+| Test | What must hold |
+|---|---|
+| `testFuzz_judge_acceptedMeansEveryRuleHolds` | for any eight words: an accepted order has the account as maker and receiver, a listed pair at its price, the one-fill flag and no other, an expiration; the sum and the window are as stated; the digest is the router's hash of the same words |
+| `testFuzz_judge_theLowestPriceAgainstAReference` | the 512-bit price comparison against plain arithmetic, for amounts and prices below 2^128 |
+
+**The router is a stand-in, and the router itself.** The stand-in is
+written from the router's verified source. `OneInchRealRouterTest` runs
+every test of `OneInchTradingTest` with the router's own code, read from a
+chain when the test runs and placed at the router's address, and adds what
+the router does with the orders the decoder refuses:
+
+```sh
+cd contracts
+ONEINCH_RPC_URL=<an RPC of Ethereum, Base, Sepolia or Base Sepolia> \
+  forge test --evm-version osaka --match-contract OneInchRealRouterTest
+```
+
+Run on 2026-11-26 with the code from Ethereum, Base, Sepolia and Base
+Sepolia: 19 tests pass on each. Without the variable they are skipped, so
+CI runs the stand-in only.
+
+**That it bites.** Thirty-eight rules were broken in the source one at a
+time, and each is found by a test:
+
+- **who and where to:** the maker, the maker's word clean, the receiver,
+  the receiver's word clean, both token words clean, the buy token's alone;
+- **the traits:** filled whole; the other bits as a whole, and four let
+  through one at a time (the extension flag, the call after the fill,
+  several fills, the lowest series bit); an expiration, and its place in
+  the word one bit off;
+- **the amounts and the price:** something to sell, 128 bits, the pair and
+  the price as a whole, the comparison the wrong way and off by one, a pair
+  listed twice, a pair without a price;
+- **the answer:** the most sold, the sold token, the order's end, the
+  lifetime dropped and off by one, the digest's type hash, exactly eight
+  words;
+- **the constructor:** the domain's fields, its chain and its contract, and
+  the router's hash of the probe order;
+- **`untouched` and `checkConfig`:** the nonce's bit and the nonce's place,
+  a lifetime, code at the buy token, a pair twice, at most sixteen pairs.
+
+**What the first run of the breaks found in the tests.** Five went
+unnoticed, and all five were faults of the tests:
+
+- the constructor's test stopped at its first expected revert and passed:
+  forge ends a test where an expected revert of a direct `new` stands, and
+  the four cases after it never ran. Each deployment is now a call of its
+  own (`build`). No other test in the repository has an expected revert
+  right before a `new`;
+- the price one unit below was tested with a price per 1,000,000 units,
+  where one unit of the product is not one unit of the price;
+- seventeen pairs were refused for a reason other than their number.
+
+**What it does not cover.** The stand-in models a plain order only. The
+real router's code runs without its chain's state: no pause, no other
+maker's bits. No order was sent to a chain.
+
 ## Rust
 
 Coverage-guided fuzzing with `cargo-fuzz` (libFuzzer, a nightly toolchain)
