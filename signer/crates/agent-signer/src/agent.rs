@@ -35,6 +35,9 @@ pub struct Deployments {
     /// The chain's decoder of plain 1inch limit orders, where 1inch's router is.
     #[serde(default)]
     pub one_inch_limit_order_decoder: Option<Address>,
+    /// The chain's decoder of swaps at Uniswap's SwapRouter02, where that router is.
+    #[serde(default)]
+    pub swap_router02_decoder: Option<Address>,
     /// Present once `Deploy.s.sol` has deployed the paymaster for this chain.
     #[serde(default)]
     pub whitelist_paymaster: Option<Address>,
@@ -251,7 +254,8 @@ pub struct TokenIdEntry {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct VenueEntry {
     pub kind: VenueKind,
-    /// The venue's decoder (`CowSwapDecoder`, `OneInchLimitOrderDecoder`), as deployed.
+    /// The venue's decoder (`CowSwapDecoder`, `OneInchLimitOrderDecoder`,
+    /// `SwapRouter02Decoder`), as deployed.
     pub decoder: Address,
     /// The decoder's code hash. Absent, the CLI pins what the chain has
     /// there now; present, the chain must agree.
@@ -260,7 +264,9 @@ pub struct VenueEntry {
     /// CoW Swap: the only `appData` an order may carry. No other kind has one.
     #[serde(default)]
     pub app_data: Option<alloy::primitives::B256>,
-    /// The longest an order may live, seconds.
+    /// The longest an order may live, seconds. A venue of swaps has none: a
+    /// swap is made at once.
+    #[serde(default)]
     pub max_life: u32,
     pub pairs: Vec<PairEntry>,
 }
@@ -273,6 +279,9 @@ pub enum VenueKind {
     /// A plain order of 1inch's Limit Order Protocol (`OneInchLimitOrderDecoder`).
     #[serde(rename = "1inch")]
     OneInch,
+    /// A swap the account makes itself at Uniswap's SwapRouter02
+    /// (`SwapRouter02Decoder`): a call, not an order.
+    Uniswap,
 }
 
 impl VenueKind {
@@ -281,6 +290,7 @@ impl VenueKind {
         match self {
             VenueKind::Cowswap => "cowSwapDecoder",
             VenueKind::OneInch => "oneInchLimitOrderDecoder",
+            VenueKind::Uniswap => "swapRouter02Decoder",
         }
     }
 }
@@ -314,6 +324,13 @@ impl VenueEntry {
             })
             .collect::<Result<Vec<_>>>()?;
         match (self.kind, self.app_data) {
+            (VenueKind::Cowswap | VenueKind::OneInch, _) if self.max_life == 0 => {
+                anyhow::bail!("the venue {} names no `maxLife`: the longest an order may live, in seconds", self.decoder)
+            }
+            (VenueKind::Uniswap, None) if self.max_life == 0 => Ok(owner_core::kernel::swap_config(&pairs)),
+            (VenueKind::Uniswap, _) => {
+                anyhow::bail!("the swap venue {} names a `maxLife` or an `appData`: a swap is made at once and has neither", self.decoder)
+            }
             (VenueKind::Cowswap, Some(app_data)) => Ok(owner_core::kernel::cow_config(app_data, self.max_life, &pairs)),
             (VenueKind::Cowswap, None) => anyhow::bail!("the CoW Swap venue {} names no `appData`: the one `appData` its orders carry", self.decoder),
             (VenueKind::OneInch, None) => Ok(owner_core::kernel::one_inch_config(self.max_life, &pairs)),
@@ -326,6 +343,7 @@ impl VenueEntry {
         match self.kind {
             VenueKind::Cowswap => dep.cow_swap_decoder,
             VenueKind::OneInch => dep.one_inch_limit_order_decoder,
+            VenueKind::Uniswap => dep.swap_router02_decoder,
         }
     }
 }
@@ -957,8 +975,9 @@ mod payee_tests {
     }
 
     /// A venue's terms are encoded for its kind's decoder: CoW Swap's with the
-    /// one `appData`, 1inch's without any. The other way round is refused,
-    /// and so is a kind the CLI does not know.
+    /// one `appData`, 1inch's without any, a swap venue's without a lifetime
+    /// either. The other way round is refused, and so is a kind the CLI does
+    /// not know.
     #[test]
     fn a_venues_terms_are_encoded_for_its_kind() {
         let pair = serde_json::json!({"sellToken": "0x00000000000000000000000000000000000000a1", "buyToken": "0x00000000000000000000000000000000000000b2", "minBuy": "3", "perSell": "1"});
@@ -988,6 +1007,41 @@ mod payee_tests {
         let refused = venue("1inch", true).unwrap().config().unwrap_err().to_string();
         assert!(refused.contains("a 1inch order has none"), "{refused}");
         assert!(venue("uniswapx", false).is_err());
+
+        // a venue of swaps: the pairs alone
+        let swaps = |max_life: Option<u32>, app_data: bool| {
+            let mut v = serde_json::json!({"kind": "uniswap", "decoder": "0x00000000000000000000000000000000000000c0", "pairs": [pair.clone()]});
+            if let Some(l) = max_life {
+                v["maxLife"] = serde_json::json!(l);
+            }
+            if app_data {
+                v["appData"] = serde_json::json!("0x0000000000000000000000000000000000000000000000000000000000000000");
+            }
+            serde_json::from_value::<VenueEntry>(v).unwrap()
+        };
+        let swap = swaps(None, false);
+        assert_eq!(swap.kind.deployments_key(), "swapRouter02Decoder");
+        assert_eq!(swap.config().unwrap(), owner_core::kernel::swap_config(&pairs));
+        assert_ne!(swap.config().unwrap(), limit.config().unwrap());
+        assert_eq!(swaps(Some(0), false).config().unwrap(), swap.config().unwrap());
+        for (max_life, app_data) in [(Some(600), false), (None, true), (Some(600), true)] {
+            let refused = swaps(max_life, app_data).config().unwrap_err().to_string();
+            assert!(refused.contains("a swap is made at once and has neither"), "{refused}");
+        }
+        // a venue of orders without a lifetime, left out or zero
+        for kind in ["cowswap", "1inch"] {
+            for max_life in [None, Some(0u32)] {
+                let mut v = serde_json::json!({"kind": kind, "decoder": "0x00000000000000000000000000000000000000c0", "pairs": [pair.clone()]});
+                if let Some(l) = max_life {
+                    v["maxLife"] = serde_json::json!(l);
+                }
+                if kind == "cowswap" {
+                    v["appData"] = serde_json::json!("0x0000000000000000000000000000000000000000000000000000000000000000");
+                }
+                let refused = serde_json::from_value::<VenueEntry>(v).unwrap().config().unwrap_err().to_string();
+                assert!(refused.contains("names no `maxLife`"), "{kind} {max_life:?}: {refused}");
+            }
+        }
     }
 
     #[test]

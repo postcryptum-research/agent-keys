@@ -312,8 +312,47 @@ by a test:
 budget were run again on this policy on 2026-11-26, and each of the ten
 breaks (`scripts/kontrol-break.py`) with them: all eleven pass and every
 break fails its proof (the record is under "Beyond fuzzing" below). The
-rule for a decoder's call has no proof of its own yet; the tests and the
-breaks above hold it.
+rule for a decoder's call has no proof of its own yet
+([#225](https://github.com/postcryptum-research/agent-keys/issues/225));
+the tests and the breaks above hold it.
+
+**The CLI swaps, and the phone reads the venue's terms as the decoder
+does.** Two of the CLI's local-chain tests run the policy and the decoder
+built from these sources, with the stand-in router:
+
+- `swaps_under_a_mandate`: the owner installs a mandate with a venue of
+  swaps and the router's allowance; `order swap` registers the swap and
+  makes it in one operation; under the lowest price, the pair the other way,
+  over the cap and past the budget go nowhere; a swap the pool would not
+  honour is found when the calls are run before sending, and nothing is
+  charged; the router's call without its registration is refused.
+- `the_phone_reads_a_swap_config_as_the_decoder_does`: 400 configs from a
+  seed, well-formed and damaged, are put to the phone's reader
+  (`swap_terms`) and to the decoder: 187 are accepted by both, 30 by the
+  decoder only, 183 by neither. For each one both accept, a swap at a
+  pair's lowest price passes with the token and the amount the phone read,
+  one unit under it does not, a pair the phone did not read is not swapped,
+  and the hash the decoder answers with is the hash of the router call the
+  CLI builds (`SwapOrder::call`), which is also the decoder's `swapCall`
+  byte for byte.
+
+```sh
+cd signer
+cargo test -p agent-signer --features insecure-software-keys --test anvil_cli swap -- --nocapture
+```
+
+One swap's bytes are recorded on both sides: the decoder's test
+(`test_decoder_theRecordedSwap`) and the core's (`a_swap_is_the_decoders`)
+hold the config, the five words, the router call and its hash to the same
+constants, which were computed with `cast`.
+
+Eleven parts of the Rust side were broken one at a time (the recipient, the
+price limit, the selector and the value in the call and its hash; the fee
+tier's width; the config's shape; the reader's canonical-bytes rule, its
+pair rules and which reader a swap venue gets; a swap's own rows; the
+refusal's words), and each is found by the core's tests. The CLI's
+comparison of its call with the decoder's `swapCall` before sending
+was not broken on purpose: no test has a decoder that builds other bytes.
 
 **What it does not cover.** The stand-in router models one function. The
 fork run is of one pool on one test network at one block. No swap was sent
@@ -618,7 +657,7 @@ What breaking them one at a time found: with the budgets set at first (a token c
 - **The policy that admits a decoder's call** (#80, the section "a call a decoder judged" above): run on 2026-11-26 on a workstation of 24 cores with the same image. The eleven proofs passed, none vacuous, in 17 min 41 s with the build and eight workers; each of the ten breaks made its proof fail. The source proved differs from the committed one in sixteen comment lines, and comments are not in the bytecode (`bytecode_hash = "none"`).
 
 **What it does not prove** ([#130](https://github.com/postcryptum-research/agent-keys/issues/130)):
-- **A decoder's call.** That a call a venue's decoder judged is admitted only as the leg after its registration, only at that decoder's venue, with its value counted: tests and breaks hold it, no proof.
+- **A decoder's call.** That a call a venue's decoder judged is admitted only as the leg after its registration, only at that decoder's venue, with its value counted: tests and breaks hold it, no proof ([#225](https://github.com/postcryptum-research/agent-keys/issues/225)).
 - **Any number of legs.** The batch, Safe and multiSend proofs fix the number of legs at two. A loop over a length the caller chooses stays with the fuzzing above.
 - **Any encoding.** The shapes are well-formed encodings with symbolic amounts. Symbolic offsets, short or trailing bytes stay with the parsers' tests and the fuzzing.
 - **Faithfulness inside a Safe.** The faithfulness proofs execute the account's single and batch paths. A Safe executing its transaction is not modelled; the differential tests are the evidence there, and that evidence missed #190: a Safe transaction with a nonzero `safeTxGas` does not revert when its inner call fails, so a call the policy judged could go unmade, a withdrawal of an allowance among them. The fuzzing and this harness built Safe transactions with `safeTxGas` and `baseGas` at 0 and varied only `gasPrice`. The policy refuses both words other than 0 since #191. Since #193 the differential in `PolicyFuzz.t.sol` draws each of the three words other than 0 now and then (1, or any word) and requires the refusal, not only that the source and the recorded instance agree. This harness still builds them at 0, and neither runs a Safe's execution. A unit test does: `test_safe_aFailingInnerCallFailsTheOperation` (`AgentPermission.t.sol`) sends #190's operation with all three words at 0 through the EntryPoint, Kernel's batch, a Safe and the token. Validation accepts it, the withdrawal reverts at execution, the Safe reverts with it, and the operation's execution fails: no allowance stands and the Safe's nonce does not move. With the rule on `safeTxGas` removed and the withdrawal given a `safeTxGas` of 1, that test fails [V 2026-11-25]. That is one shape of Safe transaction run, not a proof over all of them.

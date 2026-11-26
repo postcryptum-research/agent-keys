@@ -393,7 +393,8 @@ which refuses the operation all the same [I].
   and the id (the low 160 bits of a tagged hash; `idAsset`). The
   contract's runtime size is 24,376 bytes of the 24,576 a
   contract may have, with the calls through a decoder (below) in it
-  [V `forge build --sizes`, 2026-11-26].
+  [V `forge build --sizes`, 2026-11-26]: the next change has 200 bytes
+  ([#224](https://github.com/postcryptum-research/agent-keys/issues/224)).
   An approval is charged like a transfer; what the spender later pulls is
   not seen.
 - *No standing allowances.* An allowance the agent grants (`approve` or
@@ -943,8 +944,10 @@ one operation and vouches for it to nobody.
 `contracts/src/venues/SwapRouter02Decoder.sol`. `IVenueDecoder` for one
 call: a swap of an exact amount through one Uniswap v3 pool, at Uniswap's
 SwapRouter02 (`exactInputSingle`, selector `0x04e45aaf`) [V source]. It
-judges a call, not an order. No chain has the decoder yet, and the CLI and
-the phone do not know it yet.
+judges a call, not an order. The CLI swaps there (`"kind": "uniswap"` in a
+config's `venues`, `order swap`), and the phone's core reads the venue's
+terms; no chain has the decoder yet, so no phone build names it
+([`docs/AGENT_CONFIG.md`](AGENT_CONFIG.md)).
 
 **State.** None: no storage, no upgrade path, no `delegatecall`, no
 `selfdestruct`. The router's address is kept as two immutables (`venue`,

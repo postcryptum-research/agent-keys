@@ -2612,6 +2612,10 @@ fn one_inch_orders_under_a_mandate() {
     let shown = chain.ok(&["permission", "show", "--agent", &cfg]);
     assert!(shown.contains("ok period") && shown.contains("ok venue") && !shown.contains("DIFF"), "{shown}");
 
+    // this venue takes orders, not swaps
+    let why = chain.fails(&["order", "swap", "--agent", &cfg, "--sell", &usd, "--buy", &weth, "--sell-amount", "1000000", "--buy-amount", "200000000000000"]);
+    assert!(why.contains("takes orders, not swaps"), "{why}");
+
     // an order within the terms: registered, signed, in the form 1inch's order book takes
     let o = placed(&sell("150000000", "37500000000000000"));
     assert_eq!(o["data"]["extension"], "0x");
@@ -2766,6 +2770,179 @@ fn a_batch_gives_an_allowance_for_one_operation() {
     assert!(why.contains("is not <target>:<wei>:<0x calldata>"), "{why}");
     let why = chain.fails(&["op", "batch", "--agent", &cfg]);
     assert!(why.contains("at least one call"), "{why}");
+}
+
+mod swap_abi {
+    alloy::sol! {
+        function setPrice(uint256 n, uint256 d) external;
+    }
+}
+
+/// A mandate that swaps at a router, end to end (issue #80), on the policy
+/// and the decoder built from this repository's sources and a stand-in for
+/// Uniswap's SwapRouter02 with the router's three habits the decoder's rules
+/// are about. The owner installs the mandate with the router's allowance;
+/// `order swap` registers the swap and makes it in one operation, and what
+/// is bought comes to the account; a swap outside the terms goes nowhere; a
+/// swap the pool would not honour is found before anything is sent; revoking
+/// ends the mandate.
+#[test]
+fn swaps_under_a_mandate() {
+    let chain = chain_or_skip!("swap");
+    let (owner, agent) = (key(1), key(2));
+    let counter = chain.addr("demoCounter");
+    let policy = chain.addr("agentPolicy");
+    let until = far_future(&chain);
+    let fixture: Value = serde_json::from_str(
+        &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/trading-code.json")).unwrap(),
+    )
+    .unwrap();
+    let deploy = |name: &str, args: Vec<u8>| {
+        let mut code = hex::decode(fixture[name].as_str().unwrap().trim_start_matches("0x")).unwrap();
+        code.extend(args);
+        chain.send_from(FACILITATOR, None, code)["contractAddress"].as_str().unwrap().to_string()
+    };
+    let word = |a: &str| a.parse::<Address>().unwrap().abi_encode();
+
+    // the policy of this source in the place of the deployed one
+    let built = deploy("agentPolicyInitCode", word(&chain.addr("safeNonceAssert")));
+    let code = chain.rpc("eth_getCode", json!([built, "latest"]));
+    chain.rpc("anvil_setCode", json!([policy, code]));
+
+    let (usd, weth) = (deploy("mockTokenInitCode", vec![]), deploy("mockTokenInitCode", vec![]));
+    let router = deploy("swapRouterStandInInitCode", vec![]);
+    let decoder = deploy("swapRouter02DecoderInitCode", word(&router));
+    let decoder_code = chain.rpc("eth_getCode", json!([decoder, "latest"]));
+    let decoder_hash = alloy::primitives::keccak256(hex::decode(decoder_code.as_str().unwrap().trim_start_matches("0x")).unwrap());
+
+    let account = chain.deploy(&chain.config("agent.json", &base_cfg(&owner, &agent, &counter, until)));
+    const PERIOD: u64 = 30 * 86_400;
+    // the trading mandate: 200 a time, 300 a period, never under 0.0002 WETH for a USD
+    let mandate = |name: &str, change: &dyn Fn(&mut Value)| {
+        let path = chain.config(
+            name,
+            &Cfg {
+                permission: "0x73776170",
+                allow: vec![(counter.clone(), INCREMENT), (policy.clone(), ORDER_REGISTER)],
+                account: Some(account.clone()),
+                tokens: json!([{"token": usd, "maxPerOp": "200000000", "budget": "300000000", "payees": "anyone"}]),
+                ..base_cfg(&owner, &agent, &counter, until)
+            },
+        );
+        let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        v["policy"]["period"] = json!(PERIOD);
+        v["policy"]["venues"] = json!([{
+            "kind": "uniswap", "decoder": decoder, "codeHash": decoder_hash.to_string(),
+            "pairs": [{"sellToken": usd, "buyToken": weth, "minBuy": "200000000000000", "perSell": "1000000"}],
+        }]);
+        change(&mut v);
+        std::fs::write(&path, v.to_string()).unwrap();
+        path
+    };
+    let cfg = mandate("swap.json", &|_| {});
+
+    // the terms are put to the decoder itself before a mandate is made of them
+    let codeless = mandate("codeless.json", &|v| v["policy"]["venues"][0]["pairs"][0]["buyToken"] = json!("0x00000000000000000000000000000000000c0de5"));
+    let why = chain.fails(&["permission", "show", "--agent", &codeless]);
+    assert!(why.contains("refuses this config's terms") && why.contains("without code"), "{why}");
+    // a swap is made at once: a lifetime for it is refused
+    let with_life = mandate("life.json", &|v| v["policy"]["venues"][0]["maxLife"] = json!(600));
+    let why = chain.fails(&["permission", "show", "--agent", &with_life]);
+    assert!(why.contains("a swap is made at once and has neither"), "{why}");
+
+    let acct: Address = account.parse().unwrap();
+    let balance = |token: &str, who: Address| U256::from_be_slice(&chain.call(token, balanceOfCall { account: who }.abi_encode()));
+    let allowance = || {
+        let call = trading_abi::allowanceCall { owner: acct, spender: router.parse().unwrap() };
+        U256::from_be_slice(&chain.call(&usd, call.abi_encode()))
+    };
+    // the account holds what it sells; the stand-in router holds what it pays with
+    chain.send_from(FACILITATOR, Some(&usd), mintCall { to: acct, amount: U256::from(10_000_000_000u64) }.abi_encode());
+    chain.send_from(FACILITATOR, Some(&weth), mintCall { to: router.parse().unwrap(), amount: U256::from(10u64).pow(U256::from(18)) }.abi_encode());
+
+    let swap = |amount: &str, least: &str| -> Vec<String> {
+        ["order", "swap", "--agent", &cfg, "--sell", &usd, "--buy", &weth, "--sell-amount", amount, "--buy-amount", least, "--fee", "500"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    };
+    let run = |args: &[String]| chain.cli(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    let swapped = |args: &[String]| -> Value {
+        let out = run(args);
+        let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert!(out.status.success(), "order swap failed:\n{stderr}\n{stdout}");
+        serde_json::from_str(stdout.lines().find(|l| l.starts_with('{')).unwrap_or_else(|| panic!("no swap in: {stdout}"))).unwrap()
+    };
+    let refused = |args: &[String]| -> String {
+        let out = run(args);
+        assert!(!out.status.success(), "the swap was expected to be refused");
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+    };
+    let spent = |n: u64| chain.ok(&["permission", "show", "--agent", &cfg]).contains(&format!("(spent {n})"));
+
+    // before the owner installs the mandate there is no allowance, and the CLI says so
+    assert!(allowance().is_zero());
+    let early = refused(&swap("150000000", "30000000000000000"));
+    assert!(early.contains("the owner gives the allowance with the mandate"), "{early}");
+
+    // the owner's one operation: the old permission out, the trading one in, the router's allowance given
+    chain.ok(&["permission", "rotate", "--agent", &cfg, "--old-id", "0x74657331"]);
+    assert_eq!(allowance(), U256::from(300_000_000u64));
+    let shown = chain.ok(&["permission", "show", "--agent", &cfg]);
+    assert!(shown.contains("ok period") && shown.contains("ok venue") && !shown.contains("DIFF"), "{shown}");
+
+    // a swap within the terms, at the owner's lowest price: one operation, and the
+    // pool's price is what is paid (0.0003 WETH for a USD at the stand-in)
+    let s = swapped(&swap("150000000", "30000000000000000"));
+    assert_eq!(s["sold"], "150000000");
+    assert_eq!(s["bought"], "45000000000000000");
+    assert_eq!(s["leastBought"], "30000000000000000");
+    assert_eq!(s["router"].as_str().unwrap().to_lowercase(), router.to_lowercase());
+    assert_eq!(balance(&usd, acct), U256::from(10_000_000_000u64 - 150_000_000));
+    assert_eq!(balance(&weth, acct), U256::from(45_000_000_000_000_000u64));
+    // charged, and out of the owner's allowance
+    assert!(spent(150_000_000));
+    assert_eq!(allowance(), U256::from(150_000_000u64));
+
+    // this venue takes swaps, not orders
+    let why = chain.fails(&["order", "sell", "--agent", &cfg, "--sell", &usd, "--buy", &weth, "--sell-amount", "1000000", "--buy-amount", "200000000000000"]);
+    assert!(why.contains("takes swaps, not orders"), "{why}");
+    // the router is no target of the agent's by itself: its call without the registration is refused
+    chain.fails(&["op", "batch", "--agent", &cfg, "--call", &format!("{router}:0:0x04e45aaf")]);
+
+    // outside the terms: under the lowest price and a pair the other way (stopped
+    // before any operation), over the cap for one operation (refused by the policy)
+    let cheap = refused(&swap("150000000", "29999999999999999"));
+    assert!(cheap.contains("below the mandate's lowest price"), "{cheap}");
+    let back = chain.fails(&["order", "swap", "--agent", &cfg, "--sell", &weth, "--buy", &usd, "--sell-amount", "1000", "--buy-amount", "1"]);
+    assert!(back.contains("is not a pair of this mandate"), "{back}");
+    refused(&swap("200000001", "40000000200000000"));
+    assert!(spent(150_000_000));
+    assert_eq!(balance(&weth, acct), U256::from(45_000_000_000_000_000u64));
+
+    // the pool pays less than the swap asks for: the CLI runs the operation's calls
+    // before it sends anything, the router's own check fails there, and nothing is
+    // sent or charged
+    chain.send_from(FACILITATOR, Some(&router), swap_abi::setPriceCall { n: U256::from(250_000_000u64), d: U256::from(1u8) }.abi_encode());
+    let short = refused(&swap("50000000", "15000000000000000"));
+    assert!(short.contains("Too little received"), "{short}");
+    assert_eq!(balance(&usd, acct), U256::from(10_000_000_000u64 - 150_000_000));
+    assert_eq!(balance(&weth, acct), U256::from(45_000_000_000_000_000u64));
+    assert_eq!(allowance(), U256::from(150_000_000u64));
+    assert!(spent(150_000_000), "{short}");
+
+    // the rest of the period's budget, at the pool's new price, and not a unit more
+    let s = swapped(&swap("150000000", "30000000000000000"));
+    assert_eq!(s["bought"], "37500000000000000");
+    assert!(spent(300_000_000));
+    refused(&swap("1000000", "200000000000000"));
+
+    // revoking leaves no allowance to the router (the budget's worth was given, and all of it was swapped)
+    assert!(allowance().is_zero());
+    assert_eq!(balance(&weth, acct), U256::from(82_500_000_000_000_000u64));
+    chain.ok(&["permission", "revoke", "--agent", &cfg, "--id", "0x73776170"]);
+    assert!(allowance().is_zero());
+    chain.fails(&["demo", "--agent", &cfg]);
 }
 
 /// What the phone reads from a venue's config and what the decoder on chain
@@ -3018,6 +3195,137 @@ fn the_phone_reads_a_one_inch_config_as_the_decoder_does() {
     // them, since bytes cannot show code; the decoder's `checkConfig` refuses them.
     let buys_nothing = k::one_inch_config(1800, &[(tokens[0], codeless, U256::from(1u8), U256::from(1u8))]);
     assert!(one_inch_terms(&buys_nothing).is_ok());
+    assert!(ask("checkConfig(bytes)", (buys_nothing.clone(),).abi_encode_params()).is_none());
+}
+
+/// The same for the swap decoder: what the phone reads from its config
+/// (`swap_terms`) and what `SwapRouter02Decoder` enforces from the same
+/// bytes. And the call: for every swap the decoder allows, the hash it
+/// answers with is the hash of the router call this side builds
+/// (`SwapOrder::call`), so the leg the CLI sends is the one the policy
+/// expects. The decoder's `checkConfig` asks for code at every token, which
+/// a phone cannot see: the laptop asks the chain (`swaps_under_a_mandate`).
+#[test]
+fn the_phone_reads_a_swap_config_as_the_decoder_does() {
+    use owner_core::kernel as k;
+    use owner_core::review::swap_terms;
+    let chain = chain_or_skip!("swap-config");
+    let fixture: Value = serde_json::from_str(
+        &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/trading-code.json")).unwrap(),
+    )
+    .unwrap();
+    let deploy = |name: &str, args: Vec<u8>| {
+        let mut code = hex::decode(fixture[name].as_str().unwrap().trim_start_matches("0x")).unwrap();
+        code.extend(args);
+        chain.send_from(FACILITATOR, None, code)["contractAddress"].as_str().unwrap().to_string()
+    };
+    let router = deploy("swapRouterStandInInitCode", vec![]);
+    let decoder = deploy("swapRouter02DecoderInitCode", router.parse::<Address>().unwrap().abi_encode());
+    // a call that may revert: the returned bytes, or nothing
+    let ask = |signature: &str, args: Vec<u8>| -> Option<Vec<u8>> {
+        let mut data = alloy::primitives::keccak256(signature)[..4].to_vec();
+        data.extend(args);
+        let body = json!({"jsonrpc": "2.0", "id": 1, "method": "eth_call", "params": [{"to": decoder, "data": Bytes::from(data).to_string()}, "latest"]});
+        let v: Value = serde_json::from_str(&http_post(&chain.url, &body.to_string())).unwrap();
+        v.get("result").and_then(|r| r.as_str()).map(|r| hex::decode(r.trim_start_matches("0x")).unwrap())
+    };
+    let account: Address = "0x00000000000000000000000000000000000Acc01".to_lowercase().parse().unwrap();
+    // five tokens with code, as `checkConfig` asks, and one address without
+    let tokens: Vec<Address> = (1u8..=5).map(Address::repeat_byte).collect();
+    for token in &tokens {
+        chain.rpc("anvil_setCode", json!([token.to_string(), "0x00"]));
+    }
+    let codeless = Address::repeat_byte(0xcc);
+
+    let mut rng: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut next = move |n: u64| {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        rng % n
+    };
+    let (mut both, mut chain_only, mut neither) = (0, 0, 0);
+    for _ in 0..400 {
+        // a config: mostly within the rules, with a share of what the rules refuse
+        let count = if next(12) == 0 { 0 } else { 1 + next(3) };
+        let pairs: Vec<(Address, Address, U256, U256)> = (0..count)
+            .map(|i| {
+                let sell = if next(25) == 0 { Address::ZERO } else { tokens[i as usize] };
+                let buy = if next(25) == 0 { sell } else { tokens[(i + 1 + next(2)) as usize] };
+                let amount = |n: u64| if n % 30 == 0 { U256::ZERO } else { U256::from(1 + n % 1_000_000) };
+                (sell, buy, amount(next(u64::MAX)), amount(next(u64::MAX)))
+            })
+            .collect();
+        let mut config = k::swap_config(&pairs).to_vec();
+        // and damaged bytes: one changed, the end cut, a word added
+        match next(8) {
+            0 => {
+                let at = next(config.len() as u64) as usize;
+                config[at] ^= 1 << next(8);
+            }
+            1 => config.truncate(config.len() - 1 - next(40) as usize % config.len()),
+            2 => config.extend([0u8; 32]),
+            _ => {}
+        }
+
+        let phone = swap_terms(&config);
+        let on_chain = ask("checkConfig(bytes)", (Bytes::from(config.clone()),).abi_encode_params()).is_some();
+        let Ok(terms) = phone else {
+            if on_chain { chain_only += 1 } else { neither += 1 }
+            continue;
+        };
+        // a changed byte can turn a token into an address without code: that is the one
+        // thing the decoder refuses and the phone cannot see
+        let all_have_code = terms.pairs.iter().all(|p| tokens.contains(&p.0) && tokens.contains(&p.1));
+        assert_eq!(on_chain, all_have_code, "the phone and the decoder differ on more than a token's code: 0x{}", hex::encode(&config));
+        if !on_chain {
+            neither += 1;
+            continue;
+        }
+        both += 1;
+
+        let fee = [100u32, 500, 3000, 10_000][next(4) as usize];
+        let swap = |sell: Address, buy: Address, sold: U256, least: U256| k::SwapOrder { token_in: sell, token_out: buy, fee, amount_in: sold, amount_out_minimum: least };
+        let judge = |o: &k::SwapOrder| ask("judge(address,bytes,bytes)", (account, Bytes::from(config.clone()), o.encode().unwrap()).abi_encode_params());
+        for (sell, buy, min_buy, per_sell) in &terms.pairs {
+            // a multiple of the price's two terms is exactly at the price; the terms
+            // themselves when a multiple does not fit a word
+            let times = U256::from(1 + next(1000));
+            let (sold, least) = match (per_sell.checked_mul(times), min_buy.checked_mul(times)) {
+                (Some(sold), Some(least)) => (sold, least),
+                _ => (*per_sell, *min_buy),
+            };
+            let o = swap(*sell, *buy, sold, least);
+            let answer = judge(&o).unwrap_or_else(|| panic!("a swap at the lowest price the phone read is refused: 0x{}", hex::encode(&config)));
+            assert_eq!(answer.len(), 160);
+            assert_eq!(Address::from_slice(&answer[12..32]), *sell, "the token charged");
+            assert_eq!(U256::from_be_slice(&answer[32..64]), sold, "the amount charged");
+            // no beginning and no end: a call, made in the leg after its registration
+            assert!(answer[64..128].iter().all(|b| *b == 0), "a swap is a call, not an order");
+            // the hash the policy will hold the next leg to is the hash of the call built here
+            assert_eq!(&answer[128..160], o.digest(account).unwrap().as_slice(), "the call's hash");
+            let theirs = ask("swapCall(address,bytes)", (account, o.encode().unwrap()).abi_encode_params()).unwrap();
+            assert_eq!(<Bytes as SolValue>::abi_decode(&theirs).unwrap(), o.call(account).unwrap(), "the call");
+            assert!(judge(&swap(*sell, *buy, sold, least - U256::from(1))).is_none(), "a swap under the lowest price the phone read passes: 0x{}", hex::encode(&config));
+            assert!(judge(&swap(*sell, *buy, U256::ZERO, least)).is_none(), "a swap of the router's own balance passes");
+        }
+        // a pair the phone did not read is not swapped, at any price
+        for sell in &tokens {
+            for buy in &tokens {
+                if !terms.pairs.iter().any(|p| p.0 == *sell && p.1 == *buy) {
+                    assert!(judge(&swap(*sell, *buy, U256::from(1), U256::MAX)).is_none(), "a pair the phone did not read is swapped: 0x{}", hex::encode(&config));
+                }
+            }
+        }
+    }
+    // the generator reaches all three kinds
+    assert!(both >= 150 && chain_only >= 5 && neither >= 50, "accepted by both {both}, by the decoder only {chain_only}, by neither {neither}");
+    eprintln!("configs: {both} accepted by both, {chain_only} by the decoder only, {neither} by neither");
+
+    // The difference by design: terms that buy an address without code. The phone reads
+    // them, since bytes cannot show code; the decoder's `checkConfig` refuses them.
+    let buys_nothing = k::swap_config(&[(tokens[0], codeless, U256::from(1u8), U256::from(1u8))]);
+    assert!(swap_terms(&buys_nothing).is_ok());
     assert!(ask("checkConfig(bytes)", (buys_nothing.clone(),).abi_encode_params()).is_none());
 }
 

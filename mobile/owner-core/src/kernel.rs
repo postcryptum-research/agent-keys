@@ -184,6 +184,13 @@ pub fn one_inch_config(max_life: u32, pairs: &[(Address, Address, U256, U256)]) 
     (max_life, pairs.to_vec()).abi_encode().into()
 }
 
+/// A swap venue's config, as `SwapRouter02Decoder` reads it:
+/// `abi.encode(((address sellToken, address buyToken, uint256 minBuy,
+/// uint256 perSell)[] pairs))`: a struct of one list.
+pub fn swap_config(pairs: &[(Address, Address, U256, U256)]) -> Bytes {
+    (pairs.to_vec(),).abi_encode().into()
+}
+
 /// Kernel's `PermissionEnableDataFormat`: `abi.encode(bytes[] entries)` where
 /// each entry is `flag(2) ‖ module(20) ‖ initData`; policies first, signer last.
 /// The numeric policy fields are encoded as full words, which is byte-identical
@@ -576,6 +583,59 @@ pub fn one_inch_domain_separator(chain_id: u64, router: Address) -> B256 {
     )
 }
 
+/// A swap of an exact amount through one Uniswap v3 pool, as
+/// `SwapRouter02Decoder` takes it: what the agent names. The decoder writes
+/// the rest of the router call itself: the bought token to the account, no
+/// native value, no price limit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SwapOrder {
+    pub token_in: Address,
+    pub token_out: Address,
+    /// The pool's fee tier; twenty-four bits.
+    pub fee: u32,
+    /// The exact amount sold; never zero (to the router that is its own balance).
+    pub amount_in: U256,
+    /// The least amount bought.
+    pub amount_out_minimum: U256,
+}
+
+impl SwapOrder {
+    /// The widest fee tier the router's `uint24` holds.
+    const MAX_FEE: u32 = 0x00ff_ffff;
+
+    /// `abi.encode(Swap)`: the five words the decoder is handed. `None` if
+    /// the fee tier is wider than twenty-four bits.
+    pub fn encode(&self) -> Option<Bytes> {
+        if self.fee > Self::MAX_FEE {
+            return None;
+        }
+        Some((self.token_in, self.token_out, U256::from(self.fee), self.amount_in, self.amount_out_minimum).abi_encode().into())
+    }
+
+    /// The router call the decoder builds for `account`
+    /// (`SwapRouter02Decoder.swapCall`): `exactInputSingle((tokenIn,
+    /// tokenOut, fee, recipient, amountIn, amountOutMinimum,
+    /// sqrtPriceLimitX96))` with the account as recipient and no price limit.
+    /// The account sends exactly these bytes to the router, with no value,
+    /// in the leg after the swap's registration.
+    pub fn call(&self, account: Address) -> Option<Bytes> {
+        if self.fee > Self::MAX_FEE {
+            return None;
+        }
+        let args = (self.token_in, self.token_out, U256::from(self.fee), account, self.amount_in, self.amount_out_minimum, U256::ZERO)
+            .abi_encode();
+        Some([&[0x04u8, 0xe4, 0x5a, 0xaf][..], &args].concat().into())
+    }
+
+    /// The call's hash, as the decoder answers the policy with
+    /// (`VenueCalls.digest(0, call)`): `keccak256(abi.encode(uint256 value,
+    /// keccak256(calldata)))` with no value.
+    pub fn digest(&self, account: Address) -> Option<B256> {
+        use alloy_primitives::keccak256;
+        Some(keccak256((U256::ZERO, keccak256(self.call(account)?)).abi_encode()))
+    }
+}
+
 /// `AgentPolicy.orderRegister(decoder, config, order)`.
 pub fn order_register_calldata(decoder: Address, config: &[u8], order: &[u8]) -> Bytes {
     let args = (decoder, Bytes::copy_from_slice(config), Bytes::copy_from_slice(order)).abi_encode_params();
@@ -799,4 +859,35 @@ mod tests {
         assert_eq!(b.len(), 1 + 4 + 1 + 64);
         assert_eq!(&b[..6], &[0x02, 1, 2, 3, 4, 0xff]);
     }
+    /// A swap as `SwapRouter02Decoder` reads and builds it: the config, the
+    /// five words, the router call and the call's hash, against the bytes
+    /// the decoder's own test records
+    /// (`contracts/test/SwapRouter02.t.sol`, `test_decoder_theRecordedSwap`).
+    #[test]
+    fn a_swap_is_the_decoders() {
+        use alloy_primitives::hex;
+        let account = address!("1111111111111111111111111111111111111111");
+        let (sell, buy) = (address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"), address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"));
+        let (sold, least) = (U256::from(1_000_000_000u64), U256::from(250_000_000_000_000_000u64));
+        assert_eq!(
+            swap_config(&[(sell, buy, least, sold)]).as_ref(),
+            hex!("000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000001000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48000000000000000000000000c02aaa39b223fe8d0a0e5c4f27ead9083c756cc200000000000000000000000000000000000000000000000003782dace9d90000000000000000000000000000000000000000000000000000000000003b9aca00")
+        );
+        let swap = SwapOrder { token_in: sell, token_out: buy, fee: 500, amount_in: sold, amount_out_minimum: least };
+        assert_eq!(
+            swap.encode().unwrap().as_ref(),
+            hex!("000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48000000000000000000000000c02aaa39b223fe8d0a0e5c4f27ead9083c756cc200000000000000000000000000000000000000000000000000000000000001f4000000000000000000000000000000000000000000000000000000003b9aca0000000000000000000000000000000000000000000000000003782dace9d90000")
+        );
+        assert_eq!(
+            swap.call(account).unwrap().as_ref(),
+            hex!("04e45aaf000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48000000000000000000000000c02aaa39b223fe8d0a0e5c4f27ead9083c756cc200000000000000000000000000000000000000000000000000000000000001f40000000000000000000000001111111111111111111111111111111111111111000000000000000000000000000000000000000000000000000000003b9aca0000000000000000000000000000000000000000000000000003782dace9d900000000000000000000000000000000000000000000000000000000000000000000")
+        );
+        assert_eq!(swap.digest(account).unwrap(), b256!("b870325779145b133ddd23f0edfe40ef291a53b1b456ddae332f89a8489be208"));
+        // another account, another call; a fee tier wider than the router's 24 bits is no swap
+        assert_ne!(swap.digest(address!("2222222222222222222222222222222222222222")), swap.digest(account));
+        let wide = SwapOrder { fee: 0x0100_0000, ..swap.clone() };
+        assert!(wide.encode().is_none() && wide.call(account).is_none() && wide.digest(account).is_none());
+        assert!(SwapOrder { fee: 0x00ff_ffff, ..swap }.encode().is_some());
+    }
+
 }

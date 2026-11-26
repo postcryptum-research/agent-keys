@@ -120,6 +120,21 @@ pub enum VenueKind {
     /// `OneInchLimitOrderDecoder`: a plain order of 1inch's Limit Order
     /// Protocol, filled at 1inch's router by whoever holds it.
     OneInchLimitOrder,
+    /// `SwapRouter02Decoder`: a swap the account makes itself, at once, at
+    /// Uniswap's SwapRouter02. A call, not an order: nothing is left to be
+    /// filled later.
+    SwapRouter02,
+}
+
+impl VenueKind {
+    /// What an agent could do at the venue's own contract, past the decoder:
+    /// why a mandate that names that contract as a target is refused.
+    fn past_its_terms(self) -> &'static str {
+        match self {
+            VenueKind::CowSwap | VenueKind::OneInchLimitOrder => "where it could sign any order",
+            VenueKind::SwapRouter02 => "where it could swap at any price and send what it buys to anyone",
+        }
+    }
 }
 
 /// A trading venue's decoder the build knows (§6.7, issue #80): its code is
@@ -1157,7 +1172,7 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
         // signed past the decoder, and the spender holds the owner's allowance.
         for t in &targets {
             if let Some((_, v)) = b.facts.venues.iter().find(|(d, v)| *d == t || v.place == *t) {
-                return Err(format!("this mandate lets the agent call {}'s own contract, where it could sign any order; refused", v.name));
+                return Err(format!("this mandate lets the agent call {}'s own contract, {}; refused", v.name, v.kind.past_its_terms()));
             }
             if let Some(v) = b.facts.venues.values().find(|v| v.spender == *t) {
                 return Err(format!("this mandate lets the agent call {}'s spender, which holds this account's allowance for orders there; refused", v.name));
@@ -1227,7 +1242,7 @@ pub fn cow_terms(config: &[u8]) -> Result<CowTerms, String> {
     if (app_data, max_life, pairs.clone()).abi_encode() != config {
         return Err("is not canonical".into());
     }
-    check_pairs(max_life, &pairs)?;
+    check_pairs(Some(max_life), &pairs)?;
     Ok(CowTerms { app_data, max_life, pairs })
 }
 
@@ -1250,13 +1265,37 @@ pub fn one_inch_terms(config: &[u8]) -> Result<OneInchTerms, String> {
     if (max_life, pairs.clone()).abi_encode() != config {
         return Err("is not canonical".into());
     }
-    check_pairs(max_life, &pairs)?;
+    check_pairs(Some(max_life), &pairs)?;
     Ok(OneInchTerms { max_life, pairs })
 }
 
-/// What every decoder's `checkConfig` asks of the pairs and the lifetime.
-fn check_pairs(max_life: u32, pairs: &[(Address, Address, U256, U256)]) -> Result<(), String> {
-    if pairs.is_empty() || pairs.len() > 16 || max_life == 0 {
+/// The terms of a `SwapRouter02Decoder` config: the pairs alone. A swap is
+/// made at once, so there is no lifetime to bound.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SwapTerms {
+    /// `(sellToken, buyToken, minBuy, perSell)`.
+    pub pairs: Vec<(Address, Address, U256, U256)>,
+}
+
+/// Reads a `SwapRouter02Decoder` config, or says what is wrong with it,
+/// under the same rule as `cow_terms`: only bytes that are the one canonical
+/// encoding of what it returns, and only a config the decoder's own
+/// `checkConfig` allows as far as bytes can show (it also asks for code at
+/// each token, which the phone cannot see: the laptop asks the chain).
+pub fn swap_terms(config: &[u8]) -> Result<SwapTerms, String> {
+    type Config = (Vec<(Address, Address, U256, U256)>,);
+    let (pairs,) = Config::abi_decode_validate(config).map_err(|e| format!("does not decode: {e}"))?;
+    if (pairs.clone(),).abi_encode() != config {
+        return Err("is not canonical".into());
+    }
+    check_pairs(None, &pairs)?;
+    Ok(SwapTerms { pairs })
+}
+
+/// What every decoder's `checkConfig` asks of the pairs, and of the orders'
+/// lifetime where the venue has orders (`None` for a venue of calls).
+fn check_pairs(max_life: Option<u32>, pairs: &[(Address, Address, U256, U256)]) -> Result<(), String> {
+    if pairs.is_empty() || pairs.len() > 16 || max_life == Some(0) {
         return Err("has no pair, too many, or no order lifetime".into());
     }
     for (j, (sell, buy, min_buy, per_sell)) in pairs.iter().enumerate() {
@@ -1294,7 +1333,7 @@ fn venue_rows(
             return Err("a trading venue twice in one mandate; refused".into());
         }
         if targets.iter().any(|t| *t == venue.place || *t == *decoder) {
-            return Err(format!("this mandate lets the agent call {}'s own contract, where it could sign any order; refused", venue.name));
+            return Err(format!("this mandate lets the agent call {}'s own contract, {}; refused", venue.name, venue.kind.past_its_terms()));
         }
         let Some(config) = b.venue_configs.iter().find(|c| alloy_primitives::keccak256(c) == *config_hash) else {
             return Err(format!("the laptop did not send the config this mandate pins for {}; refused", venue.name));
@@ -1304,12 +1343,14 @@ fn venue_rows(
         let (app_data, max_life, pairs) = match venue.kind {
             VenueKind::CowSwap => {
                 let CowTerms { app_data, max_life, pairs } = cow_terms(config).map_err(refused)?;
-                (Some(app_data), max_life, pairs)
+                (Some(app_data), Some(max_life), pairs)
             }
             VenueKind::OneInchLimitOrder => {
                 let OneInchTerms { max_life, pairs } = one_inch_terms(config).map_err(refused)?;
-                (None, max_life, pairs)
+                (None, Some(max_life), pairs)
             }
+            // a swap is made at once: no lifetime
+            VenueKind::SwapRouter02 => (None, None, swap_terms(config).map_err(refused)?.pairs),
         };
         b.row(s, "Trading on", format!("{} (decoder {} verified in this build)", venue.name, decoder.to_checksum(None)));
         b.row(s, "Proceeds go to", "this account only");
@@ -1338,12 +1379,20 @@ fn venue_rows(
             "Price",
             "not below the lowest price above; above it the agent picks. At worst it sells all its budgets allow at the lowest price",
         );
-        b.row(
-            s,
-            "Orders live",
-            if max_life % 60 == 0 { format!("at most {} minutes", max_life / 60) } else { format!("at most {max_life} seconds") },
-        );
-        b.row(s, "An order is charged", "to the budget when it is registered, filled or not; the charge is not given back, it returns when budgets renew");
+        match max_life {
+            Some(max_life) => {
+                b.row(
+                    s,
+                    "Orders live",
+                    if max_life % 60 == 0 { format!("at most {} minutes", max_life / 60) } else { format!("at most {max_life} seconds") },
+                );
+                b.row(s, "An order is charged", "to the budget when it is registered, filled or not; the charge is not given back, it returns when budgets renew");
+            }
+            None => {
+                b.row(s, "A swap is", "made by the account itself, at once, through one pool of the pair that the agent picks; the agent calls nothing else there");
+                b.row(s, "A swap is charged", "to the budget when it is sent, whether it goes through or not; the charge is not given back, it returns when budgets renew");
+            }
+        }
         match app_data {
             Some(app_data) if app_data.is_zero() => b.row(s, "Order data", "none (appData is zero)"),
             Some(app_data) => {
@@ -2006,6 +2055,128 @@ mod tests {
         // a build that does not know the decoder
         let r = open_trading(&trading_params(), &limit_venue(&limit()), vec![limit()], &trading_facts());
         assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("not one this build knows")), "{}", r.text());
+    }
+
+    const SWAP_DECODER: Address = address!("5a0000000000000000000000000000000000005a");
+    const SWAP_ROUTER: Address = address!("5b0000000000000000000000000000000000005b");
+    const SWAP_CODE: B256 = B256::repeat_byte(0x5a);
+
+    /// The facts with a third venue: swaps at Uniswap's router, which is the
+    /// venue's contract and the spender at once.
+    fn three_venue_facts() -> Facts {
+        let mut f = two_venue_facts();
+        f.names.insert(SWAP_ROUTER, "Uniswap router".into());
+        f.venues.insert(
+            SWAP_DECODER,
+            Venue { name: "Uniswap".into(), kind: VenueKind::SwapRouter02, code_hash: SWAP_CODE, place: SWAP_ROUTER, spender: SWAP_ROUTER },
+        );
+        f
+    }
+
+    /// At least 0.0002 WETH for each USDC: the CoW terms, for a swap. No lifetime.
+    fn swaps() -> Bytes {
+        kernel::swap_config(&[(USD, WETH, U256::from(200_000_000_000_000u64), U256::from(1_000_000))])
+    }
+
+    fn swap_venue(config: &Bytes) -> kernel::Trading {
+        kernel::Trading { period: 86_400, venues: vec![(SWAP_DECODER, SWAP_CODE, alloy_primitives::keccak256(config))], ids: vec![] }
+    }
+
+    /// A mandate that swaps at Uniswap's router (issue #80): the pairs and
+    /// their lowest prices as at the other venues, and what is a swap's own:
+    /// made at once, no lifetime, charged when sent.
+    #[test]
+    fn a_swap_mandate_is_shown_in_what_it_allows() {
+        let f = three_venue_facts();
+        let r = open_trading(&trading_params(), &swap_venue(&swaps()), vec![swaps()], &f);
+        let t = r.text();
+        assert_eq!(r.verdict, Verdict::Sign, "{t}");
+        assert!(t.contains(&format!("Trading on: Uniswap (decoder {} verified in this build)", SWAP_DECODER.to_checksum(None))), "{t}");
+        assert!(t.contains("Proceeds go to: this account only"), "{t}");
+        assert!(t.contains("never for less than 0.0002 WETH per 1 USDC"), "{t}");
+        assert!(t.contains("Price: not below the lowest price above"), "{t}");
+        assert!(t.contains("A swap is: made by the account itself, at once, through one pool of the pair that the agent picks"), "{t}");
+        assert!(t.contains("A swap is charged: to the budget when it is sent, whether it goes through or not"), "{t}");
+        assert!(t.contains(&format!("Tokens are taken by: {} — Uniswap router (verified in this build)", SWAP_ROUTER.to_checksum(None))), "{t}");
+        // what belongs to orders is not said of a swap
+        for of_orders in ["Orders live", "An order is charged", "An order is:", "Filled by", "Order data"] {
+            assert!(!t.contains(of_orders), "{of_orders}: {t}");
+        }
+
+        // the three venues in one mandate, each read in its own encoding
+        let all = kernel::Trading {
+            period: 86_400,
+            venues: vec![
+                (DECODER, DECODER_CODE, alloy_primitives::keccak256(cow())),
+                (LIMIT_DECODER, LIMIT_CODE, alloy_primitives::keccak256(limit())),
+                (SWAP_DECODER, SWAP_CODE, alloy_primitives::keccak256(swaps())),
+            ],
+            ids: vec![],
+        };
+        let r = open_trading(&trading_params(), &all, vec![cow(), limit(), swaps()], &f);
+        let t = r.text();
+        assert_eq!(r.verdict, Verdict::Sign, "{t}");
+        assert!(t.contains("Trading on: CoW Swap") && t.contains("Trading on: 1inch") && t.contains("Trading on: Uniswap"), "{t}");
+        assert_eq!(t.matches("Orders live").count(), 2, "{t}");
+        assert_eq!(t.matches("A swap is charged").count(), 1, "{t}");
+
+        // another venue's config under the swap decoder, and a swap config under another's: none reads
+        for (trading, sent) in [
+            (swap_venue(&cow()), cow()),
+            (swap_venue(&limit()), limit()),
+            (limit_venue(&swaps()), swaps()),
+            (one_venue(&swaps()), swaps()),
+        ] {
+            let r = open_trading(&trading_params(), &trading, vec![sent], &f);
+            assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("the config for")), "{}", r.text());
+        }
+        // the router among the mandate's targets: the agent could swap past the owner's terms there
+        let mut reaches = trading_params();
+        reaches.targets.push(SWAP_ROUTER);
+        reaches.selectors.push(FixedBytes::from([0x04, 0xe4, 0x5a, 0xaf]));
+        let r = open_trading(&reaches, &swap_venue(&swaps()), vec![swaps()], &f);
+        assert!(
+            matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("Uniswap's own contract, where it could swap at any price")),
+            "{:?} {}",
+            r.verdict,
+            r.text()
+        );
+        // a build that does not know the decoder
+        let r = open_trading(&trading_params(), &swap_venue(&swaps()), vec![swaps()], &two_venue_facts());
+        assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("not one this build knows")), "{}", r.text());
+    }
+
+    /// `swap_terms` reads what `SwapRouter02Decoder.checkConfig` allows, in
+    /// its one canonical encoding, and nothing else.
+    #[test]
+    fn swap_terms_are_read_canonically_or_not_at_all() {
+        let pair = (USD, WETH, U256::from(3u8), U256::from(1u8));
+        let good = kernel::swap_config(&[pair]);
+        assert_eq!(swap_terms(&good), Ok(SwapTerms { pairs: vec![pair] }));
+        // no pair, too many pairs
+        assert!(swap_terms(&kernel::swap_config(&[])).is_err());
+        let many: Vec<_> = (0u8..17).map(|i| (USD, Address::repeat_byte(i.saturating_add(1)), U256::from(1u8), U256::from(1u8))).collect();
+        assert!(swap_terms(&kernel::swap_config(&many)).is_err());
+        assert!(swap_terms(&kernel::swap_config(&many[..16])).is_ok());
+        // a pair without two tokens, without a price, or twice
+        for bad in [
+            (Address::ZERO, WETH, U256::from(1u8), U256::from(1u8)),
+            (USD, Address::ZERO, U256::from(1u8), U256::from(1u8)),
+            (USD, USD, U256::from(1u8), U256::from(1u8)),
+            (USD, WETH, U256::ZERO, U256::from(1u8)),
+            (USD, WETH, U256::from(1u8), U256::ZERO),
+        ] {
+            assert!(swap_terms(&kernel::swap_config(&[bad])).is_err(), "{bad:?}");
+        }
+        assert!(swap_terms(&kernel::swap_config(&[pair, pair])).is_err());
+        // both ways is two pairs
+        assert!(swap_terms(&kernel::swap_config(&[pair, (WETH, USD, U256::from(1u8), U256::from(3u8))])).is_ok());
+        // bytes after the config, a byte less, and the other venues' encodings of the same terms
+        assert!(swap_terms(&[good.as_ref(), &[0u8; 32][..]].concat()).is_err());
+        assert!(swap_terms(&good[..good.len().saturating_sub(1)]).is_err());
+        assert!(swap_terms(&kernel::one_inch_config(1800, &[pair])).is_err());
+        assert!(swap_terms(&kernel::cow_config(B256::ZERO, 1800, &[pair])).is_err());
+        assert!(one_inch_terms(&good).is_err() && cow_terms(&good).is_err());
     }
 
     /// `one_inch_terms` reads what `OneInchLimitOrderDecoder.checkConfig`

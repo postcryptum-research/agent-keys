@@ -118,6 +118,36 @@ contract SwapRouter02DecoderTest is Test {
         assertEq(ISwapRouter02.exactInputSingle.selector, bytes4(0x04e45aaf));
     }
 
+    /// One swap, with the bytes written out: the CLI and the phone's core
+    /// build the same from their own code and are held to these bytes
+    /// (`mobile/owner-core/src/kernel.rs`, `a_swap_is_the_decoders`).
+    function test_decoder_theRecordedSwap() public view {
+        address account = 0x1111111111111111111111111111111111111111;
+        address sell = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+        address buy = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+        bytes memory order = abi.encode(SwapRouter02Decoder.Swap(sell, buy, 500, 1_000e6, 0.25 ether));
+        SwapRouter02Decoder.Config memory c;
+        c.pairs = new VenuePairs.Pair[](1);
+        c.pairs[0] = VenuePairs.Pair(sell, buy, 0.25 ether, 1_000e6);
+        assertEq(
+            abi.encode(c),
+            hex"000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000001000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48000000000000000000000000c02aaa39b223fe8d0a0e5c4f27ead9083c756cc200000000000000000000000000000000000000000000000003782dace9d90000000000000000000000000000000000000000000000000000000000003b9aca00",
+            "the config"
+        );
+        assertEq(
+            order,
+            hex"000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48000000000000000000000000c02aaa39b223fe8d0a0e5c4f27ead9083c756cc200000000000000000000000000000000000000000000000000000000000001f4000000000000000000000000000000000000000000000000000000003b9aca0000000000000000000000000000000000000000000000000003782dace9d90000",
+            "the swap"
+        );
+        assertEq(
+            decoder.swapCall(account, order),
+            hex"04e45aaf000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48000000000000000000000000c02aaa39b223fe8d0a0e5c4f27ead9083c756cc200000000000000000000000000000000000000000000000000000000000001f40000000000000000000000001111111111111111111111111111111111111111000000000000000000000000000000000000000000000000000000003b9aca0000000000000000000000000000000000000000000000000003782dace9d900000000000000000000000000000000000000000000000000000000000000000000",
+            "the call"
+        );
+        (,,,, bytes32 digest) = decoder.judge(account, abi.encode(c), order);
+        assertEq(digest, 0xb870325779145b133ddd23f0edfe40ef291a53b1b456ddae332f89a8489be208, "the call's hash");
+    }
+
     /// The recipient is the account the swap is judged for, whoever that is.
     function test_decoder_theRecipientIsTheAccount() public view {
         bytes memory order = abi.encode(_swap(100e6, 0.025 ether));

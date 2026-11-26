@@ -10,6 +10,10 @@
 //! `order sell` registers an order and prints it with the agent's signature,
 //! in the form the venue's order book takes. It sends it nowhere: handing the
 //! order to an order book is what makes it live.
+//!
+//! A swap is the other kind of venue: a call the account makes itself, at a
+//! router, in the same operation that registers it. `order swap` sends both
+//! as one operation; nothing is left to be filled later.
 
 use alloy::primitives::{Address, Bytes, B256, U256};
 use alloy::providers::Provider;
@@ -22,7 +26,7 @@ use rand_core::{OsRng, RngCore};
 
 use crate::agent::{open_signer, Role, VenueEntry, VenueKind};
 use crate::chain::{ask_again, Session, VenueOnChain, ASK_AGAIN, ASK_EVERY};
-use crate::kernel::{self, CowSellOrder, OneInchOrder};
+use crate::kernel::{self, CowSellOrder, OneInchOrder, SwapOrder};
 
 const ERC1271_MAGIC: [u8; 4] = [0x16, 0x26, 0xba, 0x7e];
 
@@ -30,6 +34,33 @@ const ERC1271_MAGIC: [u8; 4] = [0x16, 0x26, 0xba, 0x7e];
 pub enum VenueOrder {
     Cow(CowSellOrder),
     OneInch(OneInchOrder),
+}
+
+/// A swap as the chain has it.
+pub struct Swapped {
+    pub tx: B256,
+    pub block: u64,
+    /// The amount sold, as asked.
+    pub sold: U256,
+    /// By how much the account's balance of the bought token grew in the swap's block.
+    pub bought: U256,
+    /// The least the router was told to pay, or revert.
+    pub least: U256,
+    /// The router the swap was made at: the venue's own contract.
+    pub router: Address,
+}
+
+impl Swapped {
+    pub fn json(&self) -> Value {
+        json!({
+            "tx": self.tx.to_string(),
+            "block": self.block,
+            "sold": self.sold.to_string(),
+            "bought": self.bought.to_string(),
+            "leastBought": self.least.to_string(),
+            "router": self.router.to_string(),
+        })
+    }
 }
 
 /// A registered order, ready for the venue.
@@ -114,6 +145,116 @@ impl Session {
         Ok((v, self.venues.get(&v.decoder).context("venue not read from the chain")?))
     }
 
+    /// A sale against the config's terms and the account's funds, before
+    /// anything is signed: the pair is listed, the price is not under its
+    /// lowest, something is sold, and the venue's allowance and the
+    /// account's balance cover it. `what` is "order" or "swap".
+    async fn check_sale(
+        &self,
+        v: &VenueEntry,
+        on: &VenueOnChain,
+        what: &str,
+        sell_token: Address,
+        buy_token: Address,
+        sell_amount: U256,
+        buy_amount: U256,
+    ) -> Result<()> {
+        let pair = v
+            .pairs
+            .iter()
+            .find(|p| p.sell_token == sell_token && p.buy_token == buy_token)
+            .with_context(|| format!("selling {sell_token} for {buy_token} is not a pair of this mandate"))?;
+        let (min_buy, per_sell): (U256, U256) = (pair.min_buy.parse().context("minBuy")?, pair.per_sell.parse().context("perSell")?);
+        let enough = match (buy_amount.checked_mul(per_sell), sell_amount.checked_mul(min_buy)) {
+            (Some(offered), Some(least)) => offered >= least,
+            _ => bail!("the amounts are too large to compare with the lowest price"),
+        };
+        if !enough {
+            bail!("{buy_amount} for {sell_amount} is below the mandate's lowest price ({min_buy} per {per_sell})");
+        }
+        if sell_amount.is_zero() {
+            bail!("an {what} that sells nothing");
+        }
+        let token = IErc20Allowance::new(sell_token, self.provider.clone());
+        let allowed = token.allowance(self.account, on.spender).call().await.context("reading the venue's allowance")?;
+        if allowed < sell_amount {
+            bail!(
+                "the account lets the venue's spender {} take {allowed} of {sell_token}, less than this {what} sells: the owner gives the allowance with the mandate and renews it with `permission allowance`",
+                on.spender
+            );
+        }
+        let balance = token.balanceOf(self.account).call().await.context("reading the account's balance")?;
+        if balance < sell_amount {
+            bail!("the account holds {balance} of {sell_token}, less than this {what} sells");
+        }
+        Ok(())
+    }
+
+    /// Swap at a router under the mandate, at a venue of kind `uniswap`: one
+    /// operation of two calls, the swap's registration with the policy and
+    /// the router call the venue's decoder builds (`SwapRouter02Decoder`):
+    /// the bought token to the account, no native value, no price limit.
+    /// The policy admits that call only as the leg after its registration.
+    ///
+    /// Checked here first against the config's terms; the policy's own check
+    /// is the one that counts. The amount sold is charged to the token's
+    /// budget when the operation is validated: a swap that reverts when it
+    /// runs (the market moved under `buy_amount`) was charged all the same,
+    /// and the charge returns when the budget period turns. The operation's
+    /// calls are run before anything is sent, so a swap that would revert
+    /// now is found then and costs nothing; one that reverts because the
+    /// pool moved in between is the case that is charged.
+    pub async fn order_swap(
+        &self,
+        decoder: Option<Address>,
+        sell_token: Address,
+        buy_token: Address,
+        sell_amount: U256,
+        buy_amount: U256,
+        fee: u32,
+        sponsored: bool,
+    ) -> Result<Swapped> {
+        let (v, on) = self.venue(decoder)?;
+        if v.kind != VenueKind::Uniswap {
+            bail!("the venue {} takes orders, not swaps: `order sell`", v.decoder);
+        }
+        let config = v.config()?;
+        self.check_sale(v, on, "swap", sell_token, buy_token, sell_amount, buy_amount).await?;
+        let swap = SwapOrder { token_in: sell_token, token_out: buy_token, fee, amount_in: sell_amount, amount_out_minimum: buy_amount };
+        let fits = "the fee tier does not fit the router's 24 bits";
+        let (encoded, call) = (swap.encode().context(fits)?, swap.call(self.account).context(fits)?);
+        // The decoder's own word on the call: it builds the bytes the policy
+        // will hold the next leg to. Other bytes here would be refused there,
+        // after the gas was spent on finding out.
+        let d = crate::abi::IVenueDecoder::new(v.decoder, self.provider.clone());
+        let theirs = d.swapCall(self.account, encoded.clone()).call().await.context("asking the venue's decoder for the swap's call")?;
+        if theirs != call {
+            bail!("the decoder {} builds another call for this swap than this tool does: nothing was sent", v.decoder);
+        }
+        eprintln!("swap:           sell {sell_amount} of {sell_token} for at least {buy_amount} of {buy_token}, in the pool of fee tier {fee}");
+
+        let policy = self.installed_policy().await?;
+        let bought = IErc20Allowance::new(buy_token, self.provider.clone());
+        let before = bought.balanceOf(self.account).call().await.context("reading the account's balance of the bought token")?;
+        // the registration, then the call it admits: two legs of one operation
+        let batch = vec![(policy, U256::ZERO, kernel::order_register_calldata(v.decoder, &config, &encoded)), (on.place, U256::ZERO, call)];
+        let inc = self
+            .send_batch(batch, false, sponsored, None)
+            .await
+            .context("the swap was not made. If nothing was sent (the calls were run first and one reverted, or the mandate refused), nothing was charged. If the operation was included and its execution reverted, the amount sold was charged to the token's budget all the same, and returns when the budget period turns")?;
+        // the receipt's node has the block; another may lag behind it
+        let mut after = None;
+        for _ in 0..15 {
+            if let Ok(b) = bought.balanceOf(self.account).block(alloy::eips::BlockId::number(inc.block)).call().await {
+                after = Some(b);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+        let after = after.with_context(|| format!("the swap is in tx {} (block {}), and no node served that block within 15 s to read what was bought", inc.tx, inc.block))?;
+        Ok(Swapped { tx: inc.tx, block: inc.block, sold: sell_amount, bought: after.saturating_sub(before), least: buy_amount, router: on.place })
+    }
+
     /// Register a sell order under the mandate and sign it. Checked here
     /// first against the config's terms, so that an order the policy would
     /// refuse costs no operation; the policy's own check is the one that
@@ -130,36 +271,12 @@ impl Session {
     ) -> Result<Placed> {
         let (v, on) = self.venue(decoder)?;
         let config = v.config()?;
-        let pair = v
-            .pairs
-            .iter()
-            .find(|p| p.sell_token == sell_token && p.buy_token == buy_token)
-            .with_context(|| format!("selling {sell_token} for {buy_token} is not a pair of this mandate"))?;
-        let (min_buy, per_sell): (U256, U256) = (pair.min_buy.parse().context("minBuy")?, pair.per_sell.parse().context("perSell")?);
-        let enough = match (buy_amount.checked_mul(per_sell), sell_amount.checked_mul(min_buy)) {
-            (Some(offered), Some(least)) => offered >= least,
-            _ => bail!("the amounts are too large to compare with the lowest price"),
-        };
-        if !enough {
-            bail!("{buy_amount} for {sell_amount} is below the mandate's lowest price ({min_buy} per {per_sell})");
+        if v.kind == VenueKind::Uniswap {
+            bail!("the venue {} takes swaps, not orders: `order swap`", v.decoder);
         }
-        if sell_amount.is_zero() {
-            bail!("an order that sells nothing");
-        }
+        self.check_sale(v, on, "order", sell_token, buy_token, sell_amount, buy_amount).await?;
         if valid_for == 0 || valid_for > v.max_life {
             bail!("an order may live at most {} s under this mandate (--valid-for {valid_for})", v.max_life);
-        }
-        let token = IErc20Allowance::new(sell_token, self.provider.clone());
-        let allowed = token.allowance(self.account, on.spender).call().await.context("reading the venue's allowance")?;
-        if allowed < sell_amount {
-            bail!(
-                "the account lets the venue's spender {} take {allowed} of {sell_token}, less than this order sells: the owner gives the allowance with the mandate and renews it with `permission allowance`",
-                on.spender
-            );
-        }
-        let balance = token.balanceOf(self.account).call().await.context("reading the account's balance")?;
-        if balance < sell_amount {
-            bail!("the account holds {balance} of {sell_token}, less than this order sells");
         }
 
         // Under a budget per period an order ends with the period it is
@@ -218,6 +335,7 @@ impl Session {
                 }
                 found.context("eight random nonces were all used at the router: try again")?
             }
+            VenueKind::Uniswap => bail!("the venue {} takes swaps, not orders: `order swap`", v.decoder),
         };
         eprintln!("order:          sell {sell_amount} of {sell_token} for at least {buy_amount} of {buy_token}, until {valid_to}");
 

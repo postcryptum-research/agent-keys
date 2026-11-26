@@ -168,10 +168,23 @@ FORK_BASE_SEPOLIA_RPC_URL=<a Base Sepolia RPC> \
     forge test --evm-version osaka --match-contract SwapRouter02ForkTest
 ```
 
+The CLI makes the swap, and the phone's core shows the venue's terms to the
+owner [V `swaps_under_a_mandate` and
+`the_phone_reads_a_swap_config_as_the_decoder_does` in the CLI's local-chain
+tests, with a stand-in router]:
+
+```sh
+agent-signer order swap --agent agent.json \
+    --sell <token> --buy <token> --sell-amount <units> --buy-amount <least units> --fee 3000
+```
+
+In the config the venue is `{"kind": "uniswap", "decoder": …, "pairs": […]}`
+([`AGENT_CONFIG.md`](AGENT_CONFIG.md)).
+
 **Not on a chain yet.** No network has this decoder, or the policy that
-admits a decoder's call; the CLI and the phone do not know the venue yet.
-One pool and an exact amount sold only: paths through several pools,
-exact-output swaps and the router's v2 functions are not allowed.
+admits a decoder's call, so no phone build names the venue. One pool and an
+exact amount sold only: paths through several pools, exact-output swaps and
+the router's v2 functions are not allowed.
 
 ## Not yet: needs an argument held to the account
 
