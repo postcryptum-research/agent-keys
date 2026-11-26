@@ -207,6 +207,7 @@ its module until then; `permission show` names it.
 | Command | Reads from the file | Changes on-chain | Signed by |
 |---|---|---|---|
 | `op send`, `demo` | `agent`, `permissionId`, `account` (or derivation fields) | executes the call — **only within the installed mandate** | agent key |
+| `op batch` | same | several calls as one operation, each judged by the mandate, executed together or not at all. `--allow <token>:<spender>:<amount>` wraps them in an allowance that is taken back in the same operation, which is how the agent uses a protocol that pulls tokens ([`DAPPS.md`](DAPPS.md)) | agent key |
 | `op send --root` | `owner`, `account` | executes the call on the root path — no mandate applies | owner key |
 | `x402 fetch`, `x402 reclaim` | same, + `policy.tokens` (which are `x402`) | registers / reclaims an x402 payment — within the mandate | agent key |
 | `order sell` | same, + `policy.venues` | registers an order under the mandate and prints it signed, in the form the venue's order book takes (it is sent nowhere: an order is live once an order book has it). The order is charged to the budget at once, filled or not, until the period turns | agent key |
