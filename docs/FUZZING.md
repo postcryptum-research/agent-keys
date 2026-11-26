@@ -456,6 +456,32 @@ that protocol, and each recipe in `docs/DAPPS.md` is held by a test of its
 own or marked `[I]`. The fork run is of one asset on one test network. No
 call was sent to a chain.
 
+## Contracts: recipes against the protocols' own code
+
+`contracts/test/ProtocolRecipes.t.sol` runs four recipes of
+[`docs/DAPPS.md`](DAPPS.md) on forks: what an owner puts on a mandate so
+that an agent can use a protocol, and nothing else of it.
+
+| Recipe | Chain forked | What the tests hold |
+|---|---|---|
+| Compound v3, by the allow-list | Base Sepolia | supply and withdraw are the account's; `supplyTo`, `withdrawTo`, `allow`, an amount over the cap and an allowance left open are refused; the market credits its caller, and refuses a borrow without collateral |
+| Lido `submit`, by the allow-list | Ethereum | the stETH is the account's, the referral receives nothing; over the native cap, and the stETH's `transfer` and `approve`, are refused |
+| An ERC-4626 vault (sDAI), by rules | Ethereum | deposit, redeem and withdraw for the account; for somebody else, `mint` and the share token's own functions are refused; the vault credits whoever is named |
+| Circle's CCTP, by rules | Base Sepolia | a burn for the account's own address on the set chain is made and charged; another recipient, chain, fee, caller or form is refused; the messenger burns for whoever is named, and takes from its caller only |
+
+Run on 2026-11-26: 12 tests pass. Without `FORK_BASE_SEPOLIA_RPC_URL` and
+`FORK_ETHEREUM_RPC_URL` they are skipped, so CI runs none of them.
+
+**That it bites.** Seven loosenings, one at a time, and each fails a test:
+the bridge's recipient, chain and fee left open; the vault's receiver on a
+deposit and on a redeem; `supplyTo` in the place of `supply` on Compound's
+list; the stETH's `transfer` on Lido's list.
+
+**What it does not cover.** One market, one vault and one direction of the
+bridge, each at one block of a fork. The protocols are upgradeable or
+governed: what a function does with its arguments can change, and a
+mandate's rules do not follow it. Nothing was sent to a chain.
+
 ## Rust
 
 Coverage-guided fuzzing with `cargo-fuzz` (libFuzzer, a nightly toolchain)

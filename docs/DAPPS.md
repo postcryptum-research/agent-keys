@@ -73,8 +73,8 @@ protocol's own code; the others are `[I]` until their test exists.
 |---|---|---|---|
 | **Aave V3** | the pool's compact forms `supply(bytes32)` `0xf7a73840`, `withdraw(bytes32)` `0x8e19899e`, `repay(bytes32)` `0x563dd613`: the pool uses its own caller as beneficiary | Base, Arbitrum, Base Sepolia (the pools there are L2 pools) | **[V]** on Base Sepolia, see below |
 | Aave V3 | `repayWithATokens`, rewards `claimRewardsToSelf`, `claimAllRewardsToSelf` | every chain | [I] |
-| Compound v3 | `supply(address,uint256)`, `withdraw(address,uint256)`, rewards `claim` | Ethereum, Base, Arbitrum, Sepolia, Base Sepolia | [I] |
-| Lido | `submit(address)` (stake), wstETH `wrap` and `unwrap`, `claimWithdrawals`, `claimWithdrawal` | Ethereum; Sepolia in part | [I] |
+| **Compound v3** | `supply(address,uint256)` `0xf2b9fdb8`, `withdraw(address,uint256)` `0xf3fef3a3`, with the base token's `approve` and a limit for it | Ethereum, Base, Arbitrum, Sepolia, Base Sepolia | **[V]** on Base Sepolia, see below; rewards `claim` [I] |
+| **Lido** | `submit(address)` `0xa1903eab` (stake), under the native cap and budget | Ethereum | **[V]** on Ethereum, see below; wstETH `wrap` and `unwrap`, `claimWithdrawals`, `claimWithdrawal` [I] |
 | Rocket Pool | `deposit()`, rETH `burn` | Ethereum | [I] |
 | ether.fi | `deposit()`, `deposit(address)`, weETH `wrap` and `unwrap`, `claimWithdraw` | Ethereum | [I] |
 | EigenLayer | `depositIntoStrategy`, `queueWithdrawals`, `completeQueuedWithdrawal` | Ethereum, Sepolia | [I] |
@@ -93,6 +93,30 @@ Three of these need a word of care:
 - **Curve's price is the agent's.** The minimum-out argument is the
   agent's own, so a bad trade loses up to what was allowed. The token's
   budget bounds it; nothing holds a price.
+
+### Compound v3 and Lido, verified
+
+[V `contracts/test/ProtocolRecipes.t.sol`, run on forks on 2026-11-26.]
+
+- **Compound v3, the USDC market on Base Sepolia**
+  (`0x571621Ce60Cebb0c1D442B5afb38B1663C6Bf017`): a supply of 100 USDC as
+  three calls (the allowance, the supply, the allowance back) is the
+  account's and is charged; 40 back by one call charges nothing.
+  `supplyTo`, `withdrawTo` and `allow` are not listed and are refused. On
+  the market's own code: a supply by another caller is credited to that
+  caller, and a withdrawal of more than was supplied, with no collateral
+  there, is refused by the market.
+- **Lido on Ethereum** (`0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84`):
+  `submit` with the value of the native cap mints stETH to the account. The
+  referral argument is the agent's to choose: the referral receives
+  nothing. One wei over the cap, and the stETH's `transfer` or `approve`,
+  are refused.
+
+```sh
+cd contracts
+FORK_BASE_SEPOLIA_RPC_URL=<a Base Sepolia RPC> FORK_ETHEREUM_RPC_URL=<an Ethereum RPC> \
+    forge test --evm-version osaka --match-path test/ProtocolRecipes.t.sol --match-test 'test_recipe|test_real'
+```
 
 ### Aave V3 on Base Sepolia, verified
 
@@ -214,6 +238,43 @@ cd contracts
 FORK_BASE_SEPOLIA_RPC_URL=<a Base Sepolia RPC> \
     forge test --evm-version osaka --match-contract PoolForkTest
 ```
+
+**An ERC-4626 vault, verified.** sDAI on Ethereum
+(`0x83F20F44975D03b1b09e64809B757c47f942BEeA`): `deposit(assets,
+receiver)` with the assets charged and the receiver the account;
+`redeem(shares, receiver, owner)` and `withdraw(assets, receiver, owner)`
+with both the receiver and the owner the account, of any amount
+[V `ProtocolRecipes.t.sol` `VaultRecipeTest`, on a fork of Ethereum on
+2026-11-26: the shares are the account's and the deposit is charged; a
+deposit for somebody else, a redeem or a withdrawal to somebody else,
+`mint`, and the share token's `transfer` and `approve` are refused].
+
+```json
+{"selector": "0x6e553f65", "words": [{"charged": "<asset>"}, "account"]},
+{"selector": "0xba087652", "words": ["any", "account", "account"]},
+{"selector": "0xb460af94", "words": ["any", "account", "account"]}
+```
+
+**Circle's CCTP, verified.** `depositForBurn` at the V2 messenger on Base
+Sepolia (`0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA`): the amount charged,
+the destination chain set, the recipient the account's own address there,
+the token set, no caller named for the other side, no fee, standard
+finality [V `ProtocolRecipes.t.sol` `CctpRecipeTest`, on a fork of Base
+Sepolia on 2026-11-26: 50 USDC leave the account and the token's supply,
+and are charged; another recipient, another chain, a fee, a caller for the
+other side, the form with a hook and an amount over the cap are refused].
+The recipient "the account" is the same address on the other chain: it is
+the owner's there only if the account exists, or can be created, at that
+address on that chain.
+
+```json
+{"selector": "0x8e0250ee", "words": [{"charged": "<USDC>"}, {"is": "<destination domain>"}, "account",
+                                    {"is": "<USDC>"}, {"is": "0"}, {"atMost": "0"}, {"is": "2000"}]}
+```
+
+With one rule of a recipe loosened at a time (the recipient, the chain or
+the fee of the bridge; a receiver of the vault), its test fails: the
+refusals are the rules' doing.
 
 **The others are recipes to be written and tested,** each `[I]` until its
 test exists. The table says which rule opens what:
