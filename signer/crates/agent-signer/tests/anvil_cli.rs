@@ -2668,6 +2668,106 @@ fn one_inch_orders_under_a_mandate() {
     chain.fails(&["demo", "--agent", &cfg]);
 }
 
+mod pull_abi {
+    alloy::sol! {
+        function pull(address token, address from, address to, uint256 amount) external;
+        function approve(address spender, uint256 amount) external returns (bool);
+    }
+}
+
+/// `op batch`: several calls as one operation of the agent, and the shape a
+/// protocol that pulls tokens needs (`--allow`): the allowance, the call that
+/// uses it, the allowance taken back. The spender here is a contract that
+/// pulls what it is told to, as a lending pool pulls a supply. The mandate
+/// judges every call: one refused call refuses them all, and an allowance
+/// that would be left standing is refused.
+#[test]
+fn a_batch_gives_an_allowance_for_one_operation() {
+    let chain = chain_or_skip!("batch");
+    let (owner, agent) = (key(1), key(2));
+    let counter = chain.addr("demoCounter");
+    let until = far_future(&chain);
+    let fixture: Value = serde_json::from_str(
+        &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/trading-code.json")).unwrap(),
+    )
+    .unwrap();
+    let deploy = |name: &str| {
+        let code = hex::decode(fixture[name].as_str().unwrap().trim_start_matches("0x")).unwrap();
+        chain.send_from(FACILITATOR, None, code)["contractAddress"].as_str().unwrap().to_string()
+    };
+    let (token, pool) = (deploy("mockTokenInitCode"), deploy("relayerInitCode"));
+    let sink: Address = "0x00000000000000000000000000000000000051c0".parse().unwrap();
+
+    let account = chain.deploy(&chain.config("agent.json", &base_cfg(&owner, &agent, &counter, until)));
+    let acct: Address = account.parse().unwrap();
+    // the mandate: the token within 100 a time and 250 in all, the pool's `pull`, the counter
+    const PULL: &str = "0xdc772e94";
+    assert_eq!(hex::encode(pull_abi::pullCall::SELECTOR), PULL.trim_start_matches("0x"));
+    let cfg = chain.config(
+        "pool.json",
+        &Cfg {
+            permission: "0x706f6f6c",
+            // the token's `approve` is named like any other call; the limit below is what bounds it
+            allow: vec![(counter.clone(), INCREMENT), (pool.clone(), PULL), (token.clone(), "0x095ea7b3")],
+            account: Some(account.clone()),
+            tokens: json!([{"token": token, "maxPerOp": "100", "budget": "250", "payees": "anyone"}]),
+            ..base_cfg(&owner, &agent, &counter, until)
+        },
+    );
+    chain.ok(&["permission", "rotate", "--agent", &cfg, "--old-id", "0x74657331"]);
+    chain.send_from(FACILITATOR, Some(&token), mintCall { to: acct, amount: U256::from(1_000u64) }.abi_encode());
+    let balance = |who: Address| U256::from_be_slice(&chain.call(&token, balanceOfCall { account: who }.abi_encode()));
+    let allowance = || {
+        let call = trading_abi::allowanceCall { owner: acct, spender: pool.parse().unwrap() };
+        U256::from_be_slice(&chain.call(&token, call.abi_encode()))
+    };
+    let pull = |amount: u64| {
+        let data = pull_abi::pullCall { token: token.parse().unwrap(), from: acct, to: sink, amount: U256::from(amount) }.abi_encode();
+        format!("{pool}:0:0x{}", hex::encode(data))
+    };
+    let allow = |amount: u64| format!("{token}:{pool}:{amount}");
+
+    // the allowance, the pull, the allowance back: one operation, and the counter with it
+    let before = chain.counter();
+    let out = chain.ok(&["op", "batch", "--agent", &cfg, "--allow", &allow(100), "--call", &pull(100), "--call", &format!("{counter}:0:{INCREMENT}")]);
+    assert!(out.contains("4 call(s) in one operation") && out.contains("included: tx"), "{out}");
+    assert_eq!(balance(sink), U256::from(100u64));
+    assert_eq!(balance(acct), U256::from(900u64));
+    assert!(allowance().is_zero(), "no allowance stands after the operation");
+    assert_eq!(chain.counter(), before + U256::from(1));
+    assert!(chain.ok(&["permission", "show", "--agent", &cfg]).contains("(spent 100)"));
+
+    // the pool takes less than it was allowed: the rest of the allowance is gone all the same
+    chain.ok(&["op", "batch", "--agent", &cfg, "--allow", &allow(100), "--call", &pull(60)]);
+    assert_eq!(balance(sink), U256::from(160u64));
+    assert!(allowance().is_zero());
+    // charged is what was allowed, not what was taken
+    assert!(chain.ok(&["permission", "show", "--agent", &cfg]).contains("(spent 200)"));
+
+    // an allowance left standing: the approval and the pull as plain calls, with no withdrawal
+    let approve = |amount: u64| {
+        let data = pull_abi::approveCall { spender: pool.parse().unwrap(), amount: U256::from(amount) }.abi_encode();
+        format!("{token}:0:0x{}", hex::encode(data))
+    };
+    chain.fails(&["op", "batch", "--agent", &cfg, "--call", &approve(10), "--call", &pull(10)]);
+    // over the cap per operation; over what is left of the budget
+    chain.fails(&["op", "batch", "--agent", &cfg, "--allow", &allow(101), "--call", &pull(1)]);
+    chain.fails(&["op", "batch", "--agent", &cfg, "--allow", &allow(51), "--call", &pull(1)]);
+    // one call outside the mandate refuses the whole operation: nothing of it happens
+    let before = chain.counter();
+    chain.fails(&["op", "batch", "--agent", &cfg, "--call", &format!("{counter}:0:{INCREMENT}"), "--call", &format!("{pool}:0:0xdeadbeef")]);
+    assert_eq!(chain.counter(), before);
+    // the pull without an allowance passes the mandate and fails at the token: nothing moves
+    chain.fails(&["op", "batch", "--agent", &cfg, "--call", &pull(1)]);
+    assert_eq!(balance(sink), U256::from(160u64));
+    assert!(allowance().is_zero());
+    // an entry that is not three parts is refused before anything is signed
+    let why = chain.fails(&["op", "batch", "--agent", &cfg, "--call", &format!("{pool}:0x")]);
+    assert!(why.contains("is not <target>:<wei>:<0x calldata>"), "{why}");
+    let why = chain.fails(&["op", "batch", "--agent", &cfg]);
+    assert!(why.contains("at least one call"), "{why}");
+}
+
 /// What the phone reads from a venue's config and what the decoder on chain
 /// enforces from the same bytes are held together (the auditor's point on
 /// issue #80): for configs from a seed, well-formed and damaged, every one

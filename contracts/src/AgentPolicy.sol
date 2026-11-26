@@ -19,6 +19,7 @@ import {LibERC7579} from "kernel/lib/solady/src/accounts/LibERC7579.sol";
 
 import {SafeNonceAssert} from "./SafeNonceAssert.sol";
 import {IVenueDecoder} from "./venues/IVenueDecoder.sol";
+import {VenueCalls} from "./venues/VenueCalls.sol";
 
 /// The one Kernel view the policy reads at install time: which EntryPoint
 /// the account answers to, so that it can never become an agent's target.
@@ -464,7 +465,9 @@ contract AgentPolicy is IPolicy {
     // (CoW: `setPreSignature`), and the spender holds the owner's allowance
     // of the sold tokens (CoW: the vault relayer), so through it they would
     // leave past their caps and payee lists. Never cleared: an address that
-    // was a venue stays out of reach.
+    // was a venue stays out of reach. One path leads to a venue's own
+    // contract: a call its decoder judged, as the leg after that call's
+    // registration (`_judgeVenueCall`).
     mapping(address place => mapping(address account => bool)) internal _venuePlaces;
 
     /// @dev Policy constructor.
@@ -563,7 +566,7 @@ contract AgentPolicy is IPolicy {
     /// the account may name it as a target.
     /// @param account The account.
     /// @param place The address asked about.
-    /// @return True if the address is out of the agent's reach as a venue's place.
+    /// @return True if the address is a venue's place: on no allow-list of the account.
     function venuePlace(address account, address place) external view returns (bool) {
         return _venuePlaces[place][account];
     }
@@ -953,6 +956,8 @@ contract AgentPolicy is IPolicy {
         if (!ok || value > c.maxValuePerOp) return SIG_VALIDATION_FAILED_UINT;
         // No allowance the agent granted outlives the operation
         if (_tload(_thisOperation(OPEN_ALLOWANCES)) != 0) return SIG_VALIDATION_FAILED_UINT;
+        // And no call a decoder judged is left unmade: its registration without it is refused
+        if (_tload(_thisOperation(EXPECTED_CALL)) != 0) return SIG_VALIDATION_FAILED_UINT;
 
         // Without a paymaster the account pays for gas out of its own
         // deposit: count the most it can be charged against the budget.
@@ -1190,6 +1195,9 @@ contract AgentPolicy is IPolicy {
     /// settlement lets a solver clear the record of an expired order), so
     /// the budget rests on this policy's own counters alone. An unfilled
     /// order's part of the budget returns when the period turns.
+    /// A decoder may judge a call instead of an order (`VenueCalls`): the
+    /// registration then admits that one call, at the decoder's own venue,
+    /// as the operation's next leg, and keeps nothing of it but this record.
     /// @dev The registration was made by `_registerOrder` in the operation's
     /// validation, from these same arguments. The second parameter, the
     /// owner's config for the venue, is not read here.
@@ -1238,31 +1246,54 @@ contract AgentPolicy is IPolicy {
     /// the token (cap per operation, the shared budget) and the digest is
     /// recorded. A token with a payee list cannot be sold at a venue: what
     /// is sold goes to whoever fills the order, and the owner listed who may
-    /// be paid.
+    /// be paid. A decoder that answers without a `validTo` judged a call the
+    /// account makes in the next leg: it is charged the same way when the
+    /// decoder prices it, nothing is recorded, and its hash is kept, bound to
+    /// the decoder's venue, for `_judgeVenueCall`.
     /// @param m The mandate key.
     /// @param d The call's calldata, selector included.
-    /// @return True if the order is registered and charged.
+    /// @return True if the order, or the call, is registered and charged.
     function _registerOrder(bytes32 m, bytes calldata d) internal returns (bool) {
         // The arguments, in their canonical encoding only
         (bool ok, address decoder, bytes calldata config, bytes calldata order) = _orderArguments(d);
         if (!ok) return false;
         // The decoder's answer, for an order that sells something
         Judged memory j = _askDecoder(m, decoder, config, order);
-        if (!j.ok || j.mostSold == 0) return false;
-        // Under a period, the order ends with the period it is charged in
-        if (!_endsWithThePeriod(uint256(j.validTo) + 1)) return false; // fillable up to and at `validTo`
-        // A token with a limit, and without a payee list
-        TokenLimit storage t = _token(msg.sender, m, j.token);
-        if (!t.set || t.payeesOnly) return false;
-        // The cap per operation, over all of the operation's calls
-        if (_movedThisOperation(j.token, j.mostSold) > t.maxPerOp) return false;
-        // The token's budget, shared with transfers and x402
-        uint256 spent = _tokenSpent(m, j.token, t) + j.mostSold;
-        if (spent > t.budget) return false;
-        // Record the digest for `checkSignaturePolicy`; the same order registers once
-        if (!_recordX402(m, j.digest, j.mostSold, j.validTo, j.token)) return false;
-        // Charge it
-        t.spent = uint128(spent);
+        if (!j.ok) return false;
+        // No `validTo`: the decoder judged a call the account makes now, in
+        // the leg after this one, not an order a venue fills later
+        bool call = j.validTo == 0;
+        if (j.mostSold == 0) {
+            // An order sells something. A call may take nothing through this
+            // charge: what it takes through an allowance the agent gives in the
+            // same operation is charged there
+            if (!call) return false;
+        } else {
+            // Under a period, the order ends with the period it is charged in; a call is over at once
+            if (!_endsWithThePeriod(uint256(j.validTo) + 1)) return false; // fillable up to and at `validTo`
+            // A token with a limit, and without a payee list
+            TokenLimit storage t = _token(msg.sender, m, j.token);
+            if (!t.set || t.payeesOnly) return false;
+            // The cap per operation, over all of the operation's calls
+            if (_movedThisOperation(j.token, j.mostSold) > t.maxPerOp) return false;
+            // The token's budget, shared with transfers and x402
+            uint256 spent = _tokenSpent(m, j.token, t) + j.mostSold;
+            if (spent > t.budget) return false;
+            // An order's digest is recorded for `checkSignaturePolicy`; the same order registers once
+            if (!call && !_recordX402(m, j.digest, j.mostSold, j.validTo, j.token)) return false;
+            // Charge it
+            t.spent = uint128(spent);
+        }
+        if (call) {
+            // The call's hash, bound to the decoder's own venue: a decoder speaks
+            // for that contract only. Install took the venue from the same pinned
+            // code and refused the account and this policy there. Kept for the leg
+            // after this one and for this operation only, and vouched for to nobody
+            _tstore(
+                _thisOperation(EXPECTED_CALL), uint256(VenueCalls.bound(IVenueDecoder(decoder).venue(), j.digest))
+            );
+            return true;
+        }
         // The operation is valid from the latest "not before" and up to the earliest `validTo`
         if (j.notBefore > _perOperation(NOT_BEFORE)) _setPerOperation(NOT_BEFORE, j.notBefore);
         uint256 notAfter = _perOperation(NOT_AFTER);
@@ -1483,6 +1514,10 @@ contract AgentPolicy is IPolicy {
     bytes32 internal constant OPEN_ALLOWANCE = keccak256("agent-keys.AgentPolicy.openAllowance");
     /// The Safe whose transaction is being judged; 0 while it is the account's own call.
     bytes32 internal constant ALLOWANCE_HOLDER = keccak256("agent-keys.AgentPolicy.allowanceHolder");
+    /// The hash of the call a decoder judged in the leg before, bound to that
+    /// decoder's venue, until the leg after the registration is found to be
+    /// that call.
+    bytes32 internal constant EXPECTED_CALL = keccak256("agent-keys.AgentPolicy.expectedCall");
 
     /// @dev A transient slot of this operation of the account: keyed by the
     /// account and the operation counter (`keccak256(account ‖ x)`), so that
@@ -1657,8 +1692,15 @@ contract AgentPolicy is IPolicy {
             (address target, uint256 value, bytes calldata data) = LibERC7579.getExecution(pointers, i);
             bool ok;
             uint256 legMoved;
-            // A nonce assertion takes the Safe transaction after it along: two legs
-            if (target == NONCE_ASSERT) {
+            // The leg before this one registered a call a decoder judged: this leg is that
+            // call, or the operation is refused. A registration that is the last leg is
+            // refused where validation ends
+            if (_tload(_thisOperation(EXPECTED_CALL)) != 0) {
+                // Its native value counts like any leg's
+                (ok, legMoved) = (_judgeVenueCall(m, target, value, data), value);
+                i += 1;
+                // A nonce assertion takes the Safe transaction after it along: two legs
+            } else if (target == NONCE_ASSERT) {
                 (ok, legMoved) = _judgeGuarded(m, pointers, i, value, data);
                 i += 2;
             } else {
@@ -1670,6 +1712,27 @@ contract AgentPolicy is IPolicy {
             moved += legMoved;
         }
         return (true, moved);
+    }
+
+    /// @dev The leg after the registration of a call a decoder judged
+    /// (`_registerOrder`): it must be that call, at that decoder's own venue.
+    /// It is on no allow-list: the decoder's word is what admits it.
+    /// @param m The mandate key.
+    /// @param target The leg's target.
+    /// @param value The leg's native value.
+    /// @param data The leg's calldata.
+    /// @return True if the leg is the call the decoder named.
+    function _judgeVenueCall(bytes32 m, address target, uint256 value, bytes calldata data) internal returns (bool) {
+        // Exactly the call the decoder named, at the decoder's own venue: the
+        // registration bound the call's hash to it
+        uint256 slot = _thisOperation(EXPECTED_CALL);
+        if (uint256(VenueCalls.bound(target, VenueCalls.digest(value, data))) != _tload(slot)) return false;
+        // Never Permit2 or a contract the mandate meters, even where a decoder
+        // names one as its venue: a decoder's word does not open what the
+        // mandate counts itself
+        if (target == PERMIT2 || _token(msg.sender, m, target).set || _hasIds(m, target)) return false;
+        _tstore(slot, 0);
+        return true;
     }
 
     /// @dev Leg `i` is a nonce assertion; leg `i + 1` must be the Safe

@@ -11,6 +11,7 @@ import {WhitelistPaymaster} from "../src/WhitelistPaymaster.sol";
 import {CowSwapDecoder} from "../src/venues/CowSwapDecoder.sol";
 import {OneInchLimitOrderDecoder} from "../src/venues/OneInchLimitOrderDecoder.sol";
 import {RouterStandIn} from "./OneInchLimitOrderDecoder.t.sol";
+import {SwapRouter02Decoder} from "../src/venues/SwapRouter02Decoder.sol";
 import {DemoCounter} from "../src/demo/DemoCounter.sol";
 import {Logger} from "../src/demo/Logger.sol";
 import {IEntryPoint as IAAEntryPoint} from "account-abstraction/interfaces/IEntryPoint.sol";
@@ -44,6 +45,8 @@ contract VersionsTest is Test {
         assertEq(
             new OneInchLimitOrderDecoder(address(new RouterStandIn())).VERSION(), FIRST, "OneInchLimitOrderDecoder"
         );
+        // any contract stands in for the swap router: the decoder asks only for code there
+        assertEq(new SwapRouter02Decoder(address(new RouterStandIn())).VERSION(), FIRST, "SwapRouter02Decoder");
         IAAEntryPoint entryPoint = IAAEntryPoint(EntryPointLib.deploy());
         assertEq(new WhitelistPaymaster(entryPoint, address(this)).VERSION(), FIRST, "WhitelistPaymaster");
     }
