@@ -312,8 +312,9 @@ by a test:
 budget were run again on this policy on 2026-11-26, and each of the ten
 breaks (`scripts/kontrol-break.py`) with them: all eleven pass and every
 break fails its proof (the record is under "Beyond fuzzing" below). The
-rule for a decoder's call has no proof of its own yet; the tests and the
-breaks above hold it.
+rule for a decoder's call has no proof of its own yet
+([#225](https://github.com/postcryptum-research/agent-keys/issues/225));
+the tests and the breaks above hold it.
 
 **The CLI swaps, and the phone reads the venue's terms as the decoder
 does.** Two of the CLI's local-chain tests run the policy and the decoder
@@ -656,7 +657,7 @@ What breaking them one at a time found: with the budgets set at first (a token c
 - **The policy that admits a decoder's call** (#80, the section "a call a decoder judged" above): run on 2026-11-26 on a workstation of 24 cores with the same image. The eleven proofs passed, none vacuous, in 17 min 41 s with the build and eight workers; each of the ten breaks made its proof fail. The source proved differs from the committed one in sixteen comment lines, and comments are not in the bytecode (`bytecode_hash = "none"`).
 
 **What it does not prove** ([#130](https://github.com/postcryptum-research/agent-keys/issues/130)):
-- **A decoder's call.** That a call a venue's decoder judged is admitted only as the leg after its registration, only at that decoder's venue, with its value counted: tests and breaks hold it, no proof.
+- **A decoder's call.** That a call a venue's decoder judged is admitted only as the leg after its registration, only at that decoder's venue, with its value counted: tests and breaks hold it, no proof ([#225](https://github.com/postcryptum-research/agent-keys/issues/225)).
 - **Any number of legs.** The batch, Safe and multiSend proofs fix the number of legs at two. A loop over a length the caller chooses stays with the fuzzing above.
 - **Any encoding.** The shapes are well-formed encodings with symbolic amounts. Symbolic offsets, short or trailing bytes stay with the parsers' tests and the fuzzing.
 - **Faithfulness inside a Safe.** The faithfulness proofs execute the account's single and batch paths. A Safe executing its transaction is not modelled; the differential tests are the evidence there, and that evidence missed #190: a Safe transaction with a nonzero `safeTxGas` does not revert when its inner call fails, so a call the policy judged could go unmade, a withdrawal of an allowance among them. The fuzzing and this harness built Safe transactions with `safeTxGas` and `baseGas` at 0 and varied only `gasPrice`. The policy refuses both words other than 0 since #191. Since #193 the differential in `PolicyFuzz.t.sol` draws each of the three words other than 0 now and then (1, or any word) and requires the refusal, not only that the source and the recorded instance agree. This harness still builds them at 0, and neither runs a Safe's execution. A unit test does: `test_safe_aFailingInnerCallFailsTheOperation` (`AgentPermission.t.sol`) sends #190's operation with all three words at 0 through the EntryPoint, Kernel's batch, a Safe and the token. Validation accepts it, the withdrawal reverts at execution, the Safe reverts with it, and the operation's execution fails: no allowance stands and the Safe's nonce does not move. With the rule on `safeTxGas` removed and the withdrawal given a `safeTxGas` of 1, that test fails [V 2026-11-25]. That is one shape of Safe transaction run, not a proof over all of them.

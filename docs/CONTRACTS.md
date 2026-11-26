@@ -393,7 +393,8 @@ which refuses the operation all the same [I].
   and the id (the low 160 bits of a tagged hash; `idAsset`). The
   contract's runtime size is 24,376 bytes of the 24,576 a
   contract may have, with the calls through a decoder (below) in it
-  [V `forge build --sizes`, 2026-11-26].
+  [V `forge build --sizes`, 2026-11-26]: the next change has 200 bytes
+  ([#224](https://github.com/postcryptum-research/agent-keys/issues/224)).
   An approval is charged like a transfer; what the spender later pulls is
   not seen.
 - *No standing allowances.* An allowance the agent grants (`approve` or
