@@ -1369,6 +1369,7 @@ impl Session {
         let mut decoders: Vec<Address> = known.iter().map(|v| v.decoder).collect();
         decoders.extend(self.dep.cow_swap_decoder);
         decoders.extend(self.dep.one_inch_limit_order_decoder);
+        decoders.extend(self.dep.swap_router02_decoder);
         decoders.sort();
         decoders.dedup();
         let mut calls = Vec::new();
