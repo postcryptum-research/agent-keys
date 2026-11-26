@@ -26,8 +26,8 @@ contract SayingDecoder {
         (venue, spender) = (place, spender_);
     }
 
-    /// `order` is `abi.encode(value, data, token, mostSold, validTo, digest)`: a
-    /// call when `validTo` is zero (the digest is then the call's hash,
+    /// `order` is `abi.encode(value, data, token, mostSold, notBefore, validTo, digest)`:
+    /// a call when `validTo` is zero (the digest is then the call's hash,
     /// unless `digest` is set to stand in for it). The call's target is not
     /// in it: the policy binds the hash to `venue`.
     function judge(address, bytes calldata, bytes calldata order)
@@ -35,10 +35,17 @@ contract SayingDecoder {
         pure
         returns (address, uint256, uint48, uint48, bytes32)
     {
-        (uint256 value, bytes memory data, address token, uint256 mostSold, uint48 validTo, bytes32 digest) =
-            abi.decode(order, (uint256, bytes, address, uint256, uint48, bytes32));
+        (
+            uint256 value,
+            bytes memory data,
+            address token,
+            uint256 mostSold,
+            uint48 notBefore,
+            uint48 validTo,
+            bytes32 digest
+        ) = abi.decode(order, (uint256, bytes, address, uint256, uint48, uint48, bytes32));
         if (digest == bytes32(0)) digest = VenueCalls.digest(value, data);
-        return (token, mostSold, 0, validTo, digest);
+        return (token, mostSold, notBefore, validTo, digest);
     }
 }
 
@@ -115,7 +122,20 @@ contract VenueCallPairingTest is TradingTest {
         view
         returns (Execution memory)
     {
-        bytes memory order = abi.encode(value, data, token, mostSold, validTo, digest);
+        return _regFrom(value, data, token, mostSold, 0, validTo, digest);
+    }
+
+    /// The same with the decoder's "not before".
+    function _regFrom(
+        uint256 value,
+        bytes memory data,
+        address token,
+        uint256 mostSold,
+        uint48 notBefore,
+        uint48 validTo,
+        bytes32 digest
+    ) internal view returns (Execution memory) {
+        bytes memory order = abi.encode(value, data, token, mostSold, notBefore, validTo, digest);
         return
             Execution(address(policy), 0, abi.encodeCall(AgentPolicy.orderRegister, (address(through), CONFIG, order)));
     }
@@ -371,6 +391,22 @@ contract VenueCallPairingTest is TradingTest {
         (four[2], four[3]) = (four[0], four[1]);
         _expectRefused(_batch(four));
         assertEq(place.received(), MAX_VALUE);
+    }
+
+    /// A decoder's "not before" holds for a call as for an order: the
+    /// operation is not valid earlier.
+    function test_call_aDecodersNotBeforeHolds() public {
+        _withCalls();
+        uint48 later = uint48(block.timestamp + 1 hours);
+        Execution[] memory legs =
+            _two(_regFrom(0, _poke(), address(0), 0, later, 0, bytes32(0)), Execution(address(place), 0, _poke()));
+        // now: not due yet
+        _expectRefused(_batch(legs));
+        assertEq(place.count(), 0);
+        // at that time: made
+        vm.warp(later);
+        _send(_batch(legs));
+        assertEq(place.count(), 1);
     }
 
     // --- an order is still an order ---

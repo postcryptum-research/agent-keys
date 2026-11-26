@@ -5,7 +5,8 @@ pragma solidity ^0.8.24;
 /// @notice A decoder may judge a call the account makes now (a swap at a
 /// router, a deposit) instead of an order a venue fills later. It then
 /// answers `judge` with a `validTo` of zero, and with the hash of that call
-/// as `digest`: its value and its calldata. The call's target is not the
+/// as `digest`: its value and its calldata. Its `notBefore` holds as for an
+/// order: zero, or the earliest time the call may be made. The call's target is not the
 /// decoder's to name: it is the decoder's own `venue()`, which `AgentPolicy`
 /// binds the hash to. The policy admits the call only as the leg right
 /// after its registration, at that venue, and only if it hashes to what the

@@ -1284,6 +1284,8 @@ contract AgentPolicy is IPolicy {
             // Charge it
             t.spent = uint128(spent);
         }
+        // The operation is valid from the latest "not before", a call's as an order's
+        if (j.notBefore > _perOperation(NOT_BEFORE)) _setPerOperation(NOT_BEFORE, j.notBefore);
         if (call) {
             // The call's hash, bound to the decoder's own venue: a decoder speaks
             // for that contract only. Install took the venue from the same pinned
@@ -1294,8 +1296,7 @@ contract AgentPolicy is IPolicy {
             );
             return true;
         }
-        // The operation is valid from the latest "not before" and up to the earliest `validTo`
-        if (j.notBefore > _perOperation(NOT_BEFORE)) _setPerOperation(NOT_BEFORE, j.notBefore);
+        // And, for an order, up to the earliest `validTo`
         uint256 notAfter = _perOperation(NOT_AFTER);
         if (notAfter == 0 || uint256(j.validTo) + 1 < notAfter) _setPerOperation(NOT_AFTER, uint256(j.validTo) + 1);
         return true;
