@@ -1612,16 +1612,55 @@ contract AgentPermissionTest is Test {
     function _judged(bytes32 id, PackedUserOperation memory op) internal returns (bool ok, uint256 charged) {
         (,,,, uint128 before,) = policy.configs(acct, id);
         vm.prank(acct);
-        (bool answered, bytes memory verdict) = address(policy).call(abi.encodeCall(policy.checkUserOpPolicy, (id, op)));
+        // with a limit on the gas: a read that uses it up is a refusal (see `READ_GAS`)
+        (bool answered, bytes memory verdict) =
+            address(policy).call{gas: READ_GAS}(abi.encodeCall(policy.checkUserOpPolicy, (id, op)));
         ok = answered && abi.decode(verdict, (uint256)) != 1;
         (,,,, uint128 afterwards,) = policy.configs(acct, id);
         charged = afterwards - before;
     }
 
+    /// The gas one reading of a call gets in these tests, some thirty times
+    /// what a batch of three legs takes. Kernel's pinned `decodeBatch`
+    /// checks the pointers in a loop from the last one down, and a pointer
+    /// past the end of the calldata reads as zeros and passes: with an
+    /// enormous array length the loop ends only when the gas does ("Does an
+    /// out-of-gas revert", in the library's words). The policy calls the same
+    /// decoder first, so it stops the same way, and an operation whose
+    /// validation runs out of gas is not included. Without a limit one such
+    /// layout takes nearly all the gas the test has.
+    uint256 internal constant READ_GAS = 10_000_000;
+
+    /// A batch whose array length is enormous is read by neither side:
+    /// Kernel's decoder runs out of gas, the policy does not accept, and
+    /// nothing is charged.
+    function test_batch_anEnormousPointerArrayIsReadByNeither() public {
+        bytes32 id = bytes32(PermissionId.unwrap(AGENT_ID));
+        Execution[] memory legs = new Execution[](1);
+        legs[0] = Execution(address(counter), 0, abi.encodeWithSelector(Counter.increment.selector));
+        bytes memory body = ExecLib.encodeBatch(legs);
+        bytes memory honest = abi.encodeWithSelector(
+            Kernel.execute.selector, ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))), body
+        );
+        (bool ok,) = _judged(id, _opWith(honest, ""));
+        assertTrue(ok, "the batch as encoded passes");
+        // the same bytes with the array's length word changed: 4 + 32 (mode)
+        // + 32 (offset) + 32 (length) + 32 (the array's offset), then the word
+        bytes memory enormous = bytes.concat(honest);
+        enormous[4 + 32 * 4 + 24] = 0x10; // one leg becomes 2^60 + 1
+        KernelReads kernel = new KernelReads();
+        (bool read,) = address(kernel).call{gas: READ_GAS}(enormous);
+        assertFalse(read, "Kernel's decoder read an enormous array");
+        uint256 charged;
+        (ok, charged) = _judged(id, _opWith(enormous, ""));
+        assertFalse(ok, "the policy accepted an enormous array");
+        assertEq(charged, 0, "nothing charged");
+    }
+
     /// Kernel's reading of a call the policy accepted: every leg on the
     /// allow-list; the values together.
     function _kernelWouldSend(KernelReads kernel, bytes32 id, bytes memory callData) internal returns (uint256 sum) {
-        (bool read, bytes memory ret) = address(kernel).call(callData);
+        (bool read, bytes memory ret) = address(kernel).call{gas: READ_GAS}(callData);
         assertTrue(read, "the policy accepted a call Kernel cannot read");
         (address[] memory targets, uint256[] memory values, bytes[] memory datas) =
             abi.decode(ret, (address[], uint256[], bytes[]));

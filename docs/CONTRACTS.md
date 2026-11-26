@@ -340,7 +340,11 @@ which refuses the operation all the same [I].
   out with other offsets and declared lengths and holds that whatever the
   policy accepts, the account reads as calls on the allow-list with the
   values the policy charged
-  (`testFuzz_batch_executionDataIsReadAsKernelReadsIt`).
+  (`testFuzz_batch_executionDataIsReadAsKernelReadsIt`). A batch whose
+  array length is enormous is read by neither: the decoder checks its
+  pointers in a loop that ends only with the gas, in the policy as in the
+  account, and an operation whose validation runs out of gas is not
+  included (`test_batch_anEnormousPointerArrayIsReadByNeither`).
 - *Native value.* What an operation moves, Safe transactions and batch
   legs included, is at most `maxValuePerOp`, and is charged to `budget`
   together with the gas the account pays for itself (the EntryPoint's
