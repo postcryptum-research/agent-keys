@@ -242,7 +242,8 @@ Lessons that cost real debugging time:
   its period and the policy answers with that period's window, which the
   EntryPoint enforces; across a renewal up to two budgets can be spent in a
   short time, and the phone says so (`docs/AGENT_CONFIG.md`,
-  `docs/FUZZING.md`).
+  `docs/FUZZING.md`). The first live order, on Sepolia through CoW Swap:
+  `docs/TRADING_WALKTHROUGH.md`.
   *1c done:* `script/Deploy.s.sol` deploys the three modules and a demo
   target through the canonical CREATE2 deployer (salt 0) and records them in
   `deployments/<chainid>.json`; Kernel v3.3, its factory and EntryPoint v0.7
