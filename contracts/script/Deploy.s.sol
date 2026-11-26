@@ -10,6 +10,7 @@ import {AgentPolicy} from "../src/AgentPolicy.sol";
 import {SafeNonceAssert} from "../src/SafeNonceAssert.sol";
 import {CowSwapDecoder} from "../src/venues/CowSwapDecoder.sol";
 import {OneInchLimitOrderDecoder} from "../src/venues/OneInchLimitOrderDecoder.sol";
+import {SwapRouter02Decoder} from "../src/venues/SwapRouter02Decoder.sol";
 import {WhitelistPaymaster} from "../src/WhitelistPaymaster.sol";
 import {DemoCounter} from "../src/demo/DemoCounter.sol";
 import {IEntryPoint} from "account-abstraction/interfaces/IEntryPoint.sol";
@@ -57,6 +58,19 @@ contract Deploy is Script {
     // hashes an order as the decoder does.
     address internal constant ONE_INCH_ROUTER = 0x111111125421cA6dc452d289314280a0f8842A65;
 
+    /// @dev Uniswap's SwapRouter02, whose address differs from chain to chain
+    /// (Uniswap's deployment pages; code of the same length and a `factory()`
+    /// and a `positionManager()` at each, read on 2026-11-26).
+    /// @return The router on this chain, or zero where this script names none.
+    function swapRouter02() public view returns (address) {
+        if (block.chainid == 1 || block.chainid == 42161) return 0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45;
+        if (block.chainid == 8453) return 0x2626664c2603336E57B271c5C0b26F421741e481;
+        if (block.chainid == 56) return 0xB971eF87ede563556b2ED4b1C0b0019111Dd85d2;
+        if (block.chainid == 11155111) return 0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E;
+        if (block.chainid == 84532) return 0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4;
+        return address(0);
+    }
+
     // The compiler settings this script is built with, as foundry.toml sets
     // them, recorded in the deployments file so that the code of an instance
     // can be rebuilt and compared (issue #123). `DeploymentsRecord.t.sol`
@@ -102,8 +116,8 @@ contract Deploy is Script {
         );
         // The decoder reads the settlement's domain separator and spender when
         // it is created, so on each chain it is that chain's venue and no other.
-        // The venues' decoders, CoW Swap's and 1inch's: zero where the venue is not on this chain
-        address[2] memory decoders;
+        // The venues' decoders, CoW Swap's, 1inch's and the swap router's: zero where the venue is not on this chain
+        address[3] memory decoders;
         if (COW_SETTLEMENT.code.length > 0) {
             decoders[0] = _reuseOrDeploy(
                 recorded,
@@ -122,6 +136,16 @@ contract Deploy is Script {
                 abi.encodePacked(type(OneInchLimitOrderDecoder).creationCode, abi.encode(ONE_INCH_ROUTER))
             );
         }
+        // A swap at Uniswap's SwapRouter02: the router is the decoder's venue, so
+        // on each chain it is that chain's router and no other.
+        if (swapRouter02().code.length > 0) {
+            decoders[2] = _reuseOrDeploy(
+                recorded,
+                "swapRouter02Decoder",
+                "SwapRouter02Decoder",
+                abi.encodePacked(type(SwapRouter02Decoder).creationCode, abi.encode(swapRouter02()))
+            );
+        }
         vm.stopBroadcast();
 
         string memory json = "deployment";
@@ -136,6 +160,7 @@ contract Deploy is Script {
         _supersede(json, recorded, "demoCounter", counter);
         if (decoders[0] != address(0)) _supersede(json, recorded, "cowSwapDecoder", decoders[0]);
         if (decoders[1] != address(0)) _supersede(json, recorded, "oneInchLimitOrderDecoder", decoders[1]);
+        if (decoders[2] != address(0)) _supersede(json, recorded, "swapRouter02Decoder", decoders[2]);
         vm.serializeUint(json, "chainId", block.chainid);
         vm.serializeString(json, "solc", SOLC);
         vm.serializeString(json, "evmVersion", EVM_VERSION);
@@ -154,6 +179,7 @@ contract Deploy is Script {
         vm.serializeAddress(json, "paymasterOwner", sponsor);
         if (decoders[0] != address(0)) vm.serializeAddress(json, "cowSwapDecoder", decoders[0]);
         if (decoders[1] != address(0)) vm.serializeAddress(json, "oneInchLimitOrderDecoder", decoders[1]);
+        if (decoders[2] != address(0)) vm.serializeAddress(json, "swapRouter02Decoder", decoders[2]);
         string memory out = vm.serializeAddress(json, "demoCounter", counter);
         vm.writeJson(out, path);
         console.log("wrote", path);

@@ -57,9 +57,11 @@ tx [`0x785332105fd8085d50e542ff9f677eba964399bbc0d71333ddd71fed03e669bb`](https:
   [`docs/TRADING_WALKTHROUGH.md`](TRADING_WALKTHROUGH.md).
 - Protocols — an agent supplies to Aave V3 and withdraws from it under a
   mandate with a token limit and the pool's two compact calls, shown against
-  the pool's own code on a fork of Base Sepolia; which calls of Aave,
-  Compound, Lido and others can go on a mandate, and which never:
-  [`docs/DAPPS.md`](DAPPS.md).
+  the pool's own code on a fork of Base Sepolia; a swap at Uniswap's
+  router within the owner's pairs and lowest prices, as a call a venue's
+  decoder judged, shown against the router's own code on the same fork and
+  not on a chain yet; which calls of Aave, Compound, Lido and others can go
+  on a mandate, and which never: [`docs/DAPPS.md`](DAPPS.md).
 - Existing agent frameworks on top — Coinbase AgentKit, a Claude Code /
   OpenClaw skill, Jinn, Olas and ElizaOS, each run on Base Sepolia; the
   ElizaOS agent also pays for APIs with x402

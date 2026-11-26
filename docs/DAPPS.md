@@ -14,8 +14,9 @@ advice to put money behind an unaudited policy.
 
 The mandate allows calls by `(contract, function)` and does not read their
 arguments, with three exceptions: a token with a limit (its `transfer`,
-`approve` and their kin are counted), native value, and orders registered
-at a trading venue ([`AGENT_CONFIG.md`](AGENT_CONFIG.md)).
+`approve` and their kin are counted), native value, and what a trading
+venue's decoder judged: an order, or a call
+([`AGENT_CONFIG.md`](AGENT_CONFIG.md)).
 
 So for a function of some protocol the question is one:
 
@@ -25,8 +26,9 @@ So for a function of some protocol the question is one:
   operation, or the value sent, and credits or pays the caller. It can go
   on a mandate as it is.
 - **No:** it has a `receiver`, `to`, `onBehalfOf`, `owner` or `recipient`
-  argument, and an agent could name another address. It stays off until the
-  policy can hold that argument to the account (the next step of #80).
+  argument, and an agent could name another address. It stays off until a
+  decoder holds that argument to the account: the policy admits a call a
+  venue's decoder judged, and the first such decoder is the swap below.
 
 ## How an agent uses a protocol that pulls tokens
 
@@ -128,19 +130,64 @@ withdrawal means "everything".
 **Not on a chain yet:** the test runs on a fork. A live run on Base Sepolia
 follows.
 
+## A swap at Uniswap's router: built, not on a chain yet
+
+A swap names a recipient, so it cannot go on an allow-list. It goes through
+a venue instead, like an order: the mandate names a decoder with the
+owner's pairs and their lowest prices, and the decoder
+(`SwapRouter02Decoder`) judges a call instead of an order
+([`CONTRACTS.md`](CONTRACTS.md#swaprouter02decoder)).
+
+- **What the agent names:** the two tokens, the pool's fee tier, the
+  amount sold and the least bought. Nothing else.
+- **What is written in:** the bought token goes to the account; no native
+  value; no price limit.
+- **Two calls in one operation:** the swap's registration at the policy,
+  then the router call the decoder built, byte for byte. Any other call at
+  the router, or the same call with another recipient or for less, is
+  refused.
+- **The owner approves the router once,** as for CoW's relayer. The router
+  takes tokens from its own caller only, and the agent reaches it through
+  the decoder alone.
+- **What is charged:** the amount sold, to the sold token's `maxPerOp` and
+  budget, when the swap is registered. A swap that reverts (the market
+  moved under the least bought) is still charged; with a `period` the
+  budget renews.
+
+[V `contracts/test/SwapRouter02.t.sol`: under a mandate with a stand-in
+router, and `SwapRouter02ForkTest` on a fork of Base Sepolia on 2026-11-26
+against Uniswap's router `0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4` and
+the pool `0x46880b404CD35c165EDdefF7421019F8dD25F4Ad`: wrapped ether sold
+for the test dollar, to the account, charged; another recipient, the
+router's `multicall` around the same swap, an amount of zero, more than the
+cap and a price under the owner's lowest are each refused.]
+
+```sh
+cd contracts
+FORK_BASE_SEPOLIA_RPC_URL=<a Base Sepolia RPC> \
+    forge test --evm-version osaka --match-contract SwapRouter02ForkTest
+```
+
+**Not on a chain yet.** No network has this decoder, or the policy that
+admits a decoder's call; the CLI and the phone do not know the venue yet.
+One pool and an exact amount sold only: paths through several pools,
+exact-output swaps and the router's v2 functions are not allowed.
+
 ## Not yet: needs an argument held to the account
 
 These are the same protocols' other functions, and whole families of
 protocols, whose calls name a beneficiary. One rule kind would open them: a
-word of the call pinned to the account, or to a value the owner sets. That
-rule, with a decoder for swaps, is the next step of #80.
+word of the call pinned to the account, or to a value the owner sets. The
+policy now admits a call a venue's decoder judged, which is what such a
+rule rides on; a decoder that holds a word to the account is the next step
+of #80.
 
 | Opens with | What |
 |---|---|
 | One word = the account | Aave `supply`, `withdraw`, `repay` and its ETH gateway on Ethereum, BNB Chain and Sepolia; every ERC-4626 vault's `deposit` and `mint` (MetaMorpho, sDAI, sUSDS, Yearn, sUSDe, Aave's stata tokens); Lido and ether.fi withdrawal requests; Compound's `supplyTo` and `withdrawTo`; Uniswap v3 `collect` |
 | Two words = the account | every ERC-4626 vault's `withdraw` and `redeem` |
 | Words = values the owner sets | Morpho (the market: markets are permissionless, so the market itself is pinned); Circle's CCTP (the destination chain and recipient); the Base bridge's `bridgeETHTo` and `bridgeERC20To`; Uniswap v3 `mint` |
-| A decoder of its own | swaps at a router (Uniswap's `SwapRouter02` first); Seaport orders; GMX orders; Uniswap v4; Balancer; Pendle |
+| A decoder of its own | other swaps at a router (several pools, exact output, v2 pools, other routers); Seaport orders; GMX orders; Uniswap v4; Balancer; Pendle |
 
 Until then none of these is safe on a mandate. A pull-side function
 (`supply`, `deposit`) left unpinned loses at most what the token's budget

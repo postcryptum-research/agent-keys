@@ -26,8 +26,10 @@ commit `e48b93e001f34f460bd4845d231b8e0ee5d26ad6` builds them, every contract at
 | `WhitelistPaymaster` | a gas sponsor with a budget per account | the EntryPoint; its owner | `0x657792557C1D40f2Da031FD7aB277078D2c0a4cb` |
 | `IVenueDecoder` | what a trading venue is to the policy (interface) | the policy; the owner's tools | none: an interface |
 | `CowSwapDecoder` | CoW Protocol's orders under that interface | the policy; the owner's tools | `0x42F62bF7134F5eF6d46d4BC07d806E77D1Df641a` |
-| `VenuePairs` | the listed pairs and their lowest prices (library) | the 1inch decoder | none: compiled into it |
+| `VenuePairs` | the listed pairs and their lowest prices (library) | the 1inch and swap decoders | none: compiled into them |
 | `OneInchLimitOrderDecoder` | plain 1inch limit orders under that interface | the policy; the owner's tools | not deployed yet |
+| `VenueCalls` | how a call is named between a decoder and the policy (library) | the policy; the swap decoder | none: compiled into them |
+| `SwapRouter02Decoder` | a swap at Uniswap's SwapRouter02, as a call the account makes | the policy; the owner's tools | not deployed yet |
 | `DemoCounter` | a demo target | anyone; the agent in demos | `0x29da894F3E456CAC92b3EC76710524E74411E99f` |
 
 The addresses are the file's current entries [V `contracts/deployments/84532.json`].
@@ -249,8 +251,9 @@ epoch on, so nothing of an earlier installation is found again, and a
 reinstall starts from empty lists and zero counters [V
 `test_probe2_reinstallForgetsTheEarlierLimitsAndEntries`]. What an
 operation has moved of each token, and its notes (its period, its orders'
-window), are kept in transient storage, in the account's slots too [V
-source; `test_senderStorage_transientTotalsAreInTheAccountsSlots`].
+window, the call a decoder judged in the leg before), are kept in
+transient storage, in the account's slots too [V source;
+`test_senderStorage_transientTotalsAreInTheAccountsSlots`].
 
 **Install data.** `bytes32(id) ‖ abi.encode(...)` in one of four forms,
 told apart by the first word, the offset of `targets`; a mandate is
@@ -298,7 +301,8 @@ canonical encodings only [V source].
   `X402NotRegistered` (not registered, or for another token),
   `X402StillLive` (before `validBefore`) or `X402Settled` (the token
   reports the nonce used or cancelled). Emits `X402Reclaimed`.
-- `orderRegister(decoder, config, order)`: emits `OrderRegistered`.
+- `orderRegister(decoder, config, order)`: emits `OrderRegistered`, for
+  an order and for a call a decoder judged alike.
 - Views: `configs(account, id)` (the first six fields of `Config`),
   `period(account, id)`, `isAllowed(account, id, target, selector)`,
   `tokenLimit(account, id, token)`, `idAsset(token, tokenId)` (the key an
@@ -387,8 +391,9 @@ which refuses the operation all the same [I].
   payee list and no x402: the agent picks the receiver and the spender.
   An id's limit is kept as a token's, under a key made of the contract
   and the id (the low 160 bits of a tagged hash; `idAsset`). The
-  contract's runtime size is 23,678 bytes of the 24,576 a
-  contract may have [V `forge build --sizes`, 2026-11-25].
+  contract's runtime size is 24,376 bytes of the 24,576 a
+  contract may have, with the calls through a decoder (below) in it
+  [V `forge build --sizes`, 2026-11-26].
   An approval is charged like a transfer; what the spender later pulls is
   not seen.
 - *No standing allowances.* An allowance the agent grants (`approve` or
@@ -482,6 +487,38 @@ which refuses the operation all the same [I].
   `test_order_decoderAnswersAreHeldToTheirForm`,
   `test_order_onlyALimitedTokenWithoutAPayeeList`,
   `test_order_notRegisteredEarlierThanItsLifetime`).
+- *Calls through a venue's decoder.* A decoder that answers `judge` with
+  a `validTo` of zero has judged a call the account makes now, not an
+  order a venue fills later; its `digest` is then the hash of that call's
+  value and calldata ([`VenueCalls`](#venuecalls)). The policy binds that
+  hash to the decoder's own venue (`venue()`, as the pinned code gives
+  it) and keeps it for the length of the operation. The next leg of the
+  account's batch must then be exactly that call, at that venue, or the
+  operation is refused; a registration that is the batch's last leg, or
+  that is not in a batch, is refused where validation ends. So:
+  - a decoder speaks for its own venue's contract only: not the account,
+    not this policy, not a contract on the allow-list, not another venue's
+    contract, not its own spender
+    (`test_call_onlyAtTheDecodersOwnVenue`);
+  - even where an owner pinned a decoder that names one as its venue, a
+    call is never admitted at Permit2, at a token with a limit or at an
+    ERC-6909 contract with id limits: what the mandate counts itself is
+    reached by its own rules only (`test_call_whatNoDecoderOpens`,
+    `test_call_aDecoderDoesNotOpenAContractWithIdLimits`);
+  - the call's native value counts against the cap per operation and the
+    budget like any leg's (`test_call_itsNativeValueCounts`);
+  - when the decoder prices the call (`mostSold` not zero), that amount
+    is charged like an order's: the token must have a limit and no payee
+    list, and the cap per operation and the budget hold
+    (`test_call_chargedAsTheDecoderSays`,
+    `test_call_aTokenWithAPayeeListIsNotCharged`);
+  - nothing is recorded and nothing is vouched for: a call registers as
+    often as it is made (`test_call_theJudgedCallIsMadeAndNoOther`).
+  A call that reverts when the operation runs was still charged at
+  validation, as a transfer is; the period returns it. An order that ends
+  at second zero is taken for a call that no leg can be, and is refused
+  (`test_call_anOrderEndingAtZeroIsNotACall`). The rule is held by
+  `contracts/test/VenueCallPairing.t.sol`.
 - *Budget per period.* With `period` set, every budget, native and per
   token, counts in windows of `period` seconds from the Unix epoch.
   Validation reads no clock, so the operation names its window in six
@@ -504,7 +541,8 @@ which refuses the operation all the same [I].
   `setPreSignature`), and the spender holds the owner's allowance of the
   sold tokens (CoW: the vault relayer)
   (`test_trading_theVenueIsNoTargetUnderAnyMandate`,
-  `test_trading_theVenuesSpenderIsNoTargetUnderAnyMandate`).
+  `test_trading_theVenuesSpenderIsNoTargetUnderAnyMandate`). One path
+  leads to a venue's own contract: a call its decoder judged, above.
 - *Forbidden targets.* The account itself (Kernel's `grantAccess`,
   `installValidations`, `changeRootValidator`, `execute`: the mandate
   would widen or replace itself), its EntryPoint (read from the account at
@@ -717,6 +755,15 @@ and `spender()` when a mandate that trades at the venue is installed [V
   mandate may not name it as a target, since through it the allowance
   would move (issue #149).
 
+**An order, or a call.** A decoder says which it judged by `validTo`. Not
+zero: an order, recorded and vouched for until then. Zero: a call the
+account makes in the next leg of the same operation, at `venue()`; `digest`
+is then `VenueCalls.digest(value, calldata)`, `notBefore` is zero, and
+`mostSold` may be zero when the call takes nothing the decoder prices [V
+`contracts/src/AgentPolicy.sol` `_registerOrder`, `_judgeVenueCall`]. The
+interface's own text describes orders: the file is not changed, so that the
+source of the deployed `CowSwapDecoder` stays as it is.
+
 ## CowSwapDecoder
 
 `contracts/src/venues/CowSwapDecoder.sol`. `IVenueDecoder` for CoW
@@ -873,6 +920,101 @@ domain. The digest is held to forge's EIP-712, and to the router's own
   with a fee extension, which this decoder refuses; whether it lists a plain
   order was not tested [I]. Until a decoder reads that extension, a plain
   order is filled by a taker the agent's operator hands it to.
+
+## VenueCalls
+
+`contracts/src/venues/VenueCalls.sol`. A library of two internal functions:
+how a call the account is to make is named between a decoder and the policy
+[V source].
+
+- `digest(value, data)` is `keccak256(abi.encode(value, keccak256(data)))`:
+  what a decoder answers with for a call. The target is not in it: a
+  decoder does not name one.
+- `bound(place, callDigest)` is `keccak256(abi.encode(place, callDigest))`:
+  what the policy keeps, with `place` the decoder's `venue()`, and compares
+  with the same hash of the leg after the registration.
+
+Both are hashes of two words, so neither is an EIP-712 digest (66 bytes) nor
+any venue's order; the policy keeps the bound hash in transient storage for
+one operation and vouches for it to nobody.
+
+## SwapRouter02Decoder
+
+`contracts/src/venues/SwapRouter02Decoder.sol`. `IVenueDecoder` for one
+call: a swap of an exact amount through one Uniswap v3 pool, at Uniswap's
+SwapRouter02 (`exactInputSingle`, selector `0x04e45aaf`) [V source]. It
+judges a call, not an order. No chain has the decoder yet, and the CLI and
+the phone do not know it yet.
+
+**State.** None: no storage, no upgrade path, no `delegatecall`, no
+`selfdestruct`. The router's address is kept as two immutables (`venue`,
+`spender`): the router takes the sold token from its caller itself. The
+constructor asks only for code at the router's address (`NotARouter`).
+
+**Config.** `abi.encode(Config)`: up to 16 pairs (`VenuePairs`), each one
+way with a lowest price.
+
+**What the agent names, and what it does not.** The decoder's "order" is
+`abi.encode(Swap)`, exactly five words: `tokenIn`, `tokenOut`, `fee` (the
+pool's fee tier), `amountIn`, `amountOutMinimum`. From them the decoder
+builds the router call itself (`swapCall(account, order)` returns it), with
+the rest written in: the recipient is the account, the price limit is zero,
+and the call's hash is of no native value. The agent's leg must be those
+bytes, or the policy refuses the operation.
+
+**Rules of `judge`**, each with what it rests on in the router [V source;
+V `contracts/test/SwapRouter02.t.sol` `SwapRouter02ForkTest`, run against
+the router `0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4` and the pool
+`0x46880b404CD35c165EDdefF7421019F8dD25F4Ad` on a fork of Base Sepolia,
+2026-11-26]:
+
+| Rule | Error | Why |
+|---|---|---|
+| The swap is exactly five ABI words, each as wide as its type | `NotASwap`, or the decoding reverts | the call is built from the values judged, and nothing rides along |
+| `amountIn` is not zero | `NothingToSell` | zero means "what the router holds" to the router: whoever calls first swaps it for themselves (`test_real_anAmountOfZeroIsTheRoutersBalance`) |
+| The pair is listed, at no less than its lowest price | `VenuePairs` errors | the router then requires the pool to pay at least `amountOutMinimum`, or the swap reverts |
+| The recipient is the account (written in) | none | `address(1)` and `address(2)` mean the caller and the router to the router, and what the router holds anyone sweeps (`test_real_aRecipientOfTwoLeavesTheOutputToAnyone`) |
+| No price limit (written in) | none | the check of the least bought is then of the whole swap |
+| No native value (written in) | none | value sent to the router is spent as wrapped ether, and what is left anyone refunds to themselves |
+
+It returns `sellToken = tokenIn`, `mostSold = amountIn`, `notBefore` and
+`validTo` zero, and `VenueCalls.digest(0, the call)`.
+
+**What the owner accepts with this venue.**
+
+- **A standing allowance to the router,** given by the owner like the one
+  to CoW's relayer. The router takes the sold token from its own caller
+  only, so nobody else's call can spend the account's allowance
+  (`test_real_theRouterTakesFromItsCallerOnly`), and the account's calls
+  reach the router through this decoder alone: each is charged the amount
+  sold, against the token's cap per operation and its budget
+  (`test_swap_heldToTheCapAndTheBudget`). The router's other functions
+  (`multicall`, the sweeps and unwraps, `pull`, the position-manager calls,
+  the permits) are not this call, so the agent cannot reach them
+  (`test_swap_theRouterTakesNoOtherCall`,
+  `test_fork_theRouterTakesNoOtherCall`). The router's code was read for
+  this path, not audited by us [I].
+- **A swap that reverts is still charged.** The charge is made when the
+  swap is registered, in validation; if the market moved under the least
+  bought, the operation runs, the swap reverts, nothing moves, and the
+  budget is shorter by the amount until the period turns
+  (`test_swap_aSwapThatRevertsIsStillCharged`).
+- **The pool is the agent's choice among the pair's pools.** The fee tier
+  names it. Whatever pool it is, the account receives at least
+  `amountOutMinimum` of the bought token or the swap reverts; the lowest
+  price is the owner's, not the pool's.
+- **One pool, exact input only.** Paths through several pools, exact-output
+  swaps and the v2 functions are other functions of the router, not
+  allowed here.
+
+**Other functions.**
+
+- `swapCall(account, order)`: the calldata the account must send to the
+  router, with no value, in the leg after the registration.
+- `untouched(account, order)`: always false. Nothing of a swap is left to
+  be filled later, and the policy keeps no record of it to give back.
+- `checkConfig(config)` (a view) returns true or reverts `InvalidConfig`: a
+  list `VenuePairs.checkList` accepts, and code at every token's address.
 
 ## DemoCounter
 

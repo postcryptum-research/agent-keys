@@ -226,6 +226,99 @@ cargo test -p agent-signer --features insecure-software-keys --test anvil_cli on
 real router's code runs without its chain's state: no pause, no other
 maker's bits. No order was sent to a chain.
 
+## Contracts: a call a decoder judged, and the swap decoder
+
+`contracts/test/VenueCallPairing.t.sol` holds what the policy keeps by
+itself when a decoder judges a call instead of an order
+([#80](https://github.com/postcryptum-research/agent-keys/issues/80)): the
+decoder there judges nothing and answers what the test tells it to, so
+every rule tested is the policy's. `contracts/test/SwapRouter02.t.sol`
+holds `SwapRouter02Decoder` on its own, under the policy with a stand-in
+router, and against Uniswap's router as deployed.
+
+| Test | What must hold |
+|---|---|
+| `test_call_theJudgedCallIsMadeAndNoOther` | a venue's contract is refused by itself; registered and made in two legs it passes, as often as it is made; neither hash of the call is vouched for |
+| `test_call_theLegAfterTheRegistrationMustBeThatCall` | another function, another value, another contract, one more byte, or a leg in between: refused |
+| `test_call_aRegistrationWithoutItsCallIsRefused` | alone, as the last leg, as the only leg, or two registrations in a row: refused; each registration with its call passes |
+| `test_call_onlyAtTheDecodersOwnVenue` | not the account, the policy, an allow-listed contract, an unpinned contract, another venue's contract or the decoder's own spender |
+| `test_call_whatNoDecoderOpens`, `test_call_aDecoderDoesNotOpenAContractWithIdLimits` | Permit2, a token with a limit and a contract with id limits stay closed even to a decoder pinned with one of them as its venue |
+| `test_call_chargedAsTheDecoderSays`, `test_call_aTokenWithAPayeeListIsNotCharged`, `test_call_itsNativeValueCounts` | what a call is charged: the decoder's price against the token's cap and budget, never a token with a payee list, and the call's native value like any leg's |
+| `test_call_anAnswerWithAnEndIsAnOrder`, `test_call_anOrderEndingAtZeroIsNotACall` | an order stays an order: recorded, vouched for, taking no leg along; an order that ends at second zero is refused |
+| `test_swap_*` (7) | a swap under a mandate of two venues: made and charged, no other call of the router, the decoder's refusals, the cap and the shared budget, a reverting swap still charged, the router off every allow-list, the decoder's code pinned |
+| `test_decoder_*` (9) | the decoder alone: the call it builds, word for word; the recipient; the lowest price at its boundary; five clean words; a broken config; `checkConfig`; the constructor |
+
+**Against Uniswap's router.** `SwapRouter02ForkTest` runs on a fork of Base
+Sepolia with the router `0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4` and
+the pool `0x46880b404CD35c165EDdefF7421019F8dD25F4Ad` (wrapped ether and
+the test dollar, 0.3%): the agent's swap goes through the policy to the
+router, and three tests show on the router's own code what the decoder's
+rules keep out (an amount of zero, a recipient of `address(2)`, a
+stranger's call against the account's allowance).
+
+```sh
+cd contracts
+FORK_BASE_SEPOLIA_RPC_URL=<a Base Sepolia RPC> \
+  forge test --evm-version osaka --match-contract SwapRouter02ForkTest
+```
+
+Run on 2026-11-26: 5 tests pass. Without the variable they are skipped, so
+CI runs the stand-in only.
+
+**That it bites.** Twenty-four parts of the policy's rule and twenty-five
+of the decoder's were broken in the source one at a time, and each is found
+by a test:
+
+- **the pairing:** the check where validation ends; the leg after a
+  registration judged as the registered call; the hash compared; the hash
+  bound to the leg's target, with the place, the value and the calldata in
+  it; the registration binding the decoder's venue (and not its spender);
+  the expectation cleared by its call; the expectation set at all;
+- **what stays closed:** Permit2, a token with a limit, a contract with id
+  limits, each alone;
+- **the charge:** the call's native value; a priced call held to the cap
+  per operation, to the budget, charged at all, and never in a token with a
+  payee list; a call not recorded as an order;
+- **an order stays an order:** it sells something, it ends with its
+  period, it is recorded; an answer with an end is an order and one
+  without is a call;
+- **the decoder:** five words; something sold; the pair and the price as a
+  whole, the pair the wrong way round, the price of the wrong amounts; the
+  amount charged, in full, in the sold token; a call and not an order; no
+  native value; in the router call, the recipient (two ways), the order of
+  the tokens, the fee tier, the amount sold, the least bought, the price
+  limit and the selector; code at the router; the venue and the spender;
+  `untouched`; `checkConfig`'s list and its code checks.
+
+**What the first runs of the breaks found.** Six went unnoticed:
+
+- three were faults of the tests. No test had a contract with id limits
+  as a decoder's venue. The test decoder's spender was its venue, so a
+  policy that bound the spender passed. Every swap in the decoder's tests
+  used one fee tier, so a decoder that wrote that tier in passed;
+- one was a fault of the rule as first written: the next leg was read
+  without asking whether the batch had one, and a read past the end comes
+  back as a call to nobody, which a registration could name. The rule no
+  longer reads ahead: the leg after a registration is judged when the loop
+  reaches it, and a registration that is the last leg is refused where
+  validation ends;
+- one was a condition that did nothing (a call exempted from a check it
+  always passes); it was removed;
+- one is no fault: with "a priced call needs a limited token" dropped, the
+  cap per operation of a token without a limit is zero and refuses the
+  same calls.
+
+**The budget's proofs on the changed policy.** The eleven proofs of the
+budget were run again on this policy on 2026-11-26, and each of the ten
+breaks (`scripts/kontrol-break.py`) with them: all eleven pass and every
+break fails its proof (the record is under "Beyond fuzzing" below). The
+rule for a decoder's call has no proof of its own yet; the tests and the
+breaks above hold it.
+
+**What it does not cover.** The stand-in router models one function. The
+fork run is of one pool on one test network at one block. No swap was sent
+to a chain, and no chain has the decoder or this policy yet.
+
 ## Rust
 
 Coverage-guided fuzzing with `cargo-fuzz` (libFuzzer, a nightly toolchain)
@@ -522,8 +615,10 @@ What breaking them one at a time found: with the budgets set at first (a token c
 
 - **Breaks:** each of the ten made its proof fail, in a job of its own of 9 to 16 min, beside the proofs.
 - **The policy deployed since 2026-11-26** adds the batch rule of #206. Kontrol ran on it in that pull request's checks ([run 45702180453](https://github.com/postcryptum-research/agent-keys/actions/runs/45702180453)): the eleven proofs passed and each of the ten breaks failed its proof.
+- **The policy that admits a decoder's call** (#80, the section "a call a decoder judged" above): run on 2026-11-26 on a workstation of 24 cores with the same image. The eleven proofs passed, none vacuous, in 17 min 41 s with the build and eight workers; each of the ten breaks made its proof fail. The source proved differs from the committed one in sixteen comment lines, and comments are not in the bytecode (`bytecode_hash = "none"`).
 
 **What it does not prove** ([#130](https://github.com/postcryptum-research/agent-keys/issues/130)):
+- **A decoder's call.** That a call a venue's decoder judged is admitted only as the leg after its registration, only at that decoder's venue, with its value counted: tests and breaks hold it, no proof.
 - **Any number of legs.** The batch, Safe and multiSend proofs fix the number of legs at two. A loop over a length the caller chooses stays with the fuzzing above.
 - **Any encoding.** The shapes are well-formed encodings with symbolic amounts. Symbolic offsets, short or trailing bytes stay with the parsers' tests and the fuzzing.
 - **Faithfulness inside a Safe.** The faithfulness proofs execute the account's single and batch paths. A Safe executing its transaction is not modelled; the differential tests are the evidence there, and that evidence missed #190: a Safe transaction with a nonzero `safeTxGas` does not revert when its inner call fails, so a call the policy judged could go unmade, a withdrawal of an allowance among them. The fuzzing and this harness built Safe transactions with `safeTxGas` and `baseGas` at 0 and varied only `gasPrice`. The policy refuses both words other than 0 since #191. Since #193 the differential in `PolicyFuzz.t.sol` draws each of the three words other than 0 now and then (1, or any word) and requires the refusal, not only that the source and the recorded instance agree. This harness still builds them at 0, and neither runs a Safe's execution. A unit test does: `test_safe_aFailingInnerCallFailsTheOperation` (`AgentPermission.t.sol`) sends #190's operation with all three words at 0 through the EntryPoint, Kernel's batch, a Safe and the token. Validation accepts it, the withdrawal reverts at execution, the Safe reverts with it, and the operation's execution fails: no allowance stands and the Safe's nonce does not move. With the rule on `safeTxGas` removed and the withdrawal given a `safeTxGas` of 1, that test fails [V 2026-11-25]. That is one shape of Safe transaction run, not a proof over all of them.
