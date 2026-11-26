@@ -77,7 +77,7 @@ class MainActivity : AppCompatActivity() {
         const val ALIAS = "tpmsign-p0-owner"
         /** One key per enrolled account (§5.1): alias by chain and account. */
         fun aliasFor(chainId: String, account: String) = "tpmsign-owner-$chainId-${account.lowercase()}"
-        const val APP_VERSION = "0.4.3"
+        const val APP_VERSION = "0.4.4"
         const val PREFS = "enrollments"
         /** owner-core `user_op::tests`: the golden operation's userOpHash on chain 31337 (anvil). */
         const val GOLDEN_DIGEST_HEX = "48e286b71f896beef7a0b4d23fd82d6afae60a64e7976118de492a2fba4c1947"
@@ -302,7 +302,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             } catch (e: Exception) {
-                runOnUiThread { say("ERROR ${e::class.java.simpleName}: ${e.message}") }
+                runOnUiThread { fail(e) }
             }
         }.start()
     }
@@ -799,7 +799,24 @@ class MainActivity : AppCompatActivity() {
     private fun filesDir(): File = (getExternalFilesDir(null) ?: filesDir).also { it.mkdirs() }
 
     private fun safely(block: () -> Unit) {
-        try { block() } catch (e: Exception) { say("ERROR ${e::class.java.simpleName}: ${e.message}"); Log.e(TAG, "failed", e) }
+        try { block() } catch (e: Exception) { fail(e) }
+    }
+
+    /**
+     * A failure the owner has to see (#215): in the text area as before, and as
+     * a dialog, since the text area lies under the buttons and after a scan
+     * nothing else on the screen changes.
+     */
+    private fun fail(e: Exception) {
+        val reason = "${e::class.java.simpleName}: ${e.message}"
+        say("ERROR $reason")
+        Log.e(TAG, "failed", e)
+        if (isFinishing || isDestroyed) return
+        // the session is a plain HTTP request to the laptop on the local network
+        val hint = if (e is java.io.IOException) {
+            "\n\nThe phone could not reach the laptop's session. Both must be on the same local network; a VPN on the phone can stand in the way."
+        } else ""
+        AlertDialog.Builder(this).setTitle("That did not work").setMessage(reason + hint).setPositiveButton("OK", null).show()
     }
 
     private fun say(line: String) { out.append(line + "\n\n"); Log.i(TAG, line) }

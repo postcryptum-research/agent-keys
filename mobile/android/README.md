@@ -212,6 +212,16 @@ gave root to a key nobody held. Two changes in the app, one on the laptop:
   <label>`, and `key check --phone <label>` at any time. The CLI accepts
   this app from version code 11.
 
+### A failure is shown as a dialog (version 0.4.4, issue #215)
+
+A failure after a scan, or in any of the buttons' actions, opens a dialog
+"That did not work" with the reason, and stays in the text area as before.
+Until this version it was only printed there, under the buttons, and on the
+screen nothing seemed to happen. When the request to the laptop's session
+fails, the dialog adds that both must be on the same local network and that
+a VPN on the phone can stand in the way. What is accepted or refused does
+not change.
+
 ### Deleting an enrollment (version 0.4.1-p4, issue #40)
 
 **Delete an enrollment…** lists every key the phone holds a record of,

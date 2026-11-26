@@ -67,6 +67,14 @@ final class Model: ObservableObject {
         #endif
     }
 
+    /// A failure the owner has to see (#215): in the log as before, and as the
+    /// notice at the top of the screen, which stays until it is dismissed.
+    func fail(_ error: Error) {
+        let reason = error.localizedDescription
+        say("ERROR \(reason)")
+        notice = "That did not work: \(reason)"
+    }
+
     func say(_ line: String) {
         log.append(line)
         // to the console of whoever launched the app (`xcrun devicectl device process launch --console`)
@@ -103,7 +111,7 @@ final class Model: ObservableObject {
                 case "health-request": try openProof(bytes, qr)
                 case let other: throw Failure("unknown request type \(other ?? "none")")
                 }
-            } catch { say("ERROR \(error.localizedDescription)") }
+            } catch { fail(error) }
         }
     }
 
@@ -182,7 +190,7 @@ final class Model: ObservableObject {
                     // said where it cannot be missed: the owner is looking at the laptop, which may be saying "enrolled"
                     notice = "The laptop did not confirm this enrollment to this phone (\(outcome)).\n\nThe key is kept, unconfirmed. If the laptop says \"enrolled\", it has the key all the same: its handover will ask this phone to show the key, and that settles it. If the laptop reports a failure, enroll again: the unconfirmed key is replaced then."
                 }
-            } catch { say("ERROR \(error.localizedDescription)") }
+            } catch { fail(error) }
         }
     }
 
@@ -245,7 +253,7 @@ final class Model: ObservableObject {
                 // owner-core converts DER to r‖s, normalizes low-s and verifies before it builds the response
                 let response = try prompt.review.finish(derSignature: der, publicKey: prompt.enrollment.publicKey, app: app)
                 say("signed \(hash) and posted: \(try await Http.post(prompt.qr, response).description)")
-            } catch { say("ERROR \(error.localizedDescription)") }
+            } catch { fail(error) }
         }
     }
 
@@ -302,7 +310,7 @@ final class Model: ObservableObject {
                     try Store.save(enrollments)
                 }
                 say("showed the key \(fp) and posted: \(try await Http.post(prompt.qr, answer).description)")
-            } catch { say("ERROR \(error.localizedDescription)") }
+            } catch { fail(error) }
         }
     }
 
@@ -312,7 +320,7 @@ final class Model: ObservableObject {
     func askToDelete(_ e: Enrollment) {
         do {
             deletePrompt = DeletePrompt(enrollment: e, words: try deletionPrompt(label: e.label, chainId: e.chainId, account: e.account, publicKey: e.publicKey))
-        } catch { say("ERROR \(error.localizedDescription)") }
+        } catch { fail(error) }
     }
 
     /// After both questions: the biometric check, then the key and its record go together.
@@ -344,6 +352,6 @@ final class Model: ObservableObject {
         do {
             try Store.save(enrollments)
             say("deleted \(before - enrollments.count) test-chain enrollment(s) and their keys")
-        } catch { say("ERROR \(error.localizedDescription)") }
+        } catch { fail(error) }
     }
 }

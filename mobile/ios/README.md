@@ -152,6 +152,12 @@ Still open on a phone: the 7-day expiry of a free account's profile and
 what a rebuild after it keeps, a key after a change of the enrolled
 biometrics, Touch ID, and everything about distribution.
 
+## A failure is shown at the top of the screen (version 0.4.4, issue #215)
+
+A failure of a session or of an action is shown as the notice at the top of
+the screen, "That did not work: …", until it is dismissed, and stays in the
+log as before. What is accepted or refused does not change.
+
 ## Deleting an enrollment (version 0.4.2, issue #40)
 
 Each enrolled account has **Delete…**. The app asks twice in
