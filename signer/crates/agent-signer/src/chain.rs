@@ -1799,9 +1799,70 @@ pub fn safe_gas_words_are_zero(exec_transaction: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// How often, and how far apart, a chain read made right after an operation
+/// is asked again before a refusal is believed (see [`ask_again`]).
+pub(crate) const ASK_AGAIN: u32 = 10;
+pub(crate) const ASK_EVERY: Duration = Duration::from_secs(3);
+
+/// Asks until `stands` says the answer does, at most `again` more times,
+/// `every` apart, and returns the last answer whatever it is.
+///
+/// For a read made right after an operation was included. An RPC endpoint
+/// that spreads requests over several nodes may answer from one that has not
+/// seen that block yet: the account then does not vouch for a digest the
+/// operation registered, and the answer is a refusal that the next block
+/// turns into the true one. Found on Sepolia on 2026-11-26: `order sell`
+/// stopped at this, with its order registered and charged.
+pub(crate) async fn ask_again<T, F, Fut>(mut ask: F, stands: impl Fn(&T) -> bool, again: u32, every: Duration) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    let mut asked: u32 = 0;
+    loop {
+        let answer = ask().await;
+        if stands(&answer) || asked >= again {
+            return answer;
+        }
+        asked = asked.saturating_add(1);
+        tokio::time::sleep(every).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A read made right after an operation is asked again while it refuses:
+    /// the answer that stands is returned as soon as it comes, a refusal that
+    /// stays is returned after the last try, and an answer that stands at
+    /// once is asked once.
+    #[tokio::test]
+    async fn a_refusal_is_asked_again_until_the_answer_stands() {
+        let asks = |answers: &'static [u8]| {
+            let n = std::cell::Cell::new(0usize);
+            async move {
+                let got = ask_again(
+                    || {
+                        let i = n.get();
+                        n.set(i + 1);
+                        async move { answers[i.min(answers.len() - 1)] }
+                    },
+                    |a| *a == 1,
+                    3,
+                    Duration::ZERO,
+                )
+                .await;
+                (got, n.get())
+            }
+        };
+        // the node is two answers behind, then has the block
+        assert_eq!(asks(&[0, 0, 1]).await, (1, 3));
+        // it has it at once: asked once
+        assert_eq!(asks(&[1]).await, (1, 1));
+        // it never does: asked once and three more times, and the refusal is the answer
+        assert_eq!(asks(&[0]).await, (0, 4));
+    }
 
     /// #190: a Safe transaction for the agent has its three gas words at 0,
     /// and the CLI says which one is not.

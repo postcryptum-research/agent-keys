@@ -29,7 +29,7 @@ use serde_json::{json, Value};
 
 use crate::abi::{IAgentPolicyX402, IEip3009Token, IErc1271, IKernel, X402Events};
 use crate::agent::{open_signer, Role};
-use crate::chain::Session;
+use crate::chain::{ask_again, Session, ASK_AGAIN, ASK_EVERY};
 use crate::kernel;
 
 /// `isValidSignature` magic value.
@@ -230,11 +230,20 @@ impl Session {
         let wrapped = kernel::kernel_wrapped_hash(self.account, self.dep.chain_id, digest);
         let sig = open_signer(&self.cfg.agent, Role::Agent)?.sign_digest(&wrapped.0)?;
         let signature = kernel::permission_1271_signature(self.cfg.permission_id()?, &sig);
-        let magic = IErc1271::new(self.account, self.provider.clone())
-            .isValidSignature(digest, signature.clone())
-            .call()
-            .await
-            .context("isValidSignature reverted")?;
+        // asked again for a while on a refusal: the node that answers may not
+        // have the block of the registration yet
+        let erc1271 = IErc1271::new(self.account, self.provider.clone());
+        let magic = ask_again(
+            || {
+                let (erc1271, signature) = (&erc1271, signature.clone());
+                async move { erc1271.isValidSignature(digest, signature).call().await }
+            },
+            |answer| matches!(answer, Ok(m) if m.0 == ERC1271_MAGIC),
+            ASK_AGAIN,
+            ASK_EVERY,
+        )
+        .await
+        .context("isValidSignature reverted")?;
         if magic.0 != ERC1271_MAGIC {
             bail!("the account does not vouch for this authorization (isValidSignature = {magic}); was it registered?");
         }
