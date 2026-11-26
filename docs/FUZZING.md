@@ -245,6 +245,7 @@ router, and against Uniswap's router as deployed.
 | `test_call_whatNoDecoderOpens`, `test_call_aDecoderDoesNotOpenAContractWithIdLimits` | Permit2, a token with a limit and a contract with id limits stay closed even to a decoder pinned with one of them as its venue |
 | `test_call_chargedAsTheDecoderSays`, `test_call_aTokenWithAPayeeListIsNotCharged`, `test_call_itsNativeValueCounts` | what a call is charged: the decoder's price against the token's cap and budget, never a token with a payee list, and the call's native value like any leg's |
 | `test_call_anAnswerWithAnEndIsAnOrder`, `test_call_anOrderEndingAtZeroIsNotACall` | an order stays an order: recorded, vouched for, taking no leg along; an order that ends at second zero is refused |
+| `test_call_aDecodersNotBeforeHolds` | a decoder's "not before" holds for a call as for an order: the operation is refused earlier and passes at that time |
 | `test_swap_*` (7) | a swap under a mandate of two venues: made and charged, no other call of the router, the decoder's refusals, the cap and the shared budget, a reverting swap still charged, the router off every allow-list, the decoder's code pinned |
 | `test_decoder_*` (9) | the decoder alone: the call it builds, word for word; the recipient; the lowest price at its boundary; five clean words; a broken config; `checkConfig`; the constructor |
 
@@ -307,6 +308,13 @@ by a test:
 - one is no fault: with "a priced call needs a limited token" dropped, the
   cap per operation of a token without a limit is zero and refuses the
   same calls.
+
+A seventh was found later by reading the change and not by a break: the
+policy did not read a decoder's "not before" for a call, only for an order.
+The two call decoders answer zero, so nothing passed that should not have;
+a decoder with a time rule would have had it ignored. The test for it was
+written first and failed; the policy now sets the operation's earliest time
+before it branches on call or order.
 
 **The budget's proofs on the changed policy.** The eleven proofs of the
 budget were run again on this policy on 2026-11-26, and each of the ten

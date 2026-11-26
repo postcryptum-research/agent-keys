@@ -515,7 +515,9 @@ which refuses the operation all the same [I].
     (`test_call_chargedAsTheDecoderSays`,
     `test_call_aTokenWithAPayeeListIsNotCharged`);
   - nothing is recorded and nothing is vouched for: a call registers as
-    often as it is made (`test_call_theJudgedCallIsMadeAndNoOther`).
+    often as it is made (`test_call_theJudgedCallIsMadeAndNoOther`);
+  - the decoder's `notBefore` holds as for an order: the operation is not
+    valid earlier (`test_call_aDecodersNotBeforeHolds`).
   A call that reverts when the operation runs was still charged at
   validation, as a transfer is; the period returns it. An order that ends
   at second zero is taken for a call that no leg can be, and is refused
@@ -760,8 +762,9 @@ and `spender()` when a mandate that trades at the venue is installed [V
 **An order, or a call.** A decoder says which it judged by `validTo`. Not
 zero: an order, recorded and vouched for until then. Zero: a call the
 account makes in the next leg of the same operation, at `venue()`; `digest`
-is then `VenueCalls.digest(value, calldata)`, `notBefore` is zero, and
-`mostSold` may be zero when the call takes nothing the decoder prices [V
+is then `VenueCalls.digest(value, calldata)`, `notBefore` is zero or the
+earliest time the call may be made, and `mostSold` may be zero when the
+call takes nothing the decoder prices [V
 `contracts/src/AgentPolicy.sol` `_registerOrder`, `_judgeVenueCall`]. The
 interface's own text describes orders: the file is not changed, so that the
 source of the deployed `CowSwapDecoder` stays as it is.
