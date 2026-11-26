@@ -344,9 +344,10 @@ path adds nothing to it.
    mandate lets the agent call nothing. It erred on the careful side. From
    core 0.3.4 the row says "none" there
    ([#216](https://github.com/postcryptum-research/agent-keys/pull/216)).
-5. **The app shows nothing visible when it cannot reach the laptop's
-   session:** the error is printed under the buttons. It should be a
-   dialog.
+5. **The app showed nothing visible when it could not reach the laptop's
+   session:** the error was printed under the buttons. From app 0.4.4 a
+   failure opens a dialog
+   ([#217](https://github.com/postcryptum-research/agent-keys/pull/217)).
 
 They are recorded on
 [#80](https://github.com/postcryptum-research/agent-keys/issues/80).

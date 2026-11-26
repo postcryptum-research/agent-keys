@@ -4,7 +4,8 @@
 # key, an agent permission reviewed and signed in the app, then the app
 # signing a change of the root key itself (README.md). Twice: as it should
 # go, and with a host on the path that replaces the laptop's confirmation of
-# the enrollment. No phone and no Apple account. The sessions are on the
+# the enrollment. Then a session that fails, which the app has to show. No
+# phone and no Apple account. The sessions are on the
 # Mac's LAN address: with a VPN up the CLI's default would be the tunnel's
 # address, which the app refuses as not local.
 #   Xcode with an iOS simulator, xcodegen, anvil; rustup targets as build-core.sh.
@@ -45,7 +46,7 @@ pass() {
   if [ "$ROBOT" = 1 ]; then
     rm -rf "build/robot-$1.xcresult" "build/robot-screens-$1"
     TEST_RUNNER_TPMSIGN_ROBOT_SECONDS=300 xcodebuild test-without-building $xcode -destination "platform=iOS Simulator,name=$SIMULATOR" \
-      -resultBundlePath "build/robot-$1.xcresult" >"build/robot-$1.log" 2>&1 &
+      -only-testing:OwnerAppUITests/OwnerRobot/testActAsTheOwner -resultBundlePath "build/robot-$1.xcresult" >"build/robot-$1.log" 2>&1 &
     robot=$!
     trap 'kill $robot 2>/dev/null || true' EXIT
   else
@@ -76,4 +77,15 @@ said "enrollment NOT confirmed"
 said "showed the key"
 [ "$ROBOT" != 1 ] || said "deleted the key"
 [ "$ROBOT" != 1 ] || grep -q "the not-confirmed notice" build/robot-lost-confirmation.log || { echo "the app did not put its not-confirmed notice on screen"; exit 1; }
-echo "both runs passed: with the laptop's confirmation, and with it replaced on the way"
+# 3. a session that fails is shown to the owner (issue #215). No laptop in this one: the robot
+#    hands the app a QR that is no session and looks for the reason on the screen.
+if [ "$ROBOT" = 1 ]; then
+  xcrun simctl uninstall "$SIMULATOR" "$bundle" 2>/dev/null || true
+  xcrun simctl install "$SIMULATOR" build/derived/Build/Products/Debug-iphonesimulator/OwnerApp.app
+  rm -rf "$qr" "$applog" build/robot-failed-session.xcresult
+  xcodebuild test-without-building $xcode -destination "platform=iOS Simulator,name=$SIMULATOR" \
+    -only-testing:OwnerAppUITests/OwnerRobot/testAFailedSessionIsShown -resultBundlePath build/robot-failed-session.xcresult >build/robot-failed-session.log 2>&1 \
+    || { grep -E "error:|XCTAssert|failed" build/robot-failed-session.log | head -20; echo "failed-session: the robot's checks failed"; exit 1; }
+  echo "failed-session: the robot's checks passed"
+fi
+echo "all runs passed: with the laptop's confirmation, with it replaced on the way, and a failed session shown"

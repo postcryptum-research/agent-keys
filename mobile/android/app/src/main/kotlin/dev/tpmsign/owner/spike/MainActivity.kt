@@ -77,7 +77,9 @@ class MainActivity : AppCompatActivity() {
         const val ALIAS = "tpmsign-p0-owner"
         /** One key per enrolled account (§5.1): alias by chain and account. */
         fun aliasFor(chainId: String, account: String) = "tpmsign-owner-$chainId-${account.lowercase()}"
-        const val APP_VERSION = "0.4.3"
+        const val APP_VERSION = "0.4.4"
+        /** Added to a failed request to the laptop's session, a plain HTTP request on the local network. */
+        const val UNREACHABLE = "\n\nThe phone could not reach the laptop's session. Both must be on the same local network; a VPN on the phone can stand in the way."
         const val PREFS = "enrollments"
         /** owner-core `user_op::tests`: the golden operation's userOpHash on chain 31337 (anvil). */
         const val GOLDEN_DIGEST_HEX = "48e286b71f896beef7a0b4d23fd82d6afae60a64e7976118de492a2fba4c1947"
@@ -302,7 +304,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             } catch (e: Exception) {
-                runOnUiThread { say("ERROR ${e::class.java.simpleName}: ${e.message}") }
+                runOnUiThread { fail(e, session = true) }
             }
         }.start()
     }
@@ -410,7 +412,7 @@ class MainActivity : AppCompatActivity() {
                         try {
                             val reply = httpPost(url, resp)
                             runOnUiThread { say("signed and posted: ${reply.describe()}") }
-                        } catch (e: Exception) { runOnUiThread { say("POST failed: ${e.message}") } }
+                        } catch (e: Exception) { runOnUiThread { problem("POST failed: ${e.message}", UNREACHABLE) } }
                     }.start()
                 }
             }
@@ -558,7 +560,7 @@ class MainActivity : AppCompatActivity() {
         val app = FfiApp(platform = "android", version = APP_VERSION)
         val fp = health.fingerprint()
         health.cannot()?.let { why ->
-            say("CANNOT SHOW the key $fp for ${health.account()}: $why — telling the laptop")
+            problem("CANNOT SHOW the key $fp for ${health.account()}: $why — telling the laptop")
             val refusal = health.refuseAsUnable(app)
             Thread { try { httpPost(url, refusal) } catch (_: Exception) {} }.start()
             return
@@ -601,7 +603,7 @@ class MainActivity : AppCompatActivity() {
                         try {
                             val reply = httpPost(url, answer)
                             runOnUiThread { say("showed the key ${health.fingerprint()} and posted: ${reply.describe()}") }
-                        } catch (e: Exception) { runOnUiThread { say("POST failed: ${e.message}") } }
+                        } catch (e: Exception) { runOnUiThread { problem("POST failed: ${e.message}", UNREACHABLE) } }
                     }.start()
                 }
             }
@@ -767,9 +769,9 @@ class MainActivity : AppCompatActivity() {
                         if (keyStore.containsAlias(alias)) keyStore.deleteEntry(alias)
                         !keyStore.containsAlias(alias)
                     } catch (ex: Exception) { say("the Keystore refused: ${ex.message}"); false }
-                    if (!keyGone) { say("NOT deleted: the key $fp could not be removed from the Keystore; its record is kept and nothing changed"); return@safely }
+                    if (!keyGone) { problem("NOT deleted: the key $fp could not be removed from the Keystore; its record is kept and nothing changed"); return@safely }
                     if (prefs().edit().remove(alias).commit()) say("deleted the key $fp and its record (account ${e.getString("account")}, chain ${e.getString("chainId")})")
-                    else say("the key $fp is deleted, but its record could not be removed: the list shows it as KEY MISSING until it is")
+                    else problem("the key $fp is deleted, but its record could not be removed: the list shows it as KEY MISSING until it is")
                 }
             }
             override fun onAuthenticationError(code: Int, msg: CharSequence) { say("not deleted: biometric error $code: $msg") }
@@ -799,7 +801,24 @@ class MainActivity : AppCompatActivity() {
     private fun filesDir(): File = (getExternalFilesDir(null) ?: filesDir).also { it.mkdirs() }
 
     private fun safely(block: () -> Unit) {
-        try { block() } catch (e: Exception) { say("ERROR ${e::class.java.simpleName}: ${e.message}"); Log.e(TAG, "failed", e) }
+        try { block() } catch (e: Exception) { fail(e) }
+    }
+
+    /**
+     * What went wrong, where the owner sees it (#215): in the text area as
+     * before, and as a dialog, since the text area lies under the buttons and
+     * after a scan nothing else on the screen changes.
+     */
+    private fun problem(line: String, hint: String = "") {
+        say(line)
+        if (isFinishing || isDestroyed) return
+        AlertDialog.Builder(this).setTitle("That did not work").setMessage(line + hint).setPositiveButton("OK", null).show()
+    }
+
+    /** An exception as a [problem]. `session`: it came from a request to the laptop's session. */
+    private fun fail(e: Exception, session: Boolean = false) {
+        Log.e(TAG, "failed", e)
+        problem("ERROR ${e::class.java.simpleName}: ${e.message}", if (session && e is java.io.IOException) UNREACHABLE else "")
     }
 
     private fun say(line: String) { out.append(line + "\n\n"); Log.i(TAG, line) }

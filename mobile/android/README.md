@@ -212,6 +212,25 @@ gave root to a key nobody held. Two changes in the app, one on the laptop:
   <label>`, and `key check --phone <label>` at any time. The CLI accepts
   this app from version code 11.
 
+### A failure is shown as a dialog (version 0.4.4, issue #215)
+
+A failure opens a dialog "That did not work" with the reason, and stays in
+the text area as before. Until this version it was only printed there,
+under the buttons, and on the screen nothing seemed to happen. The dialog
+opens for:
+
+- an error after a scan or in any of the buttons' actions;
+- a signature or a shown key that did not reach the laptop ("POST failed");
+- a key the phone cannot show when the handover asks for it;
+- an enrollment that could not be deleted, or was deleted in part.
+
+When a request to the laptop's session does not get through, the dialog
+adds that both must be on the same local network and that a VPN on the
+phone can stand in the way. What is accepted or refused does not change.
+The app has no automated test of its screens
+([#218](https://github.com/postcryptum-research/agent-keys/issues/218)):
+the dialog is checked by hand on a device.
+
 ### Deleting an enrollment (version 0.4.1-p4, issue #40)
 
 **Delete an enrollment…** lists every key the phone holds a record of,

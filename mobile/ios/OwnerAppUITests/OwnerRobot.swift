@@ -147,6 +147,23 @@ final class OwnerRobot: XCTestCase {
         keep("after the delete")
     }
 
+    /// A session that fails is put in front of the owner (issue #215): the reason is at the top
+    /// of the screen until it is dismissed, not only in the log. A QR that is no session is the
+    /// plainest failure; it reaches the app the way agent-signer's QR does.
+    func testAFailedSessionIsShown() throws {
+        let app = XCUIApplication()
+        app.launch()
+        let device = ProcessInfo.processInfo.environment["SIMULATOR_SHARED_RESOURCES_DIRECTORY"] ?? ""
+        try "not a session".write(toFile: device + "/tmp/tpmsign-session.qr", atomically: true, encoding: .utf8)
+        let failure = app.staticTexts["failure"]
+        XCTAssertTrue(failure.waitForExistence(timeout: 20), "a failed session put nothing on the screen")
+        XCTAssertFalse(failure.label.isEmpty, "the failure is shown without its reason")
+        XCTAssertTrue(appLog().contains { $0 == "ERROR \(failure.label)" }, "the screen and the log give different reasons: \(failure.label)")
+        keep("a failed session")
+        app.buttons["failure-ok"].tap()
+        XCTAssertFalse(failure.waitForExistence(timeout: 1), "the failure is still shown after OK")
+    }
+
     /// The app's log, which a simulator build also writes to the simulated device's tmp
     /// directory: the review holds the whole screen, so the log is not on it.
     private func appLog() -> [String] {
