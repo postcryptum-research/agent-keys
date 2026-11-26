@@ -30,6 +30,7 @@ commit `e48b93e001f34f460bd4845d231b8e0ee5d26ad6` builds them, every contract at
 | `OneInchLimitOrderDecoder` | plain 1inch limit orders under that interface | the policy; the owner's tools | not deployed yet |
 | `VenueCalls` | how a call is named between a decoder and the policy (library) | the policy; the swap decoder | none: compiled into them |
 | `SwapRouter02Decoder` | a swap at Uniswap's SwapRouter02, as a call the account makes | the policy; the owner's tools | not deployed yet |
+| `CallRulesDecoder` | calls at one contract, each argument word held to a rule | the policy; the owner's tools | not deployed yet; one per contract it speaks for |
 | `DemoCounter` | a demo target | anyone; the agent in demos | `0x29da894F3E456CAC92b3EC76710524E74411E99f` |
 
 The addresses are the file's current entries [V `contracts/deployments/84532.json`].
@@ -1018,6 +1019,77 @@ It returns `sellToken = tokenIn`, `mostSold = amountIn`, `notBefore` and
   be filled later, and the policy keeps no record of it to give back.
 - `checkConfig(config)` (a view) returns true or reverts `InvalidConfig`: a
   list `VenuePairs.checkList` accepts, and code at every token's address.
+
+## CallRulesDecoder
+
+`contracts/src/venues/CallRulesDecoder.sol`. `IVenueDecoder` for calls at
+one contract, its `venue`: the owner lists the functions the agent may call
+there and, for each, a rule for every argument word [V source]. It judges a
+call, not an order. One decoder is deployed for each contract it speaks for
+(`contracts/script/DeployCallRules.s.sol`): the policy admits a decoder's
+call at the decoder's own venue and nowhere else. No chain has one yet, and
+the CLI and the phone do not know the kind yet.
+
+**State.** None. The venue and the spender (the contract the account
+approves there; the venue itself where it pulls tokens itself) are
+immutables; the constructor asks for code at both (`NotAContract`).
+
+**Config.** `abi.encode(Config)`: one to 8 functions, each a selector and a
+rule for each of its argument words, in order, at most 16. A rule is a kind
+and a value:
+
+| Kind | The word must be | `value` |
+|---|---|---|
+| `IS_ACCOUNT` (0) | the account's address, as a whole word | zero |
+| `IS_VALUE` (1) | exactly `value` | the value |
+| `AT_MOST` (2) | at most `value`, as an unsigned number | the bound |
+| `CHARGED` (3) | an amount; it is charged in the token `value` names | the token |
+| `ANY` (4) | anything: the agent's choice | zero |
+
+Every word has a rule: a word left to the agent is written down as `ANY`,
+so the owner's screen can show it as such. At most one word is charged.
+
+**Rules of `judge`** [V source; V `contracts/test/CallRules.t.sol`, and
+`PoolForkTest` there against Aave V3's pool
+`0x8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27` on a fork of Base Sepolia,
+2026-11-26]. The "order" it is handed is the call's calldata.
+
+| Rule | Error |
+|---|---|
+| The call has a selector | `NotACall` |
+| Its function is listed, once | `FunctionNotListed`, `FunctionListedTwice` |
+| It is exactly as long as its function's rules: the selector and one word a rule | `NotTheFunctionsLength` |
+| Every word passes its rule | `WordRefused(index)` |
+| The config holds: at most 8 functions and 16 words, known kinds, a value only where its kind reads one, one charged word in a token | `InvalidConfig` |
+
+It returns the charged word's token and amount as `sellToken` and
+`mostSold` (zero where the function charges nothing), `notBefore` and
+`validTo` zero, and `VenueCalls.digest(0, the calldata)`: no native value
+goes with the call. A config at both limits is judged in 70,135 gas of the
+150,000 the policy gives a decoder
+[V `test_rules_aConfigAtTheLimitsIsJudgedWithinTheGasBound`].
+
+**What it does not know, and the owner has to.**
+
+- **What the contract does with the words.** The decoder reads 32-byte
+  words. Which word is a beneficiary, and what a value means to the
+  protocol, is what the owner writes the rules from.
+- **Dynamic arguments.** A `bytes` or an array has an offset and a length
+  among the words. Held to the values of the one encoding meant (an empty
+  `bytes` is its offset and a zero length), the call has that shape and no
+  other; left as `ANY`, they are the agent's.
+- **The charge is the word, as the contract will read it.** A contract that
+  takes more than the word says, or takes from a balance it already holds,
+  is outside what a word can bound.
+- **A standing allowance to the spender,** where a function is charged
+  here: it must be one only the account's own calls can spend. Aave's pool
+  takes a supply from its caller only
+  [V `test_real_thePoolTakesFromItsCallerOnly`].
+- **A call that reverts is still charged,** as at every venue of calls.
+
+**Other functions.** `untouched` is always false. `checkConfig(config)`
+returns true or reverts `InvalidConfig`: the rules above for every function
+whether or not it is called, and code at each charged token.
 
 ## DemoCounter
 

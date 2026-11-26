@@ -26,9 +26,10 @@ So for a function of some protocol the question is one:
   operation, or the value sent, and credits or pays the caller. It can go
   on a mandate as it is.
 - **No:** it has a `receiver`, `to`, `onBehalfOf`, `owner` or `recipient`
-  argument, and an agent could name another address. It stays off until a
-  decoder holds that argument to the account: the policy admits a call a
-  venue's decoder judged, and the first such decoder is the swap below.
+  argument, and an agent could name another address. It goes through a
+  venue's decoder that holds that argument to the account: the policy
+  admits a call a decoder judged. The swap and the calls with a rule for
+  each argument, below, are such decoders.
 
 ## How an agent uses a protocol that pulls tokens
 
@@ -186,14 +187,36 @@ admits a decoder's call, so no phone build names the venue. One pool and an
 exact amount sold only: paths through several pools, exact-output swaps and
 the router's v2 functions are not allowed.
 
-## Not yet: needs an argument held to the account
+## With a rule for each argument: built, not on a chain yet
 
 These are the same protocols' other functions, and whole families of
-protocols, whose calls name a beneficiary. One rule kind would open them: a
-word of the call pinned to the account, or to a value the owner sets. The
-policy now admits a call a venue's decoder judged, which is what such a
-rule rides on; a decoder that holds a word to the account is the next step
-of #80.
+protocols, whose calls name a beneficiary. `CallRulesDecoder` holds each
+argument word of a call to a rule the owner wrote: the word is the account,
+or a value the owner set, or at most a bound, or an amount that is charged,
+or the agent's to choose ([`CONTRACTS.md`](CONTRACTS.md#callrulesdecoder)).
+One decoder is deployed for each contract; the mandate names it as a venue
+with its rules, and a call is two legs of one operation, like a swap.
+
+**Aave's functions that name a beneficiary, verified.** `supply(asset,
+amount, onBehalfOf, referralCode)` with the asset set, the amount charged,
+`onBehalfOf` the account and no referral; `withdraw(asset, amount, to)`
+with the asset set and `to` the account
+[V `contracts/test/CallRules.t.sol` `PoolForkTest`, on a fork of Base
+Sepolia on 2026-11-26 against the pool
+`0x8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27`: the agent supplies and the
+aTokens are the account's; a supply for somebody else, a withdrawal to
+somebody else, a borrow and an amount over the cap are refused]. These are
+the forms Ethereum, BNB Chain and Sepolia have, where the compact forms
+above do not exist.
+
+```sh
+cd contracts
+FORK_BASE_SEPOLIA_RPC_URL=<a Base Sepolia RPC> \
+    forge test --evm-version osaka --match-contract PoolForkTest
+```
+
+**The others are recipes to be written and tested,** each `[I]` until its
+test exists. The table says which rule opens what:
 
 | Opens with | What |
 |---|---|
@@ -202,7 +225,10 @@ of #80.
 | Words = values the owner sets | Morpho (the market: markets are permissionless, so the market itself is pinned); Circle's CCTP (the destination chain and recipient); the Base bridge's `bridgeETHTo` and `bridgeERC20To`; Uniswap v3 `mint` |
 | A decoder of its own | other swaps at a router (several pools, exact output, v2 pools, other routers); Seaport orders; GMX orders; Uniswap v4; Balancer; Pendle |
 
-Until then none of these is safe on a mandate. A pull-side function
+**Not on a chain yet.** No network has such a decoder, and the CLI and the
+phone do not know this kind of venue yet.
+
+Without its rules none of these is safe on a mandate. A pull-side function
 (`supply`, `deposit`) left unpinned loses at most what the token's budget
 charged, but it turns the budget into a payment to anyone, past the payee
 list. A release-side function (`withdraw`, `redeem`, `claim` with a
