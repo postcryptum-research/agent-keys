@@ -228,7 +228,7 @@ rule 5).
   `owner remove-recovery --earlier <its address>` takes the key off it,
   after `add-recovery` has installed the key on the current one [V
   `RemoveRecovery` in `agent-signer/src/main.rs`; the test
-  `the_recovery_key_moves_to_a_redeployed_validator`].
+  `the_recovery_key_moves_to_a_redeployed_validator`; the run below].
 - **Each permission**: `permission rotate --agent <config> --old-id <its id>`
   moves it onto the new `P256Signer` and `AgentPolicy`, with the config's
   allow-list already on the new instances; `--old-config` when the config no
@@ -239,6 +239,38 @@ rule 5).
   never uninstalled, since the app holds key handles
   ([`MOBILE_DEV_MODE.md`](MOBILE_DEV_MODE.md)). The regular build, not the
   development variant that knows the local test chain.
+
+### A run of these steps (2026-11-26, Base Sepolia)
+
+Account `0xD62Dd4afD4e77cDFA6f8eaD1D2655745cF5af628`, moved from the
+instances of 2026-10-20 and 2026-11-21 to the current ones. The CLI was
+built from master `93ccd9814adcc10afa501517af275e40b49eb496`. Each owner
+step is one operation signed by the account's owner key, with gas paid by
+the account and delivered through the CLI's own `handleOps`; every
+transaction succeeded [V the receipts, and the reads named with each step].
+
+| Step | Command | Transaction | Read afterwards |
+|---|---|---|---|
+| The root | `owner set-root --validator 0x9b6f7A83e10F3360af6B34F672c0AC5295f72d63 --retire 0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2 --not-a-phone --new-key …` | `0x13989b281aa8b6d4da69e57539b6121fe0fda2122244b9d8f4b387c90256a45f` | `owner status`: the new validator is root, with the same key; `isInitialized(account)` on the retired validator is false |
+| The recovery key, installed | `owner add-recovery` | `0x06ec2e32205520bc6b14400702f123d821c58167b5c4eaf5d4b3007050c6ce96` | `owner status`: installed on `0xb7a06e6c7B5cC9852578EF89f38d161C31218047`, may take root |
+| The recovery key, off the earlier validator | `owner remove-recovery --earlier 0x63dd80Fc5E109A44fd179F85050487E02c5e6958` | `0xfa3eed7277707e565a311772b8ec606a68ceedc922b3a58dc410e4162cd5ebb7` | `isInitialized(account)` on the earlier validator is false, its key for the account zero |
+| The permission | `permission rotate --old-id 0x73653032` | `0x9b8425edabc571a5798b2c928af569de5b67478ef865de358a27c9a3ed4e9d69` | `permission show`: policy module `0x530DD3C000b3939294072409834c4c4dd160BCd9`, every field `ok` |
+| An agent operation | `op send` to the demo counter, signed by the agent key | `0x5fdecc0add779cf9186078a72df6fecb1b8078f7f4dda06e169598db31bb4de0` | the counter goes from 0 to 1; the mandate's `spent` rises by the operation's gas |
+| The paymaster, funded | `paymaster deposit --wei 3000000000000000` | `0xc6aa137510cf4dbd04951d7340835572d5387ecafc10e61f1b44a8f0a5dd55b7` | the paymaster's deposit at the EntryPoint |
+| The paymaster, the account listed | `paymaster sponsor --budget 2000000000000000 --max-per-op 300000000000000` | `0x6069d2344965adf3b02c86798144e966c18d0b84bad4160ed0891e76977b2a2b` | `sponsorships(account)`: that budget and cap |
+| A sponsored agent operation | `op send --sponsored` to the demo counter | `0xb99ecb6bebaa48d3f4fc536ff040e3472a207238b34fbd7df9fdc8792e2a3c73` | the counter goes to 2; the account's balance is unchanged, the sponsorship's budget falls |
+
+- **The order matters for the recovery key:** it stays on the earlier
+  validator until it is on the current one, so the account has a recovery
+  path at every step.
+- **The paymaster starts empty.** A redeployed `WhitelistPaymaster` is a new
+  contract: no deposit at the EntryPoint and no account listed. Its two
+  steps are sent by the paymaster's owner, not by the account's.
+- **`add-recovery` needs the config's `recovery` entry** (the key file's
+  place). It reads the public half only, and the key stays cold.
+
+Not run here: a root held by a phone (`--to-phone`), and `--old-config` for
+a permission with venue terms.
 
 ## What stays
 
