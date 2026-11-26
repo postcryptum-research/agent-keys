@@ -1027,8 +1027,11 @@ one contract, its `venue`: the owner lists the functions the agent may call
 there and, for each, a rule for every argument word [V source]. It judges a
 call, not an order. One decoder is deployed for each contract it speaks for
 (`contracts/script/DeployCallRules.s.sol`): the policy admits a decoder's
-call at the decoder's own venue and nowhere else. No chain has one yet, and
-the CLI and the phone do not know the kind yet.
+call at the decoder's own venue and nowhere else. The CLI calls there
+(`"kind": "rules"` in a config's `venues`, `order call`), and the phone's
+core shows each function with the rule for every argument; no chain has
+such a decoder yet, so no phone build names one
+([`docs/AGENT_CONFIG.md`](AGENT_CONFIG.md)).
 
 **State.** None. The venue and the spender (the contract the account
 approves there; the venue itself where it pulls tokens itself) are

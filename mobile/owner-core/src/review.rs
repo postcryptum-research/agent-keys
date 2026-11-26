@@ -124,15 +124,29 @@ pub enum VenueKind {
     /// Uniswap's SwapRouter02. A call, not an order: nothing is left to be
     /// filled later.
     SwapRouter02,
+    /// `CallRulesDecoder`: calls the account makes itself at one contract,
+    /// each argument word held to a rule the owner wrote.
+    CallRules,
 }
 
 impl VenueKind {
+    /// What the agent does at this kind of venue, for the row that says what
+    /// the owner's allowance to the venue's spender is for.
+    fn noun(self) -> &'static str {
+        match self {
+            VenueKind::CowSwap | VenueKind::OneInchLimitOrder => "orders",
+            VenueKind::SwapRouter02 => "swaps",
+            VenueKind::CallRules => "calls",
+        }
+    }
+
     /// What an agent could do at the venue's own contract, past the decoder:
     /// why a mandate that names that contract as a target is refused.
     fn past_its_terms(self) -> &'static str {
         match self {
             VenueKind::CowSwap | VenueKind::OneInchLimitOrder => "where it could sign any order",
             VenueKind::SwapRouter02 => "where it could swap at any price and send what it buys to anyone",
+            VenueKind::CallRules => "where it could make any call, past the rule for each argument",
         }
     }
 }
@@ -251,7 +265,7 @@ struct Builder<'a> {
     warnings: Vec<String>,
     /// What the mandates installed in this operation sell at a venue:
     /// `(token, the venue's spender, the token's budget, the venue's name)`.
-    sold: Vec<(Address, Address, U256, String)>,
+    sold: Vec<(Address, Address, U256, String, &'static str)>,
     /// Every ERC-20 `approve` of this operation: `(token, spender, amount)`.
     approvals: Vec<(Address, Address, U256)>,
 }
@@ -417,7 +431,7 @@ fn open_with(
     // one budget at most. A laptop that put another spender there would get a
     // budget of the token outright.
     for (token, who, amount) in &b.approvals {
-        let venues: Vec<&(Address, Address, U256, String)> = b.sold.iter().filter(|v| v.0 == *token).collect();
+        let venues: Vec<&(Address, Address, U256, String, &'static str)> = b.sold.iter().filter(|v| v.0 == *token).collect();
         if venues.is_empty() {
             continue;
         }
@@ -1292,6 +1306,139 @@ pub fn swap_terms(config: &[u8]) -> Result<SwapTerms, String> {
     Ok(SwapTerms { pairs })
 }
 
+/// The terms of a `CallRulesDecoder` config: the functions the agent may
+/// call at the venue, and the rule for each argument word of each.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RulesTerms {
+    pub functions: Vec<crate::kernel::RuledFunction>,
+}
+
+/// Reads a `CallRulesDecoder` config, or says what is wrong with it, under
+/// the same rule as `cow_terms`: only bytes that are the one canonical
+/// encoding of what it returns, and only a config the decoder's own
+/// `checkConfig` allows as far as bytes can show (it also asks for code at
+/// each charged token, which the phone cannot see: the laptop asks the
+/// chain).
+pub fn rules_terms(config: &[u8]) -> Result<RulesTerms, String> {
+    use crate::kernel::WordRule;
+    type Config = (Vec<(FixedBytes<4>, Vec<(U256, U256)>)>,);
+    let (raw,) = Config::abi_decode_validate(config).map_err(|e| format!("does not decode: {e}"))?;
+    if (raw.clone(),).abi_encode() != config {
+        return Err("is not canonical".into());
+    }
+    if raw.is_empty() || raw.len() > 8 {
+        return Err("has no function, or too many".into());
+    }
+    let mut functions = Vec::with_capacity(raw.len());
+    for (j, (selector, words)) in raw.iter().enumerate() {
+        if raw[..j].iter().any(|f| f.0 == *selector) {
+            return Err("lists a function twice".into());
+        }
+        if words.len() > 16 {
+            return Err("has a function with too many argument words".into());
+        }
+        let mut rules = Vec::with_capacity(words.len());
+        let mut charged = false;
+        for (kind, value) in words {
+            // the kind is a `uint8` to the decoder: a word above four is a kind it does not know
+            let kind = u8::try_from(*kind).unwrap_or(u8::MAX);
+            rules.push(match (kind, value.is_zero()) {
+                (0, true) => WordRule::IsAccount,
+                (1, _) => WordRule::IsValue(*value),
+                (2, _) => WordRule::AtMost(*value),
+                // one charged word, in a token: an address, and not the zero one
+                (3, false) if !charged && value.bit_len() <= 160 => {
+                    charged = true;
+                    WordRule::Charged(Address::from_word(B256::from(*value)))
+                }
+                (4, true) => WordRule::Any,
+                _ => return Err("has a rule this build does not read, a value where none belongs, or two charged words".into()),
+            });
+        }
+        functions.push((*selector, rules));
+    }
+    Ok(RulesTerms { functions })
+}
+
+/// A value word as the owner reads it: a small number in decimal, an
+/// address in full with the build's name for it, anything wider as the
+/// whole word.
+fn word_shown(b: &Builder<'_>, v: U256) -> String {
+    if v.bit_len() <= 64 {
+        v.to_string()
+    } else if v.bit_len() <= 160 {
+        b.name(Address::from_word(B256::from(v)))
+    } else {
+        format!("{:#066x}", v)
+    }
+}
+
+/// The rows of a venue of rules (`CallRulesDecoder`): each function the
+/// agent may call there, and every argument word with its rule. A word the
+/// agent may choose is shown in bold and counted as a warning. A charged
+/// word's token is one the mandate limits and lists no payees for, as at
+/// every venue: the policy charges no other.
+fn rules_rows(
+    b: &mut Builder<'_>,
+    s: usize,
+    venue: &Venue,
+    decoder: &Address,
+    terms: &RulesTerms,
+    capped: &[(Address, U256)],
+    listed: &[Address],
+) -> Result<(), String> {
+    use crate::kernel::WordRule;
+    b.row(s, "Calls at", format!("{} (decoder {} verified in this build)", venue.name, decoder.to_checksum(None)));
+    b.row(s, "A call is", "made by the account itself, at once: only the functions below, with every argument as stated, and no native value");
+    let (mut charges, mut free) = (false, false);
+    for (selector, words) in &terms.functions {
+        let arguments = match words.len() {
+            0 => "no arguments".to_string(),
+            1 => "1 argument".to_string(),
+            n => format!("{n} arguments"),
+        };
+        b.row(s, "May call", format!("{} with {arguments}", selector_name(selector.0)));
+        for (i, rule) in words.iter().enumerate() {
+            let label = format!("Argument {}", i.saturating_add(1));
+            match rule {
+                WordRule::IsAccount => b.row(s, label, "this account"),
+                WordRule::IsValue(v) => {
+                    let shown = word_shown(b, *v);
+                    b.row(s, label, format!("exactly {shown}"));
+                }
+                WordRule::AtMost(v) => b.row(s, label, format!("at most {v}")),
+                WordRule::Charged(token) => {
+                    let Some((_, budget)) = capped.iter().find(|c| c.0 == *token) else {
+                        return Err(format!("the config for {} charges a token this mandate does not limit; refused", venue.name));
+                    };
+                    if listed.contains(token) {
+                        return Err(format!(
+                            "the config for {} charges a token whose payees this mandate lists; what is charged goes to the venue; refused",
+                            venue.name
+                        ));
+                    }
+                    b.sold.push((*token, venue.spender, *budget, venue.name.clone(), venue.kind.noun()));
+                    charges = true;
+                    let token = b.name(*token);
+                    b.row(s, label, format!("an amount of {token}, charged to its budget"));
+                }
+                WordRule::Any => {
+                    free = true;
+                    b.bold(s, label, "anything — the agent picks it");
+                }
+            }
+        }
+    }
+    if free {
+        b.warnings.push(format!("the agent picks some arguments of its calls at {}", venue.name));
+    }
+    if charges {
+        b.row(s, "A call is charged", "to the budget when it is sent, whether it goes through or not; the charge is not given back, it returns when budgets renew");
+        b.row(s, "Tokens are taken by", b.name(venue.spender));
+    }
+    Ok(())
+}
+
 /// What every decoder's `checkConfig` asks of the pairs, and of the orders'
 /// lifetime where the venue has orders (`None` for a venue of calls).
 fn check_pairs(max_life: Option<u32>, pairs: &[(Address, Address, U256, U256)]) -> Result<(), String> {
@@ -1351,6 +1498,12 @@ fn venue_rows(
             }
             // a swap is made at once: no lifetime
             VenueKind::SwapRouter02 => (None, None, swap_terms(config).map_err(refused)?.pairs),
+            // no pairs and no prices: functions and their arguments, in rows of their own
+            VenueKind::CallRules => {
+                let terms = rules_terms(config).map_err(refused)?;
+                rules_rows(b, s, &venue, decoder, &terms, capped, listed)?;
+                continue;
+            }
         };
         b.row(s, "Trading on", format!("{} (decoder {} verified in this build)", venue.name, decoder.to_checksum(None)));
         b.row(s, "Proceeds go to", "this account only");
@@ -1360,7 +1513,7 @@ fn venue_rows(
             let Some((_, budget)) = capped.iter().find(|c| c.0 == *sell) else {
                 return Err(format!("the config for {} sells a token this mandate does not limit; refused", venue.name));
             };
-            b.sold.push((*sell, venue.spender, *budget, venue.name.clone()));
+            b.sold.push((*sell, venue.spender, *budget, venue.name.clone(), venue.kind.noun()));
             if listed.contains(sell) {
                 return Err(format!("the config for {} sells a token whose payees this mandate lists; what is sold goes to whoever fills the order; refused", venue.name));
             }
@@ -1472,7 +1625,7 @@ fn external_call(
                     let text = if raw.is_zero() {
                         format!("{} — taken back", b.name(who))
                     } else {
-                        format!("{} may take {amount} for orders at {}: at most one budget of this token", b.name(who), v.3)
+                        format!("{} may take {amount} for {} at {}: at most one budget of this token", b.name(who), v.4, v.3)
                     };
                     b.row(s, "Allowance to the venue", text)
                 }
@@ -2144,6 +2297,243 @@ mod tests {
         // a build that does not know the decoder
         let r = open_trading(&trading_params(), &swap_venue(&swaps()), vec![swaps()], &two_venue_facts());
         assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("not one this build knows")), "{}", r.text());
+    }
+
+    const POOL_DECODER: Address = address!("9a0000000000000000000000000000000000009a");
+    const POOL: Address = address!("9b0000000000000000000000000000000000009b");
+    const POOL_CODE: B256 = B256::repeat_byte(0x9a);
+    const SUPPLY: [u8; 4] = [0x61, 0x7b, 0xa0, 0x37];
+    const WITHDRAW: [u8; 4] = [0x69, 0x32, 0x8d, 0xec];
+
+    /// The facts with a fourth venue: calls at a lending pool, which is the
+    /// venue's contract and the spender at once.
+    fn four_venue_facts() -> Facts {
+        let mut f = three_venue_facts();
+        f.names.insert(POOL, "Aave V3 pool".into());
+        f.venues.insert(
+            POOL_DECODER,
+            Venue { name: "Aave V3 pool".into(), kind: VenueKind::CallRules, code_hash: POOL_CODE, place: POOL, spender: POOL },
+        );
+        f
+    }
+
+    fn word(a: Address) -> U256 {
+        U256::from_be_slice(a.as_slice())
+    }
+
+    /// A supply of the dollar token for the account, charged, with no
+    /// referral; and nothing else.
+    fn supply_only() -> Bytes {
+        use kernel::WordRule::*;
+        kernel::call_rules_config(&[(FixedBytes::from(SUPPLY), vec![IsValue(word(USD)), Charged(USD), IsAccount, IsValue(U256::ZERO)])])
+    }
+
+    /// The supply, and a withdrawal of the dollar token to the account, of any amount.
+    fn pool_rules() -> Bytes {
+        use kernel::WordRule::*;
+        kernel::call_rules_config(&[
+            (FixedBytes::from(SUPPLY), vec![IsValue(word(USD)), Charged(USD), IsAccount, IsValue(U256::ZERO)]),
+            (FixedBytes::from(WITHDRAW), vec![IsValue(word(USD)), Any, IsAccount]),
+        ])
+    }
+
+    fn rules_venue(config: &Bytes) -> kernel::Trading {
+        kernel::Trading { period: 86_400, venues: vec![(POOL_DECODER, POOL_CODE, alloy_primitives::keccak256(config))], ids: vec![] }
+    }
+
+    /// A mandate with a venue of rules (issue #80): every function the agent
+    /// may call there, and every argument with its rule. An argument the
+    /// agent may choose is in bold and makes the verdict one with warnings.
+    #[test]
+    fn a_rules_mandate_is_shown_function_by_function() {
+        let f = four_venue_facts();
+        let usd = format!("{} — USDC (verified in this build)", USD.to_checksum(None));
+        // every argument held: nothing for the agent to pick, no warning
+        let r = open_trading(&trading_params(), &rules_venue(&supply_only()), vec![supply_only()], &f);
+        let t = r.text();
+        assert_eq!(r.verdict, Verdict::Sign, "{t}");
+        assert!(t.contains(&format!("Calls at: Aave V3 pool (decoder {} verified in this build)", POOL_DECODER.to_checksum(None))), "{t}");
+        assert!(t.contains("A call is: made by the account itself, at once: only the functions below, with every argument as stated, and no native value"), "{t}");
+        assert!(t.contains("May call: 0x617ba037 with 4 arguments"), "{t}");
+        assert!(t.contains(&format!("Argument 1: exactly {usd}")), "{t}");
+        assert!(t.contains(&format!("Argument 2: an amount of {usd}, charged to its budget")), "{t}");
+        assert!(t.contains("Argument 3: this account"), "{t}");
+        assert!(t.contains("Argument 4: exactly 0"), "{t}");
+        assert!(t.contains("A call is charged: to the budget when it is sent, whether it goes through or not"), "{t}");
+        assert!(t.contains(&format!("Tokens are taken by: {} — Aave V3 pool (verified in this build)", POOL.to_checksum(None))), "{t}");
+        // what belongs to pairs and orders is not said of calls
+        for of_trading in ["Trading on", "May sell", "Price:", "Proceeds go to", "Orders live", "An order is charged", "A swap is"] {
+            assert!(!t.contains(of_trading), "{of_trading}: {t}");
+        }
+
+        // with a withdrawal of any amount: the free argument is in bold, and the verdict warns of it
+        let r = open_trading(&trading_params(), &rules_venue(&pool_rules()), vec![pool_rules()], &f);
+        let t = r.text();
+        assert!(
+            matches!(r.verdict, Verdict::SignWithWarnings(ref w) if w.iter().any(|w| w == "the agent picks some arguments of its calls at Aave V3 pool")),
+            "{:?} {t}",
+            r.verdict
+        );
+        assert!(t.contains("May call: 0x69328dec with 3 arguments"), "{t}");
+        assert!(t.contains("! Argument 2: anything — the agent picks it"), "{t}");
+        assert_eq!(t.matches("this account").count(), 2, "{t}");
+
+        // each way a word is shown, and a function without arguments
+        use kernel::WordRule::*;
+        let wide = U256::from_be_bytes([0xab; 32]);
+        let shapes = kernel::call_rules_config(&[
+            (FixedBytes::from([1, 2, 3, 4]), vec![]),
+            (FixedBytes::from([5, 6, 7, 8]), vec![AtMost(U256::from(100u8)), IsValue(wide), IsValue(word(POOL)), IsValue(U256::from(u64::MAX))]),
+            (FixedBytes::from([9, 9, 9, 9]), vec![IsAccount]),
+        ]);
+        let r = open_trading(&trading_params(), &rules_venue(&shapes), vec![shapes.clone()], &f);
+        let t = r.text();
+        assert_eq!(r.verdict, Verdict::Sign, "{t}");
+        assert!(t.contains("May call: 0x01020304 with no arguments"), "{t}");
+        assert!(t.contains("May call: 0x09090909 with 1 argument\n"), "{t}");
+        assert!(t.contains("Argument 1: at most 100"), "{t}");
+        assert!(t.contains(&format!("Argument 2: exactly 0x{}", "ab".repeat(32))), "{t}");
+        assert!(t.contains(&format!("Argument 3: exactly {} — Aave V3 pool (verified in this build)", POOL.to_checksum(None))), "{t}");
+        assert!(t.contains(&format!("Argument 4: exactly {}", u64::MAX)), "{t}");
+        // nothing is charged there: no charge row, no spender row
+        assert!(!t.contains("A call is charged") && !t.contains("Tokens are taken by"), "{t}");
+
+        // a charge in a token the mandate does not limit, and in one whose payees it lists
+        let in_weth = kernel::call_rules_config(&[(FixedBytes::from(SUPPLY), vec![IsValue(word(WETH)), Charged(WETH), IsAccount, IsValue(U256::ZERO)])]);
+        let r = open_trading(&trading_params(), &rules_venue(&in_weth), vec![in_weth.clone()], &f);
+        assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("charges a token this mandate does not limit")), "{}", r.text());
+        let mut with_payees = trading_params();
+        with_payees.payees = vec![(USD, vec![Address::repeat_byte(0x77)])];
+        let r = open_trading(&with_payees, &rules_venue(&supply_only()), vec![supply_only()], &f);
+        assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("charges a token whose payees this mandate lists")), "{}", r.text());
+
+        // another venue's config under the rules decoder, and a rules config under another's: none reads
+        for (trading, sent) in [
+            (rules_venue(&cow()), cow()),
+            (rules_venue(&swaps()), swaps()),
+            (swap_venue(&pool_rules()), pool_rules()),
+            (one_venue(&pool_rules()), pool_rules()),
+        ] {
+            let r = open_trading(&trading_params(), &trading, vec![sent], &f);
+            assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("the config for")), "{}", r.text());
+        }
+        // the pool among the mandate's targets: the agent could call it past the rules
+        let mut reaches = trading_params();
+        reaches.targets.push(POOL);
+        reaches.selectors.push(FixedBytes::from(SUPPLY));
+        let r = open_trading(&reaches, &rules_venue(&supply_only()), vec![supply_only()], &f);
+        assert!(
+            matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("Aave V3 pool's own contract, where it could make any call, past the rule for each argument")),
+            "{:?}",
+            r.verdict
+        );
+        // a build that does not know the decoder
+        let r = open_trading(&trading_params(), &rules_venue(&supply_only()), vec![supply_only()], &three_venue_facts());
+        assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("not one this build knows")), "{}", r.text());
+    }
+
+    /// The owner's allowance that goes with a mandate of calls or of swaps is
+    /// held to the mandate like an order venue's: only to the venue's
+    /// spender, one budget at most, and named for what it is for.
+    #[test]
+    fn the_allowance_of_a_venue_of_calls_or_swaps_goes_to_its_spender() {
+        let (p, f) = (trading_params(), four_venue_facts());
+        let show = |trading: &kernel::Trading, config: &Bytes, spender: Address, amount: u64| {
+            let perm = FixedBytes::from([0x74, 0x72, 0x61, 0x64]);
+            let pdata = kernel::permission_data_with_trading(POLICY, &p, trading, SIGNER, &key(2));
+            let mut approve = SELECTOR_ERC20_APPROVE.to_vec();
+            approve.extend_from_slice(&[0u8; 12]);
+            approve.extend_from_slice(spender.as_slice());
+            approve.extend_from_slice(&U256::from(amount).to_be_bytes::<32>());
+            let mut o = op(kernel::execute_batch_calldata(vec![
+                (ACCOUNT, U256::ZERO, kernel::install_permission_calldata(perm, pdata, 1)),
+                (ACCOUNT, U256::ZERO, kernel::grant_execute_calldata(perm)),
+                (USD, U256::ZERO, approve.into()),
+            ]));
+            o.gas_fees = kernel::pack_gas(1, 1);
+            let bytes = SignRequest::new(&o, ENTRY, 31337, NOW + 120, None, BTreeMap::new(), None)
+                .with_venue_configs(vec![config.clone()])
+                .to_bytes();
+            open_request(&bytes, &commitment(&bytes), NOW, &enrolled(), &f)
+        };
+        // a venue of rules that charges the dollar token: the pool takes it
+        let r = show(&rules_venue(&supply_only()), &supply_only(), POOL, 1_000_000_000);
+        let t = r.text();
+        assert_eq!(r.verdict, Verdict::Sign, "{t}");
+        assert!(t.contains("Aave V3 pool (verified in this build) may take 1000 USDC for calls at Aave V3 pool: at most one budget"), "{t}");
+        assert!(!t.contains("ERC-20 approve"), "{t}");
+        // to anyone else, or more than a budget: refused
+        let r = show(&rules_venue(&supply_only()), &supply_only(), SWAP_ROUTER, 1);
+        assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("not the venue's spender")), "{:?}", r.verdict);
+        let r = show(&rules_venue(&supply_only()), &supply_only(), POOL, 1_000_000_001);
+        assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("more than the token's budget")), "{:?}", r.verdict);
+        // a venue of swaps: the router takes it, for swaps
+        let r = show(&swap_venue(&swaps()), &swaps(), SWAP_ROUTER, 1_000_000_000);
+        let t = r.text();
+        assert_eq!(r.verdict, Verdict::Sign, "{t}");
+        assert!(t.contains("Uniswap router (verified in this build) may take 1000 USDC for swaps at Uniswap: at most one budget"), "{t}");
+        let r = show(&swap_venue(&swaps()), &swaps(), POOL, 1);
+        assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("not the venue's spender")), "{:?}", r.verdict);
+        // a function that charges nothing asks for no allowance: an approval beside it is the bold row, as for any token
+        use kernel::WordRule::*;
+        let free = kernel::call_rules_config(&[(FixedBytes::from(WITHDRAW), vec![IsValue(word(USD)), AtMost(U256::from(5u8)), IsAccount])]);
+        let r = show(&rules_venue(&free), &free, POOL, 7);
+        assert!(r.text().contains("ERC-20 approve"), "{}", r.text());
+    }
+
+    /// `rules_terms` reads what `CallRulesDecoder.checkConfig` allows, in its
+    /// one canonical encoding, and nothing else.
+    #[test]
+    fn rules_terms_are_read_canonically_or_not_at_all() {
+        use alloy_sol_types::SolValue;
+        use kernel::WordRule::*;
+        let supply = (FixedBytes::from(SUPPLY), vec![IsValue(word(USD)), Charged(USD), IsAccount, IsValue(U256::ZERO)]);
+        let good = kernel::call_rules_config(std::slice::from_ref(&supply));
+        assert_eq!(rules_terms(&good), Ok(RulesTerms { functions: vec![supply.clone()] }));
+        // the decoder's own encoding, written by hand: a kind and a value for each word
+        let raw = |functions: Vec<(FixedBytes<4>, Vec<(U256, U256)>)>| (functions,).abi_encode();
+        let by_hand = raw(vec![(
+            FixedBytes::from(SUPPLY),
+            vec![(U256::from(1u8), word(USD)), (U256::from(3u8), word(USD)), (U256::ZERO, U256::ZERO), (U256::from(1u8), U256::ZERO)],
+        )]);
+        assert_eq!(by_hand, good.to_vec());
+        // no function, nine functions; eight pass
+        assert!(rules_terms(&kernel::call_rules_config(&[])).is_err());
+        let many: Vec<kernel::RuledFunction> = (0u8..9).map(|i| (FixedBytes::from([i, 0, 0, 1]), vec![])).collect();
+        assert!(rules_terms(&kernel::call_rules_config(&many)).is_err());
+        assert!(rules_terms(&kernel::call_rules_config(&many[..8])).is_ok());
+        // a function twice
+        assert!(rules_terms(&kernel::call_rules_config(&[supply.clone(), supply.clone()])).is_err());
+        // seventeen words; sixteen pass
+        assert!(rules_terms(&kernel::call_rules_config(&[(FixedBytes::from(SUPPLY), vec![Any; 17])])).is_err());
+        assert!(rules_terms(&kernel::call_rules_config(&[(FixedBytes::from(SUPPLY), vec![Any; 16])])).is_ok());
+        // two charged words
+        assert!(rules_terms(&kernel::call_rules_config(&[(FixedBytes::from(SUPPLY), vec![Charged(USD), Charged(USD)])])).is_err());
+        // what only the raw bytes can say: a kind the decoder does not know, a value where
+        // none belongs, a charge in no token and in a word wider than an address
+        let one = |kind: u64, value: U256| raw(vec![(FixedBytes::from(SUPPLY), vec![(U256::from(kind), value)])]);
+        for (kind, value) in [
+            (5, U256::ZERO),
+            (255, U256::ZERO),
+            (256, U256::ZERO),
+            (0, U256::from(1u8)),
+            (4, U256::from(1u8)),
+            (3, U256::ZERO),
+            (3, word(USD) | (U256::from(1u8) << 160usize)),
+        ] {
+            assert!(rules_terms(&one(kind, value)).is_err(), "kind {kind}, value {value}");
+        }
+        // the same words within the rules read
+        for (kind, value) in [(0, U256::ZERO), (1, U256::MAX), (2, U256::MAX), (3, word(USD)), (4, U256::ZERO)] {
+            assert!(rules_terms(&one(kind, value)).is_ok(), "kind {kind}, value {value}");
+        }
+        // bytes after the config, a byte less, and the other venues' encodings
+        assert!(rules_terms(&[good.as_ref(), &[0u8; 32][..]].concat()).is_err());
+        assert!(rules_terms(&good[..good.len().saturating_sub(1)]).is_err());
+        let pair = (USD, WETH, U256::from(3u8), U256::from(1u8));
+        assert!(rules_terms(&kernel::swap_config(&[pair])).is_err());
+        assert!(rules_terms(&kernel::one_inch_config(1800, &[pair])).is_err());
+        assert!(swap_terms(&good).is_err() && one_inch_terms(&good).is_err() && cow_terms(&good).is_err());
     }
 
     /// `swap_terms` reads what `SwapRouter02Decoder.checkConfig` allows, in

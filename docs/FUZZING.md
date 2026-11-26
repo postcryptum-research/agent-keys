@@ -406,6 +406,42 @@ source one at a time, and each is found by a test, on the first run:
 - **the constructor and the rest:** code at the venue and at the spender,
   which is which, `untouched`.
 
+**The CLI calls, and the phone reads the rules as the decoder does.** Two
+of the CLI's local-chain tests run the policy and the decoder built from
+these sources, with the stand-in pool:
+
+- `calls_with_rules_under_a_mandate`: the owner installs a mandate with a
+  venue of rules and the pool's allowance; `order call` registers a call
+  and makes it in one operation; a supply for the account is made and
+  charged, a withdrawal to it is charged nothing; the same for somebody
+  else, an unlisted function, a referral code, a word more, over the cap
+  and past the budget go nowhere; the pool's call without its registration
+  is refused.
+- `the_phone_reads_a_rules_config_as_the_decoder_does`: 400 configs from a
+  seed, well-formed and damaged, are put to the phone's reader
+  (`rules_terms`) and to the decoder: 134 are accepted by both, 19 by the
+  decoder only, 247 by neither. For each one both accept, a call built to
+  pass every rule the phone read passes, with the token and the amount the
+  phone read as charged; the same call with one held word changed, a word
+  more or a word less does not; a function the phone did not read is not
+  called.
+
+```sh
+cd signer
+cargo test -p agent-signer --features insecure-software-keys --test anvil_cli rules -- --nocapture
+```
+
+One config's bytes and one call's hash are recorded on both sides
+(`test_rules_theRecordedConfig`, `a_rules_config_is_the_decoders`), from
+constants computed with `cast`.
+
+Twenty-six parts of the Rust side were broken one at a time (the kinds'
+numbers and the config's shape; each rule of the phone's reader; that a
+charged token is one the mandate limits, without a payee list, and tied to
+the venue's allowance; a free word in bold and as a warning; how a word is
+shown; which reader a venue of rules gets; what the allowance row says it
+is for), and each is found by the core's tests.
+
 **What it does not cover.** The decoder reads words and not the protocol:
 that a rule list is the right one for a function is the owner's reading of
 that protocol, and each recipe in `docs/DAPPS.md` is held by a test of its

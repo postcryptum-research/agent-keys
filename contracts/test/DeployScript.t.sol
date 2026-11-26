@@ -22,10 +22,21 @@ contract DeployScriptTest is Test {
         assertEq(base, "p256Validator");
         assertEq(n, 12);
         // Negative: no number, a leading zero, no name, no `V`, a current key
-        string[7] memory not_ = ["agentPolicyV", "agentPolicyV08", "V1", "agentPolicy8", "p256Validator", "solc", "evmVersion"];
+        string[7] memory not_ =
+            ["agentPolicyV", "agentPolicyV08", "V1", "agentPolicy8", "p256Validator", "solc", "evmVersion"];
         for (uint256 i; i < not_.length; i++) {
             (v,,) = script.versionOf(not_[i]);
             assertFalse(v, not_[i]);
+        }
+    }
+
+    /// A decoder of rules has a key of its own, which a rewrite of the file keeps.
+    function test_aRulesKeyIsReadAsSuch() public view {
+        assertTrue(script.isRulesKey("callRulesAaveV3Pool"));
+        assertTrue(script.isRulesKey("callRulesX"));
+        string[6] memory not_ = ["callRules", "callRule", "CallRulesAave", "cowSwapDecoder", "swapRouter02Decoder", ""];
+        for (uint256 i; i < not_.length; i++) {
+            assertFalse(script.isRulesKey(not_[i]), not_[i]);
         }
     }
 

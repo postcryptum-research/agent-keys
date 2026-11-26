@@ -190,7 +190,9 @@ contract Deploy is Script {
 
     /// @dev Keeps every superseded version the file records (`<name>V<n>`):
     /// live permissions and accounts installed with them keep pointing there
-    /// until the owner moves them.
+    /// until the owner moves them. And every decoder of rules (`callRules…`):
+    /// there is one a contract, deployed by `DeployCallRules.s.sol` and
+    /// recorded under a key of its own, which this script does not deploy.
     /// @param json The serialization key of the file being written.
     /// @param recorded The file as it was, or "".
     function _keepSuperseded(string memory json, string memory recorded) internal {
@@ -198,7 +200,7 @@ contract Deploy is Script {
         string[] memory keys = vm.parseJsonKeys(recorded, "$");
         for (uint256 i; i < keys.length; i++) {
             (bool versioned,,) = versionOf(keys[i]);
-            if (versioned) {
+            if (versioned || isRulesKey(keys[i])) {
                 vm.serializeAddress(json, keys[i], vm.parseJsonAddress(recorded, string.concat(".", keys[i])));
             }
         }
@@ -232,6 +234,20 @@ contract Deploy is Script {
             if (versioned && keccak256(bytes(base)) == keccak256(bytes(name)) && n > highest) highest = n;
         }
         return string.concat(name, "V", vm.toString(highest + 1));
+    }
+
+    /// @dev Whether `key` records a decoder of rules: `callRules` and a name
+    /// after it (`callRulesAaveV3Pool`).
+    /// @param key A key of the deployments file.
+    /// @return True for `callRules<Name>`.
+    function isRulesKey(string memory key) public pure returns (bool) {
+        bytes memory k = bytes(key);
+        bytes memory prefix = bytes("callRules");
+        if (k.length <= prefix.length) return false;
+        for (uint256 i; i < prefix.length; i++) {
+            if (k[i] != prefix[i]) return false;
+        }
+        return true;
     }
 
     /// @dev Whether `key` is a superseded version, `<name>V<n>`: a name of at

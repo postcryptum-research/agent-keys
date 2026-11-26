@@ -191,6 +191,49 @@ pub fn swap_config(pairs: &[(Address, Address, U256, U256)]) -> Bytes {
     (pairs.to_vec(),).abi_encode().into()
 }
 
+/// The rule for one argument word of a call, as `CallRulesDecoder` reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WordRule {
+    /// The word is the address of the account that makes the call.
+    IsAccount,
+    /// The word is exactly this value.
+    IsValue(U256),
+    /// The word, as an unsigned number, is at most this bound.
+    AtMost(U256),
+    /// The word is an amount, charged in this token.
+    Charged(Address),
+    /// The word is the agent's to choose.
+    Any,
+}
+
+impl WordRule {
+    /// The decoder's `(kind, value)` for the rule. The kind is a `uint8`
+    /// there, one word like any other: a number here.
+    pub fn encode(&self) -> (U256, U256) {
+        let (kind, value) = match self {
+            WordRule::IsAccount => (0u8, U256::ZERO),
+            WordRule::IsValue(v) => (1, *v),
+            WordRule::AtMost(v) => (2, *v),
+            WordRule::Charged(token) => (3, U256::from_be_slice(token.as_slice())),
+            WordRule::Any => (4, U256::ZERO),
+        };
+        (U256::from(kind), value)
+    }
+}
+
+/// A function the agent may call at a venue of rules: its selector and the
+/// rule for each of its argument words, in order.
+pub type RuledFunction = (FixedBytes<4>, Vec<WordRule>);
+
+/// A venue of rules' config, as `CallRulesDecoder` reads it:
+/// `abi.encode(((bytes4 selector, (uint8 kind, uint256 value)[] words)[]
+/// functions))`: a struct of one list.
+pub fn call_rules_config(functions: &[RuledFunction]) -> Bytes {
+    let raw: Vec<(FixedBytes<4>, Vec<(U256, U256)>)> =
+        functions.iter().map(|(selector, words)| (*selector, words.iter().map(WordRule::encode).collect())).collect();
+    (raw,).abi_encode().into()
+}
+
 /// Kernel's `PermissionEnableDataFormat`: `abi.encode(bytes[] entries)` where
 /// each entry is `flag(2) ‖ module(20) ‖ initData`; policies first, signer last.
 /// The numeric policy fields are encoded as full words, which is byte-identical
@@ -888,6 +931,34 @@ mod tests {
         let wide = SwapOrder { fee: 0x0100_0000, ..swap.clone() };
         assert!(wide.encode().is_none() && wide.call(account).is_none() && wide.digest(account).is_none());
         assert!(SwapOrder { fee: 0x00ff_ffff, ..swap }.encode().is_some());
+    }
+
+    /// A venue of rules' config as `CallRulesDecoder` reads it, and the hash
+    /// of a call there, against the bytes the decoder's own test records
+    /// (`contracts/test/CallRules.t.sol`, `test_rules_theRecordedConfig`):
+    /// Aave's `supply` and `withdraw`, for one asset and the account.
+    #[test]
+    fn a_rules_config_is_the_decoders() {
+        use alloy_primitives::{hex, keccak256};
+        let asset = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let value = U256::from_be_slice(asset.as_slice());
+        let functions = [
+            (FixedBytes::from([0x61, 0x7b, 0xa0, 0x37]), vec![WordRule::IsValue(value), WordRule::Charged(asset), WordRule::IsAccount, WordRule::IsValue(U256::ZERO)]),
+            (FixedBytes::from([0x69, 0x32, 0x8d, 0xec]), vec![WordRule::IsValue(value), WordRule::Any, WordRule::IsAccount]),
+        ];
+        assert_eq!(
+            call_rules_config(&functions).as_ref(),
+            hex!("000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000001a0617ba03700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000001000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb480000000000000000000000000000000000000000000000000000000000000003000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000069328dec00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000030000000000000000000000000000000000000000000000000000000000000001000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb480000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000")
+        );
+        // the call's hash is of no value and the calldata as it is sent
+        let call = hex!("617ba037000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb480000000000000000000000000000000000000000000000000000000005f5e10000000000000000000000000011111111111111111111111111111111111111110000000000000000000000000000000000000000000000000000000000000000");
+        assert_eq!(keccak256((U256::ZERO, keccak256(call)).abi_encode()), b256!("607f2975b8dddb42774a6aedddf7168667808e32e98f70f542b9c8ff6405d295"));
+        // the five kinds, as the decoder numbers them
+        let kinds: Vec<U256> = [WordRule::IsAccount, WordRule::IsValue(U256::from(7u8)), WordRule::AtMost(U256::from(7u8)), WordRule::Charged(asset), WordRule::Any]
+            .iter()
+            .map(|r| r.encode().0)
+            .collect();
+        assert_eq!(kinds, (0u8..5).map(U256::from).collect::<Vec<_>>());
     }
 
 }
