@@ -334,12 +334,16 @@ path adds nothing to it.
    final (step 7a). Fixed in
    [#211](https://github.com/postcryptum-research/agent-keys/pull/211).
 2. **Sepolia's gas rules needed no change in the CLI** (step 1).
-3. **The phone refuses `WETH.deposit()` from the root key** (step 6). The
-   rule is right. Decoding `deposit()` and `withdraw(uint256)` on a token
-   the build knows as WETH would spare the owner the detour.
-4. **A review row to reword** (step 5): "Token payee: … anyone — the agent
-   picks the recipient and the spender" is shown for a token on which this
-   mandate lets the agent call nothing. It errs on the careful side.
+3. **The phone refused `WETH.deposit()` from the root key** (step 6). The
+   rule is right: a call the phone cannot decode is not signed. From core
+   0.3.4 the review reads `deposit()` and `withdraw(uint256)` on a token
+   the build knows as wrapped ether, and the detour is not needed
+   ([#216](https://github.com/postcryptum-research/agent-keys/pull/216)).
+4. **A review row reworded** (step 5): "Token payee: … anyone — the agent
+   picks the recipient and the spender" was shown for a token on which this
+   mandate lets the agent call nothing. It erred on the careful side. From
+   core 0.3.4 the row says "none" there
+   ([#216](https://github.com/postcryptum-research/agent-keys/pull/216)).
 5. **The app showed nothing visible when it could not reach the laptop's
    session:** the error was printed under the buttons. From app 0.4.4 a
    failure opens a dialog

@@ -48,6 +48,13 @@ const TOKENS: &[(u64, Address, &str, u8, B256)] = &[
 /// ERC-6909 id).
 const CURRENT_POLICY: Address = address!("530DD3C000b3939294072409834c4c4dd160BCd9");
 
+/// The tokens of `TOKENS` that wrap their chain's native currency: the review
+/// reads `deposit()` and `withdraw(uint256)` there only (issue #213).
+/// Sepolia's WETH is WETH9: its code holds both selectors, `0xd0e30db0` and
+/// `0x2e1a7d4d`, and a plain transfer to it wraps for the sender (read from
+/// the chain on 2026-11-26).
+const WRAPPED_NATIVE: &[(u64, Address)] = &[(11155111, address!("fFf9976782d46CC05630D1f6eBAb18b2324d6B14"))];
+
 /// `AgentPolicy` instances that enforce per-token payee lists (issue #66).
 /// An earlier instance decodes such a mandate and ignores the lists, so the
 /// review refuses to show payees for any module that is not here. The
@@ -195,6 +202,9 @@ fn from_deployments(json: &str, chain_id: u64, canonical: bool) -> Facts {
         for (_, token, symbol, decimals, domain) in TOKENS.iter().filter(|t| t.0 == chain_id) {
             f.names.insert(*token, symbol.to_string());
             f.tokens.insert(*token, Token { symbol: symbol.to_string(), decimals: *decimals, domain: *domain });
+            if WRAPPED_NATIVE.contains(&(chain_id, *token)) {
+                f.wrapped_native.push(*token);
+            }
         }
     }
     f
@@ -344,6 +354,9 @@ mod tests {
         assert_eq!(usdc.domain, domain);
         let weth = &f.tokens[&address!("fFf9976782d46CC05630D1f6eBAb18b2324d6B14")];
         assert_eq!((weth.symbol.as_str(), weth.decimals, weth.domain), ("WETH", 18, B256::ZERO));
+        // Sepolia's WETH is the chain's wrapped ether, and nothing else is; Base Sepolia has none
+        assert_eq!(f.wrapped_native, vec![address!("fFf9976782d46CC05630D1f6eBAb18b2324d6B14")]);
+        assert!(for_chain(84532).wrapped_native.is_empty());
     }
 
     /// The redeploys of 2026-11-25 and 2026-11-26 (the policy from
