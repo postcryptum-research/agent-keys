@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 
 use crate::abi::{IErc1271, IErc20Allowance};
 use crate::agent::{open_signer, Role, VenueEntry};
-use crate::chain::{Session, VenueOnChain};
+use crate::chain::{ask_again, Session, VenueOnChain, ASK_AGAIN, ASK_EVERY};
 use crate::kernel::{self, CowSellOrder};
 
 const ERC1271_MAGIC: [u8; 4] = [0x16, 0x26, 0xba, 0x7e];
@@ -166,12 +166,20 @@ impl Session {
         let inc = self.send_op(policy, U256::ZERO, call, false, sponsored, None).await?;
         eprintln!("registered:     tx {} (block {})", inc.tx, inc.block);
 
-        // 3. ask the account the way the venue will
-        let magic = IErc1271::new(self.account, self.provider.clone())
-            .isValidSignature(digest, signature.clone())
-            .call()
-            .await
-            .context("isValidSignature reverted")?;
+        // 3. ask the account the way the venue will; a refusal is asked again
+        // for a while, since the node that answers may not have the block yet
+        let erc1271 = IErc1271::new(self.account, self.provider.clone());
+        let magic = ask_again(
+            || {
+                let (erc1271, signature) = (&erc1271, signature.clone());
+                async move { erc1271.isValidSignature(digest, signature).call().await }
+            },
+            |answer| matches!(answer, Ok(m) if m.0 == ERC1271_MAGIC),
+            ASK_AGAIN,
+            ASK_EVERY,
+        )
+        .await
+        .context("isValidSignature reverted")?;
         if magic.0 != ERC1271_MAGIC {
             bail!("the account does not vouch for this order (isValidSignature = {magic}), although it is registered (tx {}) and charged to the budget: it comes back with `order reclaim` after its end ({valid_to})", inc.tx);
         }
