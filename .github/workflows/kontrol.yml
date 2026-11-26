@@ -1,6 +1,8 @@
 name: kontrol
-# The budget proofs of contracts/test/BudgetProof.t.sol under Kontrol (KEVM),
-# issue #130, and each rule of the policy broken alone to see its proof fail.
+# The budget proofs of contracts/test/BudgetProof.t.sol and the proofs of a
+# decoder's call of contracts/test/VenueCallProof.t.sol under Kontrol (KEVM),
+# issues #130 and #225, and each rule of the policy broken alone to see its
+# proof fail.
 # It takes about half an hour, so it does not run on every pull request: by
 # hand, once a week, and on a pull request that changes the policy, the
 # harness, the breaks, the compiler settings or this file.
@@ -11,7 +13,9 @@ on:
   pull_request:
     paths:
       - contracts/src/AgentPolicy.sol
+      - contracts/src/venues/VenueCalls.sol
       - contracts/test/BudgetProof.t.sol
+      - contracts/test/VenueCallProof.t.sol
       - scripts/kontrol-break.py
       - contracts/foundry.toml
       - .github/workflows/kontrol.yml
@@ -26,7 +30,8 @@ env:
 jobs:
   prove:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # eleven proofs took 34 to 55 minutes here with three workers; four more are in the run since #225
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,7 +45,7 @@ jobs:
           dir="$RUNNER_TEMP/proof"
           mkdir -p "$dir/test"
           cp -R contracts/src contracts/lib contracts/foundry.toml "$dir/"
-          cp contracts/test/BudgetProof.t.sol "$dir/test/"
+          cp contracts/test/BudgetProof.t.sol contracts/test/VenueCallProof.t.sol "$dir/test/"
           # the image runs as its own user, which must write out/ and kout/
           chmod -R a+rwX "$dir"
       - name: kontrol build and kontrol prove
@@ -50,7 +55,7 @@ jobs:
             -e KPROFILE_TELEMETRY_DISABLED=true \
             -v "$RUNNER_TEMP/proof:/home/user/workspace" -w /home/user/workspace \
             "$KONTROL_IMAGE" \
-            bash -c 'kontrol version && time kontrol build && time kontrol prove --match-test "BudgetProof.check_" --workers 3' \
+            bash -c 'kontrol version && time kontrol build && time kontrol prove --match-test "BudgetProof.check_" --match-test "VenueCallProof.check_" --workers 3' \
             2>&1 | tee "$RUNNER_TEMP/prove.log"
           # a proof none of whose paths reach its end proves nothing
           if grep -Eq '(^|[^0-9])[1-9][0-9]* vacuous' "$RUNNER_TEMP/prove.log"; then
@@ -94,9 +99,9 @@ jobs:
           dir="$RUNNER_TEMP/proof"
           mkdir -p "$dir/test"
           cp -R contracts/src contracts/lib contracts/foundry.toml "$dir/"
-          cp contracts/test/BudgetProof.t.sol "$dir/test/"
+          cp contracts/test/BudgetProof.t.sol contracts/test/VenueCallProof.t.sol "$dir/test/"
           proof="$(python3 scripts/kontrol-break.py "$BREAK" "$dir/src/AgentPolicy.sol")"
-          [[ "$proof" =~ ^check_[A-Za-z0-9_]+$ ]] || { echo "not a proof name: $proof"; exit 1; }
+          [[ "$proof" =~ ^[A-Za-z]+Proof\.check_[A-Za-z0-9_]+$ ]] || { echo "not a proof name: $proof"; exit 1; }
           git diff --no-index contracts/src/AgentPolicy.sol "$dir/src/AgentPolicy.sol" || true
           echo "proof=$proof" >> "$GITHUB_OUTPUT"
           chmod -R a+rwX "$dir"
@@ -111,7 +116,7 @@ jobs:
             -e KPROFILE_TELEMETRY_DISABLED=true -e PROOF \
             -v "$RUNNER_TEMP/proof:/home/user/workspace" -w /home/user/workspace \
             "$KONTROL_IMAGE" \
-            bash -c 'kontrol build && kontrol prove --match-test "BudgetProof.$PROOF"' \
+            bash -c 'kontrol build && kontrol prove --match-test "$PROOF"' \
             > "$RUNNER_TEMP/prove.log" 2>&1
           cat "$RUNNER_TEMP/prove.log"
           # failed with a failing node (a counterexample), not timed out or crashed
