@@ -213,6 +213,49 @@ pub struct VenueOnChain {
     pub domain: B256,
 }
 
+/// The calls of `op batch`, in the order they execute. Each `--allow
+/// <token>:<spender>:<amount>` opens the batch with `approve(spender,
+/// amount)` and closes it with `approve(spender, 0)`, the allowances closed
+/// in the reverse of the order they were opened in; the `--call
+/// <target>:<wei>:<calldata>` entries run between them, as given.
+pub fn batch_calls(calls: &[String], allowances: &[String]) -> Result<Vec<(Address, U256, Bytes)>> {
+    const APPROVE: [u8; 4] = [0x09, 0x5e, 0xa7, 0xb3];
+    let three = |entry: &str, what: &str| -> Result<(String, String, String)> {
+        let parts: Vec<&str> = entry.split(':').collect();
+        match parts.as_slice() {
+            [a, b, c] => Ok((a.trim().to_string(), b.trim().to_string(), c.trim().to_string())),
+            _ => bail!("`{entry}` is not {what}"),
+        }
+    };
+    let approve = |spender: Address, amount: U256| -> Bytes {
+        let mut data = APPROVE.to_vec();
+        data.extend_from_slice(B256::left_padding_from(spender.as_slice()).as_slice());
+        data.extend_from_slice(&amount.to_be_bytes::<32>());
+        data.into()
+    };
+    let mut opened = Vec::new();
+    for entry in allowances {
+        let (token, spender, amount) = three(entry, "<token>:<spender>:<amount>")?;
+        let token: Address = token.parse().with_context(|| format!("the token of --allow {entry}"))?;
+        let spender: Address = spender.parse().with_context(|| format!("the spender of --allow {entry}"))?;
+        let amount: U256 = amount.parse().with_context(|| format!("the amount of --allow {entry}"))?;
+        if amount.is_zero() {
+            bail!("--allow {entry}: an allowance of zero opens nothing");
+        }
+        opened.push((token, spender, amount));
+    }
+    let mut batch: Vec<(Address, U256, Bytes)> = opened.iter().map(|(token, spender, amount)| (*token, U256::ZERO, approve(*spender, *amount))).collect();
+    for entry in calls {
+        let (target, wei, data) = three(entry, "<target>:<wei>:<0x calldata>")?;
+        let target: Address = target.parse().with_context(|| format!("the target of --call {entry}"))?;
+        let wei: U256 = wei.parse().with_context(|| format!("the wei of --call {entry}"))?;
+        let data = hex::decode(data.trim_start_matches("0x")).with_context(|| format!("the calldata of --call {entry}"))?;
+        batch.push((target, wei, data.into()));
+    }
+    batch.extend(opened.iter().rev().map(|(token, spender, _)| (*token, U256::ZERO, approve(*spender, U256::ZERO))));
+    Ok(batch)
+}
+
 /// A public key as every command shows it: the fingerprint, then `x` and
 /// `y` in full on their own lines behind `indent`. Never cut: eight digits
 /// of `x` can be neither looked up nor told from another key's (issue #115).
@@ -549,6 +592,21 @@ impl Session {
         pinned: Option<U256>,
     ) -> Result<Included> {
         self.send_raw_at(kernel::execute_calldata(target, value, &data), SignAs::from_root(as_root), sponsored, pinned).await
+    }
+
+    /// Several calls as one `execute(batch)` operation: the mandate judges
+    /// each, and they execute together or not at all.
+    pub async fn send_batch(
+        &self,
+        calls: Vec<(Address, U256, Bytes)>,
+        as_root: bool,
+        sponsored: bool,
+        pinned: Option<U256>,
+    ) -> Result<Included> {
+        if calls.is_empty() {
+            bail!("a batch needs at least one call (--call or --allow)");
+        }
+        self.send_raw_at(kernel::execute_batch_calldata(calls), SignAs::from_root(as_root), sponsored, pinned).await
     }
 
     /// A Safe transaction (`execTransaction` calldata for `safe`) as the only
@@ -1832,6 +1890,53 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `op batch`: each allowance opens the batch and is taken back at its
+    /// end, in the reverse order; the calls run between, as given.
+    #[test]
+    fn a_batchs_allowances_wrap_its_calls() {
+        let (token, other) = ("0x00000000000000000000000000000000000000a1", "0x00000000000000000000000000000000000000a2");
+        let (pool, vault) = ("0x00000000000000000000000000000000000000b1", "0x00000000000000000000000000000000000000b2");
+        let approve = |spender: &str, amount: u64| -> Bytes {
+            let mut data = vec![0x09, 0x5e, 0xa7, 0xb3];
+            data.extend_from_slice(B256::left_padding_from(spender.parse::<Address>().unwrap().as_slice()).as_slice());
+            data.extend_from_slice(&U256::from(amount).to_be_bytes::<32>());
+            data.into()
+        };
+        let batch = batch_calls(
+            &[format!("{pool}:0:0xf7a73840"), format!("{vault}:7:0x")],
+            &[format!("{token}:{pool}:100"), format!("{other}:{vault}:5")],
+        )
+        .unwrap();
+        let at = |a: &str| a.parse::<Address>().unwrap();
+        assert_eq!(
+            batch,
+            vec![
+                (at(token), U256::ZERO, approve(pool, 100)),
+                (at(other), U256::ZERO, approve(vault, 5)),
+                (at(pool), U256::ZERO, Bytes::from(vec![0xf7, 0xa7, 0x38, 0x40])),
+                (at(vault), U256::from(7u8), Bytes::new()),
+                (at(other), U256::ZERO, approve(vault, 0)),
+                (at(token), U256::ZERO, approve(pool, 0)),
+            ]
+        );
+        // calls alone, and an allowance alone (opened and closed, nothing between)
+        assert_eq!(batch_calls(&[format!("{pool}:0:0x")], &[]).unwrap().len(), 1);
+        assert_eq!(batch_calls(&[], &[format!("{token}:{pool}:1")]).unwrap().len(), 2);
+        // what is not three parts, not an address, not a number, not hex; an allowance of zero
+        for (calls, allowances) in [
+            (vec![format!("{pool}:0x")], vec![]),
+            (vec![format!("{pool}:0:0x:1")], vec![]),
+            (vec!["0x12:0:0x".to_string()], vec![]),
+            (vec![format!("{pool}:much:0x")], vec![]),
+            (vec![format!("{pool}:0:0xzz")], vec![]),
+            (vec![], vec![format!("{token}:{pool}")]),
+            (vec![], vec![format!("{token}:{pool}:0")]),
+            (vec![], vec![format!("{token}:nobody:1")]),
+        ] {
+            assert!(batch_calls(&calls, &allowances).is_err(), "{calls:?} {allowances:?}");
+        }
+    }
 
     /// A read made right after an operation is asked again while it refuses:
     /// the answer that stands is returned as soon as it comes, a refusal that
