@@ -119,6 +119,7 @@ fn venue_key(kind: VenueKind) -> &'static str {
     match kind {
         VenueKind::CowSwap => "cowSwapDecoder",
         VenueKind::OneInchLimitOrder => "oneInchLimitOrderDecoder",
+        VenueKind::SwapRouter02 => "swapRouter02Decoder",
     }
 }
 
@@ -126,7 +127,7 @@ fn venue_key(kind: VenueKind) -> &'static str {
 fn place_name(kind: VenueKind, venue: &str) -> String {
     match kind {
         VenueKind::CowSwap => format!("{venue} settlement"),
-        VenueKind::OneInchLimitOrder => format!("{venue} router"),
+        VenueKind::OneInchLimitOrder | VenueKind::SwapRouter02 => format!("{venue} router"),
     }
 }
 

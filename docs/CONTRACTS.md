@@ -943,8 +943,10 @@ one operation and vouches for it to nobody.
 `contracts/src/venues/SwapRouter02Decoder.sol`. `IVenueDecoder` for one
 call: a swap of an exact amount through one Uniswap v3 pool, at Uniswap's
 SwapRouter02 (`exactInputSingle`, selector `0x04e45aaf`) [V source]. It
-judges a call, not an order. No chain has the decoder yet, and the CLI and
-the phone do not know it yet.
+judges a call, not an order. The CLI swaps there (`"kind": "uniswap"` in a
+config's `venues`, `order swap`), and the phone's core reads the venue's
+terms; no chain has the decoder yet, so no phone build names it
+([`docs/AGENT_CONFIG.md`](AGENT_CONFIG.md)).
 
 **State.** None: no storage, no upgrade path, no `delegatecall`, no
 `selfdestruct`. The router's address is kept as two immutables (`venue`,

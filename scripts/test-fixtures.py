@@ -48,6 +48,8 @@ CREATION = {
         "oneInchLimitOrderDecoderInitCode": "OneInchLimitOrderDecoder.sol/OneInchLimitOrderDecoder",
         "routerStandInInitCode": "OneInchLimitOrderDecoder.t.sol/RouterStandIn",
         "relayerInitCode": "Trading.t.sol/Relayer",
+        "swapRouter02DecoderInitCode": "SwapRouter02Decoder.sol/SwapRouter02Decoder",
+        "swapRouterStandInInitCode": "SwapRouter02.t.sol/SwapRouterStandIn",
     },
 }
 

@@ -198,6 +198,36 @@ enum OrderCmd {
         #[arg(long)]
         sponsored: bool,
     },
+    /// Swap at a router under the mandate (a venue of kind `uniswap`): one
+    /// operation that registers the swap and makes it. What is bought comes
+    /// to the account; it reverts if the pool pays less than --buy-amount.
+    Swap {
+        #[command(flatten)]
+        agent: AgentArgs,
+        /// The venue's decoder, when the config has several venues.
+        #[arg(long)]
+        venue: Option<Address>,
+        /// The token sold and the token bought.
+        #[arg(long)]
+        sell: Address,
+        #[arg(long)]
+        buy: Address,
+        /// Base units sold, exactly.
+        #[arg(long)]
+        sell_amount: String,
+        /// The least base units to receive for it: no lower than the
+        /// mandate's lowest price, and as close to the market as the agent
+        /// dares, since a pool pays what it pays down to this.
+        #[arg(long)]
+        buy_amount: String,
+        /// The fee tier of the pool to swap in, in hundredths of a basis
+        /// point: 500 is 0.05%, 3000 is 0.3%, 10000 is 1%.
+        #[arg(long, default_value_t = 3000)]
+        fee: u32,
+        /// Let the paymaster pay the gas.
+        #[arg(long)]
+        sponsored: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1770,6 +1800,15 @@ async fn run() -> Result<()> {
                 eprintln!("not sent to any order book: the order is live once one has it");
                 eprintln!("charged to the token's budget now, filled or not: an order's charge is not given back, it returns when the budget period turns");
                 println!("{}", placed.json());
+            }
+            OrderCmd::Swap { agent, venue, sell, buy, sell_amount, buy_amount, fee, sponsored } => {
+                let s = session(&agent).await?;
+                let sell_amount = sell_amount.parse::<U256>().context("--sell-amount")?;
+                let buy_amount = buy_amount.parse::<U256>().context("--buy-amount")?;
+                let swapped = s.order_swap(venue, sell, buy, sell_amount, buy_amount, fee, sponsored).await?;
+                eprintln!("swapped:        tx {} (block {})", swapped.tx, swapped.block);
+                eprintln!("charged to the token's budget: the amount sold; the charge returns when the budget period turns");
+                println!("{}", swapped.json());
             }
         },
         Cmd::Demo { agent, sponsored } => {

@@ -17,7 +17,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use crate::abi::{
     IDemoCounter, IEntryPoint, IKernel, IKernelFactory, IP256ValidatorView, ISafeNonceAssert, IWhitelistPaymaster,
 };
-use crate::agent::{open_signer, parse32, AgentConfig, Deployments, KeySpec, Role};
+use crate::agent::{open_signer, parse32, AgentConfig, Deployments, KeySpec, Role, VenueKind};
 use crate::bundler::Bundler;
 use crate::kernel::{self, PermissionId};
 
@@ -209,7 +209,8 @@ pub struct VenueOnChain {
     pub place: Address,
     /// Who takes the sell token (CoW: the vault relayer).
     pub spender: Address,
-    /// The EIP-712 domain the venue's orders are signed in.
+    /// The EIP-712 domain the venue's orders are signed in; zero for a
+    /// venue of swaps, which signs nothing.
     pub domain: B256,
 }
 
@@ -359,7 +360,11 @@ impl Session {
                     code_hash,
                     place: d.venue().call().await.with_context(|| ctx("venue"))?,
                     spender: d.spender().call().await.with_context(|| ctx("spender"))?,
-                    domain: d.domainSeparator().call().await.with_context(|| ctx("domainSeparator"))?,
+                    // a venue of swaps signs nothing: it has no domain
+                    domain: match v.kind {
+                        VenueKind::Uniswap => B256::ZERO,
+                        VenueKind::Cowswap | VenueKind::OneInch => d.domainSeparator().call().await.with_context(|| ctx("domainSeparator"))?,
+                    },
                 },
             );
         }

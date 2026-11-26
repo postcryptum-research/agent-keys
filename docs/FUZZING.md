@@ -315,6 +315,44 @@ break fails its proof (the record is under "Beyond fuzzing" below). The
 rule for a decoder's call has no proof of its own yet; the tests and the
 breaks above hold it.
 
+**The CLI swaps, and the phone reads the venue's terms as the decoder
+does.** Two of the CLI's local-chain tests run the policy and the decoder
+built from these sources, with the stand-in router:
+
+- `swaps_under_a_mandate`: the owner installs a mandate with a venue of
+  swaps and the router's allowance; `order swap` registers the swap and
+  makes it in one operation; under the lowest price, the pair the other way,
+  over the cap and past the budget go nowhere; a swap the pool would not
+  honour is found when the calls are run before sending, and nothing is
+  charged; the router's call without its registration is refused.
+- `the_phone_reads_a_swap_config_as_the_decoder_does`: 400 configs from a
+  seed, well-formed and damaged, are put to the phone's reader
+  (`swap_terms`) and to the decoder: 187 are accepted by both, 30 by the
+  decoder only, 183 by neither. For each one both accept, a swap at a
+  pair's lowest price passes with the token and the amount the phone read,
+  one unit under it does not, a pair the phone did not read is not swapped,
+  and the hash the decoder answers with is the hash of the router call the
+  CLI builds (`SwapOrder::call`), which is also the decoder's `swapCall`
+  byte for byte.
+
+```sh
+cd signer
+cargo test -p agent-signer --features insecure-software-keys --test anvil_cli swap -- --nocapture
+```
+
+One swap's bytes are recorded on both sides: the decoder's test
+(`test_decoder_theRecordedSwap`) and the core's (`a_swap_is_the_decoders`)
+hold the config, the five words, the router call and its hash to the same
+constants, which were computed with `cast`.
+
+Eleven parts of the Rust side were broken one at a time (the recipient, the
+price limit, the selector and the value in the call and its hash; the fee
+tier's width; the config's shape; the reader's canonical-bytes rule, its
+pair rules and which reader a swap venue gets; a swap's own rows; the
+refusal's words), and each is found by the core's tests. The CLI's
+comparison of its call with the decoder's `swapCall` before sending
+was not broken on purpose: no test has a decoder that builds other bytes.
+
 **What it does not cover.** The stand-in router models one function. The
 fork run is of one pool on one test network at one block. No swap was sent
 to a chain, and no chain has the decoder or this policy yet.

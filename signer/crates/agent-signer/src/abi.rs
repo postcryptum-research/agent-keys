@@ -124,7 +124,9 @@ sol! {
         function payeeAllowed(address account, bytes32 id, address token, address payee) external view returns (bool);
     }
 
-    /// A venue's decoder (`CowSwapDecoder`, `OneInchLimitOrderDecoder`).
+    /// A venue's decoder (`CowSwapDecoder`, `OneInchLimitOrderDecoder`,
+    /// `SwapRouter02Decoder`). `domainSeparator` is of the two that judge
+    /// orders, `swapCall` of the one that judges a swap.
     #[sol(rpc)]
     interface IVenueDecoder {
         function venue() external view returns (address);
@@ -132,6 +134,7 @@ sol! {
         function domainSeparator() external view returns (bytes32);
         function untouched(address account, bytes calldata order) external view returns (bool);
         function checkConfig(bytes calldata config) external view returns (bool);
+        function swapCall(address account, bytes calldata order) external view returns (bytes memory);
     }
 
     /// AgentPolicy's trading side (issue #80).
