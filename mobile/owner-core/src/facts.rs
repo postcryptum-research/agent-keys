@@ -90,8 +90,14 @@ const ID_POLICIES: &[Address] = &[CURRENT_POLICY];
 /// and the vault relayer filled in as `domainSeparator()` and
 /// `vaultRelayer()` of CoW's settlement return them on that chain (read on
 /// 2026-11-25).
+///
+/// Each entry: the chain, the kind, the decoder, the venue's name, the
+/// decoder's code hash, the venue's own contract, the spender and its name,
+/// and the deployments key that names the decoder. A decoder of rules
+/// (`CallRulesDecoder`) is one per contract, so each has a key of its own
+/// (`callRules…`); the other kinds have one decoder a chain.
 #[allow(clippy::type_complexity)]
-const VENUES: &[(u64, VenueKind, Address, &str, B256, Address, Address, &str)] = &[
+const VENUES: &[(u64, VenueKind, Address, &str, B256, Address, Address, &str, &str)] = &[
     (
         84532,
         VenueKind::CowSwap,
@@ -101,6 +107,7 @@ const VENUES: &[(u64, VenueKind, Address, &str, B256, Address, Address, &str)] =
         address!("9008D19f58AAbD9eD0D60971565AA8510560ab41"),
         address!("C92E8bdf79f0507f65a392b0ab4667716BFE0110"),
         "CoW Swap vault relayer",
+        "cowSwapDecoder",
     ),
     (
         11155111,
@@ -111,23 +118,17 @@ const VENUES: &[(u64, VenueKind, Address, &str, B256, Address, Address, &str)] =
         address!("9008D19f58AAbD9eD0D60971565AA8510560ab41"),
         address!("C92E8bdf79f0507f65a392b0ab4667716BFE0110"),
         "CoW Swap vault relayer",
+        "cowSwapDecoder",
     ),
 ];
-
-/// The deployments key of a kind of venue's decoder.
-fn venue_key(kind: VenueKind) -> &'static str {
-    match kind {
-        VenueKind::CowSwap => "cowSwapDecoder",
-        VenueKind::OneInchLimitOrder => "oneInchLimitOrderDecoder",
-        VenueKind::SwapRouter02 => "swapRouter02Decoder",
-    }
-}
 
 /// The name of a venue's own contract.
 fn place_name(kind: VenueKind, venue: &str) -> String {
     match kind {
         VenueKind::CowSwap => format!("{venue} settlement"),
         VenueKind::OneInchLimitOrder | VenueKind::SwapRouter02 => format!("{venue} router"),
+        // a venue of rules is named after the one contract it is
+        VenueKind::CallRules => venue.to_string(),
     }
 }
 
@@ -210,8 +211,8 @@ fn from_deployments(json: &str, chain_id: u64, canonical: bool) -> Facts {
     }
     if canonical {
         // a venue is known only where the deployments file names its decoder
-        for (_, kind, decoder, name, code_hash, place, spender, spender_name) in VENUES.iter().filter(|v| v.0 == chain_id) {
-            if map.get(venue_key(*kind)).and_then(|v| v.as_str()).and_then(|s| s.parse::<Address>().ok()) != Some(*decoder) {
+        for (_, kind, decoder, name, code_hash, place, spender, spender_name, key) in VENUES.iter().filter(|v| v.0 == chain_id) {
+            if map.get(*key).and_then(|v| v.as_str()).and_then(|s| s.parse::<Address>().ok()) != Some(*decoder) {
                 continue;
             }
             // the venue's own contract, then who takes the tokens: one address at 1inch, whose router is both

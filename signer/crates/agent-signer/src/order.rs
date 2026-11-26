@@ -13,7 +13,9 @@
 //!
 //! A swap is the other kind of venue: a call the account makes itself, at a
 //! router, in the same operation that registers it. `order swap` sends both
-//! as one operation; nothing is left to be filled later.
+//! as one operation; nothing is left to be filled later. `order call` does
+//! the same for a call at a venue of rules, where the owner wrote a rule for
+//! every argument word of each function the agent may call.
 
 use alloy::primitives::{Address, Bytes, B256, U256};
 use alloy::providers::Provider;
@@ -59,6 +61,30 @@ impl Swapped {
             "bought": self.bought.to_string(),
             "leastBought": self.least.to_string(),
             "router": self.router.to_string(),
+        })
+    }
+}
+
+/// A call at a venue of rules as the chain has it.
+pub struct Called {
+    pub tx: B256,
+    pub block: u64,
+    /// The contract the call was made at: the venue's own.
+    pub venue: Address,
+    /// The token the call's charged word is in; zero where its function charges nothing.
+    pub token: Address,
+    /// The amount charged to that token's budget.
+    pub charged: U256,
+}
+
+impl Called {
+    pub fn json(&self) -> Value {
+        json!({
+            "tx": self.tx.to_string(),
+            "block": self.block,
+            "venue": self.venue.to_string(),
+            "chargedToken": self.token.to_string(),
+            "charged": self.charged.to_string(),
         })
     }
 }
@@ -215,8 +241,10 @@ impl Session {
         sponsored: bool,
     ) -> Result<Swapped> {
         let (v, on) = self.venue(decoder)?;
-        if v.kind != VenueKind::Uniswap {
-            bail!("the venue {} takes orders, not swaps: `order sell`", v.decoder);
+        match v.kind {
+            VenueKind::Uniswap => {}
+            VenueKind::Rules => bail!("the venue {} takes calls, not swaps: `order call`", v.decoder),
+            VenueKind::Cowswap | VenueKind::OneInch => bail!("the venue {} takes orders, not swaps: `order sell`", v.decoder),
         }
         let config = v.config()?;
         self.check_sale(v, on, "swap", sell_token, buy_token, sell_amount, buy_amount).await?;
@@ -255,6 +283,57 @@ impl Session {
         Ok(Swapped { tx: inc.tx, block: inc.block, sold: sell_amount, bought: after.saturating_sub(before), least: buy_amount, router: on.place })
     }
 
+    /// A call at a venue of rules (kind `rules`, `CallRulesDecoder`): one
+    /// operation of two calls, the call's registration with the policy and
+    /// the call itself, at the venue's one contract. The decoder holds every
+    /// argument word of `data` to the owner's rule for it.
+    ///
+    /// The decoder is asked first, so that a call the rules refuse costs no
+    /// operation; the policy asks it again, and that is the check that
+    /// counts. Where the function charges a word, the amount is charged to
+    /// the token's budget when the operation is validated: a call that
+    /// reverts when it runs was charged all the same, and the charge returns
+    /// when the budget period turns.
+    pub async fn order_call(&self, decoder: Option<Address>, data: Bytes, sponsored: bool) -> Result<Called> {
+        let (v, on) = self.venue(decoder)?;
+        if v.kind != VenueKind::Rules {
+            bail!("the venue {} is not a venue of rules: `order sell` places an order, `order swap` makes a swap", v.decoder);
+        }
+        let config = v.config()?;
+        let d = crate::abi::IVenueDecoder::new(v.decoder, self.provider.clone());
+        let judged = d
+            .judge(self.account, config.clone(), data.clone())
+            .call()
+            .await
+            .with_context(|| format!("the rules of the venue {} refuse this call: its function is not listed, it is not as long as its rules, or an argument does not pass its rule", v.decoder))?;
+        // what the function charges, if it charges: the venue's allowance and the account's balance cover it
+        if !judged.mostSold.is_zero() {
+            let token = IErc20Allowance::new(judged.sellToken, self.provider.clone());
+            let allowed = token.allowance(self.account, on.spender).call().await.context("reading the venue's allowance")?;
+            if allowed < judged.mostSold {
+                bail!(
+                    "the account lets the venue's spender {} take {allowed} of {}, less than this call is charged: the owner gives the allowance with the mandate and renews it with `permission allowance`",
+                    on.spender,
+                    judged.sellToken
+                );
+            }
+            let balance = token.balanceOf(self.account).call().await.context("reading the account's balance")?;
+            if balance < judged.mostSold {
+                bail!("the account holds {balance} of {}, less than this call is charged", judged.sellToken);
+            }
+        }
+        eprintln!("call:           {} bytes to {}, charged {} of {}", data.len(), on.place, judged.mostSold, judged.sellToken);
+
+        let policy = self.installed_policy().await?;
+        // the registration, then the call it admits: two legs of one operation
+        let batch = vec![(policy, U256::ZERO, kernel::order_register_calldata(v.decoder, &config, &data)), (on.place, U256::ZERO, data)];
+        let inc = self
+            .send_batch(batch, false, sponsored, None)
+            .await
+            .context("the call was not made. If nothing was sent (the calls were run first and one reverted, or the mandate refused), nothing was charged. If the operation was included and its execution reverted, what the call is charged was charged to the token's budget all the same, and returns when the budget period turns")?;
+        Ok(Called { tx: inc.tx, block: inc.block, venue: on.place, token: judged.sellToken, charged: judged.mostSold })
+    }
+
     /// Register a sell order under the mandate and sign it. Checked here
     /// first against the config's terms, so that an order the policy would
     /// refuse costs no operation; the policy's own check is the one that
@@ -271,8 +350,10 @@ impl Session {
     ) -> Result<Placed> {
         let (v, on) = self.venue(decoder)?;
         let config = v.config()?;
-        if v.kind == VenueKind::Uniswap {
-            bail!("the venue {} takes swaps, not orders: `order swap`", v.decoder);
+        match v.kind {
+            VenueKind::Uniswap => bail!("the venue {} takes swaps, not orders: `order swap`", v.decoder),
+            VenueKind::Rules => bail!("the venue {} takes calls, not orders: `order call`", v.decoder),
+            VenueKind::Cowswap | VenueKind::OneInch => {}
         }
         self.check_sale(v, on, "order", sell_token, buy_token, sell_amount, buy_amount).await?;
         if valid_for == 0 || valid_for > v.max_life {
@@ -336,6 +417,7 @@ impl Session {
                 found.context("eight random nonces were all used at the router: try again")?
             }
             VenueKind::Uniswap => bail!("the venue {} takes swaps, not orders: `order swap`", v.decoder),
+            VenueKind::Rules => bail!("the venue {} takes calls, not orders: `order call`", v.decoder),
         };
         eprintln!("order:          sell {sell_amount} of {sell_token} for at least {buy_amount} of {buy_token}, until {valid_to}");
 

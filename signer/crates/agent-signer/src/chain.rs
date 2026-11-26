@@ -351,7 +351,11 @@ impl Session {
             // for done, so an order that buys such a "token" gives the sold
             // amount away.
             if let Err(e) = d.checkConfig(v.config()?).call().await {
-                bail!("the venue decoder {} refuses this config's terms for it (`checkConfig`): a pair without two tokens or a price, a pair twice, no order lifetime, or a token address without code ({e})", v.decoder);
+                let what = match v.kind {
+                    VenueKind::Rules => "no function or more than eight, a function twice, more than sixteen words, a rule it does not know, two charged words, or a charged token address without code",
+                    VenueKind::Cowswap | VenueKind::OneInch | VenueKind::Uniswap => "a pair without two tokens or a price, a pair twice, no order lifetime, or a token address without code",
+                };
+                bail!("the venue decoder {} refuses this config's terms for it (`checkConfig`): {what} ({e})", v.decoder);
             }
             let ctx = |what: &str| format!("reading {what}() of the venue decoder {}", v.decoder);
             venues.insert(
@@ -362,7 +366,7 @@ impl Session {
                     spender: d.spender().call().await.with_context(|| ctx("spender"))?,
                     // a venue of swaps signs nothing: it has no domain
                     domain: match v.kind {
-                        VenueKind::Uniswap => B256::ZERO,
+                        VenueKind::Uniswap | VenueKind::Rules => B256::ZERO,
                         VenueKind::Cowswap | VenueKind::OneInch => d.domainSeparator().call().await.with_context(|| ctx("domainSeparator"))?,
                     },
                 },
@@ -1399,7 +1403,7 @@ impl Session {
                 // and the owner is told what could not be looked at.
                 let mut tokens: Vec<Address> = self.cfg.policy.tokens.iter().map(|t| t.token).collect();
                 tokens.extend(old.iter().flat_map(|c| c.policy.tokens.iter().map(|t| t.token)));
-                tokens.extend(known.iter().flat_map(|v| v.pairs.iter().map(|p| p.sell_token)));
+                tokens.extend(known.iter().flat_map(|v| v.sold_tokens()));
                 tokens.sort();
                 tokens.dedup();
                 for token in &tokens {
@@ -1422,11 +1426,11 @@ impl Session {
                     pin.configHash
                 );
             };
-            for pair in &terms.pairs {
-                if taken(&calls, pair.sell_token) {
+            for token in terms.sold_tokens() {
+                if taken(&calls, token) {
                     continue;
                 }
-                calls.push(approve_call(pair.sell_token, spender, U256::ZERO));
+                calls.push(approve_call(token, spender, U256::ZERO));
             }
         }
         Ok(calls)
@@ -1438,14 +1442,14 @@ impl Session {
         let p = &self.cfg.policy;
         for v in &p.venues {
             let spender = self.venues.get(&v.decoder).context("venue not read from the chain")?.spender;
-            for pair in &v.pairs {
-                if legs.iter().any(|l| l.0 == pair.sell_token && l.1 == spender) {
+            for token in v.sold_tokens() {
+                if legs.iter().any(|l| l.0 == token && l.1 == spender) {
                     continue;
                 }
-                let budget = self.cfg.token_budget(pair.sell_token)?.with_context(|| {
-                    format!("the venue sells {}, and `tokens` gives it no limit: the policy registers no order for it", pair.sell_token)
+                let budget = self.cfg.token_budget(token)?.with_context(|| {
+                    format!("the venue sells or charges {token}, and `tokens` gives it no limit: the policy registers nothing for it")
                 })?;
-                legs.push((pair.sell_token, spender, budget));
+                legs.push((token, spender, budget));
             }
         }
         Ok(legs)

@@ -225,8 +225,31 @@ test exists. The table says which rule opens what:
 | Words = values the owner sets | Morpho (the market: markets are permissionless, so the market itself is pinned); Circle's CCTP (the destination chain and recipient); the Base bridge's `bridgeETHTo` and `bridgeERC20To`; Uniswap v3 `mint` |
 | A decoder of its own | other swaps at a router (several pools, exact output, v2 pools, other routers); Seaport orders; GMX orders; Uniswap v4; Balancer; Pendle |
 
-**Not on a chain yet.** No network has such a decoder, and the CLI and the
-phone do not know this kind of venue yet.
+The CLI makes such calls, and the phone's core shows the owner each
+function with the rule for every argument [V
+`calls_with_rules_under_a_mandate` and
+`the_phone_reads_a_rules_config_as_the_decoder_does` in the CLI's
+local-chain tests, with a stand-in pool]. Aave's supply for one asset and
+the account only, in a config's `venues`:
+
+```json
+{"kind": "rules", "decoder": "<the decoder for the pool>", "codeHash": "<its code hash>",
+ "functions": [
+   {"selector": "0x617ba037", "words": [{"is": "<asset>"}, {"charged": "<asset>"}, "account", {"is": "0"}]},
+   {"selector": "0x69328dec", "words": [{"is": "<asset>"}, "any", "account"]}]}
+```
+
+```sh
+agent-signer order call --agent agent.json --data <calldata of the supply>
+```
+
+The owner's screen then reads, for the supply: the first argument exactly
+the asset, the second an amount charged to the asset's budget, the third
+this account, the fourth exactly 0; and for the withdrawal's amount, in
+bold, "anything — the agent picks it", with a warning.
+
+**Not on a chain yet.** No network has such a decoder, so no phone build
+names one.
 
 Without its rules none of these is safe on a mandate. A pull-side function
 (`supply`, `deposit`) left unpinned loses at most what the token's budget

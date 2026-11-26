@@ -228,6 +228,22 @@ enum OrderCmd {
         #[arg(long)]
         sponsored: bool,
     },
+    /// Make a call at a venue of rules (kind `rules`): one operation that
+    /// registers the call and makes it at the venue's contract. The venue's
+    /// decoder holds every argument to the owner's rule for it.
+    Call {
+        #[command(flatten)]
+        agent: AgentArgs,
+        /// The venue's decoder, when the config has several venues.
+        #[arg(long)]
+        venue: Option<Address>,
+        /// The call's calldata, 0x hex: the selector and the arguments.
+        #[arg(long)]
+        data: Bytes,
+        /// Let the paymaster pay the gas.
+        #[arg(long)]
+        sponsored: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1809,6 +1825,15 @@ async fn run() -> Result<()> {
                 eprintln!("swapped:        tx {} (block {})", swapped.tx, swapped.block);
                 eprintln!("charged to the token's budget: the amount sold; the charge returns when the budget period turns");
                 println!("{}", swapped.json());
+            }
+            OrderCmd::Call { agent, venue, data, sponsored } => {
+                let s = session(&agent).await?;
+                let called = s.order_call(venue, data, sponsored).await?;
+                eprintln!("called:         tx {} (block {})", called.tx, called.block);
+                if !called.charged.is_zero() {
+                    eprintln!("charged to the token's budget: {} of {}; the charge returns when the budget period turns", called.charged, called.token);
+                }
+                println!("{}", called.json());
             }
         },
         Cmd::Demo { agent, sponsored } => {

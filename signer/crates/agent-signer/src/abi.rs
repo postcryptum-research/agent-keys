@@ -135,6 +135,10 @@ sol! {
         function untouched(address account, bytes calldata order) external view returns (bool);
         function checkConfig(bytes calldata config) external view returns (bool);
         function swapCall(address account, bytes calldata order) external view returns (bytes memory);
+        function judge(address account, bytes calldata config, bytes calldata order)
+            external
+            view
+            returns (address sellToken, uint256 mostSold, uint48 notBefore, uint48 validTo, bytes32 digest);
     }
 
     /// AgentPolicy's trading side (issue #80).

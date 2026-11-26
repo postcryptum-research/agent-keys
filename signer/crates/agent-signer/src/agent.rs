@@ -264,11 +264,45 @@ pub struct VenueEntry {
     /// CoW Swap: the only `appData` an order may carry. No other kind has one.
     #[serde(default)]
     pub app_data: Option<alloy::primitives::B256>,
-    /// The longest an order may live, seconds. A venue of swaps has none: a
-    /// swap is made at once.
+    /// The longest an order may live, seconds. A venue of swaps or of rules
+    /// has none: a call is made at once.
     #[serde(default)]
     pub max_life: u32,
+    /// The pairs the agent may trade, with their lowest prices. A venue of
+    /// rules has none.
+    #[serde(default)]
     pub pairs: Vec<PairEntry>,
+    /// `rules` only: the functions the agent may call at the venue, each
+    /// with a rule for every argument word.
+    #[serde(default)]
+    pub functions: Vec<FunctionEntry>,
+}
+
+/// A function the agent may call at a venue of rules, and the rule for each
+/// of its argument words, in order: the call has exactly this many.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FunctionEntry {
+    pub selector: alloy::primitives::FixedBytes<4>,
+    pub words: Vec<WordEntry>,
+}
+
+/// The rule for one argument word: `"account"`, `"any"`, `{"is": value}`,
+/// `{"atMost": bound}` or `{"charged": token}`. A value or a bound is a
+/// decimal number or `0x` hex (an address is its own hex).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum WordEntry {
+    /// The word is the account's address: a beneficiary held to the account.
+    Account,
+    /// The word is the agent's to choose.
+    Any,
+    /// The word is exactly this value.
+    Is(String),
+    /// The word, as an unsigned number, is at most this bound.
+    AtMost(String),
+    /// The word is an amount, charged in this token.
+    Charged(Address),
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -282,6 +316,10 @@ pub enum VenueKind {
     /// A swap the account makes itself at Uniswap's SwapRouter02
     /// (`SwapRouter02Decoder`): a call, not an order.
     Uniswap,
+    /// Calls the account makes itself at one contract, each argument word
+    /// held to a rule (`CallRulesDecoder`). One decoder a contract: the
+    /// deployments file names none, and the config states its `codeHash`.
+    Rules,
 }
 
 impl VenueKind {
@@ -291,6 +329,8 @@ impl VenueKind {
             VenueKind::Cowswap => "cowSwapDecoder",
             VenueKind::OneInch => "oneInchLimitOrderDecoder",
             VenueKind::Uniswap => "swapRouter02Decoder",
+            // one decoder a contract: no key names them
+            VenueKind::Rules => "no key: a decoder of rules is named by its `codeHash`",
         }
     }
 }
@@ -323,7 +363,16 @@ impl VenueEntry {
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
+        if self.kind != VenueKind::Rules && !self.functions.is_empty() {
+            anyhow::bail!("the venue {} names `functions`: only a venue of kind `rules` has them", self.decoder);
+        }
         match (self.kind, self.app_data) {
+            (VenueKind::Rules, None) if self.max_life == 0 && self.pairs.is_empty() => {
+                Ok(owner_core::kernel::call_rules_config(&self.ruled_functions()?))
+            }
+            (VenueKind::Rules, _) => {
+                anyhow::bail!("the venue of rules {} names `pairs`, a `maxLife` or an `appData`: it has `functions` and none of those", self.decoder)
+            }
             (VenueKind::Cowswap | VenueKind::OneInch, _) if self.max_life == 0 => {
                 anyhow::bail!("the venue {} names no `maxLife`: the longest an order may live, in seconds", self.decoder)
             }
@@ -344,7 +393,53 @@ impl VenueEntry {
             VenueKind::Cowswap => dep.cow_swap_decoder,
             VenueKind::OneInch => dep.one_inch_limit_order_decoder,
             VenueKind::Uniswap => dep.swap_router02_decoder,
+            VenueKind::Rules => None,
         }
+    }
+
+    /// The functions of a venue of rules, as the decoder's config names them.
+    fn ruled_functions(&self) -> Result<Vec<owner_core::kernel::RuledFunction>> {
+        use owner_core::kernel::WordRule;
+        let number = |s: &str, what: &str| s.parse::<U256>().with_context(|| format!("venues.functions.words.{what}: `{s}` is not a decimal number or 0x hex"));
+        self.functions
+            .iter()
+            .map(|f| {
+                let words = f
+                    .words
+                    .iter()
+                    .map(|w| {
+                        Ok(match w {
+                            WordEntry::Account => WordRule::IsAccount,
+                            WordEntry::Any => WordRule::Any,
+                            WordEntry::Is(v) => WordRule::IsValue(number(v, "is")?),
+                            WordEntry::AtMost(v) => WordRule::AtMost(number(v, "atMost")?),
+                            WordEntry::Charged(token) => WordRule::Charged(*token),
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Ok((f.selector, words))
+            })
+            .collect()
+    }
+
+    /// The tokens the venue takes from the account, each once: what its
+    /// pairs sell, or what its functions charge. The owner's allowance to
+    /// the venue's spender is of these.
+    pub fn sold_tokens(&self) -> Vec<Address> {
+        let mut tokens: Vec<Address> = self.pairs.iter().map(|p| p.sell_token).collect();
+        for f in &self.functions {
+            tokens.extend(f.words.iter().filter_map(|w| match w {
+                WordEntry::Charged(token) => Some(*token),
+                _ => None,
+            }));
+        }
+        let mut once = Vec::with_capacity(tokens.len());
+        for t in tokens {
+            if !once.contains(&t) {
+                once.push(t);
+            }
+        }
+        once
     }
 }
 
@@ -1042,6 +1137,65 @@ mod payee_tests {
                 assert!(refused.contains("names no `maxLife`"), "{kind} {max_life:?}: {refused}");
             }
         }
+    }
+
+    /// A venue of rules: its functions and the rule for each argument word,
+    /// encoded as the decoder reads them; and what such a venue may not name.
+    #[test]
+    fn a_venue_of_rules_is_its_functions() {
+        use owner_core::kernel::WordRule;
+        let token = "0x00000000000000000000000000000000000000a1";
+        let venue = |change: &dyn Fn(&mut serde_json::Value)| {
+            let mut v = serde_json::json!({
+                "kind": "rules", "decoder": "0x00000000000000000000000000000000000000c0",
+                "functions": [
+                    {"selector": "0x617ba037", "words": [{"is": token}, {"charged": token}, "account", {"is": "0"}]},
+                    {"selector": "0x69328dec", "words": [{"is": token}, "any", "account"]},
+                    {"selector": "0x01020304", "words": [{"atMost": "100"}, {"is": "0x10"}]},
+                    {"selector": "0x4e71d92d", "words": []},
+                ],
+            });
+            change(&mut v);
+            serde_json::from_value::<VenueEntry>(v)
+        };
+        let v = venue(&|_| {}).unwrap();
+        let asset: Address = token.parse().unwrap();
+        let value = U256::from_be_slice(asset.as_slice());
+        let expected = owner_core::kernel::call_rules_config(&[
+            (FixedBytes::from([0x61, 0x7b, 0xa0, 0x37]), vec![WordRule::IsValue(value), WordRule::Charged(asset), WordRule::IsAccount, WordRule::IsValue(U256::ZERO)]),
+            (FixedBytes::from([0x69, 0x32, 0x8d, 0xec]), vec![WordRule::IsValue(value), WordRule::Any, WordRule::IsAccount]),
+            (FixedBytes::from([1, 2, 3, 4]), vec![WordRule::AtMost(U256::from(100u8)), WordRule::IsValue(U256::from(16u8))]),
+            (FixedBytes::from([0x4e, 0x71, 0xd9, 0x2d]), vec![]),
+        ]);
+        assert_eq!(v.config().unwrap(), expected);
+        // what the owner's allowance to the venue's spender is of: each charged token, once
+        assert_eq!(v.sold_tokens(), vec![asset]);
+        // a venue of rules has no pairs, no lifetime and no appData
+        let pair = serde_json::json!({"sellToken": token, "buyToken": "0x00000000000000000000000000000000000000b2", "minBuy": "3", "perSell": "1"});
+        for change in [
+            &(|v: &mut serde_json::Value| v["pairs"] = serde_json::json!([pair.clone()])) as &dyn Fn(&mut serde_json::Value),
+            &|v: &mut serde_json::Value| v["maxLife"] = serde_json::json!(600),
+            &|v: &mut serde_json::Value| v["appData"] = serde_json::json!(format!("0x{}", "00".repeat(32))),
+        ] {
+            let refused = venue(change).unwrap().config().unwrap_err().to_string();
+            assert!(refused.contains("it has `functions` and none of those"), "{refused}");
+        }
+        // a value that is no number; a rule the CLI does not know; a selector of another length
+        let refused = venue(&|v| v["functions"][0]["words"][0] = serde_json::json!({"is": "usdc"})).unwrap().config().unwrap_err();
+        assert!(format!("{refused:#}").contains("is not a decimal number or 0x hex"), "{refused:#}");
+        assert!(venue(&|v| v["functions"][0]["words"][0] = serde_json::json!("anybody")).is_err());
+        assert!(venue(&|v| v["functions"][0]["words"][0] = serde_json::json!({"is": "1", "atMost": "2"})).is_err());
+        assert!(venue(&|v| v["functions"][0]["selector"] = serde_json::json!("0x617ba0")).is_err());
+        // the other kinds have no functions
+        let with_functions = serde_json::json!({
+            "kind": "uniswap", "decoder": "0x00000000000000000000000000000000000000c0", "pairs": [pair.clone()],
+            "functions": [{"selector": "0x617ba037", "words": []}],
+        });
+        let refused = serde_json::from_value::<VenueEntry>(with_functions).unwrap().config().unwrap_err().to_string();
+        assert!(refused.contains("only a venue of kind `rules` has them"), "{refused}");
+        // and a venue of pairs sells what its pairs sell
+        let swaps = serde_json::json!({"kind": "uniswap", "decoder": "0x00000000000000000000000000000000000000c0", "pairs": [pair.clone(), pair]});
+        assert_eq!(serde_json::from_value::<VenueEntry>(swaps).unwrap().sold_tokens(), vec![asset]);
     }
 
     #[test]

@@ -2945,6 +2945,196 @@ fn swaps_under_a_mandate() {
     chain.fails(&["demo", "--agent", &cfg]);
 }
 
+mod pool_abi {
+    alloy::sol! {
+        function supply(address asset, uint256 amount, address onBehalfOf, uint16 referralCode) external;
+        function withdraw(address asset, uint256 amount, address to) external returns (uint256);
+        function borrow(address asset, uint256 amount) external;
+        function credit(address asset, address who) external view returns (uint256);
+    }
+}
+
+/// A mandate with a venue of rules, end to end (issue #80), on the policy
+/// and the decoder built from this repository's sources and a stand-in for a
+/// lending pool whose two functions name a beneficiary, as Aave's do. The
+/// owner installs the mandate with the pool's allowance; `order call`
+/// registers a call and makes it in one operation; a supply for the account
+/// is made and charged, a withdrawal to it is not charged; the same for
+/// somebody else, a function the owner did not list and an amount past the
+/// limits go nowhere; revoking takes the allowance back.
+#[test]
+fn calls_with_rules_under_a_mandate() {
+    let chain = chain_or_skip!("rules");
+    let (owner, agent) = (key(1), key(2));
+    let counter = chain.addr("demoCounter");
+    let policy = chain.addr("agentPolicy");
+    let until = far_future(&chain);
+    let fixture: Value = serde_json::from_str(
+        &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/trading-code.json")).unwrap(),
+    )
+    .unwrap();
+    let deploy = |name: &str, args: Vec<u8>| {
+        let mut code = hex::decode(fixture[name].as_str().unwrap().trim_start_matches("0x")).unwrap();
+        code.extend(args);
+        chain.send_from(FACILITATOR, None, code)["contractAddress"].as_str().unwrap().to_string()
+    };
+    let word = |a: &str| a.parse::<Address>().unwrap().abi_encode();
+
+    // the policy of this source in the place of the deployed one
+    let built = deploy("agentPolicyInitCode", word(&chain.addr("safeNonceAssert")));
+    let code = chain.rpc("eth_getCode", json!([built, "latest"]));
+    chain.rpc("anvil_setCode", json!([policy, code]));
+
+    let usd = deploy("mockTokenInitCode", vec![]);
+    let pool = deploy("poolStandInInitCode", vec![]);
+    // one decoder for the one contract: the pool is the venue and the spender
+    let decoder = deploy("callRulesDecoderInitCode", [word(&pool), word(&pool)].concat());
+    let decoder_code = chain.rpc("eth_getCode", json!([decoder, "latest"]));
+    let decoder_hash = alloy::primitives::keccak256(hex::decode(decoder_code.as_str().unwrap().trim_start_matches("0x")).unwrap());
+
+    let account = chain.deploy(&chain.config("agent.json", &base_cfg(&owner, &agent, &counter, until)));
+    const PERIOD: u64 = 30 * 86_400;
+    // the mandate: 200 a time, 300 a period; a supply of the token for the account, charged,
+    // and a withdrawal of it to the account
+    let mandate = |name: &str, change: &dyn Fn(&mut Value)| {
+        let path = chain.config(
+            name,
+            &Cfg {
+                permission: "0x72756c65",
+                allow: vec![(counter.clone(), INCREMENT), (policy.clone(), ORDER_REGISTER)],
+                account: Some(account.clone()),
+                tokens: json!([{"token": usd, "maxPerOp": "200000000", "budget": "300000000", "payees": "anyone"}]),
+                ..base_cfg(&owner, &agent, &counter, until)
+            },
+        );
+        let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        v["policy"]["period"] = json!(PERIOD);
+        v["policy"]["venues"] = json!([{
+            "kind": "rules", "decoder": decoder, "codeHash": decoder_hash.to_string(),
+            "functions": [
+                {"selector": "0x617ba037", "words": [{"is": usd}, {"charged": usd}, "account", {"is": "0"}]},
+                {"selector": "0x69328dec", "words": [{"is": usd}, "any", "account"]},
+            ],
+        }]);
+        change(&mut v);
+        std::fs::write(&path, v.to_string()).unwrap();
+        path
+    };
+    let cfg = mandate("rules.json", &|_| {});
+
+    // the terms are put to the decoder itself before a mandate is made of them:
+    // a function listed twice is no list of rules
+    let twice = mandate("twice.json", &|v| {
+        let f = v["policy"]["venues"][0]["functions"][0].clone();
+        v["policy"]["venues"][0]["functions"].as_array_mut().unwrap().push(f);
+    });
+    let why = chain.fails(&["permission", "show", "--agent", &twice]);
+    assert!(why.contains("refuses this config's terms") && why.contains("a function twice"), "{why}");
+    // a venue of rules has no pairs
+    let with_pairs = mandate("pairs.json", &|v| {
+        v["policy"]["venues"][0]["pairs"] = json!([{"sellToken": usd, "buyToken": counter, "minBuy": "1", "perSell": "1"}]);
+    });
+    let why = chain.fails(&["permission", "show", "--agent", &with_pairs]);
+    assert!(why.contains("it has `functions` and none of those"), "{why}");
+    // such a decoder is one per contract: the deployments file names none, so its code hash is stated
+    let unpinned = mandate("unpinned.json", &|v| {
+        v["policy"]["venues"][0].as_object_mut().unwrap().remove("codeHash");
+    });
+    let why = chain.fails(&["permission", "show", "--agent", &unpinned]);
+    assert!(why.contains("state its `codeHash`"), "{why}");
+
+    let acct: Address = account.parse().unwrap();
+    let (usd_a, pool_a): (Address, Address) = (usd.parse().unwrap(), pool.parse().unwrap());
+    let balance = |who: Address| U256::from_be_slice(&chain.call(&usd, balanceOfCall { account: who }.abi_encode()));
+    let credit = |who: Address| U256::from_be_slice(&chain.call(&pool, pool_abi::creditCall { asset: usd_a, who }.abi_encode()));
+    let allowance = || U256::from_be_slice(&chain.call(&usd, trading_abi::allowanceCall { owner: acct, spender: pool_a }.abi_encode()));
+    chain.send_from(FACILITATOR, Some(&usd), mintCall { to: acct, amount: U256::from(10_000_000_000u64) }.abi_encode());
+
+    let other: Address = "0x00000000000000000000000000000000000051c0".parse().unwrap();
+    let supply = |amount: u64, to: Address| {
+        Bytes::from(pool_abi::supplyCall { asset: usd_a, amount: U256::from(amount), onBehalfOf: to, referralCode: 0 }.abi_encode()).to_string()
+    };
+    let withdraw = |amount: u64, to: Address| Bytes::from(pool_abi::withdrawCall { asset: usd_a, amount: U256::from(amount), to }.abi_encode()).to_string();
+    let call = |data: &str| -> Vec<String> { ["order", "call", "--agent", &cfg, "--data", data].iter().map(|s| s.to_string()).collect() };
+    let run = |args: &[String]| chain.cli(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    let called = |args: &[String]| -> Value {
+        let out = run(args);
+        let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert!(out.status.success(), "order call failed:\n{stderr}\n{stdout}");
+        serde_json::from_str(stdout.lines().find(|l| l.starts_with('{')).unwrap_or_else(|| panic!("no call in: {stdout}"))).unwrap()
+    };
+    let refused = |args: &[String]| -> String {
+        let out = run(args);
+        assert!(!out.status.success(), "the call was expected to be refused");
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+    };
+    let spent = |n: u64| chain.ok(&["permission", "show", "--agent", &cfg]).contains(&format!("(spent {n})"));
+
+    // before the owner installs the mandate there is no allowance, and the CLI says so
+    assert!(allowance().is_zero());
+    let early = refused(&call(&supply(150_000_000, acct)));
+    assert!(early.contains("the owner gives the allowance with the mandate"), "{early}");
+
+    // the owner's one operation: the old permission out, this one in, the pool's allowance given
+    chain.ok(&["permission", "rotate", "--agent", &cfg, "--old-id", "0x74657331"]);
+    assert_eq!(allowance(), U256::from(300_000_000u64));
+    let shown = chain.ok(&["permission", "show", "--agent", &cfg]);
+    assert!(shown.contains("ok period") && shown.contains("ok venue") && !shown.contains("DIFF"), "{shown}");
+
+    // a supply for the account: one operation, credited to the account, charged
+    let c = called(&call(&supply(150_000_000, acct)));
+    assert_eq!(c["charged"], "150000000");
+    assert_eq!(c["chargedToken"].as_str().unwrap().to_lowercase(), usd.to_lowercase());
+    assert_eq!(c["venue"].as_str().unwrap().to_lowercase(), pool.to_lowercase());
+    assert_eq!(credit(acct), U256::from(150_000_000u64));
+    assert_eq!(balance(acct), U256::from(10_000_000_000u64 - 150_000_000));
+    assert!(spent(150_000_000));
+    assert_eq!(allowance(), U256::from(150_000_000u64));
+
+    // a withdrawal to the account: made, and charged nothing
+    let c = called(&call(&withdraw(50_000_000, acct)));
+    assert_eq!(c["charged"], "0");
+    assert_eq!(credit(acct), U256::from(100_000_000u64));
+    assert_eq!(balance(acct), U256::from(10_000_000_000u64 - 100_000_000));
+    assert!(spent(150_000_000));
+
+    // for somebody else, each of the two: the rules refuse, before any operation
+    let why = refused(&call(&supply(1_000_000, other)));
+    assert!(why.contains("refuse this call"), "{why}");
+    let why = refused(&call(&withdraw(1_000_000, other)));
+    assert!(why.contains("refuse this call"), "{why}");
+    // a function the owner did not list; a supply with a referral code; a word more
+    let borrow = Bytes::from(pool_abi::borrowCall { asset: usd_a, amount: U256::from(1u8) }.abi_encode()).to_string();
+    assert!(refused(&call(&borrow)).contains("refuse this call"));
+    let referred = Bytes::from(pool_abi::supplyCall { asset: usd_a, amount: U256::from(1u8), onBehalfOf: acct, referralCode: 7 }.abi_encode()).to_string();
+    assert!(refused(&call(&referred)).contains("refuse this call"));
+    assert!(refused(&call(&format!("{}{}", supply(1, acct), "00".repeat(32)))).contains("refuse this call"));
+    // this venue takes calls, not orders and not swaps
+    let why = chain.fails(&["order", "sell", "--agent", &cfg, "--sell", &usd, "--buy", &counter, "--sell-amount", "1", "--buy-amount", "1"]);
+    assert!(why.contains("takes calls, not orders"), "{why}");
+    let why = chain.fails(&["order", "swap", "--agent", &cfg, "--sell", &usd, "--buy", &counter, "--sell-amount", "1", "--buy-amount", "1"]);
+    assert!(why.contains("takes calls, not swaps"), "{why}");
+    // the pool is no target of the agent's by itself: its call without the registration is refused
+    chain.fails(&["op", "batch", "--agent", &cfg, "--call", &format!("{pool}:0:{}", supply(1_000_000, acct))]);
+
+    // past the limits: over the cap for one operation, then the rest of the budget and not a unit more
+    refused(&call(&supply(200_000_001, acct)));
+    assert!(spent(150_000_000));
+    called(&call(&supply(150_000_000, acct)));
+    assert!(spent(300_000_000));
+    refused(&call(&supply(1, acct)));
+    // a withdrawal still passes: it is charged nothing
+    called(&call(&withdraw(250_000_000, acct)));
+    assert!(credit(acct).is_zero());
+    assert!(credit(other).is_zero() && balance(other).is_zero());
+
+    // revoking takes the pool's allowance back with the mandate
+    assert!(allowance().is_zero());
+    chain.ok(&["permission", "revoke", "--agent", &cfg, "--id", "0x72756c65"]);
+    assert!(allowance().is_zero());
+    chain.fails(&["demo", "--agent", &cfg]);
+}
+
 /// What the phone reads from a venue's config and what the decoder on chain
 /// enforces from the same bytes are held together (the auditor's point on
 /// issue #80): for configs from a seed, well-formed and damaged, every one
@@ -3327,6 +3517,168 @@ fn the_phone_reads_a_swap_config_as_the_decoder_does() {
     let buys_nothing = k::swap_config(&[(tokens[0], codeless, U256::from(1u8), U256::from(1u8))]);
     assert!(swap_terms(&buys_nothing).is_ok());
     assert!(ask("checkConfig(bytes)", (buys_nothing.clone(),).abi_encode_params()).is_none());
+}
+
+/// The same for the decoder of rules: what the phone reads from its config
+/// (`rules_terms`) and what `CallRulesDecoder` enforces from the same bytes.
+/// For every config both accept, a call built to pass each function's rules
+/// passes, with the token and the amount the phone read as charged, and the
+/// same call with one held word changed does not. The decoder's
+/// `checkConfig` asks for code at every charged token, which a phone cannot
+/// see: the laptop asks the chain (`calls_with_rules_under_a_mandate`).
+#[test]
+fn the_phone_reads_a_rules_config_as_the_decoder_does() {
+    use owner_core::kernel::{self as k, WordRule};
+    use owner_core::review::rules_terms;
+    let chain = chain_or_skip!("rules-config");
+    let fixture: Value = serde_json::from_str(
+        &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/trading-code.json")).unwrap(),
+    )
+    .unwrap();
+    let deploy = |name: &str, args: Vec<u8>| {
+        let mut code = hex::decode(fixture[name].as_str().unwrap().trim_start_matches("0x")).unwrap();
+        code.extend(args);
+        chain.send_from(FACILITATOR, None, code)["contractAddress"].as_str().unwrap().to_string()
+    };
+    let pool = deploy("poolStandInInitCode", vec![]);
+    let pool_word = pool.parse::<Address>().unwrap().abi_encode();
+    let decoder = deploy("callRulesDecoderInitCode", [pool_word.clone(), pool_word].concat());
+    // a call that may revert: the returned bytes, or nothing
+    let ask = |signature: &str, args: Vec<u8>| -> Option<Vec<u8>> {
+        let mut data = alloy::primitives::keccak256(signature)[..4].to_vec();
+        data.extend(args);
+        let body = json!({"jsonrpc": "2.0", "id": 1, "method": "eth_call", "params": [{"to": decoder, "data": Bytes::from(data).to_string()}, "latest"]});
+        let v: Value = serde_json::from_str(&http_post(&chain.url, &body.to_string())).unwrap();
+        v.get("result").and_then(|r| r.as_str()).map(|r| hex::decode(r.trim_start_matches("0x")).unwrap())
+    };
+    let account: Address = "0x00000000000000000000000000000000000Acc01".to_lowercase().parse().unwrap();
+    // three tokens with code, as `checkConfig` asks of a charged token, and one address without
+    let tokens: Vec<Address> = (1u8..=3).map(Address::repeat_byte).collect();
+    for token in &tokens {
+        chain.rpc("anvil_setCode", json!([token.to_string(), "0x00"]));
+    }
+    let codeless = Address::repeat_byte(0xcc);
+
+    let mut rng: u64 = 0xd1b5_4a32_d192_ed03;
+    let mut next = move |n: u64| {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        rng % n
+    };
+    let (mut both, mut chain_only, mut neither) = (0, 0, 0);
+    for _ in 0..400 {
+        // a config: mostly within the rules, with a share of what the rules refuse
+        let count = match next(20) {
+            0 => 0,
+            1 => 9,
+            n => 1 + n % 3,
+        };
+        let functions: Vec<(alloy::primitives::FixedBytes<4>, Vec<(U256, U256)>)> = (0..count)
+            .map(|i| {
+                // now and then the selector of the function before it: a function twice
+                let selector = if i > 0 && next(25) == 0 { [0xf0, 0, 0, (i - 1) as u8] } else { [0xf0, 0, 0, i as u8] };
+                let words = if next(30) == 0 { 17 } else { next(6) };
+                let rules = (0..words)
+                    .map(|_| match next(40) {
+                        0 => (U256::from(5u8), U256::ZERO),               // a kind the decoder does not know
+                        1 => (U256::ZERO, U256::from(1u8)),               // a value where none belongs
+                        2 => (U256::from(3u8), U256::ZERO),               // a charge in no token
+                        n if n % 5 == 0 => (U256::ZERO, U256::ZERO),
+                        n if n % 5 == 1 => (U256::from(1u8), U256::from(next(u64::MAX))),
+                        n if n % 5 == 2 => (U256::from(2u8), U256::from(next(1_000_000))),
+                        n if n % 5 == 3 => (U256::from(3u8), U256::from_be_slice(tokens[(n % 3) as usize].as_slice())),
+                        _ => (U256::from(4u8), U256::ZERO),
+                    })
+                    .collect();
+                (alloy::primitives::FixedBytes::from(selector), rules)
+            })
+            .collect();
+        let mut config = (functions,).abi_encode();
+        // and damaged bytes: one changed, the end cut, a word added
+        match next(8) {
+            0 => {
+                let at = next(config.len() as u64) as usize;
+                config[at] ^= 1 << next(8);
+            }
+            1 => config.truncate(config.len() - 1 - next(40) as usize % config.len()),
+            2 => config.extend([0u8; 32]),
+            _ => {}
+        }
+
+        let phone = rules_terms(&config);
+        let on_chain = ask("checkConfig(bytes)", (Bytes::from(config.clone()),).abi_encode_params()).is_some();
+        let Ok(terms) = phone else {
+            if on_chain { chain_only += 1 } else { neither += 1 }
+            continue;
+        };
+        // a changed byte can turn a charged token into an address without code: that is the
+        // one thing the decoder refuses and the phone cannot see
+        let charged_have_code = terms.functions.iter().flat_map(|f| f.1.iter()).all(|r| !matches!(r, WordRule::Charged(t) if !tokens.contains(t)));
+        assert_eq!(on_chain, charged_have_code, "the phone and the decoder differ on more than a token's code: 0x{}", hex::encode(&config));
+        if !on_chain {
+            neither += 1;
+            continue;
+        }
+        both += 1;
+
+        let judge = |call: &[u8]| ask("judge(address,bytes,bytes)", (account, Bytes::from(config.clone()), Bytes::copy_from_slice(call)).abi_encode_params());
+        for (selector, rules) in &terms.functions {
+            // a call that passes every rule the phone read
+            let amount = U256::from(1 + next(1_000_000));
+            let words: Vec<U256> = rules
+                .iter()
+                .map(|r| match r {
+                    WordRule::IsAccount => U256::from_be_slice(account.as_slice()),
+                    WordRule::IsValue(v) => *v,
+                    WordRule::AtMost(bound) => *bound,
+                    WordRule::Charged(_) => amount,
+                    WordRule::Any => U256::from(next(u64::MAX)),
+                })
+                .collect();
+            let call = |words: &[U256]| [selector.as_slice(), &words.iter().flat_map(|w| w.to_be_bytes::<32>()).collect::<Vec<u8>>()].concat();
+            let answer = judge(&call(&words)).unwrap_or_else(|| panic!("a call within the rules the phone read is refused: 0x{}", hex::encode(&config)));
+            assert_eq!(answer.len(), 160);
+            // what is charged is what the phone read as charged
+            let charged = rules.iter().find_map(|r| match r {
+                WordRule::Charged(t) => Some(*t),
+                _ => None,
+            });
+            assert_eq!(Address::from_slice(&answer[12..32]), charged.unwrap_or(Address::ZERO), "the token charged");
+            assert_eq!(U256::from_be_slice(&answer[32..64]), if charged.is_some() { amount } else { U256::ZERO }, "the amount charged");
+            assert!(answer[64..128].iter().all(|b| *b == 0), "a call, not an order");
+            let hash = alloy::primitives::keccak256((U256::ZERO, alloy::primitives::keccak256(call(&words))).abi_encode());
+            assert_eq!(&answer[128..160], hash.as_slice(), "the call's hash");
+            // each held word, changed alone, is refused
+            for (i, r) in rules.iter().enumerate() {
+                let mut other = words.clone();
+                match r {
+                    WordRule::IsAccount | WordRule::IsValue(_) => other[i] ^= U256::from(1u8),
+                    WordRule::AtMost(bound) if *bound != U256::MAX => other[i] = *bound + U256::from(1u8),
+                    _ => continue,
+                }
+                assert!(judge(&call(&other)).is_none(), "a call that breaks the rule of word {i} passes: 0x{}", hex::encode(&config));
+            }
+            // a word more, and a word less where there is one
+            let mut longer = words.clone();
+            longer.push(U256::ZERO);
+            assert!(judge(&call(&longer)).is_none(), "a call longer than its rules passes");
+            if !words.is_empty() {
+                assert!(judge(&call(&words[..words.len() - 1])).is_none(), "a call shorter than its rules passes");
+            }
+        }
+        // a function the phone did not read is not called
+        assert!(judge(&[0xee, 0xee, 0xee, 0xee]).is_none(), "a function the phone did not read is called: 0x{}", hex::encode(&config));
+    }
+    // the generator reaches all three kinds
+    assert!(both >= 100 && chain_only >= 5 && neither >= 50, "accepted by both {both}, by the decoder only {chain_only}, by neither {neither}");
+    eprintln!("configs: {both} accepted by both, {chain_only} by the decoder only, {neither} by neither");
+
+    // The difference by design: a charge in an address without code. The phone reads it,
+    // since bytes cannot show code; the decoder's `checkConfig` refuses it.
+    let charges_nothing = k::call_rules_config(&[(alloy::primitives::FixedBytes::from([1, 2, 3, 4]), vec![WordRule::Charged(codeless)])]);
+    assert!(rules_terms(&charges_nothing).is_ok());
+    assert!(ask("checkConfig(bytes)", (charges_nothing.clone(),).abi_encode_params()).is_none());
 }
 
 /// An account is created through ZeroDev's staked FactoryStaker when the
