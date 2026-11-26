@@ -29,6 +29,9 @@ const VALIDATION_TYPE_PERMISSION: u8 = 0x02;
 const SELECTOR_INCREMENT: [u8; 4] = [0xd0, 0x9d, 0xe0, 0x8a];
 const SELECTOR_ERC20_TRANSFER: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
 const SELECTOR_ERC20_APPROVE: [u8; 4] = [0x09, 0x5e, 0xa7, 0xb3];
+/// `deposit()` and `withdraw(uint256)` of wrapped ether (WETH9).
+const SELECTOR_WETH_DEPOSIT: [u8; 4] = [0xd0, 0xe3, 0x0d, 0xb0];
+const SELECTOR_WETH_WITHDRAW: [u8; 4] = [0x2e, 0x1a, 0x7d, 0x4d];
 
 /// One account this phone holds a key for (§5.4), with the options chosen
 /// at enrollment.
@@ -100,6 +103,10 @@ pub struct Facts {
     pub trading_policy_modules: Vec<Address>,
     /// `AgentPolicy` instances known to hold limits per id of an ERC-6909 contract.
     pub id_policy_modules: Vec<Address>,
+    /// The tokens among `tokens` that wrap the chain's native currency
+    /// (wrapped ether): `deposit()` and `withdraw(uint256)` are read there
+    /// only (#213).
+    pub wrapped_native: Vec<Address>,
     /// The venue decoders this build can read, by address.
     pub venues: BTreeMap<Address, Venue>,
 }
@@ -1088,7 +1095,35 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
                         b.row(s, "Token payee", format!("{}: only to {}", b.name(*token), b.name(*payee)));
                     }
                 }
-                None => b.row(s, "Token payee", format!("{}: anyone — the agent picks the recipient and the spender", b.name(*token))),
+                // No payee list (#214). What the agent can make a recipient depends on
+                // what the mandate gives it for this token.
+                // A function of the token is on the allow-list: the agent calls it
+                // with the recipient or the spender it chooses.
+                None if targets.contains(token) => {
+                    b.row(s, "Token payee", format!("{}: anyone — the agent picks the recipient and the spender", b.name(*token)))
+                }
+                // No function of the token, but a signing domain: the agent signs an
+                // x402 payment to an address it chooses, and without a list the
+                // policy binds no recipient for it.
+                None if !domain.is_zero() => b.row(
+                    s,
+                    "Token payee",
+                    format!(
+                        "{}: anyone, by x402 payment — the agent picks who is paid; the mandate lists no function of this token, so it cannot transfer or approve it by a call",
+                        b.name(*token)
+                    ),
+                ),
+                // Neither: the agent has no recipient to pick. The cap then bounds
+                // what a registered order takes, and an order pays only the account,
+                // through the spender the owner approved.
+                None => b.row(
+                    s,
+                    "Token payee",
+                    format!(
+                        "{}: none — the mandate lists no function of this token and no x402 payment in it: the agent cannot transfer or approve it, and the cap bounds what its registered orders take",
+                        b.name(*token)
+                    ),
+                ),
             }
         }
         // Limits per id of an ERC-6909 contract. The amounts are raw: this build
@@ -1340,6 +1375,29 @@ fn external_call(
         }
         return Ok(());
     }
+    // Wrapped ether, on the token the build knows as such and nowhere else
+    // (#213): `deposit()` wraps the value sent with it, `withdraw(uint256)`
+    // gives it back. Both move value between the account's own two forms of
+    // it. The same selectors on any other address stay undecoded.
+    if b.facts.wrapped_native.contains(&target) {
+        let symbol = b.facts.tokens.get(&target).map_or_else(|| "the wrapped token".to_string(), |t| t.symbol.clone());
+        if selector == SELECTOR_WETH_DEPOSIT && data.len() == 4 {
+            if value.is_zero() {
+                b.row(s, "Wrap", format!("nothing: deposit() with no value sent, the account's {symbol} does not change"));
+            } else {
+                b.row(s, "Wrap", format!("{} ETH into {symbol}, kept by this account", format_ether(value)));
+            }
+            return Ok(());
+        }
+        if selector == SELECTOR_WETH_WITHDRAW && data.len() == 36 {
+            if !value.is_zero() {
+                return Err(format!("a withdraw of {symbol} that also sends value; refused"));
+            }
+            let amount = b.token_amount(target, U256::from_be_slice(&data[4..36]));
+            b.row(s, "Unwrap", format!("{amount} into ETH, kept by this account"));
+            return Ok(());
+        }
+    }
     if !acct.expert_mode {
         return Err(format!(
             "a call to {} with function 0x{} this version cannot decode; from the root key it can move everything the account holds (expert mode is off)",
@@ -1555,6 +1613,7 @@ mod tests {
             entry_point: None,
             trading_policy_modules: vec![POLICY],
             id_policy_modules: vec![POLICY],
+            wrapped_native: vec![],
             venues: BTreeMap::new(),
         }
     }
@@ -2199,8 +2258,47 @@ mod tests {
         assert!(t.contains("x402 payments allowed"), "{t}");
         assert!(t.contains("Allow permission 0x74657331 to call: execute"), "{t}");
         assert!(!r.needs_second_confirmation(), "{t}");
-        // no payee list: the screen says who may be paid
-        assert!(t.contains("anyone — the agent picks the recipient and the spender"), "{t}");
+        // No payee list (#214). What the row says depends on what the mandate
+        // gives the agent for this token: a function of it, x402 payments in
+        // it, or neither.
+        let payee_row = |targets: Vec<Address>, domain: B256| {
+            let p = kernel::PolicyParams {
+                // one function for each target: the counter's increment(), the token's transfer
+                selectors: targets.iter().map(|t| FixedBytes::from(if *t == COUNTER { SELECTOR_INCREMENT } else { [0xa9, 0x05, 0x9c, 0xbb] })).collect(),
+                targets,
+                max_value_per_op: 1000,
+                budget: 10u128.pow(18),
+                valid_until: NOW + 86_400,
+                tokens: vec![(SIGNER, 5, 50, domain)],
+                valid_after: 0,
+                payees: vec![],
+            };
+            let pdata = kernel::permission_data(POLICY, &p, SIGNER, &key(2));
+            let mut o = op(kernel::execute_batch_calldata(vec![
+                (me, U256::ZERO, kernel::install_permission_calldata(perm, pdata, 1)),
+                (me, U256::ZERO, kernel::grant_execute_calldata(perm)),
+            ]));
+            o.gas_fees = kernel::pack_gas(1, 1);
+            let r = open(&o);
+            let t = r.text();
+            assert_eq!(r.verdict, Verdict::Sign, "{t}");
+            let rows: Vec<&str> = t.lines().filter(|l| l.contains("Token payee: ")).collect();
+            assert_eq!(rows.len(), 1, "{t}");
+            rows[0].to_string()
+        };
+        let x402 = B256::repeat_byte(1);
+        // x402 payments in the token and no function of it: the agent signs a
+        // payment to whom it chooses, and the screen must not say "none"
+        let row = payee_row(vec![COUNTER], x402);
+        assert!(row.contains("anyone, by x402 payment — the agent picks who is paid"), "{row}");
+        // neither a function of the token nor x402: no recipient for the agent to pick
+        let row = payee_row(vec![COUNTER], B256::ZERO);
+        assert!(row.contains("none — the mandate lists no function of this token") && !row.contains("anyone"), "{row}");
+        // a function of the token on the allow-list, with x402 or without: the agent picks
+        for domain in [x402, B256::ZERO] {
+            let row = payee_row(vec![COUNTER, SIGNER], domain);
+            assert!(row.contains("anyone — the agent picks the recipient and the spender"), "{row}");
+        }
 
         // the same mandate with a payee list for its token
         let listed = kernel::PolicyParams { payees: vec![(SIGNER, vec![COUNTER, RECOVERY])], ..params };
@@ -2314,6 +2412,52 @@ mod tests {
         let t = r.text();
         assert_eq!(r.verdict, Verdict::Sign, "{t}");
         assert!(t.contains("! Hand control of this account to validator: 0x3000000000000000000000000000000000000003") && !t.contains("to key"), "{t}");
+    }
+
+    /// #213: on the token the build knows as wrapped ether, and there only, a
+    /// root call of `deposit()` or `withdraw(uint256)` is read as a wrap or
+    /// an unwrap. Anywhere else, and in any other shape, it stays a call the
+    /// phone cannot decode.
+    #[test]
+    fn wrapped_ether_is_wrapped_and_unwrapped_from_the_root_key() {
+        let mut wraps = trading_facts();
+        wraps.wrapped_native = vec![WETH];
+        let ask = |facts: &Facts, target: Address, value: u64, data: &[u8]| {
+            let mut o = op(kernel::execute_calldata(target, U256::from(value), data));
+            o.gas_fees = kernel::pack_gas(1, 1);
+            let (bytes, c) = request(&o);
+            open_request(&bytes, &c, NOW, &enrolled(), facts)
+        };
+        let deposit = [0xd0, 0xe3, 0x0d, 0xb0];
+        let withdraw = |amount: u64| [&[0x2e, 0x1a, 0x7d, 0x4d][..], &U256::from(amount).to_be_bytes::<32>()].concat();
+        let two_finney = 2_000_000_000_000_000u64;
+
+        // deposit() with value: a wrap of that much
+        let r = ask(&wraps, WETH, two_finney, &deposit);
+        assert_eq!(r.verdict, Verdict::Sign, "{}", r.text());
+        assert!(r.text().contains("Wrap: 0.002 ETH into WETH, kept by this account"), "{}", r.text());
+        // without value it wraps nothing, and the screen says so
+        let r = ask(&wraps, WETH, 0, &deposit);
+        assert_eq!(r.verdict, Verdict::Sign, "{}", r.text());
+        assert!(r.text().contains("Wrap: nothing"), "{}", r.text());
+        // withdraw(amount): an unwrap of that much, in the token's units
+        let r = ask(&wraps, WETH, 0, &withdraw(two_finney));
+        assert_eq!(r.verdict, Verdict::Sign, "{}", r.text());
+        assert!(r.text().contains("Unwrap: 0.002 WETH into ETH, kept by this account"), "{}", r.text());
+
+        // a withdraw that also sends value
+        assert!(matches!(ask(&wraps, WETH, 1, &withdraw(two_finney)).verdict, Verdict::Refuse(ref m) if m.contains("also sends value")));
+        // the same calls where the build does not know the token as wrapped ether:
+        // the token without the fact, another token, an unknown address
+        for (facts, target) in [(trading_facts(), WETH), (wraps.clone(), USD), (wraps.clone(), PAYMASTER)] {
+            for data in [deposit.to_vec(), withdraw(two_finney)] {
+                assert!(matches!(ask(&facts, target, 0, &data).verdict, Verdict::Refuse(ref m) if m.contains("cannot decode")), "{target} {data:02x?}");
+            }
+        }
+        // another shape: bytes after deposit(), a short or long withdraw
+        for data in [[&deposit[..], &[0u8; 32][..]].concat(), withdraw(two_finney)[..35].to_vec(), [&withdraw(two_finney)[..], &[0u8][..]].concat()] {
+            assert!(matches!(ask(&wraps, WETH, 0, &data).verdict, Verdict::Refuse(ref m) if m.contains("cannot decode")), "{data:02x?}");
+        }
     }
 
     #[test]
