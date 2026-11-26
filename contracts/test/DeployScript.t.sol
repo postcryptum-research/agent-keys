@@ -68,7 +68,7 @@ contract DeployScriptTest is Test {
     /// @dev Against the file as it stands for Base Sepolia.
     function test_theRecordedFileGivesTheExpectedNames() public view {
         string[] memory keys = vm.parseJsonKeys(vm.readFile("deployments/84532.json"), "$");
-        assertEq(script.nextVersionKey(keys, "agentPolicy"), "agentPolicyV11");
+        assertEq(script.nextVersionKey(keys, "agentPolicy"), "agentPolicyV12");
         assertEq(script.nextVersionKey(keys, "p256Signer"), "p256SignerV3");
         assertEq(script.nextVersionKey(keys, "demoCounter"), "demoCounterV2");
         assertEq(script.nextVersionKey(keys, "cowSwapDecoder"), "cowSwapDecoderV1");

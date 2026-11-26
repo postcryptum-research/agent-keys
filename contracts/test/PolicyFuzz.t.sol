@@ -72,10 +72,10 @@ contract SettledNonces {
 ///   below) decides each operation on its own, and the policy must decide
 ///   the same; the mandate's counters must never pass its limits.
 /// - `testFuzz_differential_*`: the policy in the source and the instance
-///   deployed to Base Sepolia on 2026-11-25 (its runtime code, in
+///   deployed to Base Sepolia on 2026-11-26 (its runtime code, in
 ///   `test/vectors`) get the same mandate and the same operations and must
 ///   agree on every decision and every view. That instance was built from
-///   commit `60e773be7c7f071a4e5a69f84e7af3697092a4ef`, so a difference is a
+///   commit `e48b93e001f34f460bd4845d231b8e0ee5d26ad6`, so a difference is a
 ///   change to the source since, or a bug in one of the two.
 ///
 /// More runs: `FOUNDRY_FUZZ_RUNS=20000 forge test --match-contract PolicyFuzz`.
@@ -458,7 +458,7 @@ contract PolicyFuzzModel is PolicyFuzzBase {
 /// The source against the deployed instance.
 contract PolicyFuzzDifferential is PolicyFuzzBase {
     AgentPolicy internal fresh; // the source
-    AgentPolicy internal deployed; // Base Sepolia's runtime code of 2026-11-25
+    AgentPolicy internal deployed; // Base Sepolia's runtime code of 2026-11-26
 
     bytes32[] internal digests;
 
@@ -483,7 +483,7 @@ contract PolicyFuzzDifferential is PolicyFuzzBase {
         vm.etch(TOKEN_B, nonces);
         fresh = new AgentPolicy(NONCE_ASSERT);
         deployed = AgentPolicy(address(0xDE9107ED));
-        vm.etch(address(deployed), vm.parseBytes(vm.readFile("test/vectors/agent-policy-84532-0xe52825D4.hex")));
+        vm.etch(address(deployed), vm.parseBytes(vm.readFile("test/vectors/agent-policy-84532-0x530DD3C0.hex")));
         assertEq(deployed.NONCE_ASSERT(), NONCE_ASSERT, "the vector is not the instance it is taken for");
         account.install(fresh, _installData(fresh));
         account.install(deployed, _installData(deployed));

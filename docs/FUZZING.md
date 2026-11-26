@@ -18,7 +18,7 @@ budget, one past it), with a share of damaged ones.
 | `testFuzz_model_decisionsAndCounters` | a second, plain statement of the rules (the model in the test) and the policy decide every operation alike, 40 in a row per seed, and count alike; no counter passes its limit |
 | `testFuzz_model_arbitraryCallDataIsRefused` | bytes that are no `execute` call are never let through |
 | `testFuzz_model_arbitraryExecuteBodyStaysWithinLimits` | an `execute` with arbitrary bytes behind it moves no counter past one operation's limits |
-| `testFuzz_differential_sourceAgainstTheDeployedInstance` | the policy in the source and the runtime code deployed to Base Sepolia on 2026-11-25 agree on every decision, every returned validation word and every view, 40 operations per seed, across uninstall and reinstall; here the operations also go through a Safe, MultiSend batches and x402 registrations. Between operations the account asks for a registered authorization back (`x402Reclaim`), as registered or with one field changed, after time has moved or the token has come to say the nonce was used: both answer alike, and as the rule says on its own (only what is registered, past its `validBefore` and not settled comes back, once, and the token's counter falls by exactly its value) |
+| `testFuzz_differential_sourceAgainstTheDeployedInstance` | the policy in the source and the runtime code deployed to Base Sepolia on 2026-11-26 agree on every decision, every returned validation word and every view, 40 operations per seed, across uninstall and reinstall; here the operations also go through a Safe, MultiSend batches and x402 registrations. Between operations the account asks for a registered authorization back (`x402Reclaim`), as registered or with one field changed, after time has moved or the token has come to say the nonce was used: both answer alike, and as the rule says on its own (only what is registered, past its `validBefore` and not settled comes back, once, and the token's counter falls by exactly its value) |
 | `testFuzz_differential_mandatesFromTheSeed` | both install or both refuse a mandate built from the seed (it draws from everything install must refuse), and what is then readable of it is the same |
 | `testFuzz_differential_arbitraryCallData`, `…arbitraryInstallData` | the same answer from both for arbitrary bytes |
 
@@ -27,8 +27,8 @@ instance differed only in where they kept their state
 ([#83](https://github.com/postcryptum-research/agent-keys/issues/83)): any
 difference in behaviour was a bug in one of them, and 10,000 runs found
 none. The vector in `contracts/test/vectors/` is now the runtime code of
-the `AgentPolicy` deployed on 2026-11-25 from commit
-`60e773be7c7f071a4e5a69f84e7af3697092a4ef`, read from Base Sepolia, so both
+the `AgentPolicy` deployed on 2026-11-26 from commit
+`e48b93e001f34f460bd4845d231b8e0ee5d26ad6`, read from Base Sepolia, so both
 sides are the same code: the tests hold what is deployed to the source, and
 guard the next change to it. Approvals are drawn with any amount and every
 mandate goes to both, since the instance has the source's rules (no
@@ -419,7 +419,7 @@ What breaking them one at a time found: with the budgets set at first (a token c
 
 **In CI:** `.github/workflows/kontrol.yml` runs the proofs, and each break in a job of its own, by hand, once a week, and on a pull request that changes `AgentPolicy.sol`, the harness, the breaks, `foundry.toml` or the workflow. A proof reported vacuous fails the run. The image is pinned by digest. Kontrol sends anonymous usage data unless `KPROFILE_TELEMETRY_DISABLED=true` is set, as the workflow does. The command to run it by hand is in the harness's header. Its first run, on GitHub's `ubuntu-latest` runner on 2026-11-24 ([#135](https://github.com/postcryptum-research/agent-keys/pull/135)), passed all three proofs: pulling the image took 45 s, `kontrol build` 2 min 9 s, and `kontrol prove` with three workers 6 min 49 s, about 10 min 30 s for the whole job.
 
-**The run of the eleven proofs on 2026-11-25**, on the policy deployed to both test networks (master `60e773be7c7f071a4e5a69f84e7af3697092a4ef`, with #191, merged into this harness; [the run](https://github.com/postcryptum-research/agent-keys/actions/runs/45661617595), GitHub's `ubuntu-latest`, four vCPUs):
+**The run of the eleven proofs on 2026-11-25**, on the policy of master `60e773be7c7f071a4e5a69f84e7af3697092a4ef` (with #191, merged into this harness; [the run](https://github.com/postcryptum-research/agent-keys/actions/runs/45661617595), GitHub's `ubuntu-latest`, four vCPUs):
 - **Proofs:** all eleven passed, none vacuous; the `prove` job took 34 min with three workers.
 - **Each proof's time:**
 
@@ -438,6 +438,7 @@ What breaking them one at a time found: with the budgets set at first (a token c
   | `check_allowance_mustBeWithdrawn` | 14 min 14 s |
 
 - **Breaks:** each of the ten made its proof fail, in a job of its own of 9 to 16 min, beside the proofs.
+- **The policy deployed since 2026-11-26** adds the batch rule of #206. Kontrol ran on it in that pull request's checks ([run 45702180453](https://github.com/postcryptum-research/agent-keys/actions/runs/45702180453)): the eleven proofs passed and each of the ten breaks failed its proof.
 
 **What it does not prove** ([#130](https://github.com/postcryptum-research/agent-keys/issues/130)):
 - **Any number of legs.** The batch, Safe and multiSend proofs fix the number of legs at two. A loop over a length the caller chooses stays with the fuzzing above.
