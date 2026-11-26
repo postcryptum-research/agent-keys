@@ -8,4 +8,8 @@ description = "Public, non-secret data verified 2026-11-19"
 regexes = [
   '''0x036CbD53842c5426634e7929541eC2318f3dCF7e''',            # Base Sepolia USDC token address (public)
   '''\b[0-9A-Z]{5}-[0-9A-Z]{5}-[0-9A-Z]{5}-[0-9A-Z]{5}\b''',   # PUBLIC key fingerprints
+  # Public contract addresses on Sepolia, verified 2026-11-26: the rule fires on the word "token" beside them
+  '''0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14''',            # Sepolia WETH token address (public)
+  '''0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238''',            # Sepolia USDC token address (public)
+  '''0xC92E8bdf79f0507f65a392b0ab4667716BFE0110''',            # CoW Protocol's vault relayer (public)
 ]
