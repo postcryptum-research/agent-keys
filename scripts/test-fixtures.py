@@ -47,6 +47,7 @@ CREATION = {
         "mockTokenInitCode": "AgentPermission.t.sol/MockToken",
         "oneInchLimitOrderDecoderInitCode": "OneInchLimitOrderDecoder.sol/OneInchLimitOrderDecoder",
         "routerStandInInitCode": "OneInchLimitOrderDecoder.t.sol/RouterStandIn",
+        "relayerInitCode": "Trading.t.sol/Relayer",
     },
 }
 

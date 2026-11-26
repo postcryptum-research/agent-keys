@@ -687,6 +687,36 @@ enum OpCmd {
         #[arg(long)]
         safe_nonce: Option<String>,
     },
+    /// Several calls as one operation: the mandate judges every one of
+    /// them, and they execute together or not at all. This is how the agent
+    /// uses a protocol that pulls tokens: the allowance, the call, and the
+    /// allowance taken back, in one operation (`--allow`), since the mandate
+    /// accepts an approval only with its withdrawal in the same operation.
+    Batch {
+        #[command(flatten)]
+        agent: AgentArgs,
+        /// One call, `<target>:<wei>:<0x calldata>`; repeat it for each call, in order.
+        #[arg(long = "call")]
+        calls: Vec<String>,
+        /// An allowance for the length of the operation,
+        /// `<token>:<spender>:<amount>` in the token's smallest units: the
+        /// batch begins with `approve(spender, amount)` and ends with
+        /// `approve(spender, 0)`. Repeatable.
+        #[arg(long = "allow")]
+        allowances: Vec<String>,
+        /// Sign with the owner key on the root path instead of the agent permission.
+        #[arg(long)]
+        root: bool,
+        /// Let the paymaster pay instead of the account.
+        #[arg(long)]
+        sponsored: bool,
+        /// Print the result as one JSON object on stdout.
+        #[arg(long)]
+        json: bool,
+        /// Use this EntryPoint nonce instead of the next free one (see `op send --nonce`).
+        #[arg(long)]
+        nonce: Option<String>,
+    },
 }
 
 /// Wire format shared with `contracts/test`. Every field is 0x-prefixed hex so
@@ -1450,6 +1480,26 @@ async fn run() -> Result<()> {
                     ),
                     None => s.send_op(target, value, data, root, sponsored, nonce).await?,
                 };
+                if json {
+                    let out = serde_json::json!({
+                        "account": s.account.to_string(),
+                        "userOpHash": inc.user_op_hash.to_string(),
+                        "nonce": format!("{:#x}", inc.nonce),
+                        "tx": inc.tx.to_string(),
+                        "block": inc.block,
+                        "gasUsed": inc.gas_used,
+                    });
+                    println!("{out}");
+                } else {
+                    println!("included: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
+                }
+            }
+            OpCmd::Batch { agent, calls, allowances, root, sponsored, json, nonce } => {
+                let s = session(&agent).await?;
+                let nonce = nonce.map(|n| n.parse::<U256>()).transpose().context("--nonce")?;
+                let batch = chain::batch_calls(&calls, &allowances)?;
+                eprintln!("batch:          {} call(s) in one operation", batch.len());
+                let inc = s.send_batch(batch, root, sponsored, nonce).await?;
                 if json {
                     let out = serde_json::json!({
                         "account": s.account.to_string(),

@@ -55,6 +55,11 @@ tx [`0x785332105fd8085d50e542ff9f677eba964399bbc0d71333ddd71fed03e669bb`](https:
   (settlement tx [`0xc7cc5d07e3156edde4cb85ac264544f508f931e4f1fdaf1eb0811622a3f98fa0`](https://sepolia.etherscan.io/tx/0xc7cc5d07e3156edde4cb85ac264544f508f931e4f1fdaf1eb0811622a3f98fa0));
   the whole run, step by step:
   [`docs/TRADING_WALKTHROUGH.md`](TRADING_WALKTHROUGH.md).
+- Protocols — an agent supplies to Aave V3 and withdraws from it under a
+  mandate with a token limit and the pool's two compact calls, shown against
+  the pool's own code on a fork of Base Sepolia; which calls of Aave,
+  Compound, Lido and others can go on a mandate, and which never:
+  [`docs/DAPPS.md`](DAPPS.md).
 - Existing agent frameworks on top — Coinbase AgentKit, a Claude Code /
   OpenClaw skill, Jinn, Olas and ElizaOS, each run on Base Sepolia; the
   ElizaOS agent also pays for APIs with x402
