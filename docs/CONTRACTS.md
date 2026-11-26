@@ -10,8 +10,8 @@ are those of Base Sepolia (chain 84532), from
 `contracts/deployments/84532.json`, which keeps earlier instances under
 versioned names. Each contract answers `VERSION()`: 0.1.0 for every
 contract until the first audited release, when a change to a contract's
-bytecode starts raising it (house rule 9). The instances listed are built
-from commit `60e773be7c7f071a4e5a69f84e7af3697092a4ef`, every contract at
+bytecode starts raising it (house rule 9). The instances listed are as
+commit `e48b93e001f34f460bd4845d231b8e0ee5d26ad6` builds them, every contract at
 0.1.0, and Sepolia has them at the same addresses
 ([`docs/DEPLOYMENTS.md`](DEPLOYMENTS.md)).
 
@@ -20,7 +20,7 @@ from commit `60e773be7c7f071a4e5a69f84e7af3697092a4ef`, every contract at
 | `P256Validator` | the owner key, as the account's root | Kernel, from the account | `0x9b6f7A83e10F3360af6B34F672c0AC5295f72d63` |
 | `P256RecoveryValidator` | the recovery key, granted only `changeRootValidator` | Kernel, from the account | `0xb7a06e6c7B5cC9852578EF89f38d161C31218047` |
 | `P256Signer` | the agent key, as one Kernel permission | Kernel, from the account | `0xd88d25Ca3e042A28893781935756ee90Bc2d2769` |
-| `AgentPolicy` | the agent's mandate, as that permission's policy | Kernel, from the account; the account, for x402 and orders | `0xe52825D44396d72cA17adF0c0260d468e94F8C94` |
+| `AgentPolicy` | the agent's mandate, as that permission's policy | Kernel, from the account; the account, for x402 and orders | `0x530DD3C000b3939294072409834c4c4dd160BCd9` |
 | `P256Point` | the on-curve check (library) | the key modules, at install | none: compiled into them |
 | `SafeNonceAssert` | the replay guard of an agent's Safe transaction | the account, in a batch | `0x29f600cBcdC5221a63bD5c88F4a75E20c5CBe219` |
 | `WhitelistPaymaster` | a gas sponsor with a budget per account | the EntryPoint; its owner | `0x657792557C1D40f2Da031FD7aB277078D2c0a4cb` |
@@ -562,9 +562,9 @@ which refuses the operation all the same [I].
   the CLI builds the plain form only; a hook needs those two, not a new
   policy.
 
-**Instances.** The current one, `0xe52825D44396d72cA17adF0c0260d468e94F8C94`,
+**Instances.** The current one, `0x530DD3C000b3939294072409834c4c4dd160BCd9`,
 is `agentPolicy` on both chains: built from commit
-`60e773be7c7f071a4e5a69f84e7af3697092a4ef`, with every rule of this
+`e48b93e001f34f460bd4845d231b8e0ee5d26ad6`, with every rule of this
 section, periods, venues and the venue's spender as a place (#149) [V
 `contracts/deployments/84532.json`, `contracts/deployments/11155111.json`,
 `docs/DEPLOYMENTS.md`]. The instances it replaced stay recorded, each with

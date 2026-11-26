@@ -43,10 +43,10 @@ const TOKENS: &[(u64, Address, &str, u8, B256)] = &[
 ];
 
 /// The current `AgentPolicy`, the same address on both chains: built from
-/// commit `60e773be7c7f071a4e5a69f84e7af3697092a4ef`, with every feature of
+/// commit `e48b93e001f34f460bd4845d231b8e0ee5d26ad6`, with every feature of
 /// the source (payee lists, x402, a budget per period, venues, limits per
 /// ERC-6909 id).
-const CURRENT_POLICY: Address = address!("e52825D44396d72cA17adF0c0260d468e94F8C94");
+const CURRENT_POLICY: Address = address!("530DD3C000b3939294072409834c4c4dd160BCd9");
 
 /// `AgentPolicy` instances that enforce per-token payee lists (issue #66).
 /// An earlier instance decodes such a mandate and ignores the lists, so the
@@ -286,7 +286,7 @@ mod tests {
     fn sepolia() {
         let f = for_chain(11155111);
         assert!(chains().contains(&11155111));
-        let policy = address!("e52825D44396d72cA17adF0c0260d468e94F8C94");
+        let policy = address!("530DD3C000b3939294072409834c4c4dd160BCd9");
         assert_eq!(f.names[&policy], "AgentPolicy");
         assert_eq!((&f.policy_modules, &f.payee_policy_modules, &f.trading_policy_modules), (&vec![policy], &vec![policy], &vec![policy]));
         let first = address!("5Cfa68d42e4245c9Ba71e6103D4E2D99F3E40b42");
@@ -299,6 +299,12 @@ mod tests {
         let third = address!("2511FF556aa1534676A34F9B715232917e04FE5e");
         assert_eq!(f.names[&third], "AgentPolicy v3 (superseded)");
         assert!(!f.policy_modules.contains(&third) && !f.trading_policy_modules.contains(&third) && !f.payee_policy_modules.contains(&third));
+        // the instance of 2026-11-25, replaced the next day by the one with the batch rule of #206
+        let fourth = address!("e52825D44396d72cA17adF0c0260d468e94F8C94");
+        assert_eq!(f.names[&fourth], "AgentPolicy v4 (superseded)");
+        for list in [&f.policy_modules, &f.payee_policy_modules, &f.trading_policy_modules, &f.id_policy_modules] {
+            assert!(!list.contains(&fourth));
+        }
         assert_eq!(f.signer_modules, vec![address!("d88d25Ca3e042A28893781935756ee90Bc2d2769")]);
         assert_eq!(f.entry_point, Some(address!("0000000071727De22E5E9d8BAf0edAc6f37da032")));
 
@@ -340,7 +346,8 @@ mod tests {
         assert_eq!((weth.symbol.as_str(), weth.decimals, weth.domain), ("WETH", 18, B256::ZERO));
     }
 
-    /// The redeploy from `60e773be7c7f071a4e5a69f84e7af3697092a4ef`: on both
+    /// The redeploys of 2026-11-25 and 2026-11-26 (the policy from
+    /// `e48b93e001f34f460bd4845d231b8e0ee5d26ad6`): on both
     /// chains the current policy is read with every feature, CoW's venue is
     /// known with that chain's decoder code, and each instance it replaced
     /// is named under its versioned key as superseded.
@@ -435,7 +442,7 @@ mod tests {
     #[test]
     fn base_sepolia() {
         let f = for_chain(84532);
-        let policy = address!("e52825D44396d72cA17adF0c0260d468e94F8C94");
+        let policy = address!("530DD3C000b3939294072409834c4c4dd160BCd9");
         let signer = address!("d88d25Ca3e042A28893781935756ee90Bc2d2769");
         assert_eq!(f.names[&policy], "AgentPolicy");
         assert_eq!((&f.policy_modules, &f.signer_modules), (&vec![policy], &vec![signer]), "the current policy and signer only, each in its slot");
@@ -460,6 +467,12 @@ mod tests {
         assert_eq!(f.names[&v10], "AgentPolicy v10 (superseded)");
         for list in [&f.policy_modules, &f.payee_policy_modules, &f.trading_policy_modules, &f.id_policy_modules] {
             assert!(!list.contains(&v10));
+        }
+        // the instance of 60e773b, replaced by the one with the batch rule of #206: named, and read by nothing
+        let v11 = address!("e52825D44396d72cA17adF0c0260d468e94F8C94");
+        assert_eq!(f.names[&v11], "AgentPolicy v11 (superseded)");
+        for list in [&f.policy_modules, &f.payee_policy_modules, &f.trading_policy_modules, &f.id_policy_modules] {
+            assert!(!list.contains(&v11));
         }
         assert_eq!(f.payee_policy_modules, vec![policy]);
         assert_eq!(f.names[&address!("68544284bfDbbd6bDB9F6A1D80D05C387015daA9")], "P256Signer v1 (superseded)");

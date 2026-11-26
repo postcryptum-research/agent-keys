@@ -98,8 +98,10 @@ What the deployed contracts are compiled from, and what the accounts call.
      allow the calls the batch reads as, it passes without the rule and is
      refused with it]. In a batch the policy accepts, every pointer word
      and every leg lies inside `executionData`, which the policy and
-     Kernel read alike. The instances deployed on 2026-11-25 predate the
-     rule. There the case is closed by argument [I]: a leg read through a
+     Kernel read alike. The instances current since 2026-11-26 have the
+     rule; the ones of 2026-11-25 they replaced predate it
+     ([`DEPLOYMENTS.md`](DEPLOYMENTS.md)). There the case is closed by
+     argument [I]: a leg read through a
      pointer past the end must fit, head and data, in the last words of
      `executionData`, which are the first pointer words themselves, so
      its target is read from those pointer words: address 0 or a small
@@ -199,7 +201,7 @@ the Android and npm packages, and GitHub's advisories [V].
   bytes with the keccak hash
   `0x9933b3f70809361dcfebe1f731b129890454cc29af5b32840dcae92400a8826b`
   [V 2026-11-25].
-- On the instances deployed on 2026-11-25, every arrangement of a batch
+- On the instances deployed on 2026-11-25 and replaced on 2026-11-26, every arrangement of a batch
   whose pointer words lie past the end of `callData` (point 2 of the
   on-chain list): two are tested, the rest argued. The source refuses
   them all by rule.

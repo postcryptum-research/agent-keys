@@ -38,17 +38,19 @@ missing from this page.
   carries `string public constant VERSION`. Until the first audited release
   every contract stays at 0.1.0 and a fix is carried by a redeploy, not by
   a version change (house rule 9, `CLAUDE.md`). The current instances on
-  both chains are built from commit
-  `60e773be7c7f071a4e5a69f84e7af3697092a4ef`, every contract at `VERSION`
-  0.1.0. On Base Sepolia seven of them were deployed earlier the same day
-  from commit `772e8f1608bcdf8bc966cb81ef27c7446c0677d0`, which builds those
-  seven as `60e773be7c7f071a4e5a69f84e7af3697092a4ef` does; only
-  `AgentPolicy` differs between the two [V `scripts/source-record.sh
-  772e8f1608bcdf8bc966cb81ef27c7446c0677d0` on 2026-11-25]. Master may move ahead of them: `scripts/source-record.sh <commit>`
+  both chains are what commit
+  `e48b93e001f34f460bd4845d231b8e0ee5d26ad6` builds, every contract at `VERSION`
+  0.1.0. `AgentPolicy` was deployed from it on 2026-11-26. The other seven
+  were deployed on 2026-11-25, on Sepolia from commit
+  `60e773be7c7f071a4e5a69f84e7af3697092a4ef` and on Base Sepolia from commit
+  `772e8f1608bcdf8bc966cb81ef27c7446c0677d0`; both build those seven as
+  `e48b93e001f34f460bd4845d231b8e0ee5d26ad6` does, and only `AgentPolicy`
+  differs [V `scripts/source-record.sh` with each of the two commits, on
+  2026-11-26]. Master may move ahead of them: `scripts/source-record.sh <commit>`
   names every contract whose bytecode master no longer builds as that commit
-  does [V `scripts/source-record.sh 60e773be7c7f071a4e5a69f84e7af3697092a4ef`
-  on 2026-11-25, at this record's commit: `contracts/src` and
-  `foundry.toml` are as at that commit]. The earlier instances predate
+  does [V `scripts/source-record.sh origin/master` on 2026-11-26, at this
+  record's commit: `contracts/src` and `foundry.toml` are as at
+  `e48b93e001f34f460bd4845d231b8e0ee5d26ad6`]. The earlier instances predate
   `VERSION`: master's source no longer builds them, the commit named with
   each does.
 - **Earlier instances stay recorded** under versioned names (`agentPolicyV1`,
@@ -80,21 +82,23 @@ chain.
 | `P256Validator` | [`0x9b6f7A83e10F3360af6B34F672c0AC5295f72d63`](https://sepolia.basescan.org/address/0x9b6f7A83e10F3360af6B34F672c0AC5295f72d63) | the owner key: the account's root validator |
 | `P256RecoveryValidator` | [`0xb7a06e6c7B5cC9852578EF89f38d161C31218047`](https://sepolia.basescan.org/address/0xb7a06e6c7B5cC9852578EF89f38d161C31218047) | the cold recovery key, granted only `changeRootValidator` |
 | `P256Signer` | [`0xd88d25Ca3e042A28893781935756ee90Bc2d2769`](https://sepolia.basescan.org/address/0xd88d25Ca3e042A28893781935756ee90Bc2d2769) | the agent key, as one Kernel permission |
-| `AgentPolicy` | [`0xe52825D44396d72cA17adF0c0260d468e94F8C94`](https://sepolia.basescan.org/address/0xe52825D44396d72cA17adF0c0260d468e94F8C94) | the agent's mandate: targets, caps, budget, window, payees, x402, a budget per period, orders through a venue's decoder, and limits per ERC-6909 id |
+| `AgentPolicy` | [`0x530DD3C000b3939294072409834c4c4dd160BCd9`](https://sepolia.basescan.org/address/0x530DD3C000b3939294072409834c4c4dd160BCd9) | the agent's mandate: targets, caps, budget, window, payees, x402, a budget per period, orders through a venue's decoder, and limits per ERC-6909 id |
 | `SafeNonceAssert` | [`0x29f600cBcdC5221a63bD5c88F4a75E20c5CBe219`](https://sepolia.basescan.org/address/0x29f600cBcdC5221a63bD5c88F4a75E20c5CBe219) | the replay guard of an agent's Safe transaction |
 | `CowSwapDecoder` | [`0x42F62bF7134F5eF6d46d4BC07d806E77D1Df641a`](https://sepolia.basescan.org/address/0x42F62bF7134F5eF6d46d4BC07d806E77D1Df641a) | reads a CoW Swap order for the policy |
 | `WhitelistPaymaster` | [`0x657792557C1D40f2Da031FD7aB277078D2c0a4cb`](https://sepolia.basescan.org/address/0x657792557C1D40f2Da031FD7aB277078D2c0a4cb) | a gas sponsor with a budget per account; owner [`0x52370eE170c0E2767B32687166791973a0dE7966`](https://sepolia.basescan.org/address/0x52370eE170c0E2767B32687166791973a0dE7966) |
 | `DemoCounter` | [`0x29da894F3E456CAC92b3EC76710524E74411E99f`](https://sepolia.basescan.org/address/0x29da894F3E456CAC92b3EC76710524E74411E99f) | a demo target, with no rights over anything |
 
-Built from commit `60e773be7c7f071a4e5a69f84e7af3697092a4ef`, every contract
-at `VERSION` 0.1.0, with `contracts/script/Deploy.s.sol` and `REDEPLOY=true`.
+As commit `e48b93e001f34f460bd4845d231b8e0ee5d26ad6` builds them, every contract
+at `VERSION` 0.1.0, deployed with `contracts/script/Deploy.s.sol` and
+`REDEPLOY=true`.
 
-Deployed on 2026-11-25 by `0x52370eE170c0E2767B32687166791973a0dE7966`,
-each through the CREATE2 deployer, every transaction successful:
+Deployed by `0x52370eE170c0E2767B32687166791973a0dE7966`, each through the
+CREATE2 deployer, every transaction successful: `AgentPolicy` on 2026-11-26,
+the others on 2026-11-25.
 
 | Contract | Built from | Transaction |
 |---|---|---|
-| `AgentPolicy` | `60e773b` | [`0x274bf3dbc4a9745bd743d58499a5b7864a2964bb18c85d3913941b5859b4377a`](https://sepolia.basescan.org/tx/0x274bf3dbc4a9745bd743d58499a5b7864a2964bb18c85d3913941b5859b4377a) |
+| `AgentPolicy` | `e48b93e` | [`0x25bbc3e45e38284145b6cd59690d55091ebf64a525f066ad8b1c30c2dc766a0b`](https://sepolia.basescan.org/tx/0x25bbc3e45e38284145b6cd59690d55091ebf64a525f066ad8b1c30c2dc766a0b) |
 | `P256Validator` | `772e8f1` | [`0x17b09e1bb3e937b2ebb9381be132a9c7f8191f31b486bf3cc4b381f6a56355a5`](https://sepolia.basescan.org/tx/0x17b09e1bb3e937b2ebb9381be132a9c7f8191f31b486bf3cc4b381f6a56355a5) |
 | `P256RecoveryValidator` | `772e8f1` | [`0x2c74c492e604d31ac3c0322e26c2d1150491d17a3a794e0c2cc68d6baf221598`](https://sepolia.basescan.org/tx/0x2c74c492e604d31ac3c0322e26c2d1150491d17a3a794e0c2cc68d6baf221598) |
 | `P256Signer` | `772e8f1` | [`0x2bd74f20bf982107a19b97f4ac50de16c583aa45aec5eb0af127be94fb215333`](https://sepolia.basescan.org/tx/0x2bd74f20bf982107a19b97f4ac50de16c583aa45aec5eb0af127be94fb215333) |
@@ -103,8 +107,8 @@ each through the CREATE2 deployer, every transaction successful:
 | `WhitelistPaymaster` | `772e8f1` | [`0x7bfb78272819a92e3dc4e0224dc6898e0f9b27857b009dda3a5a3542b2255a28`](https://sepolia.basescan.org/tx/0x7bfb78272819a92e3dc4e0224dc6898e0f9b27857b009dda3a5a3542b2255a28) |
 | `CowSwapDecoder` | `772e8f1` | [`0x91c71c7b01d236ad37f0e057783c3fbafc6993a6a895ecce40e8439e88658186`](https://sepolia.basescan.org/tx/0x91c71c7b01d236ad37f0e057783c3fbafc6993a6a895ecce40e8439e88658186) |
 
-[V] Each instance compared on chain on 2026-11-25 with the build of
-`60e773be7c7f071a4e5a69f84e7af3697092a4ef`: `P256Validator`,
+[V] Each instance compared on chain on 2026-11-26 with the build of
+`e48b93e001f34f460bd4845d231b8e0ee5d26ad6`: `P256Validator`,
 `P256RecoveryValidator`, `P256Signer`, `SafeNonceAssert` and `DemoCounter`
 are equal byte for byte; `AgentPolicy`, `WhitelistPaymaster` and
 `CowSwapDecoder` are equal outside their immutable slots, which hold
@@ -131,6 +135,7 @@ there: `0x05a97329397200dF8795A882da0b5b1aD894EB97`, owner
 | `agentPolicyV8` | [`0x2E6F47B2F3d0F3E6071eCdBc0b445a2B26d23D95`](https://sepolia.basescan.org/address/0x2E6F47B2F3d0F3E6071eCdBc0b445a2B26d23D95) | 2026-11-20, `933b3d27f3d3bb74d94e535ca815f4765c821912` | payee lists and the per-operation token cap (#66, #76, #79) |
 | `agentPolicyV9` | [`0x12b7E79974CC4F4181a40Aa11f9d3170018ae0E2`](https://sepolia.basescan.org/address/0x12b7E79974CC4F4181a40Aa11f9d3170018ae0E2) | 2026-11-21, `50a95a679cb44963263ba97aeb264c421277a323` | storage owned by the account (#83); no budget per period and no venues |
 | `agentPolicyV10` | [`0x6b8F14421007FC49251F6B2d48071795A077B2D8`](https://sepolia.basescan.org/address/0x6b8F14421007FC49251F6B2d48071795A077B2D8) | 2026-11-25, `772e8f1608bcdf8bc966cb81ef27c7446c0677d0` (built from; transaction [`0x885578ae77e16c4428481f37b176d9562f223583f3201b5026e067e49ecfc031`](https://sepolia.basescan.org/tx/0x885578ae77e16c4428481f37b176d9562f223583f3201b5026e067e49ecfc031)) | carries #190: a Safe transaction with a nonzero `safeTxGas` lets its inner call fail without reverting the operation; replaced the same day by the instance of #191. Not for a mandate with a Safe |
+| `agentPolicyV11` | [`0xe52825D44396d72cA17adF0c0260d468e94F8C94`](https://sepolia.basescan.org/address/0xe52825D44396d72cA17adF0c0260d468e94F8C94) | 2026-11-25, `60e773be7c7f071a4e5a69f84e7af3697092a4ef` (built from; transaction [`0x274bf3dbc4a9745bd743d58499a5b7864a2964bb18c85d3913941b5859b4377a`](https://sepolia.basescan.org/tx/0x274bf3dbc4a9745bd743d58499a5b7864a2964bb18c85d3913941b5859b4377a)) | the fix of #190 (#191); without the batch rule of #206: a batch's pointer array is not held within its `executionData`. What that leaves open is on [`THIRD_PARTIES.md`](THIRD_PARTIES.md); replaced on 2026-11-26 |
 | `p256ValidatorV1` | [`0xDe1Af9b0Fcc5Dda03380b069F26EA2bfbd3c24D1`](https://sepolia.basescan.org/address/0xDe1Af9b0Fcc5Dda03380b069F26EA2bfbd3c24D1) | 2026-10-20, `2759d0e3a06505a5d5d1d44aae95ef050b7cc814` | the first owner-key validator |
 | `p256ValidatorV2` | [`0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2`](https://sepolia.basescan.org/address/0xdA4cd5c37a5B888826A7A9e09dF6A9033A1550c2) | 2026-10-20, `96d56ada9969304afafdddc126129dd472febea0` | the fixes of the audit of 2026-10-20 |
 | `p256SignerV1` | [`0x68544284bfDbbd6bDB9F6A1D80D05C387015daA9`](https://sepolia.basescan.org/address/0x68544284bfDbbd6bDB9F6A1D80D05C387015daA9) | 2026-10-20, `2759d0e3a06505a5d5d1d44aae95ef050b7cc814` | the first agent-key signer |
@@ -144,9 +149,9 @@ there: `0x05a97329397200dF8795A882da0b5b1aD894EB97`, owner
 
 [V] First recorded: the commit that added the address to
 `contracts/deployments/84532.json` (`git log -S <address>`); for
-`agentPolicyV10`, which this record is the first to name, the commit it was
-built from. Its code was compared on chain on 2026-11-25 with that build:
-equal outside the immutable slots.
+`agentPolicyV10` and `agentPolicyV11`, the commit each was built from. The
+code of each was compared on chain on 2026-11-25 with that build: equal
+outside the immutable slots.
 
 [V] The instances the redeploy replaced (`agentPolicyV9`, `p256ValidatorV2`,
 `p256RecoveryValidatorV2`, `p256SignerV2`, `safeNonceAssertV1`,
@@ -160,7 +165,7 @@ turned off: its code is that build's followed by solc's metadata.
 
 What the current instances change against them [V `git diff` and `git log`
 of `contracts/src` from `175acbf3a3127e804a45a3e4dd097165f0a4c922` to
-`60e773be7c7f071a4e5a69f84e7af3697092a4ef`]: every contract gains `VERSION`;
+`e48b93e001f34f460bd4845d231b8e0ee5d26ad6`]: every contract gains `VERSION`;
 `P256Validator` and `P256Signer` take install data of the exact length only
 (#154); `AgentPolicy` brings the budget per period and venues (#80), an x402
 refund only of the token that was charged (#134), the venue's spender
@@ -179,7 +184,10 @@ refused as a target (#149), and then:
   (#185), and limits per ERC-6909 id (#187);
 - a Safe transaction's `safeTxGas` and `baseGas` must be 0, as its
   `gasPrice` is, so that the Safe reverts with its inner call (#191, fixing
-  #190).
+  #190);
+- a batch's pointer array must end within its `executionData`, so that the
+  policy and the account read every call of a batch from the same bytes
+  (#206).
 
 ### Contracts of others that the account uses
 
@@ -203,21 +211,24 @@ The chain the trading mandate was first tried on. The tables are written from
 | `P256Validator` | [`0x9b6f7A83e10F3360af6B34F672c0AC5295f72d63`](https://sepolia.etherscan.io/address/0x9b6f7A83e10F3360af6B34F672c0AC5295f72d63) | the owner key: the account's root validator |
 | `P256RecoveryValidator` | [`0xb7a06e6c7B5cC9852578EF89f38d161C31218047`](https://sepolia.etherscan.io/address/0xb7a06e6c7B5cC9852578EF89f38d161C31218047) | the cold recovery key, granted only `changeRootValidator` |
 | `P256Signer` | [`0xd88d25Ca3e042A28893781935756ee90Bc2d2769`](https://sepolia.etherscan.io/address/0xd88d25Ca3e042A28893781935756ee90Bc2d2769) | the agent key, as one Kernel permission |
-| `AgentPolicy` | [`0xe52825D44396d72cA17adF0c0260d468e94F8C94`](https://sepolia.etherscan.io/address/0xe52825D44396d72cA17adF0c0260d468e94F8C94) | the agent's mandate: targets, caps, budget, window, payees, x402, a budget per period, orders through a venue's decoder, and limits per ERC-6909 id |
+| `AgentPolicy` | [`0x530DD3C000b3939294072409834c4c4dd160BCd9`](https://sepolia.etherscan.io/address/0x530DD3C000b3939294072409834c4c4dd160BCd9) | the agent's mandate: targets, caps, budget, window, payees, x402, a budget per period, orders through a venue's decoder, and limits per ERC-6909 id |
 | `CowSwapDecoder` | [`0x42F62bF7134F5eF6d46d4BC07d806E77D1Df641a`](https://sepolia.etherscan.io/address/0x42F62bF7134F5eF6d46d4BC07d806E77D1Df641a) | reads a CoW Swap order for the policy |
 | `SafeNonceAssert` | [`0x29f600cBcdC5221a63bD5c88F4a75E20c5CBe219`](https://sepolia.etherscan.io/address/0x29f600cBcdC5221a63bD5c88F4a75E20c5CBe219) | the replay guard of an agent's Safe transaction |
 | `WhitelistPaymaster` | [`0x657792557C1D40f2Da031FD7aB277078D2c0a4cb`](https://sepolia.etherscan.io/address/0x657792557C1D40f2Da031FD7aB277078D2c0a4cb) | a gas sponsor with a budget per account; owner [`0x52370eE170c0E2767B32687166791973a0dE7966`](https://sepolia.etherscan.io/address/0x52370eE170c0E2767B32687166791973a0dE7966) |
 | `DemoCounter` | [`0x29da894F3E456CAC92b3EC76710524E74411E99f`](https://sepolia.etherscan.io/address/0x29da894F3E456CAC92b3EC76710524E74411E99f) | a demo target, with no rights over anything |
 
-Built from commit `60e773be7c7f071a4e5a69f84e7af3697092a4ef`, every contract
-at `VERSION` 0.1.0, with `contracts/script/Deploy.s.sol` and `REDEPLOY=true`.
-The same addresses as on Base Sepolia: the same creation code.
+As commit `e48b93e001f34f460bd4845d231b8e0ee5d26ad6` builds them, every contract
+at `VERSION` 0.1.0, deployed with `contracts/script/Deploy.s.sol` and
+`REDEPLOY=true`. The same addresses as on Base Sepolia: the same creation
+code.
 
-Deployed on 2026-11-25 by `0x52370eE170c0E2767B32687166791973a0dE7966`,
-each through the CREATE2 deployer, all eight transactions successful. The
-chain runs Glamsterdam, so the gas limits were raised
-([`REDEPLOY.md`](REDEPLOY.md)); `AgentPolicy`'s deployment used 36,840,068
-gas.
+Deployed by `0x52370eE170c0E2767B32687166791973a0dE7966`, each through the
+CREATE2 deployer, every transaction successful: `AgentPolicy` on 2026-11-26
+from `e48b93e001f34f460bd4845d231b8e0ee5d26ad6`, the others on 2026-11-25
+from `60e773be7c7f071a4e5a69f84e7af3697092a4ef`. The chain runs Glamsterdam
+([`REDEPLOY.md`](REDEPLOY.md)): `AgentPolicy`'s deployment was sent with
+the script's limit of 48,354,777 gas, taken from the chain's estimate, and
+used 36,901,943.
 
 | Contract | Transaction |
 |---|---|
@@ -225,13 +236,13 @@ gas.
 | `P256RecoveryValidator` | [`0xc2c7d83f6f22be38668673eb72cf7af039190e1801ccb95805dd2f5ef260d051`](https://sepolia.etherscan.io/tx/0xc2c7d83f6f22be38668673eb72cf7af039190e1801ccb95805dd2f5ef260d051) |
 | `P256Signer` | [`0x435e480d64f5a35cc3462bdc5d351e92851f56a0cb847a4f2e3b2187c6fa6a3d`](https://sepolia.etherscan.io/tx/0x435e480d64f5a35cc3462bdc5d351e92851f56a0cb847a4f2e3b2187c6fa6a3d) |
 | `SafeNonceAssert` | [`0x57b39de67de42fabb71488813fdf337b0d3cbb0e2fb7b41c7657f968aaf38d0c`](https://sepolia.etherscan.io/tx/0x57b39de67de42fabb71488813fdf337b0d3cbb0e2fb7b41c7657f968aaf38d0c) |
-| `AgentPolicy` | [`0xb9ef70388a7a9be68ac37a65834b9b55cd47ef610e303d22651ff7bb963208a4`](https://sepolia.etherscan.io/tx/0xb9ef70388a7a9be68ac37a65834b9b55cd47ef610e303d22651ff7bb963208a4) |
+| `AgentPolicy` | [`0x2d32ef7b1ea810ff4de1a24c441a6c5e336d81ec4bf9717d0d278efcffd56ea8`](https://sepolia.etherscan.io/tx/0x2d32ef7b1ea810ff4de1a24c441a6c5e336d81ec4bf9717d0d278efcffd56ea8) |
 | `DemoCounter` | [`0x605bca9362a3f2195b432d94c893646ad66b5cddc8845ad362f577fbd967dd62`](https://sepolia.etherscan.io/tx/0x605bca9362a3f2195b432d94c893646ad66b5cddc8845ad362f577fbd967dd62) |
 | `WhitelistPaymaster` | [`0xa0e7428b05f6f8bd435be3748e58d2f7d862d8ac507431c647414ba639e650c0`](https://sepolia.etherscan.io/tx/0xa0e7428b05f6f8bd435be3748e58d2f7d862d8ac507431c647414ba639e650c0) |
 | `CowSwapDecoder` | [`0x9b6db47bf3edcf3f4d24203485bc9a9c85eff26b184267e9287efd991390f14c`](https://sepolia.etherscan.io/tx/0x9b6db47bf3edcf3f4d24203485bc9a9c85eff26b184267e9287efd991390f14c) |
 
-[V] Each instance compared on chain on 2026-11-25 with the build of that
-commit: the same result as on Base Sepolia, with CoW's domain separator on
+[V] Each instance compared on chain on 2026-11-26 with the build of
+`e48b93e001f34f460bd4845d231b8e0ee5d26ad6`: the same result as on Base Sepolia, with CoW's domain separator on
 this chain in the decoder, and the decoder's code hash
 `0xe11511d23d679dd68a71be1cfd2d6714ba3fb10e077c4db6c4bf3fe96d21e47e`, the
 one the phone's build names.
@@ -240,6 +251,7 @@ one the phone's build names.
 
 | Key | Address | Why it was replaced |
 |---|---|---|
+| `agentPolicyV4` | [`0xe52825D44396d72cA17adF0c0260d468e94F8C94`](https://sepolia.etherscan.io/address/0xe52825D44396d72cA17adF0c0260d468e94F8C94) | it lacks the batch rule of #206 (a batch's pointer array held within its `executionData`); built from `60e773be7c7f071a4e5a69f84e7af3697092a4ef`, deployed on 2026-11-25 in transaction [`0xb9ef70388a7a9be68ac37a65834b9b55cd47ef610e303d22651ff7bb963208a4`](https://sepolia.etherscan.io/tx/0xb9ef70388a7a9be68ac37a65834b9b55cd47ef610e303d22651ff7bb963208a4), replaced on 2026-11-26 |
 | `agentPolicyV3` | [`0x2511FF556aa1534676A34F9B715232917e04FE5e`](https://sepolia.etherscan.io/address/0x2511FF556aa1534676A34F9B715232917e04FE5e) | it does not refuse a venue's spender as a target (#149); the redeploy from `60e773be7c7f071a4e5a69f84e7af3697092a4ef` carries that fix and `VERSION` |
 | `agentPolicyV2` | [`0xb15700E18D058BF83f5d9D38b5407f214df5E410`](https://sepolia.etherscan.io/address/0xb15700E18D058BF83f5d9D38b5407f214df5E410) | it refunded an order's charge on the venue's word that the order was unfilled, and the venue lets a filled order's record be cleared |
 | `agentPolicyV1` | [`0x5Cfa68d42e4245c9Ba71e6103D4E2D99F3E40b42`](https://sepolia.etherscan.io/address/0x5Cfa68d42e4245c9Ba71e6103D4E2D99F3E40b42) | a registration could outlive its budget period |

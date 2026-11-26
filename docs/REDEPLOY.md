@@ -60,6 +60,10 @@ Sepolia (11155111). What is deployed where, with every earlier instance:
    chain's figure, a dry run against Sepolia gives `AgentPolicy` a limit
    of 48,273,733 gas; EIP-7825's cap of 2^24 applies to regular gas only,
    so such a transaction is valid [V the dry run, 2026-11-25; EIP-8037].
+   The redeploy of 2026-11-26 was the first broadcast sized this way: on
+   Sepolia `AgentPolicy` went out with a limit of 48,354,777 gas and used
+   36,901,943 [V transaction
+   `0x2d32ef7b1ea810ff4de1a24c441a6c5e336d81ec4bf9717d0d278efcffd56ea8`].
    Without an RPC to ask (a run with no `--rpc-url`), forge estimates as
    before. The addresses do not change: only the compilation decides them.
 
