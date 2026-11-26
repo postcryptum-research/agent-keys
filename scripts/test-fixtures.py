@@ -45,6 +45,8 @@ CREATION = {
         "cowSwapDecoderInitCode": "CowSwapDecoder.sol/CowSwapDecoder",
         "settlementInitCode": "Trading.t.sol/Settlement",
         "mockTokenInitCode": "AgentPermission.t.sol/MockToken",
+        "oneInchLimitOrderDecoderInitCode": "OneInchLimitOrderDecoder.sol/OneInchLimitOrderDecoder",
+        "routerStandInInitCode": "OneInchLimitOrderDecoder.t.sol/RouterStandIn",
     },
 }
 
@@ -91,7 +93,8 @@ def main():
                     fixture["contracts"][key]["code"] = now
         for key, name in CREATION[file].items():
             now = artifact(name)["bytecode"]["object"]
-            if fixture[key].lower() != now.lower():
+            # a key the fixture does not have yet is behind like any other
+            if fixture.get(key, "").lower() != now.lower():
                 behind.append(f"{file}: {key}")
                 fixture[key] = now
         if write:

@@ -111,12 +111,25 @@ pub struct Facts {
     pub venues: BTreeMap<Address, Venue>,
 }
 
+/// The decoders this build can read. Each has its own config encoding, read
+/// by its own function below, and its own rows on the owner's screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VenueKind {
+    /// `CowSwapDecoder`: CoW Protocol's orders, settled by its solvers.
+    CowSwap,
+    /// `OneInchLimitOrderDecoder`: a plain order of 1inch's Limit Order
+    /// Protocol, filled at 1inch's router by whoever holds it.
+    OneInchLimitOrder,
+}
+
 /// A trading venue's decoder the build knows (§6.7, issue #80): its code is
 /// a fact of the build, like its address, and so are the venue's own
 /// contract and the address that takes the tokens.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Venue {
     pub name: String,
+    /// Which decoder this is: how its config is read and what its orders are.
+    pub kind: VenueKind,
     /// `extcodehash` of the decoder as deployed.
     pub code_hash: B256,
     /// The venue's own contract (CoW: the settlement).
@@ -1214,6 +1227,35 @@ pub fn cow_terms(config: &[u8]) -> Result<CowTerms, String> {
     if (app_data, max_life, pairs.clone()).abi_encode() != config {
         return Err("is not canonical".into());
     }
+    check_pairs(max_life, &pairs)?;
+    Ok(CowTerms { app_data, max_life, pairs })
+}
+
+/// The terms of a `OneInchLimitOrderDecoder` config.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OneInchTerms {
+    pub max_life: u32,
+    /// `(sellToken, buyToken, minBuy, perSell)`.
+    pub pairs: Vec<(Address, Address, U256, U256)>,
+}
+
+/// Reads a `OneInchLimitOrderDecoder` config, or says what is wrong with it,
+/// under the same rule as `cow_terms`: only bytes that are the one canonical
+/// encoding of what it returns, and only a config the decoder's own
+/// `checkConfig` allows as far as bytes can show (it also asks for code at
+/// each token, which the phone cannot see: the laptop asks the chain).
+pub fn one_inch_terms(config: &[u8]) -> Result<OneInchTerms, String> {
+    type Config = (u32, Vec<(Address, Address, U256, U256)>);
+    let (max_life, pairs) = Config::abi_decode_validate(config).map_err(|e| format!("does not decode: {e}"))?;
+    if (max_life, pairs.clone()).abi_encode() != config {
+        return Err("is not canonical".into());
+    }
+    check_pairs(max_life, &pairs)?;
+    Ok(OneInchTerms { max_life, pairs })
+}
+
+/// What every decoder's `checkConfig` asks of the pairs and the lifetime.
+fn check_pairs(max_life: u32, pairs: &[(Address, Address, U256, U256)]) -> Result<(), String> {
     if pairs.is_empty() || pairs.len() > 16 || max_life == 0 {
         return Err("has no pair, too many, or no order lifetime".into());
     }
@@ -1225,7 +1267,7 @@ pub fn cow_terms(config: &[u8]) -> Result<CowTerms, String> {
             return Err("lists a pair twice".into());
         }
     }
-    Ok(CowTerms { app_data, max_life, pairs })
+    Ok(())
 }
 
 /// The venues of a trading mandate (issue #80), in the order of what can
@@ -1257,8 +1299,18 @@ fn venue_rows(
         let Some(config) = b.venue_configs.iter().find(|c| alloy_primitives::keccak256(c) == *config_hash) else {
             return Err(format!("the laptop did not send the config this mandate pins for {}; refused", venue.name));
         };
-        let CowTerms { app_data, max_life, pairs } =
-            cow_terms(config).map_err(|e| format!("the config for {} {e}; refused", venue.name))?;
+        // each kind's config in its own encoding; `app_data` is CoW's alone
+        let refused = |e: String| format!("the config for {} {e}; refused", venue.name);
+        let (app_data, max_life, pairs) = match venue.kind {
+            VenueKind::CowSwap => {
+                let CowTerms { app_data, max_life, pairs } = cow_terms(config).map_err(refused)?;
+                (Some(app_data), max_life, pairs)
+            }
+            VenueKind::OneInchLimitOrder => {
+                let OneInchTerms { max_life, pairs } = one_inch_terms(config).map_err(refused)?;
+                (None, max_life, pairs)
+            }
+        };
         b.row(s, "Trading on", format!("{} (decoder {} verified in this build)", venue.name, decoder.to_checksum(None)));
         b.row(s, "Proceeds go to", "this account only");
         for (sell, buy, min_buy, per_sell) in pairs.iter() {
@@ -1292,11 +1344,17 @@ fn venue_rows(
             if max_life % 60 == 0 { format!("at most {} minutes", max_life / 60) } else { format!("at most {max_life} seconds") },
         );
         b.row(s, "An order is charged", "to the budget when it is registered, filled or not; the charge is not given back, it returns when budgets renew");
-        if app_data.is_zero() {
-            b.row(s, "Order data", "none (appData is zero)");
-        } else {
-            b.bold(s, "Order data", format!("appData {app_data} — this build does not know what it stands for"));
-            b.warnings.push(format!("the orders at {} carry appData this build cannot read", venue.name));
+        match app_data {
+            Some(app_data) if app_data.is_zero() => b.row(s, "Order data", "none (appData is zero)"),
+            Some(app_data) => {
+                b.bold(s, "Order data", format!("appData {app_data} — this build does not know what it stands for"));
+                b.warnings.push(format!("the orders at {} carry appData this build cannot read", venue.name));
+            }
+            None => {}
+        }
+        if venue.kind == VenueKind::OneInchLimitOrder {
+            b.row(s, "An order is", "filled whole, once, or not at all; it carries no extension and calls nothing");
+            b.row(s, "Filled by", "anyone who holds the order: at the lowest price above at worst");
         }
         b.row(s, "Tokens are taken by", b.name(venue.spender));
     }
@@ -1666,7 +1724,10 @@ mod tests {
         f.names.insert(USD, "USDC".into());
         f.names.insert(WETH, "WETH".into());
         f.names.insert(RELAYER, "CoW Swap vault relayer".into());
-        f.venues.insert(DECODER, Venue { name: "CoW Swap".into(), code_hash: DECODER_CODE, place: SETTLEMENT, spender: RELAYER });
+        f.venues.insert(
+            DECODER,
+            Venue { name: "CoW Swap".into(), kind: VenueKind::CowSwap, code_hash: DECODER_CODE, place: SETTLEMENT, spender: RELAYER },
+        );
         f
     }
 
@@ -1868,6 +1929,114 @@ mod tests {
         ]));
         o.gas_fees = kernel::pack_gas(1, 1);
         assert!(!open(&o).text().contains("Operator grant"));
+    }
+
+    const LIMIT_DECODER: Address = address!("d00000000000000000000000000000000000000d");
+    const ROUTER: Address = address!("e00000000000000000000000000000000000000e");
+    const LIMIT_CODE: B256 = B256::repeat_byte(0xd0);
+
+    /// The trading facts with a second venue: 1inch limit orders, whose
+    /// router is the venue's contract and the spender at once.
+    fn two_venue_facts() -> Facts {
+        let mut f = trading_facts();
+        f.names.insert(ROUTER, "1inch router".into());
+        f.venues.insert(
+            LIMIT_DECODER,
+            Venue { name: "1inch".into(), kind: VenueKind::OneInchLimitOrder, code_hash: LIMIT_CODE, place: ROUTER, spender: ROUTER },
+        );
+        f
+    }
+
+    /// At least 0.0002 WETH for each USDC, orders of 30 minutes at most: the CoW terms, at 1inch.
+    fn limit() -> Bytes {
+        kernel::one_inch_config(1800, &[(USD, WETH, U256::from(200_000_000_000_000u64), U256::from(1_000_000))])
+    }
+
+    fn limit_venue(config: &Bytes) -> kernel::Trading {
+        kernel::Trading { period: 86_400, venues: vec![(LIMIT_DECODER, LIMIT_CODE, alloy_primitives::keccak256(config))], ids: vec![] }
+    }
+
+    /// A mandate that trades by 1inch limit orders (issue #80): the same
+    /// terms as at CoW Swap, and what is this venue's own. Its config is
+    /// read by its own reader: another venue's bytes under it are refused.
+    #[test]
+    fn a_one_inch_mandate_is_shown_in_what_it_allows() {
+        let f = two_venue_facts();
+        let r = open_trading(&trading_params(), &limit_venue(&limit()), vec![limit()], &f);
+        let t = r.text();
+        assert_eq!(r.verdict, Verdict::Sign, "{t}");
+        assert!(t.contains(&format!("Trading on: 1inch (decoder {} verified in this build)", LIMIT_DECODER.to_checksum(None))), "{t}");
+        assert!(t.contains("Proceeds go to: this account only"), "{t}");
+        assert!(t.contains("never for less than 0.0002 WETH per 1 USDC"), "{t}");
+        assert!(t.contains("Orders live: at most 30 minutes"), "{t}");
+        assert!(t.contains("An order is charged: to the budget when it is registered, filled or not"), "{t}");
+        assert!(t.contains("An order is: filled whole, once, or not at all; it carries no extension and calls nothing"), "{t}");
+        assert!(t.contains("Filled by: anyone who holds the order: at the lowest price above at worst"), "{t}");
+        assert!(t.contains(&format!("Tokens are taken by: {} — 1inch router (verified in this build)", ROUTER.to_checksum(None))), "{t}");
+        // CoW's row about an order's data is CoW's alone
+        assert!(!t.contains("Order data"), "{t}");
+
+        // both venues in one mandate, each read in its own encoding
+        let both = kernel::Trading {
+            period: 86_400,
+            venues: vec![
+                (DECODER, DECODER_CODE, alloy_primitives::keccak256(cow())),
+                (LIMIT_DECODER, LIMIT_CODE, alloy_primitives::keccak256(limit())),
+            ],
+            ids: vec![],
+        };
+        let r = open_trading(&trading_params(), &both, vec![cow(), limit()], &f);
+        let t = r.text();
+        assert_eq!(r.verdict, Verdict::Sign, "{t}");
+        assert!(t.contains("Trading on: CoW Swap") && t.contains("Trading on: 1inch"), "{t}");
+        assert_eq!(t.matches("Order data: none").count(), 1, "{t}");
+        assert_eq!(t.matches("Filled by: anyone who holds the order").count(), 1, "{t}");
+
+        // CoW's config under the 1inch decoder, and the other way round: neither reads
+        for (trading, sent) in [(limit_venue(&cow()), cow()), (one_venue(&limit()), limit())] {
+            let r = open_trading(&trading_params(), &trading, vec![sent], &f);
+            assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("the config for")), "{}", r.text());
+        }
+        // the router among the mandate's targets: the agent could sign any order there
+        let mut reaches = trading_params();
+        reaches.targets.push(ROUTER);
+        reaches.selectors.push(FixedBytes::from([0xb6, 0x8f, 0xb0, 0x20]));
+        let r = open_trading(&reaches, &limit_venue(&limit()), vec![limit()], &f);
+        assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("1inch's own contract")), "{}", r.text());
+        // a build that does not know the decoder
+        let r = open_trading(&trading_params(), &limit_venue(&limit()), vec![limit()], &trading_facts());
+        assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("not one this build knows")), "{}", r.text());
+    }
+
+    /// `one_inch_terms` reads what `OneInchLimitOrderDecoder.checkConfig`
+    /// allows, in its one canonical encoding, and nothing else.
+    #[test]
+    fn one_inch_terms_are_read_canonically_or_not_at_all() {
+        let pair = (USD, WETH, U256::from(3u8), U256::from(1u8));
+        let good = kernel::one_inch_config(1800, &[pair]);
+        assert_eq!(one_inch_terms(&good), Ok(OneInchTerms { max_life: 1800, pairs: vec![pair] }));
+        // no lifetime, no pair, too many pairs
+        assert!(one_inch_terms(&kernel::one_inch_config(0, &[pair])).is_err());
+        assert!(one_inch_terms(&kernel::one_inch_config(1800, &[])).is_err());
+        let many: Vec<_> = (0u8..17).map(|i| (USD, Address::repeat_byte(i.saturating_add(1)), U256::from(1u8), U256::from(1u8))).collect();
+        assert!(one_inch_terms(&kernel::one_inch_config(1800, &many)).is_err());
+        assert!(one_inch_terms(&kernel::one_inch_config(1800, &many[..16])).is_ok());
+        // a pair without two tokens, without a price, or twice
+        for bad in [
+            (Address::ZERO, WETH, U256::from(1u8), U256::from(1u8)),
+            (USD, Address::ZERO, U256::from(1u8), U256::from(1u8)),
+            (USD, USD, U256::from(1u8), U256::from(1u8)),
+            (USD, WETH, U256::ZERO, U256::from(1u8)),
+            (USD, WETH, U256::from(1u8), U256::ZERO),
+        ] {
+            assert!(one_inch_terms(&kernel::one_inch_config(1800, &[bad])).is_err(), "{bad:?}");
+        }
+        assert!(one_inch_terms(&kernel::one_inch_config(1800, &[pair, pair])).is_err());
+        // bytes after the config, a byte less, and CoW's encoding of the same terms
+        assert!(one_inch_terms(&[good.as_ref(), &[0u8; 32][..]].concat()).is_err());
+        assert!(one_inch_terms(&good[..good.len().saturating_sub(1)]).is_err());
+        assert!(one_inch_terms(&kernel::cow_config(B256::ZERO, 1800, &[pair])).is_err());
+        assert!(cow_terms(&good).is_err());
     }
 
     #[test]

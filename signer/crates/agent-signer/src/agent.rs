@@ -32,6 +32,9 @@ pub struct Deployments {
     /// The chain's CoW Swap decoder, where CoW Protocol runs.
     #[serde(default)]
     pub cow_swap_decoder: Option<Address>,
+    /// The chain's decoder of plain 1inch limit orders, where 1inch's router is.
+    #[serde(default)]
+    pub one_inch_limit_order_decoder: Option<Address>,
     /// Present once `Deploy.s.sol` has deployed the paymaster for this chain.
     #[serde(default)]
     pub whitelist_paymaster: Option<Address>,
@@ -248,14 +251,15 @@ pub struct TokenIdEntry {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct VenueEntry {
     pub kind: VenueKind,
-    /// The venue's decoder (`CowSwapDecoder`), as deployed.
+    /// The venue's decoder (`CowSwapDecoder`, `OneInchLimitOrderDecoder`), as deployed.
     pub decoder: Address,
     /// The decoder's code hash. Absent, the CLI pins what the chain has
     /// there now; present, the chain must agree.
     #[serde(default)]
     pub code_hash: Option<alloy::primitives::B256>,
-    /// The only `appData` an order may carry.
-    pub app_data: alloy::primitives::B256,
+    /// CoW Swap: the only `appData` an order may carry. No other kind has one.
+    #[serde(default)]
+    pub app_data: Option<alloy::primitives::B256>,
     /// The longest an order may live, seconds.
     pub max_life: u32,
     pub pairs: Vec<PairEntry>,
@@ -264,7 +268,21 @@ pub struct VenueEntry {
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum VenueKind {
+    /// CoW Protocol's orders (`CowSwapDecoder`).
     Cowswap,
+    /// A plain order of 1inch's Limit Order Protocol (`OneInchLimitOrderDecoder`).
+    #[serde(rename = "1inch")]
+    OneInch,
+}
+
+impl VenueKind {
+    /// The deployments key of this kind's decoder.
+    pub fn deployments_key(self) -> &'static str {
+        match self {
+            VenueKind::Cowswap => "cowSwapDecoder",
+            VenueKind::OneInch => "oneInchLimitOrderDecoder",
+        }
+    }
 }
 
 /// A pair the agent may trade one way, and its lowest price: never less
@@ -295,7 +313,20 @@ impl VenueEntry {
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(owner_core::kernel::cow_config(self.app_data, self.max_life, &pairs))
+        match (self.kind, self.app_data) {
+            (VenueKind::Cowswap, Some(app_data)) => Ok(owner_core::kernel::cow_config(app_data, self.max_life, &pairs)),
+            (VenueKind::Cowswap, None) => anyhow::bail!("the CoW Swap venue {} names no `appData`: the one `appData` its orders carry", self.decoder),
+            (VenueKind::OneInch, None) => Ok(owner_core::kernel::one_inch_config(self.max_life, &pairs)),
+            (VenueKind::OneInch, Some(_)) => anyhow::bail!("the 1inch venue {} names an `appData`: a 1inch order has none", self.decoder),
+        }
+    }
+
+    /// The decoder the deployments file names for this kind of venue, if any.
+    pub fn listed(&self, dep: &Deployments) -> Option<Address> {
+        match self.kind {
+            VenueKind::Cowswap => dep.cow_swap_decoder,
+            VenueKind::OneInch => dep.one_inch_limit_order_decoder,
+        }
     }
 }
 
@@ -923,6 +954,40 @@ mod payee_tests {
             }
             Err(e) => panic!("the venue of this test does not parse: {e}"),
         }
+    }
+
+    /// A venue's terms are encoded for its kind's decoder: CoW Swap's with the
+    /// one `appData`, 1inch's without any. The other way round is refused,
+    /// and so is a kind the CLI does not know.
+    #[test]
+    fn a_venues_terms_are_encoded_for_its_kind() {
+        let pair = serde_json::json!({"sellToken": "0x00000000000000000000000000000000000000a1", "buyToken": "0x00000000000000000000000000000000000000b2", "minBuy": "3", "perSell": "1"});
+        let venue = |kind: &str, app_data: bool| {
+            let mut v = serde_json::json!({"kind": kind, "decoder": "0x00000000000000000000000000000000000000c0", "maxLife": 600, "pairs": [pair.clone()]});
+            if app_data {
+                v["appData"] = serde_json::json!("0x0000000000000000000000000000000000000000000000000000000000000000");
+            }
+            serde_json::from_value::<VenueEntry>(v)
+        };
+        let pairs = [(
+            "0x00000000000000000000000000000000000000a1".parse().unwrap(),
+            "0x00000000000000000000000000000000000000b2".parse().unwrap(),
+            U256::from(3u8),
+            U256::from(1u8),
+        )];
+        let cow = venue("cowswap", true).unwrap();
+        assert_eq!(cow.kind.deployments_key(), "cowSwapDecoder");
+        assert_eq!(cow.config().unwrap(), owner_core::kernel::cow_config(alloy::primitives::B256::ZERO, 600, &pairs));
+        let limit = venue("1inch", false).unwrap();
+        assert_eq!(limit.kind.deployments_key(), "oneInchLimitOrderDecoder");
+        assert_eq!(limit.config().unwrap(), owner_core::kernel::one_inch_config(600, &pairs));
+        // the two encodings are not each other's
+        assert_ne!(cow.config().unwrap(), limit.config().unwrap());
+        let refused = venue("cowswap", false).unwrap().config().unwrap_err().to_string();
+        assert!(refused.contains("names no `appData`"), "{refused}");
+        let refused = venue("1inch", true).unwrap().config().unwrap_err().to_string();
+        assert!(refused.contains("a 1inch order has none"), "{refused}");
+        assert!(venue("uniswapx", false).is_err());
     }
 
     #[test]

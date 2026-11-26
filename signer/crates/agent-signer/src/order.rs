@@ -18,27 +18,67 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
 use crate::abi::{IErc1271, IErc20Allowance};
-use crate::agent::{open_signer, Role, VenueEntry};
+use rand_core::{OsRng, RngCore};
+
+use crate::agent::{open_signer, Role, VenueEntry, VenueKind};
 use crate::chain::{ask_again, Session, VenueOnChain, ASK_AGAIN, ASK_EVERY};
-use crate::kernel::{self, CowSellOrder};
+use crate::kernel::{self, CowSellOrder, OneInchOrder};
 
 const ERC1271_MAGIC: [u8; 4] = [0x16, 0x26, 0xba, 0x7e];
 
+/// An order in its venue's own form.
+pub enum VenueOrder {
+    Cow(CowSellOrder),
+    OneInch(OneInchOrder),
+}
+
 /// A registered order, ready for the venue.
 pub struct Placed {
-    pub order: CowSellOrder,
+    pub order: VenueOrder,
     pub digest: B256,
-    /// CoW's order uid: digest ‖ owner ‖ validTo.
-    pub uid: Bytes,
     pub signature: Bytes,
     pub tx: B256,
     pub account: Address,
 }
 
 impl Placed {
-    /// The order as CoW's order book takes it (`POST /api/v1/orders`).
+    /// The order as its venue takes it.
     pub fn json(&self) -> Value {
-        let o = &self.order;
+        match &self.order {
+            VenueOrder::Cow(o) => self.cow_json(o),
+            VenueOrder::OneInch(o) => self.one_inch_json(o),
+        }
+    }
+
+    /// As 1inch's order book takes an order (`POST /orderbook/v4.1/<chain>`):
+    /// its hash, the signature and the eight fields, with no extension.
+    /// `order` is the same eight words ABI-encoded, for a taker that fills at
+    /// the router itself (`fillContractOrder(order, signature, makingAmount, 1 << 255)`).
+    fn one_inch_json(&self, o: &OneInchOrder) -> Value {
+        json!({
+            "orderHash": self.digest.to_string(),
+            "signature": self.signature.to_string(),
+            "data": {
+                "salt": o.salt.to_string(),
+                "maker": o.maker.to_string(),
+                "receiver": Address::ZERO.to_string(),
+                "makerAsset": o.maker_asset.to_string(),
+                "takerAsset": o.taker_asset.to_string(),
+                "makingAmount": o.making_amount.to_string(),
+                "takingAmount": o.taking_amount.to_string(),
+                "makerTraits": o.traits().map(|t| t.to_string()),
+                "extension": "0x",
+            },
+            "order": o.encode().map(|b| b.to_string()),
+            "expiration": o.expiration,
+            "registeredIn": self.tx.to_string(),
+        })
+    }
+
+    /// As CoW's order book takes an order (`POST /api/v1/orders`). Its uid
+    /// is digest ‖ owner ‖ validTo.
+    fn cow_json(&self, o: &CowSellOrder) -> Value {
+        let uid: Bytes = [self.digest.as_slice(), self.account.as_slice(), &o.valid_to.to_be_bytes()].concat().into();
         json!({
             "sellToken": o.sell_token.to_string(),
             "buyToken": o.buy_token.to_string(),
@@ -55,7 +95,7 @@ impl Placed {
             "signingScheme": "eip1271",
             "signature": self.signature.to_string(),
             "from": self.account.to_string(),
-            "uid": self.uid.to_string(),
+            "uid": uid.to_string(),
             "registeredIn": self.tx.to_string(),
         })
     }
@@ -140,8 +180,45 @@ impl Session {
             }
         }
         let valid_to = u32::try_from(until).context("validTo")?;
-        let order = CowSellOrder { sell_token, buy_token, sell_amount, buy_amount, valid_to, app_data: v.app_data };
-        let digest = order.digest(on.domain);
+        // the order in its venue's form, the bytes its decoder reads, and the digest the venue will ask for
+        let (order, encoded, digest) = match v.kind {
+            VenueKind::Cowswap => {
+                let app_data = v.app_data.context("the CoW Swap venue names no `appData`")?;
+                let o = CowSellOrder { sell_token, buy_token, sell_amount, buy_amount, valid_to, app_data };
+                let (encoded, digest) = (o.encode(), o.digest(on.domain));
+                (VenueOrder::Cow(o), encoded, digest)
+            }
+            VenueKind::OneInch => {
+                // The router keeps one bit per maker and nonce for an order
+                // filled whole: two live orders of one nonce would fill once
+                // between them. So a nonce from the system's random source,
+                // one whose bit the router still has clear.
+                let d = crate::abi::IVenueDecoder::new(v.decoder, self.provider.clone());
+                let mut found = None;
+                for _ in 0..8 {
+                    let (mut salt, mut nonce) = ([0u8; 32], [0u8; 8]);
+                    OsRng.fill_bytes(&mut salt);
+                    OsRng.fill_bytes(&mut nonce[3..]);
+                    let o = OneInchOrder {
+                        salt: U256::from_be_bytes(salt),
+                        maker: self.account,
+                        maker_asset: sell_token,
+                        taker_asset: buy_token,
+                        making_amount: sell_amount,
+                        taking_amount: buy_amount,
+                        expiration: u64::from(valid_to),
+                        nonce: u64::from_be_bytes(nonce),
+                    };
+                    let encoded = o.encode().context("the order's expiration does not fit a 1inch order")?;
+                    if d.untouched(self.account, encoded.clone()).call().await.context("reading the order's bit at the router")? {
+                        let digest = o.digest(on.domain).context("the order's expiration does not fit a 1inch order")?;
+                        found = Some((VenueOrder::OneInch(o), encoded, digest));
+                        break;
+                    }
+                }
+                found.context("eight random nonces were all used at the router: try again")?
+            }
+        };
         eprintln!("order:          sell {sell_amount} of {sell_token} for at least {buy_amount} of {buy_token}, until {valid_to}");
 
         let policy = self.installed_policy().await?;
@@ -162,7 +239,7 @@ impl Session {
         let signature = kernel::permission_1271_signature(self.cfg.permission_id()?, &sig);
 
         // 2. register: the mandate judges it like any other operation
-        let call = kernel::order_register_calldata(v.decoder, &config, &order.encode());
+        let call = kernel::order_register_calldata(v.decoder, &config, &encoded);
         let inc = self.send_op(policy, U256::ZERO, call, false, sponsored, None).await?;
         eprintln!("registered:     tx {} (block {})", inc.tx, inc.block);
 
@@ -183,7 +260,6 @@ impl Session {
         if magic.0 != ERC1271_MAGIC {
             bail!("the account does not vouch for this order (isValidSignature = {magic}), although it is registered (tx {}) and charged to the budget: it comes back with `order reclaim` after its end ({valid_to})", inc.tx);
         }
-        let uid = [digest.as_slice(), self.account.as_slice(), &valid_to.to_be_bytes()].concat().into();
-        Ok(Placed { order, digest, uid, signature, tx: inc.tx, account: self.account })
+        Ok(Placed { order, digest, signature, tx: inc.tx, account: self.account })
     }
 }

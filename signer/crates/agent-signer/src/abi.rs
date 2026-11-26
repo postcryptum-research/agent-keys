@@ -124,13 +124,14 @@ sol! {
         function payeeAllowed(address account, bytes32 id, address token, address payee) external view returns (bool);
     }
 
-    /// A venue's decoder (`CowSwapDecoder`).
+    /// A venue's decoder (`CowSwapDecoder`, `OneInchLimitOrderDecoder`).
     #[sol(rpc)]
     interface IVenueDecoder {
         function venue() external view returns (address);
         function spender() external view returns (address);
         function domainSeparator() external view returns (bytes32);
         function untouched(address account, bytes calldata order) external view returns (bool);
+        function checkConfig(bytes calldata config) external view returns (bool);
     }
 
     /// AgentPolicy's trading side (issue #80).

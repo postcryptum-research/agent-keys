@@ -177,6 +177,13 @@ pub fn cow_config(app_data: B256, max_life: u32, pairs: &[(Address, Address, U25
     (app_data, max_life, pairs.to_vec()).abi_encode().into()
 }
 
+/// A 1inch limit-order venue's config, as `OneInchLimitOrderDecoder` reads
+/// it: `abi.encode((uint32 maxLife, (address sellToken, address buyToken,
+/// uint256 minBuy, uint256 perSell)[] pairs))`.
+pub fn one_inch_config(max_life: u32, pairs: &[(Address, Address, U256, U256)]) -> Bytes {
+    (max_life, pairs.to_vec()).abi_encode().into()
+}
+
 /// Kernel's `PermissionEnableDataFormat`: `abi.encode(bytes[] entries)` where
 /// each entry is `flag(2) ‖ module(20) ‖ initData`; policies first, signer last.
 /// The numeric policy fields are encoded as full words, which is byte-identical
@@ -486,6 +493,89 @@ pub fn cow_domain_separator(chain_id: u64, settlement: Address) -> B256 {
     )
 }
 
+/// A plain order of 1inch's Limit Order Protocol v4 as
+/// `OneInchLimitOrderDecoder` takes it: the eight words of the router's
+/// order, the proceeds to the maker, filled whole and once, with an
+/// expiration and no other trait.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OneInchOrder {
+    /// Any number: with no extension the router gives it no meaning.
+    pub salt: U256,
+    /// The account.
+    pub maker: Address,
+    pub maker_asset: Address,
+    pub taker_asset: Address,
+    pub making_amount: U256,
+    pub taking_amount: U256,
+    /// The last second the order can be filled; forty bits, never zero.
+    pub expiration: u64,
+    /// The order's place among the maker's one-fill bits; forty bits.
+    pub nonce: u64,
+}
+
+impl OneInchOrder {
+    /// The order's `makerTraits`: bit 255 (no partial fills), the expiration
+    /// in bits 80 to 119, the nonce in bits 120 to 159, and nothing else.
+    /// `None` if the expiration is zero (the router reads it as "never") or
+    /// either number is wider than forty bits.
+    pub fn traits(&self) -> Option<U256> {
+        let (expiration, nonce) = (self.expiration.to_be_bytes(), self.nonce.to_be_bytes());
+        if self.expiration == 0 || expiration[..3] != [0u8; 3] || nonce[..3] != [0u8; 3] {
+            return None;
+        }
+        // big-endian: bit 255 is the first byte's top bit; bits 120-159 are
+        // bytes 12 to 16, bits 80-119 bytes 17 to 21
+        let mut word = [0u8; 32];
+        word[0] = 0x80;
+        word[12..17].copy_from_slice(&nonce[3..]);
+        word[17..22].copy_from_slice(&expiration[3..]);
+        Some(U256::from_be_bytes(word))
+    }
+
+    /// `abi.encode` of the router's order: eight words.
+    pub fn encode(&self) -> Option<Bytes> {
+        Some(
+            (
+                self.salt,
+                self.maker,
+                Address::ZERO, // receiver: the maker
+                self.maker_asset,
+                self.taker_asset,
+                self.making_amount,
+                self.taking_amount,
+                self.traits()?,
+            )
+                .abi_encode()
+                .into(),
+        )
+    }
+
+    /// The EIP-712 digest the router asks the maker to vouch for.
+    pub fn digest(&self, domain_separator: B256) -> Option<B256> {
+        use alloy_primitives::keccak256;
+        let type_hash = keccak256(
+            "Order(uint256 salt,address maker,address receiver,address makerAsset,address takerAsset,uint256 makingAmount,uint256 takingAmount,uint256 makerTraits)",
+        );
+        let struct_hash = keccak256([type_hash.as_slice(), &self.encode()?].concat());
+        Some(keccak256([&[0x19u8, 0x01][..], domain_separator.as_slice(), struct_hash.as_slice()].concat()))
+    }
+}
+
+/// The EIP-712 domain separator of 1inch's router (AggregationRouterV6) on a chain.
+pub fn one_inch_domain_separator(chain_id: u64, router: Address) -> B256 {
+    use alloy_primitives::keccak256;
+    keccak256(
+        (
+            keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+            keccak256("1inch Aggregation Router"),
+            keccak256("6"),
+            U256::from(chain_id),
+            router,
+        )
+            .abi_encode(),
+    )
+}
+
 /// `AgentPolicy.orderRegister(decoder, config, order)`.
 pub fn order_register_calldata(decoder: Address, config: &[u8], order: &[u8]) -> Bytes {
     let args = (decoder, Bytes::copy_from_slice(config), Bytes::copy_from_slice(order)).abi_encode_params();
@@ -597,6 +687,51 @@ mod tests {
             cow_domain_separator(84532, settlement),
             b256!("75e06a5fc9670d3e53c52ba9d3ff16ef1f1c671964aa68ad94588ee7462d0338")
         );
+    }
+
+    /// The 1inch order's digest against the router's own: `hashOrder` of the
+    /// router at 0x111111125421cA6dc452d289314280a0f8842A65 was asked for
+    /// this order on four chains (2026-11-26, `eth_call`), the same order
+    /// `OneInchLimitOrderDecoder.t.sol` holds the decoder to.
+    #[test]
+    fn one_inch_order_digest_is_the_routers() {
+        let router = address!("111111125421cA6dc452d289314280a0f8842A65");
+        let order = OneInchOrder {
+            salt: U256::from(42u64),
+            maker: A,
+            maker_asset: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            taker_asset: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            making_amount: U256::from(1_000_000_000u64),
+            taking_amount: U256::from(250_000_000_000_000_000u64),
+            expiration: 1_900_000_000,
+            nonce: 7,
+        };
+        assert_eq!(order.encode().unwrap().len(), 8 * 32);
+        // no partial fills, the expiration and the nonce, and no other bit
+        assert_eq!(
+            order.traits().unwrap(),
+            "57896044618658097711785492504343953926644299225749833698634550595112927232000".parse::<U256>().unwrap()
+        );
+        for (chain, given) in [
+            (1u64, b256!("0a6c594bc65692afed072afc8ffbcbac664384f0d521624b63f396edfcbbb48d")),
+            (8453, b256!("fbcef6ee1646af7a95c2d774d1f7e7168b46dc7a79e5e58e1c310c91ef8b961f")),
+            (11155111, b256!("a776b6c7b9c9e0a40a83221072e354a444b8fd94c6dcf5f4ec56c2e764c9e598")),
+            (84532, b256!("a64c698dddd4f1ece332d81be16df5c432a378ed04f9eff991f366cb23fb96cf")),
+        ] {
+            assert_eq!(order.digest(one_inch_domain_separator(chain, router)), Some(given), "chain {chain}");
+        }
+        // mainnet's separator, as the decoder's test has it
+        assert_eq!(
+            one_inch_domain_separator(1, router),
+            b256!("d999e213f11c7bfa3e796c3409e316f25e02aa3e25e5c207a92e381c7d22b6de")
+        );
+        // an order that never expires, or a number wider than forty bits, is no order
+        assert_eq!(OneInchOrder { expiration: 0, ..order.clone() }.encode(), None);
+        assert_eq!(OneInchOrder { expiration: 1 << 40, ..order.clone() }.traits(), None);
+        assert_eq!(OneInchOrder { nonce: 1 << 40, ..order.clone() }.digest(B256::ZERO), None);
+        // the widest of both fit, and stay in their own bits
+        let widest = OneInchOrder { expiration: (1 << 40) - 1, nonce: (1 << 40) - 1, ..order }.traits().unwrap();
+        assert_eq!(widest, (U256::from(1u8) << 255) | (((U256::from(1u8) << 80) - U256::from(1u8)) << 80));
     }
 
     #[test]
