@@ -163,6 +163,10 @@ costs — P-256 through RIP-7212 is as cheap as `ecrecover`, and the whole
 agent path adds about 79k gas per operation.
 Each contract, who calls it, what it keeps and what it refuses:
 [`docs/CONTRACTS.md`](docs/CONTRACTS.md).
+A trading agent end to end — an account created by the agent, its owner key
+moved to a phone, a trading mandate approved there, and an order filled on
+CoW Swap — step by step, with every transaction:
+[`docs/TRADING_WALKTHROUGH.md`](docs/TRADING_WALKTHROUGH.md).
 How this compares with what else exists — old-phone signers such as Cake
 Wallet's Cupcake, hosted agent-wallet platforms, passkey accounts and the
 nearest open-source projects: [`docs/related/`](docs/related/README.md).

@@ -201,8 +201,9 @@ refused as a target (#149), and then:
 
 ## Sepolia (chain 11155111)
 
-The chain the trading mandate was first tried on. The tables are written from
-`contracts/deployments/11155111.json`.
+The chain the trading mandate was first tried on, and where the first live
+order was filled ([`TRADING_WALKTHROUGH.md`](TRADING_WALKTHROUGH.md)). The
+tables are written from `contracts/deployments/11155111.json`.
 
 ### This project's contracts
 

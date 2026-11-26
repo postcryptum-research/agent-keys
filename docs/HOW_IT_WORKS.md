@@ -90,6 +90,8 @@ The longer form, with where each statement comes from, is
 - [`KEY_POLICY.md`](KEY_POLICY.md) — what each key may do and where it may
   live; what an attacker with the agent's privileges can and cannot do.
 - [`AGENT_CONFIG.md`](AGENT_CONFIG.md) — the mandate, field by field.
+- [`TRADING_WALKTHROUGH.md`](TRADING_WALKTHROUGH.md) — one run from an
+  empty address to a filled order on CoW Swap, with every transaction.
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — the contracts and the signer.
 - [`examples/`](../examples/README.md) — AgentKit, ElizaOS, Jinn, Olas, a
   Claude Code skill and x402 payments on hardware-held keys.
