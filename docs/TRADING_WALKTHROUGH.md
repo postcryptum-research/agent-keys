@@ -342,7 +342,7 @@ path adds nothing to it.
 4. **A review row reworded** (step 5): "Token payee: … anyone — the agent
    picks the recipient and the spender" was shown for a token on which this
    mandate lets the agent call nothing. It erred on the careful side. From
-   core 0.3.4 the row says "none by a call" there
+   core 0.3.4 the row says "none" there
    ([#216](https://github.com/postcryptum-research/agent-keys/pull/216)).
 5. **The app shows nothing visible when it cannot reach the laptop's
    session:** the error is printed under the buttons. It should be a

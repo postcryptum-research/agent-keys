@@ -1095,18 +1095,35 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
                         b.row(s, "Token payee", format!("{}: only to {}", b.name(*token), b.name(*payee)));
                     }
                 }
-                // No function of the token is on the allow-list: the agent cannot
-                // call it, so there is no recipient for it to pick (#214). The cap
-                // then bounds what a registered order or payment takes.
-                None if !targets.contains(token) => b.row(
+                // No payee list (#214). What the agent can make a recipient depends on
+                // what the mandate gives it for this token.
+                // A function of the token is on the allow-list: the agent calls it
+                // with the recipient or the spender it chooses.
+                None if targets.contains(token) => {
+                    b.row(s, "Token payee", format!("{}: anyone — the agent picks the recipient and the spender", b.name(*token)))
+                }
+                // No function of the token, but a signing domain: the agent signs an
+                // x402 payment to an address it chooses, and without a list the
+                // policy binds no recipient for it.
+                None if !domain.is_zero() => b.row(
                     s,
                     "Token payee",
                     format!(
-                        "{}: none by a call — the mandate lists no function of this token, so the agent cannot transfer or approve it; the cap bounds what its registered orders and payments take",
+                        "{}: anyone, by x402 payment — the agent picks who is paid; the mandate lists no function of this token, so it cannot transfer or approve it by a call",
                         b.name(*token)
                     ),
                 ),
-                None => b.row(s, "Token payee", format!("{}: anyone — the agent picks the recipient and the spender", b.name(*token))),
+                // Neither: the agent has no recipient to pick. The cap then bounds
+                // what a registered order takes, and an order pays only the account,
+                // through the spender the owner approved.
+                None => b.row(
+                    s,
+                    "Token payee",
+                    format!(
+                        "{}: none — the mandate lists no function of this token and no x402 payment in it: the agent cannot transfer or approve it, and the cap bounds what its registered orders take",
+                        b.name(*token)
+                    ),
+                ),
             }
         }
         // Limits per id of an ERC-6909 contract. The amounts are raw: this build
@@ -2241,32 +2258,47 @@ mod tests {
         assert!(t.contains("x402 payments allowed"), "{t}");
         assert!(t.contains("Allow permission 0x74657331 to call: execute"), "{t}");
         assert!(!r.needs_second_confirmation(), "{t}");
-        // no payee list, and no function of the token on the allow-list: the agent
-        // cannot call the token, and the screen does not say it picks a recipient (#214)
-        assert!(t.contains("none by a call — the mandate lists no function of this token"), "{t}");
-        assert!(!t.contains("anyone — the agent picks"), "{t}");
-        // the same mandate with `transfer` of the token listed: now the agent does pick
-        let callable = kernel::PolicyParams {
-            targets: vec![COUNTER, SIGNER],
-            selectors: vec![FixedBytes::from(SELECTOR_INCREMENT), FixedBytes::from([0xa9, 0x05, 0x9c, 0xbb])],
-            max_value_per_op: 1000,
-            budget: 10u128.pow(18),
-            valid_until: NOW + 86_400,
-            tokens: vec![(SIGNER, 5, 50, B256::repeat_byte(1))],
-            valid_after: 0,
-            payees: vec![],
+        // No payee list (#214). What the row says depends on what the mandate
+        // gives the agent for this token: a function of it, x402 payments in
+        // it, or neither.
+        let payee_row = |targets: Vec<Address>, domain: B256| {
+            let p = kernel::PolicyParams {
+                // one function for each target: the counter's increment(), the token's transfer
+                selectors: targets.iter().map(|t| FixedBytes::from(if *t == COUNTER { SELECTOR_INCREMENT } else { [0xa9, 0x05, 0x9c, 0xbb] })).collect(),
+                targets,
+                max_value_per_op: 1000,
+                budget: 10u128.pow(18),
+                valid_until: NOW + 86_400,
+                tokens: vec![(SIGNER, 5, 50, domain)],
+                valid_after: 0,
+                payees: vec![],
+            };
+            let pdata = kernel::permission_data(POLICY, &p, SIGNER, &key(2));
+            let mut o = op(kernel::execute_batch_calldata(vec![
+                (me, U256::ZERO, kernel::install_permission_calldata(perm, pdata, 1)),
+                (me, U256::ZERO, kernel::grant_execute_calldata(perm)),
+            ]));
+            o.gas_fees = kernel::pack_gas(1, 1);
+            let r = open(&o);
+            let t = r.text();
+            assert_eq!(r.verdict, Verdict::Sign, "{t}");
+            let rows: Vec<&str> = t.lines().filter(|l| l.contains("Token payee: ")).collect();
+            assert_eq!(rows.len(), 1, "{t}");
+            rows[0].to_string()
         };
-        let pdata = kernel::permission_data(POLICY, &callable, SIGNER, &key(2));
-        let mut o = op(kernel::execute_batch_calldata(vec![
-            (me, U256::ZERO, kernel::install_permission_calldata(perm, pdata, 1)),
-            (me, U256::ZERO, kernel::grant_execute_calldata(perm)),
-        ]));
-        o.gas_fees = kernel::pack_gas(1, 1);
-        let r = open(&o);
-        let t = r.text();
-        assert_eq!(r.verdict, Verdict::Sign, "{t}");
-        assert!(t.contains("anyone — the agent picks the recipient and the spender"), "{t}");
-        assert!(!t.contains("none by a call"), "{t}");
+        let x402 = B256::repeat_byte(1);
+        // x402 payments in the token and no function of it: the agent signs a
+        // payment to whom it chooses, and the screen must not say "none"
+        let row = payee_row(vec![COUNTER], x402);
+        assert!(row.contains("anyone, by x402 payment — the agent picks who is paid"), "{row}");
+        // neither a function of the token nor x402: no recipient for the agent to pick
+        let row = payee_row(vec![COUNTER], B256::ZERO);
+        assert!(row.contains("none — the mandate lists no function of this token") && !row.contains("anyone"), "{row}");
+        // a function of the token on the allow-list, with x402 or without: the agent picks
+        for domain in [x402, B256::ZERO] {
+            let row = payee_row(vec![COUNTER, SIGNER], domain);
+            assert!(row.contains("anyone — the agent picks the recipient and the spender"), "{row}");
+        }
 
         // the same mandate with a payee list for its token
         let listed = kernel::PolicyParams { payees: vec![(SIGNER, vec![COUNTER, RECOVERY])], ..params };
