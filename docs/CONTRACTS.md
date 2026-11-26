@@ -794,8 +794,10 @@ change when a second venue arrives.
 `contracts/src/venues/OneInchLimitOrderDecoder.sol`. `IVenueDecoder` for a
 plain order of 1inch's Limit Order Protocol v4, which is part of 1inch's
 router, AggregationRouterV6, at `0x111111125421cA6dc452d289314280a0f8842A65`
-[V source]. The CLI and the phone do not know this venue yet: the decoder
-and its tests are the first step.
+[V source]. The CLI places such orders (`"kind": "1inch"` in a config's
+`venues`, `order sell`), and the phone's core reads the venue's terms; no
+chain has the decoder yet, so no phone build names it
+([`docs/AGENT_CONFIG.md`](AGENT_CONFIG.md)).
 
 **State.** None: no storage, no upgrade path, no `delegatecall`, no
 `selfdestruct`. The router's address and its EIP-712 domain separator are

@@ -293,13 +293,22 @@ impl Session {
                 // budget to whatever spender that code names: a decoder the
                 // deployments file does not list is taken only with its code
                 // hash stated, so that somebody has looked at it.
-                None if dep.cow_swap_decoder != Some(v.decoder) => bail!(
-                    "the venue decoder {} is not the one the deployments file names for this chain (cowSwapDecoder): state its `codeHash` in the config ({code_hash} is at that address now) once you have checked that code",
-                    v.decoder
+                None if v.listed(&dep) != Some(v.decoder) => bail!(
+                    "the venue decoder {} is not the one the deployments file names for this chain ({}): state its `codeHash` in the config ({code_hash} is at that address now) once you have checked that code",
+                    v.decoder,
+                    v.kind.deployments_key()
                 ),
                 None => {}
             }
             let d = crate::abi::IVenueDecoder::new(v.decoder, provider.clone());
+            // The decoder's own word on the owner's terms, before any mandate
+            // is made from them. For 1inch it also asks for code at every
+            // token: the router takes a transfer at an address without code
+            // for done, so an order that buys such a "token" gives the sold
+            // amount away.
+            if let Err(e) = d.checkConfig(v.config()?).call().await {
+                bail!("the venue decoder {} refuses this config's terms for it (`checkConfig`): a pair without two tokens or a price, a pair twice, no order lifetime, or a token address without code ({e})", v.decoder);
+            }
             let ctx = |what: &str| format!("reading {what}() of the venue decoder {}", v.decoder);
             venues.insert(
                 v.decoder,
@@ -1296,6 +1305,7 @@ impl Session {
         known.extend(old.iter().flat_map(|c| c.policy.venues.iter()));
         let mut decoders: Vec<Address> = known.iter().map(|v| v.decoder).collect();
         decoders.extend(self.dep.cow_swap_decoder);
+        decoders.extend(self.dep.one_inch_limit_order_decoder);
         decoders.sort();
         decoders.dedup();
         let mut calls = Vec::new();
@@ -2008,6 +2018,7 @@ mod tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let names = [
             "agentPolicy", "p256Validator", "p256RecoveryValidator", "p256Signer", "safeNonceAssert", "whitelistPaymaster", "demoCounter", "cowSwapDecoder",
+            "oneInchLimitOrderDecoder",
         ];
         let mut checked = 0;
         for name in ["agent.base-sepolia.json", "agent.enclave.base-sepolia.json", "agent.tropic01.base-sepolia.json", "agent.window-demo.base-sepolia.json", "agent.x402.base-sepolia.json"] {

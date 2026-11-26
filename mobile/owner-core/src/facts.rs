@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use alloy_primitives::{address, b256, Address, B256};
 
-use crate::review::{Facts, Token, Venue};
+use crate::review::{Facts, Token, Venue, VenueKind};
 
 /// `contracts/deployments/84532.json`, the canonical file. Variants such as
 /// `84532.enclave.json` (a developer's test paymaster) are never embedded.
@@ -91,9 +91,10 @@ const ID_POLICIES: &[Address] = &[CURRENT_POLICY];
 /// `vaultRelayer()` of CoW's settlement return them on that chain (read on
 /// 2026-11-25).
 #[allow(clippy::type_complexity)]
-const VENUES: &[(u64, Address, &str, B256, Address, Address, &str)] = &[
+const VENUES: &[(u64, VenueKind, Address, &str, B256, Address, Address, &str)] = &[
     (
         84532,
+        VenueKind::CowSwap,
         address!("42F62bF7134F5eF6d46d4BC07d806E77D1Df641a"),
         "CoW Swap",
         b256!("8ed2aee08c4faa05aba4104106931086449b62026b1e4e4bcfeac7d19727d6c1"),
@@ -103,6 +104,7 @@ const VENUES: &[(u64, Address, &str, B256, Address, Address, &str)] = &[
     ),
     (
         11155111,
+        VenueKind::CowSwap,
         address!("42F62bF7134F5eF6d46d4BC07d806E77D1Df641a"),
         "CoW Swap",
         b256!("e11511d23d679dd68a71be1cfd2d6714ba3fb10e077c4db6c4bf3fe96d21e47e"),
@@ -111,6 +113,22 @@ const VENUES: &[(u64, Address, &str, B256, Address, Address, &str)] = &[
         "CoW Swap vault relayer",
     ),
 ];
+
+/// The deployments key of a kind of venue's decoder.
+fn venue_key(kind: VenueKind) -> &'static str {
+    match kind {
+        VenueKind::CowSwap => "cowSwapDecoder",
+        VenueKind::OneInchLimitOrder => "oneInchLimitOrderDecoder",
+    }
+}
+
+/// The name of a venue's own contract.
+fn place_name(kind: VenueKind, venue: &str) -> String {
+    match kind {
+        VenueKind::CowSwap => format!("{venue} settlement"),
+        VenueKind::OneInchLimitOrder => format!("{venue} router"),
+    }
+}
 
 /// The chains this build has facts for.
 pub fn chains() -> Vec<u64> {
@@ -191,13 +209,17 @@ fn from_deployments(json: &str, chain_id: u64, canonical: bool) -> Facts {
     }
     if canonical {
         // a venue is known only where the deployments file names its decoder
-        for (_, decoder, name, code_hash, place, spender, spender_name) in VENUES.iter().filter(|v| v.0 == chain_id) {
-            if map.get("cowSwapDecoder").and_then(|v| v.as_str()).and_then(|s| s.parse::<Address>().ok()) != Some(*decoder) {
+        for (_, kind, decoder, name, code_hash, place, spender, spender_name) in VENUES.iter().filter(|v| v.0 == chain_id) {
+            if map.get(venue_key(*kind)).and_then(|v| v.as_str()).and_then(|s| s.parse::<Address>().ok()) != Some(*decoder) {
                 continue;
             }
-            f.names.insert(*place, format!("{name} settlement"));
+            // the venue's own contract, then who takes the tokens: one address at 1inch, whose router is both
+            f.names.insert(*place, place_name(*kind, name));
             f.names.insert(*spender, spender_name.to_string());
-            f.venues.insert(*decoder, Venue { name: name.to_string(), code_hash: *code_hash, place: *place, spender: *spender });
+            f.venues.insert(
+                *decoder,
+                Venue { name: name.to_string(), kind: *kind, code_hash: *code_hash, place: *place, spender: *spender },
+            );
         }
         for (_, token, symbol, decimals, domain) in TOKENS.iter().filter(|t| t.0 == chain_id) {
             f.names.insert(*token, symbol.to_string());
@@ -224,6 +246,7 @@ const CONTRACTS: &[(&str, &str, bool)] = &[
     ("safeNonceAssert", "SafeNonceAssert", true),
     ("demoCounter", "demo counter", true),
     ("cowSwapDecoder", "CoW Swap order decoder", true),
+    ("oneInchLimitOrderDecoder", "1inch limit order decoder", true),
     ("entryPoint", "EntryPoint v0.7", false),
 ];
 
@@ -251,7 +274,7 @@ pub fn is_build_name(label: &str) -> bool {
         Some((base, version)) if !version.is_empty() && version.bytes().all(|b| b.is_ascii_digit() || b == b'.') => base,
         _ => label,
     };
-    let venue_names = VENUES.iter().flat_map(|v| [format!("{} settlement", v.2), v.6.to_string()]);
+    let venue_names = VENUES.iter().flat_map(|v| [place_name(v.1, v.3), v.7.to_string()]);
     let names: Vec<String> = CONTRACTS.iter().map(|c| c.1.to_string()).chain(TOKENS.iter().map(|t| t.2.to_string())).chain(venue_names).collect();
     names.iter().any(|name| {
         let name = name.to_ascii_lowercase();

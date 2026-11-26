@@ -2453,6 +2453,221 @@ fn trading_orders_under_a_mandate() {
     assert!(allowance().is_zero());
 }
 
+mod one_inch_abi {
+    alloy::sol! {
+        struct LimitOrder {
+            uint256 salt;
+            uint256 maker;
+            uint256 receiver;
+            uint256 makerAsset;
+            uint256 takerAsset;
+            uint256 makingAmount;
+            uint256 takingAmount;
+            uint256 makerTraits;
+        }
+        function fillContractOrder(LimitOrder order, bytes signature, uint256 amount, uint256 takerTraits) external;
+        function approve(address spender, uint256 amount) external returns (bool);
+    }
+}
+
+/// A mandate that trades by plain 1inch limit orders, end to end (issue
+/// #80), on the policy and the decoder built from this repository's sources
+/// and a stand-in for 1inch's router, written from the router's verified
+/// source: the decoder's own check stops a config that buys a "token"
+/// without code; the owner installs the mandate with the router's
+/// allowance; the agent registers and signs an order, each with a nonce of
+/// its own; a taker fills it at the router on the account's word, once; an
+/// order outside the terms goes nowhere; revoking takes the allowance back.
+#[test]
+fn one_inch_orders_under_a_mandate() {
+    let chain = chain_or_skip!("one-inch");
+    let (owner, agent) = (key(1), key(2));
+    let counter = chain.addr("demoCounter");
+    let policy = chain.addr("agentPolicy");
+    let until = far_future(&chain);
+    let fixture: Value = serde_json::from_str(
+        &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/trading-code.json")).unwrap(),
+    )
+    .unwrap();
+    let deploy = |name: &str, args: Vec<u8>| {
+        let mut code = hex::decode(fixture[name].as_str().unwrap().trim_start_matches("0x")).unwrap();
+        code.extend(args);
+        chain.send_from(FACILITATOR, None, code)["contractAddress"].as_str().unwrap().to_string()
+    };
+    let word = |a: &str| a.parse::<Address>().unwrap().abi_encode();
+
+    // the policy of this source in the place of the deployed one
+    let built = deploy("agentPolicyInitCode", word(&chain.addr("safeNonceAssert")));
+    let code = chain.rpc("eth_getCode", json!([built, "latest"]));
+    chain.rpc("anvil_setCode", json!([policy, code]));
+
+    let (usd, weth) = (deploy("mockTokenInitCode", vec![]), deploy("mockTokenInitCode", vec![]));
+    let router = deploy("routerStandInInitCode", vec![]);
+    let decoder = deploy("oneInchLimitOrderDecoderInitCode", word(&router));
+    let decoder_code = chain.rpc("eth_getCode", json!([decoder, "latest"]));
+    let decoder_hash = alloy::primitives::keccak256(hex::decode(decoder_code.as_str().unwrap().trim_start_matches("0x")).unwrap());
+
+    let account = chain.deploy(&chain.config("agent.json", &base_cfg(&owner, &agent, &counter, until)));
+    const PERIOD: u64 = 30 * 86_400;
+    // the trading mandate: 200 a time, 300 a period, never under 0.0002 WETH for a USD
+    let mandate = |name: &str, change: &dyn Fn(&mut Value)| {
+        let path = chain.config(
+            name,
+            &Cfg {
+                permission: "0x6c696d31",
+                allow: vec![(counter.clone(), INCREMENT), (policy.clone(), ORDER_REGISTER)],
+                account: Some(account.clone()),
+                tokens: json!([{"token": usd, "maxPerOp": "200000000", "budget": "300000000", "payees": "anyone"}]),
+                ..base_cfg(&owner, &agent, &counter, until)
+            },
+        );
+        let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        v["policy"]["period"] = json!(PERIOD);
+        v["policy"]["venues"] = json!([{
+            "kind": "1inch", "decoder": decoder, "codeHash": decoder_hash.to_string(), "maxLife": 1800,
+            "pairs": [{"sellToken": usd, "buyToken": weth, "minBuy": "200000000000000", "perSell": "1000000"}],
+        }]);
+        change(&mut v);
+        std::fs::write(&path, v.to_string()).unwrap();
+        path
+    };
+    let cfg = mandate("limit.json", &|_| {});
+
+    // the terms are put to the decoder itself before a mandate is made of them:
+    // a pair that buys an address without code would give the sold amount away
+    let codeless = mandate("codeless.json", &|v| v["policy"]["venues"][0]["pairs"][0]["buyToken"] = json!("0x00000000000000000000000000000000000c0de5"));
+    let why = chain.fails(&["permission", "show", "--agent", &codeless]);
+    assert!(why.contains("refuses this config's terms") && why.contains("without code"), "{why}");
+    // a 1inch order has no appData; and CoW Swap's has one
+    let with_app_data = mandate("app-data.json", &|v| v["policy"]["venues"][0]["appData"] = json!(format!("0x{}", "00".repeat(32))));
+    let why = chain.fails(&["permission", "show", "--agent", &with_app_data]);
+    assert!(why.contains("a 1inch order has none"), "{why}");
+
+    let acct: Address = account.parse().unwrap();
+    let balance = |token: &str, who: Address| U256::from_be_slice(&chain.call(token, balanceOfCall { account: who }.abi_encode()));
+    let allowance = || {
+        let call = trading_abi::allowanceCall { owner: acct, spender: router.parse().unwrap() };
+        U256::from_be_slice(&chain.call(&usd, call.abi_encode()))
+    };
+    // the account holds what it sells; the taker holds what it pays with, and lets the router take it
+    let taker: Address = FACILITATOR.parse().unwrap();
+    chain.send_from(FACILITATOR, Some(&usd), mintCall { to: acct, amount: U256::from(10_000_000_000u64) }.abi_encode());
+    chain.send_from(FACILITATOR, Some(&weth), mintCall { to: taker, amount: U256::from(10u64).pow(U256::from(18)) }.abi_encode());
+    chain.send_from(FACILITATOR, Some(&weth), one_inch_abi::approveCall { spender: router.parse().unwrap(), amount: U256::MAX }.abi_encode());
+
+    let sell = |amount: &str, least: &str| -> Vec<String> {
+        ["order", "sell", "--agent", &cfg, "--sell", &usd, "--buy", &weth, "--sell-amount", amount, "--buy-amount", least]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    };
+    let run = |args: &[String]| chain.cli(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    let placed = |args: &[String]| -> Value {
+        let out = run(args);
+        let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert!(out.status.success(), "order sell failed:\n{stderr}\n{stdout}");
+        serde_json::from_str(stdout.lines().find(|l| l.starts_with('{')).unwrap_or_else(|| panic!("no order in: {stdout}"))).unwrap()
+    };
+    let refused = |args: &[String]| -> String {
+        let out = run(args);
+        assert!(!out.status.success(), "the order was expected to be refused");
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+    };
+    // the taker's fill at the router: the eight words as the CLI printed them, the whole making amount
+    let fill = |o: &Value| -> Vec<u8> {
+        let d = &o["data"];
+        let num = |k: &str| d[k].as_str().unwrap().parse::<U256>().unwrap();
+        let addr = |k: &str| U256::from_be_slice(d[k].as_str().unwrap().parse::<Address>().unwrap().as_slice());
+        one_inch_abi::fillContractOrderCall {
+            order: one_inch_abi::LimitOrder {
+                salt: num("salt"),
+                maker: addr("maker"),
+                receiver: addr("receiver"),
+                makerAsset: addr("makerAsset"),
+                takerAsset: addr("takerAsset"),
+                makingAmount: num("makingAmount"),
+                takingAmount: num("takingAmount"),
+                makerTraits: num("makerTraits"),
+            },
+            signature: o["signature"].as_str().unwrap().parse().unwrap(),
+            amount: num("makingAmount"),
+            takerTraits: U256::from(1u8) << 255usize,
+        }
+        .abi_encode()
+    };
+    let would_fill = |o: &Value| -> bool {
+        let body = json!({"jsonrpc": "2.0", "id": 1, "method": "eth_call", "params": [{"from": FACILITATOR, "to": router, "data": Bytes::from(fill(o)).to_string()}, "latest"]});
+        let v: Value = serde_json::from_str(&http_post(&chain.url, &body.to_string())).unwrap();
+        v.get("error").is_none()
+    };
+
+    // before the owner installs the mandate there is no allowance, and the CLI says so
+    assert!(allowance().is_zero());
+    let early = refused(&sell("150000000", "37500000000000000"));
+    assert!(early.contains("the owner gives the allowance with the mandate"), "{early}");
+
+    // the owner's one operation: the old permission out, the trading one in, the router's allowance given
+    chain.ok(&["permission", "rotate", "--agent", &cfg, "--old-id", "0x74657331"]);
+    assert_eq!(allowance(), U256::from(300_000_000u64));
+    let shown = chain.ok(&["permission", "show", "--agent", &cfg]);
+    assert!(shown.contains("ok period") && shown.contains("ok venue") && !shown.contains("DIFF"), "{shown}");
+
+    // an order within the terms: registered, signed, in the form 1inch's order book takes
+    let o = placed(&sell("150000000", "37500000000000000"));
+    assert_eq!(o["data"]["extension"], "0x");
+    assert_eq!(o["data"]["receiver"], Address::ZERO.to_string());
+    assert_eq!(o["data"]["maker"].as_str().unwrap().to_lowercase(), account.to_lowercase());
+    // its traits: no partial fills, an expiration, a nonce, and no other bit
+    let traits: U256 = o["data"]["makerTraits"].as_str().unwrap().parse().unwrap();
+    let top: U256 = traits >> 255usize;
+    assert_eq!(top, U256::from(1u8));
+    let forty = U256::from((1u64 << 40) - 1);
+    let middle: U256 = (traits >> 160usize) & ((U256::from(1u8) << 95usize) - U256::from(1u8));
+    assert!(middle.is_zero(), "{traits}");
+    let expiration: U256 = (traits >> 80usize) & forty;
+    assert_eq!(expiration, U256::from(o["expiration"].as_u64().unwrap()));
+    // the eight words the decoder judged are the ones printed
+    assert_eq!(o["order"].as_str().unwrap().len(), 2 + 2 * 8 * 32);
+    assert!(chain.ok(&["permission", "show", "--agent", &cfg]).contains("(spent 150000000)"));
+
+    // a taker fills it at the router: the router asks the account, and the account vouches
+    assert!(would_fill(&o));
+    chain.send_from(FACILITATOR, Some(&router), fill(&o));
+    assert_eq!(balance(&usd, acct), U256::from(10_000_000_000u64 - 150_000_000));
+    assert_eq!(balance(&weth, acct), U256::from(37_500_000_000_000_000u64));
+    assert_eq!(balance(&usd, taker), U256::from(150_000_000u64));
+    // once: the router's bit for the order's nonce is set
+    assert!(!would_fill(&o));
+
+    // the same terms again are another order: a salt and a nonce of its own
+    let second = placed(&sell("150000000", "37500000000000000"));
+    assert_ne!(second["orderHash"], o["orderHash"]);
+    assert_ne!(second["data"]["makerTraits"], o["data"]["makerTraits"]);
+    assert!(would_fill(&second));
+    // with another order's signature the router gets a no from the account
+    let mut forged = second.clone();
+    forged["data"]["takingAmount"] = json!("1");
+    assert!(!would_fill(&forged));
+
+    // outside the terms: under the lowest price (stopped before any operation),
+    // over the cap for one order, over the period's budget (refused by the policy)
+    let cheap = refused(&sell("150000000", "29999999999999999"));
+    assert!(cheap.contains("below the mandate's lowest price"), "{cheap}");
+    refused(&sell("200000001", "50000000000000000"));
+    refused(&sell("1000000", "250000000000000"));
+    assert!(chain.ok(&["permission", "show", "--agent", &cfg]).contains("(spent 300000000)"));
+
+    // past its end the account no longer vouches, and the router no longer fills
+    chain.advance(1801);
+    assert!(!would_fill(&second));
+
+    // revoking takes the router's allowance back with the mandate
+    assert_eq!(allowance(), U256::from(150_000_000u64));
+    chain.ok(&["permission", "revoke", "--agent", &cfg, "--id", "0x6c696d31"]);
+    assert!(allowance().is_zero());
+    chain.fails(&["demo", "--agent", &cfg]);
+}
+
 /// What the phone reads from a venue's config and what the decoder on chain
 /// enforces from the same bytes are held together (the auditor's point on
 /// issue #80): for configs from a seed, well-formed and damaged, every one
@@ -2570,6 +2785,140 @@ fn the_phone_reads_a_venue_config_as_the_decoder_does() {
     // the generator reaches all three kinds
     assert!(both >= 150 && chain_only >= 5 && neither >= 50, "accepted by both {both}, by the decoder only {chain_only}, by neither {neither}");
     eprintln!("configs: {both} accepted by both, {chain_only} by the decoder only, {neither} by neither");
+}
+
+/// The same for the 1inch decoder: what the phone reads from its config
+/// (`one_inch_terms`) and what `OneInchLimitOrderDecoder` enforces from the
+/// same bytes. One difference is by design and is held here too: the
+/// decoder's `checkConfig` asks for code at every token, which a phone
+/// cannot see, so the laptop asks the chain before a mandate is made
+/// (`one_inch_orders_under_a_mandate`).
+#[test]
+fn the_phone_reads_a_one_inch_config_as_the_decoder_does() {
+    use owner_core::kernel as k;
+    use owner_core::review::one_inch_terms;
+    let chain = chain_or_skip!("one-inch-config");
+    let fixture: Value = serde_json::from_str(
+        &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/trading-code.json")).unwrap(),
+    )
+    .unwrap();
+    let deploy = |name: &str, args: Vec<u8>| {
+        let mut code = hex::decode(fixture[name].as_str().unwrap().trim_start_matches("0x")).unwrap();
+        code.extend(args);
+        chain.send_from(FACILITATOR, None, code)["contractAddress"].as_str().unwrap().to_string()
+    };
+    let router = deploy("routerStandInInitCode", vec![]);
+    let decoder = deploy("oneInchLimitOrderDecoderInitCode", router.parse::<Address>().unwrap().abi_encode());
+    // a call that may revert: the returned bytes, or nothing
+    let ask = |signature: &str, args: Vec<u8>| -> Option<Vec<u8>> {
+        let mut data = alloy::primitives::keccak256(signature)[..4].to_vec();
+        data.extend(args);
+        let body = json!({"jsonrpc": "2.0", "id": 1, "method": "eth_call", "params": [{"to": decoder, "data": Bytes::from(data).to_string()}, "latest"]});
+        let v: Value = serde_json::from_str(&http_post(&chain.url, &body.to_string())).unwrap();
+        v.get("result").and_then(|r| r.as_str()).map(|r| hex::decode(r.trim_start_matches("0x")).unwrap())
+    };
+    let account: Address = "0x00000000000000000000000000000000000Acc01".to_lowercase().parse().unwrap();
+    // five tokens with code, as `checkConfig` asks, and one address without
+    let tokens: Vec<Address> = (1u8..=5).map(Address::repeat_byte).collect();
+    for token in &tokens {
+        chain.rpc("anvil_setCode", json!([token.to_string(), "0x00"]));
+    }
+    let codeless = Address::repeat_byte(0xcc);
+
+    let mut rng: u64 = 0x2545_f491_4f6c_dd1d;
+    let mut next = move |n: u64| {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        rng % n
+    };
+    let (mut both, mut chain_only, mut neither) = (0, 0, 0);
+    for _ in 0..400 {
+        // a config: mostly within the rules, with a share of what the rules refuse
+        let count = if next(12) == 0 { 0 } else { 1 + next(3) };
+        let pairs: Vec<(Address, Address, U256, U256)> = (0..count)
+            .map(|i| {
+                let sell = if next(25) == 0 { Address::ZERO } else { tokens[i as usize] };
+                let buy = if next(25) == 0 { sell } else { tokens[(i + 1 + next(2)) as usize] };
+                let amount = |n: u64| if n % 30 == 0 { U256::ZERO } else { U256::from(1 + n % 1_000_000) };
+                (sell, buy, amount(next(u64::MAX)), amount(next(u64::MAX)))
+            })
+            .collect();
+        let life = if next(15) == 0 { 0 } else { 1 + next(86_400) as u32 };
+        let mut config = k::one_inch_config(life, &pairs).to_vec();
+        // and damaged bytes: one changed, the end cut, a word added
+        match next(8) {
+            0 => {
+                let at = next(config.len() as u64) as usize;
+                config[at] ^= 1 << next(8);
+            }
+            1 => config.truncate(config.len() - 1 - next(40) as usize % config.len()),
+            2 => config.extend([0u8; 32]),
+            _ => {}
+        }
+
+        let phone = one_inch_terms(&config);
+        let on_chain = ask("checkConfig(bytes)", (Bytes::from(config.clone()),).abi_encode_params()).is_some();
+        let Ok(terms) = phone else {
+            if on_chain { chain_only += 1 } else { neither += 1 }
+            continue;
+        };
+        // a changed byte can turn a token into an address without code: that is the one
+        // thing the decoder refuses and the phone cannot see
+        let all_have_code = terms.pairs.iter().all(|p| tokens.contains(&p.0) && tokens.contains(&p.1));
+        assert_eq!(on_chain, all_have_code, "the phone and the decoder differ on more than a token's code: 0x{}", hex::encode(&config));
+        if !on_chain {
+            neither += 1;
+            continue;
+        }
+        both += 1;
+
+        let expiration = 1_900_000_000u64;
+        let judge = |sell: Address, buy: Address, making: U256, taking: U256| {
+            let order = k::OneInchOrder { salt: U256::from(7u8), maker: account, maker_asset: sell, taker_asset: buy, making_amount: making, taking_amount: taking, expiration, nonce: 3 };
+            ask("judge(address,bytes,bytes)", (account, Bytes::from(config.clone()), order.encode().unwrap()).abi_encode_params())
+        };
+        for (sell, buy, min_buy, per_sell) in &terms.pairs {
+            // a multiple of the price's two terms is exactly at the price; the terms
+            // themselves when a multiple does not fit a word
+            let times = U256::from(1 + next(1000));
+            let (sold, least) = match (per_sell.checked_mul(times), min_buy.checked_mul(times)) {
+                (Some(sold), Some(least)) => (sold, least),
+                _ => (*per_sell, *min_buy),
+            };
+            // An order's amounts stay within 128 bits, the range the router's own
+            // arithmetic is written for. A price whose terms are wider (a damaged byte
+            // makes one) is a price no order can be made at: nothing passes.
+            if sold > U256::from(u128::MAX) || least > U256::from(u128::MAX) {
+                assert!(judge(*sell, *buy, sold, least).is_none(), "an order with an amount beyond 128 bits passes: 0x{}", hex::encode(&config));
+                continue;
+            }
+            let answer = judge(*sell, *buy, sold, least).unwrap_or_else(|| panic!("an order at the lowest price the phone read is refused: 0x{}", hex::encode(&config)));
+            assert_eq!(answer.len(), 160);
+            assert_eq!(Address::from_slice(&answer[12..32]), *sell, "the token charged");
+            assert_eq!(U256::from_be_slice(&answer[32..64]), sold, "the amount charged");
+            assert_eq!(U256::from_be_slice(&answer[64..96]), U256::from(expiration - u64::from(terms.max_life)), "the lifetime");
+            assert_eq!(U256::from_be_slice(&answer[96..128]), U256::from(expiration));
+            assert!(judge(*sell, *buy, sold, least - U256::from(1)).is_none(), "an order under the lowest price the phone read passes: 0x{}", hex::encode(&config));
+        }
+        // a pair the phone did not read is not traded, at any price
+        for sell in &tokens {
+            for buy in &tokens {
+                if !terms.pairs.iter().any(|p| p.0 == *sell && p.1 == *buy) {
+                    assert!(judge(*sell, *buy, U256::from(1), U256::from(u128::MAX)).is_none(), "a pair the phone did not read is traded: 0x{}", hex::encode(&config));
+                }
+            }
+        }
+    }
+    // the generator reaches all three kinds
+    assert!(both >= 150 && chain_only >= 5 && neither >= 50, "accepted by both {both}, by the decoder only {chain_only}, by neither {neither}");
+    eprintln!("configs: {both} accepted by both, {chain_only} by the decoder only, {neither} by neither");
+
+    // The difference by design: terms that buy an address without code. The phone reads
+    // them, since bytes cannot show code; the decoder's `checkConfig` refuses them.
+    let buys_nothing = k::one_inch_config(1800, &[(tokens[0], codeless, U256::from(1u8), U256::from(1u8))]);
+    assert!(one_inch_terms(&buys_nothing).is_ok());
+    assert!(ask("checkConfig(bytes)", (buys_nothing.clone(),).abi_encode_params()).is_none());
 }
 
 /// An account is created through ZeroDev's staked FactoryStaker when the

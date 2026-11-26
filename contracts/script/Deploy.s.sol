@@ -9,6 +9,7 @@ import {P256Signer} from "../src/P256Signer.sol";
 import {AgentPolicy} from "../src/AgentPolicy.sol";
 import {SafeNonceAssert} from "../src/SafeNonceAssert.sol";
 import {CowSwapDecoder} from "../src/venues/CowSwapDecoder.sol";
+import {OneInchLimitOrderDecoder} from "../src/venues/OneInchLimitOrderDecoder.sol";
 import {WhitelistPaymaster} from "../src/WhitelistPaymaster.sol";
 import {DemoCounter} from "../src/demo/DemoCounter.sol";
 import {IEntryPoint} from "account-abstraction/interfaces/IEntryPoint.sol";
@@ -50,6 +51,12 @@ contract Deploy is Script {
     // chain CoW runs on. The decoder is deployed only where it has code.
     address internal constant COW_SETTLEMENT = 0x9008D19f58AAbD9eD0D60971565AA8510560ab41;
 
+    // 1inch's router (AggregationRouterV6, which carries Limit Order Protocol
+    // v4), the same address on every chain it is on. The decoder is deployed
+    // only where it has code, and its constructor reverts unless that code
+    // hashes an order as the decoder does.
+    address internal constant ONE_INCH_ROUTER = 0x111111125421cA6dc452d289314280a0f8842A65;
+
     // The compiler settings this script is built with, as foundry.toml sets
     // them, recorded in the deployments file so that the code of an instance
     // can be rebuilt and compared (issue #123). `DeploymentsRecord.t.sol`
@@ -78,7 +85,10 @@ contract Deploy is Script {
         address nonceAssert =
             _reuseOrDeploy(recorded, "safeNonceAssert", "SafeNonceAssert", type(SafeNonceAssert).creationCode);
         address policy = _reuseOrDeploy(
-            recorded, "agentPolicy", "AgentPolicy", abi.encodePacked(type(AgentPolicy).creationCode, abi.encode(nonceAssert))
+            recorded,
+            "agentPolicy",
+            "AgentPolicy",
+            abi.encodePacked(type(AgentPolicy).creationCode, abi.encode(nonceAssert))
         );
         address counter = _reuseOrDeploy(recorded, "demoCounter", "DemoCounter", type(DemoCounter).creationCode);
         // The paymaster is owned by whoever runs this script (the sponsor);
@@ -92,13 +102,24 @@ contract Deploy is Script {
         );
         // The decoder reads the settlement's domain separator and spender when
         // it is created, so on each chain it is that chain's venue and no other.
-        address cowDecoder;
+        // The venues' decoders, CoW Swap's and 1inch's: zero where the venue is not on this chain
+        address[2] memory decoders;
         if (COW_SETTLEMENT.code.length > 0) {
-            cowDecoder = _reuseOrDeploy(
+            decoders[0] = _reuseOrDeploy(
                 recorded,
                 "cowSwapDecoder",
                 "CowSwapDecoder",
                 abi.encodePacked(type(CowSwapDecoder).creationCode, abi.encode(COW_SETTLEMENT))
+            );
+        }
+        // The decoder reads the router's EIP-712 domain when it is created, so
+        // on each chain it is that chain's router and no other.
+        if (ONE_INCH_ROUTER.code.length > 0) {
+            decoders[1] = _reuseOrDeploy(
+                recorded,
+                "oneInchLimitOrderDecoder",
+                "OneInchLimitOrderDecoder",
+                abi.encodePacked(type(OneInchLimitOrderDecoder).creationCode, abi.encode(ONE_INCH_ROUTER))
             );
         }
         vm.stopBroadcast();
@@ -113,7 +134,8 @@ contract Deploy is Script {
         _supersede(json, recorded, "agentPolicy", policy);
         _supersede(json, recorded, "whitelistPaymaster", paymaster);
         _supersede(json, recorded, "demoCounter", counter);
-        if (cowDecoder != address(0)) _supersede(json, recorded, "cowSwapDecoder", cowDecoder);
+        if (decoders[0] != address(0)) _supersede(json, recorded, "cowSwapDecoder", decoders[0]);
+        if (decoders[1] != address(0)) _supersede(json, recorded, "oneInchLimitOrderDecoder", decoders[1]);
         vm.serializeUint(json, "chainId", block.chainid);
         vm.serializeString(json, "solc", SOLC);
         vm.serializeString(json, "evmVersion", EVM_VERSION);
@@ -130,7 +152,8 @@ contract Deploy is Script {
         vm.serializeAddress(json, "safeNonceAssert", nonceAssert);
         vm.serializeAddress(json, "whitelistPaymaster", paymaster);
         vm.serializeAddress(json, "paymasterOwner", sponsor);
-        if (cowDecoder != address(0)) vm.serializeAddress(json, "cowSwapDecoder", cowDecoder);
+        if (decoders[0] != address(0)) vm.serializeAddress(json, "cowSwapDecoder", decoders[0]);
+        if (decoders[1] != address(0)) vm.serializeAddress(json, "oneInchLimitOrderDecoder", decoders[1]);
         string memory out = vm.serializeAddress(json, "demoCounter", counter);
         vm.writeJson(out, path);
         console.log("wrote", path);
@@ -149,7 +172,9 @@ contract Deploy is Script {
         string[] memory keys = vm.parseJsonKeys(recorded, "$");
         for (uint256 i; i < keys.length; i++) {
             (bool versioned,,) = versionOf(keys[i]);
-            if (versioned) vm.serializeAddress(json, keys[i], vm.parseJsonAddress(recorded, string.concat(".", keys[i])));
+            if (versioned) {
+                vm.serializeAddress(json, keys[i], vm.parseJsonAddress(recorded, string.concat(".", keys[i])));
+            }
         }
     }
 
@@ -196,9 +221,13 @@ contract Deploy is Script {
         while (i > 0 && k[i - 1] >= "0" && k[i - 1] <= "9") i--;
         // At least one digit, no leading zero, a `V` before them and a name before that
         if (i == k.length || k[i] == "0" || i < 2 || k[i - 1] != "V") return (false, "", 0);
-        for (uint256 j = i; j < k.length; j++) n = n * 10 + uint8(k[j]) - 48;
+        for (uint256 j = i; j < k.length; j++) {
+            n = n * 10 + uint8(k[j]) - 48;
+        }
         bytes memory b = new bytes(i - 1);
-        for (uint256 j; j + 1 < i; j++) b[j] = k[j];
+        for (uint256 j; j + 1 < i; j++) {
+            b[j] = k[j];
+        }
         return (true, string(b), n);
     }
 
@@ -231,8 +260,7 @@ contract Deploy is Script {
         // Sepolia since 2026-10-06) that limit runs out while the code is
         // stored. With no RPC to ask, forge estimates as before.
         uint256 limit = chainGas(msg.sender, data);
-        (bool ok, bytes memory ret) =
-            limit == 0 ? CREATE2_DEPLOYER.call(data) : CREATE2_DEPLOYER.call{gas: limit}(data);
+        (bool ok, bytes memory ret) = limit == 0 ? CREATE2_DEPLOYER.call(data) : CREATE2_DEPLOYER.call{gas: limit}(data);
         require(ok && ret.length == 20 && address(bytes20(ret)) == addr, "create2 failed");
         console.log(name, "deployed at", addr);
         if (limit != 0) console.log("  gas limit from the chain's estimate:", limit);
@@ -242,7 +270,13 @@ contract Deploy is Script {
     /// default margin); 0 when there is no RPC or it gives no estimate.
     function chainGas(address from, bytes memory data) public returns (uint256) {
         string memory params = string.concat(
-            '[{"from":"', vm.toString(from), '","to":"', vm.toString(CREATE2_DEPLOYER), '","data":"', vm.toString(data), '"}]'
+            '[{"from":"',
+            vm.toString(from),
+            '","to":"',
+            vm.toString(CREATE2_DEPLOYER),
+            '","data":"',
+            vm.toString(data),
+            '"}]'
         );
         try vm.rpc("eth_estimateGas", params) returns (bytes memory r) {
             return withMargin(quantity(r));

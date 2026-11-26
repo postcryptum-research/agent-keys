@@ -204,6 +204,24 @@ unnoticed, and all five were faults of the tests:
   where one unit of the product is not one unit of the price;
 - seventeen pairs were refused for a reason other than their number.
 
+**The phone reads the venue's terms as the decoder does.**
+`the_phone_reads_a_one_inch_config_as_the_decoder_does`, among the CLI's
+local-chain tests, puts 400 configs from a seed, well-formed and damaged,
+to the phone's reader (`one_inch_terms`) and to the decoder on a local
+chain: 167 are accepted by both, 30 by the decoder only, 203 by
+neither. For each one both accept, an order at a pair's lowest price passes
+with the token, the amount and the lifetime the phone read, one unit under
+it does not, and a pair the phone did not read is not traded. The phone
+may refuse more than the decoder; it never reads other terms. One
+difference is by design: the decoder's `checkConfig` asks for code at every
+token, which a phone cannot see, so the CLI asks the chain before a mandate
+is made (`one_inch_orders_under_a_mandate` holds that it does).
+
+```sh
+cd signer
+cargo test -p agent-signer --features insecure-software-keys --test anvil_cli one_inch -- --nocapture
+```
+
 **What it does not cover.** The stand-in models a plain order only. The
 real router's code runs without its chain's state: no pause, no other
 maker's bits. No order was sent to a chain.
