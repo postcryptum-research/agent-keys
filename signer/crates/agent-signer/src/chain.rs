@@ -88,6 +88,13 @@ pub fn venue_target(venues: &std::collections::HashMap<Address, VenueOnChain>, t
 /// the end and the hardware signs only once, over the final gas fields.
 const PLACEHOLDER_SIGNATURE: hw_signer::Signature = hw_signer::Signature { r: [0x11; 32], s: [0x22; 32] };
 
+/// The verification gas sent with a token paymaster: its price read and the
+/// token's `transferFrom` (Circle's guide uses the same figure).
+const TOKEN_PAYMASTER_VERIFICATION_GAS: u128 = 200_000;
+/// Added to a token paymaster's own `additionalGasCharge` for its `postOp`.
+const TOKEN_PAYMASTER_POST_OP_MARGIN: u128 = 15_000;
+
+
 /// Secrets come from the environment (optionally a `.env` file), never from
 /// the agent config: `BASE_SEPOLIA_RPC_URL` (or `RPC_URL`) and, optionally,
 /// `GAS_WALLET_KEYFILE`, a file holding the hex key of a small hot wallet that
@@ -99,6 +106,10 @@ pub struct Env {
     /// `BUNDLER_URL`: when set (or overridden by `--bundler`), operations go
     /// through an ERC-4337 bundler instead of our own `handleOps`.
     pub bundler_url: Option<String>,
+    /// `GAS_TOKEN_PAYMASTER`: another party's paymaster that takes a token
+    /// from the account for its gas, through an allowance the owner gave it
+    /// (Circle Paymaster). When set, the agent's operations go with it.
+    pub token_paymaster: Option<Address>,
 }
 
 impl Env {
@@ -120,7 +131,11 @@ impl Env {
         if gas_key.is_none() && bundler_url.is_none() {
             bail!("set BUNDLER_URL (operations go through a bundler) or GAS_WALLET_KEYFILE (submit them ourselves)");
         }
-        Ok(Self { rpc_url, gas_key, bundler_url })
+        let token_paymaster = match std::env::var("GAS_TOKEN_PAYMASTER") {
+            Ok(a) => Some(a.trim().parse::<Address>().with_context(|| format!("GAS_TOKEN_PAYMASTER {a:?} is not an address"))?),
+            Err(_) => None,
+        };
+        Ok(Self { rpc_url, gas_key, bundler_url, token_paymaster })
     }
 }
 
@@ -183,6 +198,9 @@ pub struct Session {
     pub gas_wallet: Option<Address>,
     /// Set when operations are delivered through a bundler RPC.
     pub bundler: Option<Bundler>,
+    /// A paymaster that takes a token from the account for the gas of the
+    /// agent's operations (`GAS_TOKEN_PAYMASTER`).
+    pub token_paymaster: Option<Address>,
     pub cfg: AgentConfig,
     pub dep: Deployments,
     /// Kernel `initialize` data, known only when the config carries the
@@ -414,7 +432,21 @@ impl Session {
             }
         };
 
-        Ok(Self { provider, gas_wallet, bundler, cfg, dep, init_data, permission_data, account, pinned, token_domains, venues })
+        let token_paymaster = env.token_paymaster;
+        Ok(Self {
+            provider,
+            gas_wallet,
+            bundler,
+            token_paymaster,
+            cfg,
+            dep,
+            init_data,
+            permission_data,
+            account,
+            pinned,
+            token_domains,
+            venues,
+        })
     }
 
     /// Kernel `initialize` data for this account (needs `ownerPublicKey`).
@@ -1554,6 +1586,20 @@ impl Session {
         Ok(if stored == current { current.checked_add(1).context("the account's validation nonce is at its largest")? } else { current })
     }
 
+    /// What a token paymaster asks of an operation: its token, the allowance
+    /// the account gave it, and the `postOp` gas limit to send. The paymaster
+    /// refuses a limit under its own `additionalGasCharge`; the margin on top
+    /// is for the refund it sends back.
+    async fn token_paymaster_terms(&self, paymaster: Address) -> Result<(Address, U256, u128)> {
+        let pm = crate::abi::ITokenPaymaster::new(paymaster, self.provider.clone());
+        let token = pm.token().call().await.with_context(|| format!("{paymaster} does not answer token(): not a token paymaster"))?;
+        let charge = pm.additionalGasCharge().call().await.with_context(|| format!("reading additionalGasCharge() of {paymaster}"))?;
+        let charge = u128::try_from(charge).map_err(|_| anyhow::anyhow!("the paymaster's additionalGasCharge does not fit 128 bits"))?;
+        let post_op_gas = charge.checked_add(TOKEN_PAYMASTER_POST_OP_MARGIN).context("the paymaster's postOp gas limit")?;
+        let allowance = crate::abi::IERC20Allowance::new(token, self.provider.clone()).allowance(self.account, paymaster).call().await?;
+        Ok((token, allowance, post_op_gas))
+    }
+
     /// Sign `call_data` in hardware and submit it through `handleOps`. The
     /// first operation carries `initCode` and deploys the account. With
     /// `sponsored`, the whitelist paymaster pays instead of the account.
@@ -1576,16 +1622,32 @@ impl Session {
         };
         let ep = IEntryPoint::new(self.dep.entry_point, self.provider.clone());
         let deployed = self.is_deployed().await?;
-        if !deployed && !sponsored && self.provider.get_balance(self.account).await?.is_zero() {
+        // Gas in a token: another party's paymaster takes it from the account
+        // through an allowance the owner gave it. The agent's operations only:
+        // the owner's phone accepts no paymaster it does not know. Nothing but
+        // the two limits goes with it: no permit, which the agent's key cannot
+        // sign, so the owner's allowance is all the paymaster can take.
+        let token_paymaster = match (sponsored, sign_as) {
+            (false, SignAs::Agent) => self.token_paymaster,
+            _ => None,
+        };
+        if !deployed && !sponsored && token_paymaster.is_none() && self.provider.get_balance(self.account).await?.is_zero() {
             bail!("account {} holds no ETH to pay for its deployment; run `account fund` first", self.account);
         }
         // v0.7 layout: paymaster(20) ‖ verificationGasLimit(16) ‖ postOpGasLimit(16) ‖ data
         let paymaster_and_data = if sponsored {
-            let mut b = Vec::with_capacity(52);
-            b.extend_from_slice(self.paymaster()?.as_slice());
-            b.extend_from_slice(&100_000u128.to_be_bytes());
-            b.extend_from_slice(&0u128.to_be_bytes());
-            Bytes::from(b)
+            crate::bundler::paymaster_and_data(self.paymaster()?, 100_000, 0)
+        } else if let Some(pm) = token_paymaster {
+            let (token, allowance, post_op_gas) = self.token_paymaster_terms(pm).await?;
+            if allowance.is_zero() {
+                bail!(
+                    "the paymaster {pm} takes the token {token} from the account for gas, through an allowance, and the \
+                     owner has given it none: an owner operation that approves that token to it comes first \
+                     (`op send --root --target {token}` with an `approve`)"
+                );
+            }
+            eprintln!("gas in a token: the paymaster {pm} takes {token} from the account, inside the owner's allowance ({allowance} left)");
+            crate::bundler::paymaster_and_data(pm, TOKEN_PAYMASTER_VERIFICATION_GAS, post_op_gas)
         } else {
             Bytes::new()
         };
@@ -1724,7 +1786,14 @@ impl Session {
                 SignAs::RecoveryAsRoot => "root (recovery key)",
             }
         );
-        eprintln!("gas paid by:    {}", if sponsored { "paymaster" } else { "the account" });
+        eprintln!(
+            "gas paid by:    {}",
+            match (sponsored, token_paymaster) {
+                (true, _) => "paymaster",
+                (false, Some(_)) => "the account, in a token through a paymaster",
+                (false, None) => "the account",
+            }
+        );
 
         if let Some(bundler) = &self.bundler {
             eprintln!("userOpHash:     {user_op_hash}");

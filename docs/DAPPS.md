@@ -398,7 +398,9 @@ and are charged; another recipient, another chain, a fee, a caller for the
 other side, the form with a hook and an amount over the cap are refused].
 The recipient "the account" is the same address on the other chain: it is
 the owner's there only if the account exists, or can be created, at that
-address on that chain.
+address on that chain. A transfer out of Arc testnet to the account's own
+address on Base Sepolia, burned and minted, is on
+[`CIRCLE.md`](CIRCLE.md).
 
 ```json
 {"selector": "0x8e0250ee", "words": [{"charged": "<USDC>"}, {"is": "<destination domain>"}, "account",
@@ -645,6 +647,45 @@ native budget.
   kinds of operation are traced on a local chain
   ([`FUZZING.md`](FUZZING.md)).
 - One account, one chain, small amounts, one run of each.
+
+## On a chain: three recipes on Sepolia, later that day
+
+[V] The same account, `0xeAb60Ce78Af6e62E268dfF4af9186b7C61c2bcEd`, under a
+new mandate its owner approved on the phone on 2026-11-27 (the Android
+owner app 0.4.6, core 0.3.7): [`0xfd5600c4dba49acaab5697749ce2e776dc66961d2efd38d128cb5e5868ee1b97`](https://sepolia.etherscan.io/tx/0xfd5600c4dba49acaab5697749ce2e776dc66961d2efd38d128cb5e5868ee1b97).
+It replaced the mandate of the runs above, took back the allowances of the
+two venues that left (CoW Swap, 1inch), and added calls by rules at two
+contracts whose decoders were deployed that day
+([`DEPLOYMENTS.md`](DEPLOYMENTS.md)): Compound v3's USDC market
+`0xAec1F48e02Cfb822Be958B68C7957156EB3F0b6e` and Uniswap v3's position
+manager `0x1238536071E1c677A632429e3655c799b22cDA52`; and, on the
+allow-list, Lido's wrapper on Sepolia
+`0xB82381A3fBD3FaFA77B3a7bE693342618240067b`.
+
+**The agent, eight times:**
+
+| What | Transaction | Result |
+|---|---|---|
+| Lido: 0.001 ETH sent to the wrapper | [`0x09ba34e6f0ebc930f01e6e102d92dcfbf4993e83a85e71067b1b7b41cd5f9fad`](https://sepolia.etherscan.io/tx/0x09ba34e6f0ebc930f01e6e102d92dcfbf4993e83a85e71067b1b7b41cd5f9fad) | staked and wrapped: 0.000963653100270615 wstETH to the account |
+| Lido: `unwrap`, all of it | [`0x393e52ac78ec0e80fb67c9e9de0cb899e3f58778061806b779eba8a3a2fdab15`](https://sepolia.etherscan.io/tx/0x393e52ac78ec0e80fb67c9e9de0cb899e3f58778061806b779eba8a3a2fdab15) | 0.000999999999999998 stETH to the account |
+| Lido: `wrap`, with the allowance for one operation | [`0x6492a62c92d1c8ad9662a73923f867da15f277f6c72c07a32afcae22bca28947`](https://sepolia.etherscan.io/tx/0x6492a62c92d1c8ad9662a73923f867da15f277f6c72c07a32afcae22bca28947) | wstETH again; no allowance left |
+| Compound v3 by rules: `supplyTo`, 5 USDC for the account | [`0x5b7a13fe4a8050ff52872db4b950d8d52351b565af95b4d1598088de48b82b8f`](https://sepolia.etherscan.io/tx/0x5b7a13fe4a8050ff52872db4b950d8d52351b565af95b4d1598088de48b82b8f) | the supply is the account's; charged |
+| Compound v3 by rules: `withdrawTo`, 2 USDC to the account | [`0x8c2953f7235c79165384b59daf039cf20c1cdc21937f3bd84d2cbff3dfd0612f`](https://sepolia.etherscan.io/tx/0x8c2953f7235c79165384b59daf039cf20c1cdc21937f3bd84d2cbff3dfd0612f) | 2 USDC back |
+| Uniswap v3 by rules: `mint`, 5 USDC in the set range | [`0xd56ce389caf36469a0833ba2e34d51663b1b900f25d8b28d145e5cab5d415ac0`](https://sepolia.etherscan.io/tx/0xd56ce389caf36469a0833ba2e34d51663b1b900f25d8b28d145e5cab5d415ac0) | position 235079 is the account's; charged |
+| Uniswap v3 by rules: `decreaseLiquidity`, all of it | [`0xaba6daab76621f2292e231b0d3e941c4e059c64236e7b53d72ff79015f1eadb0`](https://sepolia.etherscan.io/tx/0xaba6daab76621f2292e231b0d3e941c4e059c64236e7b53d72ff79015f1eadb0) | the position is empty |
+| Uniswap v3 by rules: `collect`, to the account | [`0x1a292d4d07c20baf32320790aaf09a822ab931088a4e71676487b1083a231767`](https://sepolia.etherscan.io/tx/0x1a292d4d07c20baf32320790aaf09a822ab931088a4e71676487b1083a231767) | 4.999999 USDC back in the account |
+
+Each receipt was read afterwards: every operation succeeded. Refused
+before sending, by the rules: a supply for another address (its first
+argument) and a position for another recipient (its tenth).
+
+**What it does not show.** The position is one-sided: a range above the
+price, which takes the first token only, with the second token's word held
+to zero. A position of two tokens was not run: a call under rules brings
+no allowance of a second token from the CLI
+([#242](https://github.com/postcryptum-research/agent-keys/issues/242)).
+Lido's withdrawal queue is paused on Sepolia, so a request and a claim
+cannot be run there. One run of each, small amounts.
 
 ## Never for an agent key
 

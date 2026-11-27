@@ -27,6 +27,16 @@ use serde_json::{json, Value};
 
 use crate::abi::IEntryPoint::PackedUserOperation;
 
+/// `paymasterAndData` of EntryPoint v0.7 with no data of the paymaster's own:
+/// `paymaster (20) ‖ verificationGasLimit (16) ‖ postOpGasLimit (16)`.
+pub fn paymaster_and_data(paymaster: Address, verification_gas: u128, post_op_gas: u128) -> Bytes {
+    let mut b = Vec::with_capacity(52);
+    b.extend_from_slice(paymaster.as_slice());
+    b.extend_from_slice(&verification_gas.to_be_bytes());
+    b.extend_from_slice(&post_op_gas.to_be_bytes());
+    Bytes::from(b)
+}
+
 /// Split a packed `(hi, lo)` word: `accountGasLimits` into (verification,
 /// call), `gasFees` into (maxPriorityFee, maxFee).
 pub fn split_gas(word: B256) -> (u128, u128) {
@@ -140,7 +150,10 @@ pub fn apply_estimate(op: &mut PackedUserOperation, est: &GasEstimate, pre_verif
         };
         let verification =
             paymaster("paymasterVerificationGasLimit", est.paymaster_verification_gas_limit, our_verification)?;
-        let post_op = paymaster("paymasterPostOpGasLimit", est.paymaster_post_op_gas_limit, our_post_op)?;
+        // A token paymaster refuses a postOp limit under a floor of its own (Circle's:
+        // `additionalGasCharge`), and the CLI's figure is that floor with a margin. A bundler's
+        // measured figure can be under it, so it is taken only where it is not below ours.
+        let post_op = paymaster("paymasterPostOpGasLimit", est.paymaster_post_op_gas_limit, our_post_op)?.max(our_post_op);
         let mut repacked = Vec::with_capacity(pm.len());
         repacked.extend_from_slice(&pm[..20]);
         repacked.extend_from_slice(&verification.to_be_bytes());
@@ -356,6 +369,20 @@ mod tests {
         assert_eq!(min_priority_fee_from_error("maxPriorityFeePerGas must be at least"), None);
     }
 
+    /// The sponsoring paymaster and a token paymaster go with the two limits
+    /// and no data of their own: 52 bytes, in the EntryPoint's order.
+    #[test]
+    fn paymaster_and_data_is_the_two_limits_after_the_address() {
+        let pm = Address::repeat_byte(0x31);
+        let b = paymaster_and_data(pm, 200_000, 50_000);
+        assert_eq!(b.len(), 52);
+        assert_eq!(&b[..20], pm.as_slice());
+        assert_eq!(u128::from_be_bytes(b[20..36].try_into().unwrap()), 200_000);
+        assert_eq!(u128::from_be_bytes(b[36..52].try_into().unwrap()), 50_000);
+        // no post-op gas for a paymaster without a postOp
+        assert_eq!(&paymaster_and_data(pm, 100_000, 0)[36..], &[0u8; 16]);
+    }
+
     #[test]
     fn gas_price_tiers_parse() {
         let v: GasPriceTiers = serde_json::from_value(json!({
@@ -403,6 +430,32 @@ mod tests {
     fn paymaster_limits(op: &PackedUserOperation) -> (u128, u128) {
         let pm = &op.paymasterAndData;
         (u128::from_be_bytes(pm[20..36].try_into().unwrap()), u128::from_be_bytes(pm[36..52].try_into().unwrap()))
+    }
+
+    /// A token paymaster has a floor for its postOp gas limit: Circle's on Base Sepolia refused
+    /// 12395, a bundler's measured figure, with `PostOpGasLimitTooLow(12395, 35000)` (2026-11-27).
+    /// A bundler's figure under the CLI's own is not taken; one above it, within the bound, is.
+    #[test]
+    fn a_bundlers_post_op_figure_does_not_go_under_ours() {
+        let with_token_paymaster = || {
+            let mut op = ours(0);
+            op.paymasterAndData = paymaster_and_data(Address::repeat_byte(0x31), 200_000, 50_000);
+            op
+        };
+        let mut est = honest();
+        est.paymaster_verification_gas_limit = Some(U256::from(60_000u64));
+        est.paymaster_post_op_gas_limit = Some(U256::from(12_395u64));
+        let mut op = with_token_paymaster();
+        apply_estimate(&mut op, &est, 1).unwrap();
+        assert_eq!(paymaster_limits(&op), (60_000, 50_000), "the floor stays; the verification figure is the bundler's");
+        est.paymaster_post_op_gas_limit = Some(U256::from(70_000u64));
+        let mut op = with_token_paymaster();
+        apply_estimate(&mut op, &est, 1).unwrap();
+        assert_eq!(paymaster_limits(&op).1, 70_000);
+        // the sponsoring paymaster, which has no postOp: a bundler's 1 is still taken
+        let mut op = ours(0);
+        apply_estimate(&mut op, &honest(), 1).unwrap();
+        assert_eq!(paymaster_limits(&op).1, 1);
     }
 
     #[test]

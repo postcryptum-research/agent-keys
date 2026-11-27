@@ -279,6 +279,8 @@ tables are written from `contracts/deployments/11155111.json`.
 | `SwapRouter02Decoder` | [`0x6D7e83461cd295AEf006F9A76009b662d6b06b6b`](https://sepolia.etherscan.io/address/0x6D7e83461cd295AEf006F9A76009b662d6b06b6b) | judges a swap at Uniswap's SwapRouter02, which the account makes itself |
 | `CallRulesDecoder` for Aave V3's pool | [`0x112b620C87A7C4b9f53566dD422f20704140dbfe`](https://sepolia.etherscan.io/address/0x112b620C87A7C4b9f53566dD422f20704140dbfe) | holds each argument of a call at the pool to the owner's rule (`callRulesAaveV3Pool` in the file) |
 | `CallRulesDecoder` for CCTP's messenger | [`0xC5135aC6A911B692173F2626dD57ff1D80d16F62`](https://sepolia.etherscan.io/address/0xC5135aC6A911B692173F2626dD57ff1D80d16F62) | the same for Circle's `TokenMessengerV2` (`callRulesCctpMessenger` in the file) |
+| `CallRulesDecoder` for Compound v3's USDC market | [`0x467b0caE921ceEaf64D832eFD242A2260e057E60`](https://sepolia.etherscan.io/address/0x467b0caE921ceEaf64D832eFD242A2260e057E60) | the same for Compound's market [`0xAec1F48e02Cfb822Be958B68C7957156EB3F0b6e`](https://sepolia.etherscan.io/address/0xAec1F48e02Cfb822Be958B68C7957156EB3F0b6e) (`callRulesCompoundV3Usdc` in the file) |
+| `CallRulesDecoder` for Uniswap v3's position manager | [`0x1CC3c09765f4867e440Dd9b7F61c227E2338e254`](https://sepolia.etherscan.io/address/0x1CC3c09765f4867e440Dd9b7F61c227E2338e254) | the same for the position manager [`0x1238536071E1c677A632429e3655c799b22cDA52`](https://sepolia.etherscan.io/address/0x1238536071E1c677A632429e3655c799b22cDA52) (`callRulesUniswapV3Positions` in the file) |
 | `SeaportBidDecoder` | [`0x713165a6157a4B2952A775A9D1C9948D9a703128`](https://sepolia.etherscan.io/address/0x713165a6157a4B2952A775A9D1C9948D9a703128) | reads a bid for an NFT at Seaport for the policy; no build of the CLI or the phone places or shows such a bid yet |
 | `SafeNonceAssert` | [`0x29f600cBcdC5221a63bD5c88F4a75E20c5CBe219`](https://sepolia.etherscan.io/address/0x29f600cBcdC5221a63bD5c88F4a75E20c5CBe219) | the replay guard of an agent's Safe transaction |
 | `WhitelistPaymaster` | [`0x657792557C1D40f2Da031FD7aB277078D2c0a4cb`](https://sepolia.etherscan.io/address/0x657792557C1D40f2Da031FD7aB277078D2c0a4cb) | a gas sponsor with a budget per account; owner [`0x52370eE170c0E2767B32687166791973a0dE7966`](https://sepolia.etherscan.io/address/0x52370eE170c0E2767B32687166791973a0dE7966) |
@@ -315,6 +317,8 @@ used 37,919,850.
 | `SwapRouter02Decoder` | [`0x80802dfe67e207190176ed96473dcec450f4b4723ecd389e81e1970b16ea56c7`](https://sepolia.etherscan.io/tx/0x80802dfe67e207190176ed96473dcec450f4b4723ecd389e81e1970b16ea56c7) |
 | `CallRulesDecoder` for Aave V3's pool | [`0x33653c1c47013963dac1f45ab17c25be2fe5eb05c5604d455bc7afb4e7ed4368`](https://sepolia.etherscan.io/tx/0x33653c1c47013963dac1f45ab17c25be2fe5eb05c5604d455bc7afb4e7ed4368) |
 | `CallRulesDecoder` for CCTP's messenger | [`0x306ebd4bda08d965652a7089f54c3efe613026e2ca266ff9f4c4ac1035fcda9d`](https://sepolia.etherscan.io/tx/0x306ebd4bda08d965652a7089f54c3efe613026e2ca266ff9f4c4ac1035fcda9d) |
+| `CallRulesDecoder` for Compound v3's USDC market | [`0x414a520146b01fc731672a5c324db23d64998e155d93c5eff6d999722401865a`](https://sepolia.etherscan.io/tx/0x414a520146b01fc731672a5c324db23d64998e155d93c5eff6d999722401865a) |
+| `CallRulesDecoder` for Uniswap v3's position manager | [`0xd0473bc3cd3596bbc1b7e500af0456c6197d27e1ccdff3a02ea6cd308d06c2b8`](https://sepolia.etherscan.io/tx/0xd0473bc3cd3596bbc1b7e500af0456c6197d27e1ccdff3a02ea6cd308d06c2b8) |
 | `SeaportBidDecoder` | [`0x65c3d31e5c84b052527053a687054edf6c308ae94605b4cc2ecbd44aa33bda8e`](https://sepolia.etherscan.io/tx/0x65c3d31e5c84b052527053a687054edf6c308ae94605b4cc2ecbd44aa33bda8e) |
 
 [V] Each instance compared on chain on 2026-11-27 with the build of
@@ -330,6 +334,15 @@ rules for Aave's pool
 `0xe4c94fa9fc749bc6946011db8711411432c433980b0116f9d170358337da8363`, the
 rules for CCTP's messenger
 `0x225c3d4bd0bd706e394b6341124c19430e7e5ee807bd249e1687664a89aef79b`.
+
+[V] **Two more decoders of rules,** deployed later on 2026-11-27 from the
+same commit for a live run of two recipes of [`DAPPS.md`](DAPPS.md): one for
+Compound v3's USDC market and one for Uniswap v3's position manager. Read
+that day: each answers its contract for `venue()` and `spender()`, and its
+code hash is the one the phone's build names, for Compound's
+`0x69d1e9bf07069eb098604962272a415811ae4c4f2a6cd7e8af7f7dfada4f159d` and
+for the position manager's
+`0xc30fbabcfe8545837a22df63b331eec5435e8a00cb92d1044e759b1a1c751ed2`.
 
 [V] **Sources on the explorer.** Since 2026-11-27 the explorer shows
 verified source for every current instance on this chain (its
@@ -395,3 +408,83 @@ in `agent-signer`].
 
 [V] Each venue and spender is what its decoder answers on this chain
 (`venue()`, `spender()`), read on 2026-11-27.
+
+## Arc testnet (chain 5042002)
+
+A chain whose gas token is USDC. The same commit as on the other two
+chains, at the same addresses. The tables are written from
+`contracts/deployments/5042002.json`.
+
+### This project's contracts
+
+| Contract | Address | What it is |
+|---|---|---|
+| `P256Validator` | [`0x9b6f7A83e10F3360af6B34F672c0AC5295f72d63`](https://explorer.testnet.arc.io/address/0x9b6f7A83e10F3360af6B34F672c0AC5295f72d63) | the owner key: the account's root validator |
+| `P256RecoveryValidator` | [`0xb7a06e6c7B5cC9852578EF89f38d161C31218047`](https://explorer.testnet.arc.io/address/0xb7a06e6c7B5cC9852578EF89f38d161C31218047) | the cold recovery key, granted only `changeRootValidator` |
+| `P256Signer` | [`0xd88d25Ca3e042A28893781935756ee90Bc2d2769`](https://explorer.testnet.arc.io/address/0xd88d25Ca3e042A28893781935756ee90Bc2d2769) | the agent key, as one Kernel permission |
+| `AgentPolicy` | [`0xdA16ba0d5C8aC6D5599A444c1e1e3bCD6c97c0C6`](https://explorer.testnet.arc.io/address/0xdA16ba0d5C8aC6D5599A444c1e1e3bCD6c97c0C6) | the agent's mandate, with every feature of the instance on the other two chains |
+| `CallRulesDecoder` for CCTP's messenger | [`0xC5135aC6A911B692173F2626dD57ff1D80d16F62`](https://explorer.testnet.arc.io/address/0xC5135aC6A911B692173F2626dD57ff1D80d16F62) | holds each argument of a call at Circle's `TokenMessengerV2` to the owner's rule (`callRulesCctpMessenger` in the file) |
+| `SafeNonceAssert` | [`0x29f600cBcdC5221a63bD5c88F4a75E20c5CBe219`](https://explorer.testnet.arc.io/address/0x29f600cBcdC5221a63bD5c88F4a75E20c5CBe219) | the replay guard of an agent's Safe transaction |
+| `WhitelistPaymaster` | [`0x657792557C1D40f2Da031FD7aB277078D2c0a4cb`](https://explorer.testnet.arc.io/address/0x657792557C1D40f2Da031FD7aB277078D2c0a4cb) | a gas sponsor with a budget per account; owner [`0x52370eE170c0E2767B32687166791973a0dE7966`](https://explorer.testnet.arc.io/address/0x52370eE170c0E2767B32687166791973a0dE7966) |
+| `DemoCounter` | [`0x29da894F3E456CAC92b3EC76710524E74411E99f`](https://explorer.testnet.arc.io/address/0x29da894F3E456CAC92b3EC76710524E74411E99f) | a demo target, with no rights over anything |
+
+As commit `b11adb7cf2dcb2660b4c93c81c62f8945e246706` builds them, every contract
+at `VERSION` 0.1.0, deployed on 2026-11-27 with
+`contracts/script/Deploy.s.sol` and the decoder of rules with
+`contracts/script/DeployCallRules.s.sol`, by
+`0x52370eE170c0E2767B32687166791973a0dE7966`, each through the CREATE2
+deployer, every transaction successful:
+
+| Contract | Transaction |
+|---|---|
+| `P256Validator` | [`0x7481603778e793e4689c7f198cfecebde5f1fa856dd9a75f0a0a741f00a53acf`](https://explorer.testnet.arc.io/tx/0x7481603778e793e4689c7f198cfecebde5f1fa856dd9a75f0a0a741f00a53acf) |
+| `P256RecoveryValidator` | [`0xf24b92cd3c6ade2b49fad64e80cd0b5f873461a42aa9ddaa17ce2f7fde9e6579`](https://explorer.testnet.arc.io/tx/0xf24b92cd3c6ade2b49fad64e80cd0b5f873461a42aa9ddaa17ce2f7fde9e6579) |
+| `P256Signer` | [`0xf3306255854ee15e4b8aa0eaacebde088974ed35d377cfff53362ac1935648cd`](https://explorer.testnet.arc.io/tx/0xf3306255854ee15e4b8aa0eaacebde088974ed35d377cfff53362ac1935648cd) |
+| `AgentPolicy` | [`0xb1a8064d9526827eb6c4a22e6e36a6ba9d9577375f89fe937c7a41114ae60691`](https://explorer.testnet.arc.io/tx/0xb1a8064d9526827eb6c4a22e6e36a6ba9d9577375f89fe937c7a41114ae60691) |
+| `CallRulesDecoder` for CCTP's messenger | [`0xc6dd90aa8fe64fa33d098f62ba6ec678bf6260f7389f290a6a32e92a887c4879`](https://explorer.testnet.arc.io/tx/0xc6dd90aa8fe64fa33d098f62ba6ec678bf6260f7389f290a6a32e92a887c4879) |
+| `SafeNonceAssert` | [`0xec36e3e72fca5defac613370ed621c26a8f5bf21965917d6adce746e033c436a`](https://explorer.testnet.arc.io/tx/0xec36e3e72fca5defac613370ed621c26a8f5bf21965917d6adce746e033c436a) |
+| `WhitelistPaymaster` | [`0x9c6f164af34b4b04eea3ed7b7ddf8297abda12b6e948d642a5df10f637faefcc`](https://explorer.testnet.arc.io/tx/0x9c6f164af34b4b04eea3ed7b7ddf8297abda12b6e948d642a5df10f637faefcc) |
+| `DemoCounter` | [`0xa680890f1d76a45303e96a390c6c59ec88ca934348f09fc8e7aaff53e512d6bd`](https://explorer.testnet.arc.io/tx/0xa680890f1d76a45303e96a390c6c59ec88ca934348f09fc8e7aaff53e512d6bd) |
+
+[V] **The code is the code on Sepolia.** Read on 2026-11-27: the runtime
+code of each of the eight has the same hash on this chain and on Sepolia,
+and the decoder answers CCTP's messenger for `venue()` and `spender()`.
+
+**No trading venue is decoded here.** [V, read on 2026-11-27] CoW's
+settlement and 1inch's router have no code at their addresses on this
+chain, so the deploy script deployed no decoder for them. Seaport is
+there; the conduit the bid decoder is built for is not, so that decoder
+was not deployed either.
+
+**The gas token is USDC, and it has two forms over one balance.** [V, read
+on 2026-11-27] As the native token it has 18 decimals: value sent and gas
+are counted in it. As the token
+[`0x3600000000000000000000000000000000000000`](https://explorer.testnet.arc.io/address/0x3600000000000000000000000000000000000000)
+it has 6: `transfer`, `approve` and the signed authorizations move the same
+balance. A mandate has a limit for each form, and each holds its own: the
+native cap and budget hold value and gas, the token's limit holds its
+transfers and approvals. An owner sets both. The phone names native
+amounts in USDC on this chain and says so on a mandate's review (core
+0.3.6 and later).
+
+[V] **Sources on the explorer.** Since 2026-11-27 the explorer shows verified
+source for each of the eight (its `smart-contracts` answer for each address,
+compiler 0.8.38), from `b11adb7cf2dcb2660b4c93c81c62f8945e246706`.
+
+### Contracts of others that the account uses
+
+| Contract | Address |
+|---|---|
+| EntryPoint v0.7 | [`0x0000000071727De22E5E9d8BAf0edAc6f37da032`](https://explorer.testnet.arc.io/address/0x0000000071727De22E5E9d8BAf0edAc6f37da032) |
+| Kernel v3.3 | [`0xd6CEDDe84be40893d153Be9d467CD6aD37875b28`](https://explorer.testnet.arc.io/address/0xd6CEDDe84be40893d153Be9d467CD6aD37875b28) |
+| Kernel's factory | [`0x2577507b78c2008Ff367261CB6285d44ba5eF2E9`](https://explorer.testnet.arc.io/address/0x2577507b78c2008Ff367261CB6285d44ba5eF2E9) |
+| The factory in front of it | [`0xd703aaE79538628d27099B8c4f621bE4CCd142d5`](https://explorer.testnet.arc.io/address/0xd703aaE79538628d27099B8c4f621bE4CCd142d5) |
+| CCTP's `TokenMessengerV2`: the venue and the spender of its decoder of rules | [`0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA`](https://explorer.testnet.arc.io/address/0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA) |
+
+[V, read on 2026-11-27] The factory in front of Kernel's is **not staked**
+at this chain's EntryPoint (`getDepositInfo` answers no stake), unlike on
+the other two chains. With our own bundling an account is created all the
+same; a bundler that enforces the validation rules would refuse an
+account's first operation. CCTP names this chain domain 26. The P-256
+precompile answers a valid signature at
+`0x0000000000000000000000000000000000000100`.

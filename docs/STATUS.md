@@ -75,6 +75,15 @@ tx [`0x785332105fd8085d50e542ff9f677eba964399bbc0d71333ddd71fed03e669bb`](https:
   not sent to a chain; which calls of these and others can go on a
   mandate, and which never:
   [`docs/DAPPS.md`](DAPPS.md).
+- A chain whose gas token is USDC, and Circle's products — the same
+  contracts on Arc testnet; an account created there by the agent's own
+  operation through a public bundler, paying its gas in USDC; payments in
+  USDC, EURC and cirBTC to listed payees under a mandate approved on a
+  phone; a CCTP transfer out of Arc, burned and minted; an x402 payment
+  verified and settled by Circle's hosted facilitator; and, on Base
+  Sepolia, an agent's operation whose gas was paid in USDC through
+  Circle's paymaster. Each with its transaction:
+  [`docs/CIRCLE.md`](CIRCLE.md).
 - Existing agent frameworks on top — Coinbase AgentKit, a Claude Code /
   OpenClaw skill, Jinn, Olas and ElizaOS, each run on Base Sepolia; the
   ElizaOS agent also pays for APIs with x402

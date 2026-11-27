@@ -489,6 +489,44 @@ It is only required to submit `handleOps` yourself and for the commands that
 send ETH from it (`account fund`, `paymaster deposit / sponsor / stake`);
 those say so when it is missing.
 
+**Gas in a token, through another party's paymaster.** With
+`GAS_TOKEN_PAYMASTER=<address>` in the environment (or the `--env-file`),
+the agent's operations go with that paymaster, which takes a token from the
+account for the gas: Circle Paymaster takes USDC so, on the chains where gas
+is not USDC. Three things hold it:
+
+- The paymaster takes the token through an allowance, and the CLI sends no
+  permit with the operation: the agent's key cannot sign one. So the owner
+  gives the allowance first, in an owner operation (an `approve` of the
+  token to the paymaster), and that allowance is all the paymaster can take.
+  Without it the CLI refuses before signing.
+- The mandate's native budget does not count this gas: the policy counts
+  what the account pays in the native token. The owner's allowance to the
+  paymaster is the bound on what an agent can spend on gas this way.
+- It is for the agent's operations only. An owner's operation is not sent
+  through it: the phone accepts no paymaster it does not know.
+
+[V] Run on a local fork of Base Sepolia on 2026-11-27 against Circle
+Paymaster for EntryPoint v0.7
+(`0x31BE08D380A21fc740883c0BC434FcFc88740b58`; its source tries a permit
+only when one is sent, then takes the token by `transferFrom`). After the
+owner's `approve` of 5 USDC, an agent's operation under a mandate whose
+native budget was zero was included: 0.006368 USDC left the account for
+gas and its ETH did not change. Each operation takes its maximum cost out
+of the allowance and gets the unused part back as tokens, so the allowance
+falls faster than the balance: by 0.02746 USDC for that operation. With
+the allowance at zero the CLI refused before signing.
+
+[V] On Base Sepolia itself, the same day: after the owner's approval of
+5 USDC to the paymaster
+(`0x9a9a97137d7322590db081e1437880f9019757a7cabf4de27b6973a537fd7f60`), an
+agent's operation delivered by a bundler paid 0.006296 USDC for its gas and
+no ETH: `0x3d7ba1d1bbe8d28f836bd7836ce84ebab457075f6a2704e19faf3193576cae70`.
+The allowance fell by 0.0139 USDC. A bundler's own figure for the
+paymaster's `postOp` gas was under the paymaster's floor and the first try
+was refused for it; the CLI now keeps its own figure where the bundler's is
+lower.
+
 If you run your own sponsor with these commands, the gas wallet is the
 paymaster's owner: its plain key file then controls the paymaster's deposit
 and stake, so keep the deposit small or keep that key off the agent's

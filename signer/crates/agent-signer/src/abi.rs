@@ -46,6 +46,14 @@ sol! {
         function allowance(address owner, address spender) external view returns (uint256);
     }
 
+    /// A paymaster that takes a token from the account for its gas (Circle
+    /// Paymaster): the token, and the gas its `postOp` charges on top.
+    #[sol(rpc)]
+    interface ITokenPaymaster {
+        function token() external view returns (address);
+        function additionalGasCharge() external view returns (uint256);
+    }
+
     #[sol(rpc)]
     interface IKernelFactory {
         function createAccount(bytes calldata data, bytes32 salt) external payable returns (address);

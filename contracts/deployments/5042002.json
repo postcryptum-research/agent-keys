@@ -1,0 +1,18 @@
+{
+  "agentPolicy": "0xdA16ba0d5C8aC6D5599A444c1e1e3bCD6c97c0C6",
+  "callRulesCctpMessenger": "0xC5135aC6A911B692173F2626dD57ff1D80d16F62",
+  "chainId": 5042002,
+  "demoCounter": "0x29da894F3E456CAC92b3EC76710524E74411E99f",
+  "entryPoint": "0x0000000071727De22E5E9d8BAf0edAc6f37da032",
+  "evmVersion": "cancun",
+  "kernel": "0xd6CEDDe84be40893d153Be9d467CD6aD37875b28",
+  "kernelFactory": "0x2577507b78c2008Ff367261CB6285d44ba5eF2E9",
+  "kernelFactoryStaker": "0xd703aaE79538628d27099B8c4f621bE4CCd142d5",
+  "p256RecoveryValidator": "0xb7a06e6c7B5cC9852578EF89f38d161C31218047",
+  "p256Signer": "0xd88d25Ca3e042A28893781935756ee90Bc2d2769",
+  "p256Validator": "0x9b6f7A83e10F3360af6B34F672c0AC5295f72d63",
+  "paymasterOwner": "0x52370eE170c0E2767B32687166791973a0dE7966",
+  "safeNonceAssert": "0x29f600cBcdC5221a63bD5c88F4a75E20c5CBe219",
+  "solc": "0.8.38",
+  "whitelistPaymaster": "0x657792557C1D40f2Da031FD7aB277078D2c0a4cb"
+}

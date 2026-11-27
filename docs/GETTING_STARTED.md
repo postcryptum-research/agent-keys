@@ -43,7 +43,9 @@ YubiKey: `--features yubikey`, [`docs/YUBIKEY.md`](YUBIKEY.md).
 Secrets stay outside the repository: a `.env` with `BASE_SEPOLIA_RPC_URL`,
 and `BUNDLER_URL` and/or `GAS_WALLET_KEYFILE` (a file holding the hex key of
 a small funded EOA that submits `handleOps` itself and pays for funding
-commands; not needed when a bundler delivers the operations). The account itself is described
+commands; not needed when a bundler delivers the operations), and, to pay
+the agent's gas in a token through another party's paymaster,
+`GAS_TOKEN_PAYMASTER` ([`FAQ.md`](FAQ.md)). The account itself is described
 by `signer/agent.base-sepolia.json`: two TPM handles, a permission id and the
 agent's mandate. Module addresses come from `contracts/deployments/84532.json`
 (`forge script script/Deploy.s.sol` writes it; CREATE2 with salt 0, so they

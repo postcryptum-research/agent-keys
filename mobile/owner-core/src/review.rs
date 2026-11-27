@@ -59,7 +59,7 @@ impl EnrolledAccount {
             entry_point,
             account,
             validator: None,
-            gas_cap_wei: DEFAULT_GAS_CAP_WEI,
+            gas_cap_wei: crate::facts::default_gas_cap_wei(chain_id),
             expert_mode: false,
             pins: BTreeMap::new(),
         }
@@ -109,6 +109,25 @@ pub struct Facts {
     pub wrapped_native: Vec<Address>,
     /// The venue decoders this build can read, by address.
     pub venues: BTreeMap<Address, Venue>,
+    /// The chain's gas token where it is not ether. `None`: ether.
+    pub native: Option<Native>,
+}
+
+/// A gas token that is not ether: the symbol of the native balance (18
+/// decimals: value sent and gas are counted in it), and the ERC-20 that
+/// moves the same balance.
+#[derive(Clone, Debug)]
+pub struct Native {
+    pub symbol: String,
+    pub token: Address,
+}
+
+impl Facts {
+    /// What a native amount is counted in on this chain: `ETH`, or the
+    /// chain's own gas token.
+    pub fn native_symbol(&self) -> &str {
+        self.native.as_ref().map_or("ETH", |n| n.symbol.as_str())
+    }
 }
 
 /// The decoders this build can read. Each has its own config encoding, read
@@ -436,6 +455,11 @@ fn open_with(
             continue;
         }
         let Some(v) = venues.iter().find(|v| v.1 == *who) else {
+            // An allowance of zero grants nothing: it takes back what the spender of a venue that
+            // leaves the mandate held, and the laptop sends it with the mandate that follows.
+            if amount.is_zero() {
+                continue;
+            }
             let why = format!(
                 "this operation installs a mandate that sells {} at {}, and gives an allowance of that token to {}, which is not the venue's spender; refused",
                 b.name(*token),
@@ -484,13 +508,14 @@ fn open_with(
     let Some(max_cost) = max_cost else {
         return Review::refused(c, b.sections, "the operation's gas limits and fee cap give a maximum cost beyond 2^256 wei; refused");
     };
-    b.row(s, "Maximum gas cost", format!("{} ETH", format_ether(max_cost)));
+    let native = b.facts.native_symbol().to_string();
+    b.row(s, "Maximum gas cost", format!("{} {native}", format_ether(max_cost)));
     if op.paymaster_and_data.is_empty() && max_cost > U256::from(acct.gas_cap_wei) {
         return Review::refused(
             c,
             b.sections,
             format!(
-                "the maximum gas cost {} ETH exceeds this enrollment's cap of {} ETH",
+                "the maximum gas cost {} {native} exceeds this enrollment's cap of {} {native}",
                 format_ether(max_cost),
                 format_ether(U256::from(acct.gas_cap_wei))
             ),
@@ -1102,8 +1127,20 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
                 b.bold(s, "Operator grant", format!("{} · {what}", b.name(*t)));
             }
         }
-        b.row(s, "Max value per operation", format!("{} ETH", format_ether(max_value)));
-        b.row(s, "Budget", format!("{} ETH", format_ether(budget)));
+        let native = b.facts.native_symbol().to_string();
+        b.row(s, "Max value per operation", format!("{} {native}", format_ether(max_value)));
+        b.row(s, "Budget", format!("{} {native}", format_ether(budget)));
+        if let Some(n) = b.facts.native.clone() {
+            // one balance behind two doors: the owner sees that each limit holds its own door only
+            b.bold(
+                s,
+                "One balance",
+                format!(
+                    "{native} is this chain's gas token and also the token {}: the two limits above hold what is sent as value and what is paid for gas, that token's own limit holds its transfers and approvals, and all of them spend the same balance",
+                    n.token.to_checksum(None)
+                ),
+            );
+        }
         if let Some((period, _)) = &trading {
             b.row(s, "Budgets renew", period_text(*period));
         }
@@ -1580,9 +1617,9 @@ fn external_call(
     if !value.is_zero() {
         // value to a contract the build knows is a parameter; to anything else it is a payment
         if b.facts.names.contains_key(&target) {
-            b.row(s, "Send", format!("{} ETH", format_ether(value)));
+            b.row(s, "Send", format!("{} {}", format_ether(value), b.facts.native_symbol()));
         } else {
-            b.bold(s, "Send", format!("{} ETH to an address this build does not know", format_ether(value)));
+            b.bold(s, "Send", format!("{} {} to an address this build does not know", format_ether(value), b.facts.native_symbol()));
         }
     }
     if data.is_empty() {
@@ -1645,7 +1682,7 @@ fn external_call(
             if value.is_zero() {
                 b.row(s, "Wrap", format!("nothing: deposit() with no value sent, the account's {symbol} does not change"));
             } else {
-                b.row(s, "Wrap", format!("{} ETH into {symbol}, kept by this account", format_ether(value)));
+                b.row(s, "Wrap", format!("{} {} into {symbol}, kept by this account", format_ether(value), b.facts.native_symbol()));
             }
             return Ok(());
         }
@@ -1654,7 +1691,7 @@ fn external_call(
                 return Err(format!("a withdraw of {symbol} that also sends value; refused"));
             }
             let amount = b.token_amount(target, U256::from_be_slice(&data[4..36]));
-            b.row(s, "Unwrap", format!("{amount} into ETH, kept by this account"));
+            b.row(s, "Unwrap", format!("{amount} into {}, kept by this account", b.facts.native_symbol()));
             return Ok(());
         }
     }
@@ -1760,6 +1797,9 @@ fn selector_name(sel: [u8; 4]) -> String {
         [0x95, 0x9b, 0x8c, 0x3f] => Some("authorizeOperator"),
         [0x55, 0x8a, 0x72, 0x97] => Some("setOperator"),
         [0x27, 0xdd, 0xae, 0x76] => Some("orderRegister"),
+        // the policy's two calls for x402: a payment registered, an unused one given back
+        [0x49, 0x93, 0xd6, 0x16] => Some("x402Authorize"),
+        [0xf3, 0xea, 0x18, 0x3e] => Some("x402Reclaim"),
         [0, 0, 0, 0] => Some("plain value transfer"),
         _ => None,
     };
@@ -1875,6 +1915,7 @@ mod tests {
             id_policy_modules: vec![POLICY],
             wrapped_native: vec![],
             venues: BTreeMap::new(),
+            native: None,
         }
     }
 
@@ -2467,6 +2508,12 @@ mod tests {
         assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("not the venue's spender")), "{:?}", r.verdict);
         let r = show(&rules_venue(&supply_only()), &supply_only(), POOL, 1_000_000_001);
         assert!(matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("more than the token's budget")), "{:?}", r.verdict);
+        // an allowance of zero to anyone else grants nothing. It is how the allowance of a venue that leaves the
+        // mandate is taken back, in the operation that installs the next one
+        let r = show(&rules_venue(&supply_only()), &supply_only(), SWAP_ROUTER, 0);
+        let t = r.text();
+        assert_eq!(r.verdict, Verdict::Sign, "{t}");
+        assert!(t.contains("may spend 0 USDC of this token"), "{t}");
         // a venue of swaps: the router takes it, for swaps
         let r = show(&swap_venue(&swaps()), &swaps(), SWAP_ROUTER, 1_000_000_000);
         let t = r.text();
@@ -2877,6 +2924,90 @@ mod tests {
         pm.extend_from_slice(&[0u8; 32]);
         other.paymaster_and_data = pm.into();
         assert!(matches!(open(&other).verdict, Verdict::Refuse(ref m) if m.contains("paymaster")));
+    }
+
+    /// The policy's own calls an allow-list may hold are named, not shown as bare selectors: a
+    /// mandate with x402 payments lists two of them (seen as `0x4993d616` and `0xf3ea183e` on an
+    /// owner's screen on 2026-11-27). The names are the ones the review checks them by.
+    #[test]
+    fn the_policys_x402_calls_are_named() {
+        let sel = |signature: &str| -> [u8; 4] { alloy_primitives::keccak256(signature)[..4].try_into().unwrap() };
+        assert_eq!(
+            selector_name(sel("x402Authorize(address,address,address,uint256,uint256,uint256,bytes32)")),
+            "x402Authorize (0x4993d616)"
+        );
+        assert_eq!(
+            selector_name(sel("x402Reclaim(bytes32,address,address,uint256,uint256,uint256,bytes32)")),
+            "x402Reclaim (0xf3ea183e)"
+        );
+        assert_eq!(selector_name(sel("orderRegister(address,bytes,bytes)")), "orderRegister (0x27ddae76)");
+    }
+
+    /// A chain whose gas token is not ether (Arc testnet: USDC). Every
+    /// native amount on the screen is named in that token, and a mandate's
+    /// review says that its native limits and the token's own limit spend
+    /// one balance. On a chain of ether neither changes.
+    #[test]
+    fn a_chain_with_its_own_gas_token_is_named_in_it() {
+        let usdc = address!("3600000000000000000000000000000000000000");
+        let with_usdc = |mut f: Facts| {
+            f.native = Some(Native {
+                symbol: "USDC".into(),
+                token: usdc,
+            });
+            f
+        };
+        // an operation over the cap: its cost and the cap are in the chain's token
+        let (bytes, c) = request(&op(kernel::execute_calldata(
+            COUNTER,
+            U256::ZERO,
+            &SELECTOR_INCREMENT,
+        )));
+        let r = open_request(&bytes, &c, NOW, &enrolled(), &with_usdc(facts()));
+        assert!(
+            matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("0.0102 USDC exceeds this enrollment's cap of 0.005 USDC")),
+            "{:?}",
+            r.verdict
+        );
+        assert!(
+            r.text().contains("Maximum gas cost: 0.0102 USDC"),
+            "{}",
+            r.text()
+        );
+        assert!(!r.text().contains("ETH"), "{}", r.text());
+        // the same operation where the gas token is ether
+        let r = open_request(&bytes, &c, NOW, &enrolled(), &facts());
+        assert!(
+            matches!(r.verdict, Verdict::Refuse(ref m) if m.contains("0.0102 ETH exceeds this enrollment's cap of 0.005 ETH"))
+        );
+
+        // a mandate: its two native limits in the token, and the note on the one balance
+        let plain = kernel::Trading {
+            period: 3_600,
+            venues: vec![],
+            ids: vec![],
+        };
+        let r = open_trading(
+            &trading_params(),
+            &plain,
+            vec![],
+            &with_usdc(trading_facts()),
+        );
+        assert_eq!(r.verdict, Verdict::Sign, "{}", r.text());
+        let t = r.text();
+        assert!(t.contains("Max value per operation: 0 USDC"), "{t}");
+        assert!(t.contains("Budget: 0.01 USDC"), "{t}");
+        assert!(
+            t.contains("One balance: USDC is this chain's gas token and also the token 0x3600000000000000000000000000000000000000"),
+            "{t}"
+        );
+        assert!(!t.contains(" ETH"), "{t}");
+        let r = open_trading(&trading_params(), &plain, vec![], &trading_facts());
+        assert!(
+            r.text().contains("Budget: 0.01 ETH") && !r.text().contains("One balance"),
+            "{}",
+            r.text()
+        );
     }
 
     /// Gas limits and fees are the laptop's numbers, up to 2^128 - 1 each

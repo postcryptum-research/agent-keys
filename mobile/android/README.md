@@ -212,6 +212,45 @@ gave root to a key nobody held. Two changes in the app, one on the laptop:
   <label>`, and `key check --phone <label>` at any time. The CLI accepts
   this app from version code 11.
 
+### A chain whose gas token is not ether (versions 0.4.5 to 0.4.7)
+
+The build knows Arc testnet (chain 5042002), where the gas token is USDC,
+beside Base Sepolia and Sepolia.
+
+- Every native amount on the review is named in the chain's gas token: on
+  Arc "Maximum gas cost: … USDC", "Budget: … USDC".
+- A mandate's review there says that USDC is the gas token and also a
+  token, that each has its limit, and that both spend one balance.
+- The default cap on an owner operation's gas cost is the chain's: 0.005
+  of ether, and 3 USDC on Arc testnet (1 before 0.4.7). On 2026-11-27 the
+  fee there moved between 30 and 566 gwei, and a mandate's install came to
+  a maximum of 0.83 USDC.
+- An allowance set to zero for the spender of a venue that leaves a mandate
+  is accepted with the mandate that follows: it takes an allowance back and
+  grants nothing. Before 0.4.6 the phone refused such an operation.
+- The policy's two calls for x402 are named on a mandate's allow-list
+  (`x402Authorize`, `x402Reclaim`), from 0.4.7. Before, they were shown as
+  `0x4993d616` and `0xf3ea183e`.
+- The app states its own version to the laptop as the build's, from 0.4.7:
+  0.4.5 and 0.4.6 said "0.4.4".
+
+[V] 0.4.6 with core 0.3.7 approved two mandates on Arc testnet and one on
+Sepolia on 2026-11-27 ([`docs/CIRCLE.md`](../../docs/CIRCLE.md),
+[`docs/DAPPS.md`](../../docs/DAPPS.md)).
+
+[V] 0.4.7 with core 0.3.8 on a phone, 2026-11-27, updated in place over
+0.4.6 (`adb install -r`; the enrollments were kept). The app's first line
+read "owner-core 0.3.8 loaded". The payments mandate of the account on Arc
+testnet was sent to the phone twice, to be installed again as it was. The
+review, read from the phone's screen over USB, named both calls:
+`AgentPolicy (verified in this build) · x402Authorize (0x4993d616)` and
+`· x402Reclaim (0xf3ea183e)`, with the maximum gas cost in USDC and the
+"One balance" line. The first was refused on the phone and nothing was
+sent. The second was confirmed, and the operation the phone signed ran:
+[`0x3bee588be33d2435214cba38dbfcf5b277e665c7552fd2a6d666364e79450ed9`](https://explorer.testnet.arc.io/tx/0x3bee588be33d2435214cba38dbfcf5b277e665c7552fd2a6d666364e79450ed9).
+A third party's call on an allow-list is still shown by its selector: the
+phone names what its build can vouch for.
+
 ### A failure is shown as a dialog (version 0.4.4, issue #215)
 
 A failure opens a dialog "That did not work" with the reason, and stays in
