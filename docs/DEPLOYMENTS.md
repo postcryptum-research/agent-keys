@@ -53,9 +53,10 @@ missing from this page.
   that change were built from commits whose files said `^0.8.24`, with the
   same compiler; each is recorded with its commit, below.
 - **The current instances are built from one commit.** Every contract
-  carries `string public constant VERSION`. Until the first audited release
-  every contract stays at 0.1.0 and a fix is carried by a redeploy, not by
-  a version change (house rule 9, `CLAUDE.md`). The current instances on
+  carries `string public constant VERSION`. In development, until the
+  first external audit or mainnet deployment, every contract stays at 0.1.0
+  and a fix is carried by the next redeploy, not by a version change (house
+  rule 9, `CLAUDE.md`). The current instances on
   both chains are what commit
   `b11adb7cf2dcb2660b4c93c81c62f8945e246706` builds, every contract at `VERSION`
   0.1.0. `AgentPolicy` and the venue decoders that are new with it

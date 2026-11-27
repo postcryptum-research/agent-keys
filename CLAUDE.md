@@ -83,17 +83,23 @@ scripts/test-fixtures.py                          # the contract code in the CLI
    elsewhere gets its cut values restored from the link target or the chain.
 9. **Versions and releases.** Every deployable contract carries
    `string public constant VERSION = "x.y.z"` (semantic versioning, per
-   contract, from `0.1.0`). Until the first audited release every contract
-   stays at `0.1.0`: a fix changes the code and not the version, and the
-   test networks are redeployed to carry it. From the first release tag on,
+   contract, from `0.1.0`). **In development**, until the first external
+   audit or the first deployment to a mainnet, every contract stays at
+   `0.1.0`: a fix or a refactor changes the code and not the version. The
+   test networks carry it with their next redeploy, which gathers what
+   changed since the last one; until then `docs/DEPLOYMENTS.md` says what
+   their instances lack. Code of this time never goes to a mainnet: each
+   change supersedes it. An internal audit names the commit it read and is
+   not tagged. **The commit given to the first external audit, or deployed
+   first to a mainnet, is tagged and fixes those versions**; from then on
    a change to a contract's bytecode raises its version: CI's
    `source-record` job then fails a pull request where a contract's
-   bytecode differs from the base's and its version does not. A
-   release is tagged at each stage: `vX.Y.Z-pre-internal-audit`,
-   `vX.Y.Z-pre-external-audit` (the commit given to the auditors),
-   `vX.Y.Z-post-external-audit` (after the fix review), and `vX.Y.Z` (the
-   commit deployed). Audit reports are kept in the repository with the tag
-   they cover.
+   bytecode differs from the base's and its version does not. From then
+   on a release is tagged at each stage: `vX.Y.Z-pre-internal-audit`
+   where an internal audit reads it, `vX.Y.Z-pre-external-audit` (the
+   commit given to the auditors), `vX.Y.Z-post-external-audit` (after the
+   fix review), and `vX.Y.Z` (the commit deployed). Audit reports are kept
+   in `audits/` with the commit or tag they cover.
 10. **Arithmetic in Rust is checked, in product code.** Product code is
     `signer/crates/hw-signer/src`, `signer/crates/agent-signer/src` and
     `mobile/owner-core/src`, outside their `#[cfg(test)]` modules. Test

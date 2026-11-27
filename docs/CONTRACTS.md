@@ -9,8 +9,9 @@ account's validation touch, `keccak256(account ‖ x) + n` (rule 4 in
 are those of Base Sepolia (chain 84532), from
 `contracts/deployments/84532.json`, which keeps earlier instances under
 versioned names. Each contract answers `VERSION()`: 0.1.0 for every
-contract until the first audited release, when a change to a contract's
-bytecode starts raising it (house rule 9). The instances listed are as
+contract in development, until the commit given to the first external
+audit or deployed first to a mainnet is tagged; from then on a change to a
+contract's bytecode raises it (house rule 9). The instances listed are as
 commit `e48b93e001f34f460bd4845d231b8e0ee5d26ad6` builds them, every contract at
 0.1.0, and Sepolia has them at the same addresses
 ([`docs/DEPLOYMENTS.md`](DEPLOYMENTS.md)).
