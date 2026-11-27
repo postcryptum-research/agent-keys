@@ -60,12 +60,14 @@ tx [`0x785332105fd8085d50e542ff9f677eba964399bbc0d71333ddd71fed03e669bb`](https:
   the pool's own code on a fork of Base Sepolia; a swap at Uniswap's
   router within the owner's pairs and lowest prices, as a call a venue's
   decoder judged, shown against the router's own code on the same fork,
-  deployed on both test networks and not yet run there; a pool's functions
-  that name a beneficiary, each
+  deployed on both test networks and made once on Sepolia; a pool's
+  functions that name a beneficiary, each
   argument held to a rule the owner wrote, shown against Aave's pools on
   Ethereum, BNB Chain, Arbitrum, Base, Sepolia and Base Sepolia, each on a
   fork (the pools of Ethereum, BNB Chain and Sepolia have no other
-  functions to supply by); a bid for an NFT at Seaport within the owner's collections and
+  functions to supply by), and run on Sepolia itself with a transfer by
+  Circle's CCTP, a 1inch order and a CoW order under the new policy, all
+  under one mandate approved on a phone; a bid for an NFT at Seaport within the owner's collections and
   highest prices, in the contracts and their tests only, shown against
   Seaport's own code on the same fork; which calls of Aave, Compound, Lido
   and others can go on a mandate, and which never:

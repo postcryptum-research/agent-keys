@@ -152,10 +152,11 @@ reserve 0 on Base Sepolia, so a supply of 100 USDC (100,000,000 units) is
 `0xf7a73840` followed by the word `100000000 << 16`. The widest amount in a
 withdrawal means "everything".
 
-**Not run on a chain yet:** the test runs on a fork. A live run on Base
-Sepolia follows.
+**The compact forms were not run on a chain:** this test runs on a fork.
+Aave by rules was run on Sepolia itself
+([the runs of 2026-11-27](#on-a-chain-the-runs-on-sepolia-of-2026-11-27)).
 
-## A swap at Uniswap's router: deployed, not yet run on a chain
+## A swap at Uniswap's router: deployed, and run on Sepolia
 
 A swap names a recipient, so it cannot go on an allow-list. It goes through
 a venue instead, like an order: the mandate names a decoder with the
@@ -208,11 +209,12 @@ In the config the venue is `{"kind": "uniswap", "decoder": …, "pairs": […]}`
 
 **Deployed on Sepolia and Base Sepolia on 2026-11-27,** with the policy
 that admits a decoder's call; the phone's core names the venue there
-([`DEPLOYMENTS.md`](DEPLOYMENTS.md)). No swap has been made through it on a
-chain yet. One pool and an exact amount sold only: paths through several
+([`DEPLOYMENTS.md`](DEPLOYMENTS.md)). The first swap through it on a
+chain was made on Sepolia on 2026-11-27
+([the runs](#on-a-chain-the-runs-on-sepolia-of-2026-11-27)). One pool and an exact amount sold only: paths through several
 pools, exact-output swaps and the router's v2 functions are not allowed.
 
-## With a rule for each argument: deployed for two contracts, not yet run on a chain
+## With a rule for each argument: deployed for two contracts, and run on Sepolia
 
 These are the same protocols' other functions, and whole families of
 protocols, whose calls name a beneficiary. `CallRulesDecoder` holds each
@@ -362,8 +364,9 @@ bold, "anything — the agent picks it", with a warning.
 
 **Deployed for two contracts on each test network on 2026-11-27:** Aave
 V3's pool and CCTP's messenger, on Sepolia and on Base Sepolia; the phone's
-core names both ([`DEPLOYMENTS.md`](DEPLOYMENTS.md)). No call has gone
-through one on a chain yet.
+core names both ([`DEPLOYMENTS.md`](DEPLOYMENTS.md)). Both were used on
+Sepolia on 2026-11-27: a supply and a withdrawal at Aave, a transfer by
+CCTP ([the runs](#on-a-chain-the-runs-on-sepolia-of-2026-11-27)).
 
 Without its rules none of these is safe on a mandate. A pull-side function
 (`supply`, `deposit`) left unpinned loses at most what the token's budget
@@ -371,6 +374,66 @@ charged, but it turns the budget into a payment to anyone, past the payee
 list. A release-side function (`withdraw`, `redeem`, `claim` with a
 recipient) moves what the account already holds in the protocol, and
 nothing in the mandate bounds that.
+
+## On a chain: the runs on Sepolia of 2026-11-27
+
+Everything above this section's date was shown on forks. On 2026-11-27
+(UTC) it ran on Sepolia itself, through the policy and the decoders
+deployed that day ([`DEPLOYMENTS.md`](DEPLOYMENTS.md)), on the account of
+the first live order, `0xeAb60Ce78Af6e62E268dfF4af9186b7C61c2bcEd`
+([`TRADING_WALKTHROUGH.md`](TRADING_WALKTHROUGH.md)).
+
+**The owner's step, once.** One operation, approved on the phone (the
+Android owner app 0.4.4, core 0.3.5), removed the account's earlier
+permission and installed a mandate on the policy
+`0xdA16ba0d5C8aC6D5599A444c1e1e3bCD6c97c0C6` with five venues: CoW Swap,
+1inch, Uniswap, rules for Aave V3's pool, rules for CCTP's messenger; a
+cap and a budget for WETH, USDC and Aave's test LINK; one allowance to
+each venue's spender; and Aave's test faucet on the allow-list. The phone
+showed each venue from its build's facts, the two tokens it knows by name
+and the third by its address, and one warning: the amount of a withdrawal
+from Aave is the agent's to choose
+[V [`0x3c140c6b36dec2d83586930ec517cf7c4d23c9177444cb140b6ac1f569ea20b0`](https://sepolia.etherscan.io/tx/0x3c140c6b36dec2d83586930ec517cf7c4d23c9177444cb140b6ac1f569ea20b0), 5,331,697 gas].
+
+**The agent's steps,** each signed by the agent's key in the secure
+hardware of the machine it runs on, each through the policy [V the
+transactions; every one succeeded]:
+
+| What the agent did | Transaction | What it did on the chain |
+|---|---|---|
+| a call on the allow-list: Aave's test faucet | [`0x0f3e6e678c49366f0f1b2aa5f1acced2c36abed1a8912c8fef0ce6ab279c040a`](https://sepolia.etherscan.io/tx/0x0f3e6e678c49366f0f1b2aa5f1acced2c36abed1a8912c8fef0ce6ab279c040a) | 200 test LINK minted to the account |
+| a supply to Aave V3, by rules | [`0x426a010da476eb45302025724b2b1bf62538478a87da52cc32dd6d1ecba65e59`](https://sepolia.etherscan.io/tx/0x426a010da476eb45302025724b2b1bf62538478a87da52cc32dd6d1ecba65e59) | 100 LINK supplied with the account as beneficiary; the aLINK is the account's; 100 LINK charged |
+| a withdrawal from Aave V3, by rules | [`0xb51f058a1cca46fd55ccf9de33592b2d9d4da1cb2010e54dfb950029b6409c99`](https://sepolia.etherscan.io/tx/0xb51f058a1cca46fd55ccf9de33592b2d9d4da1cb2010e54dfb950029b6409c99) | 40 LINK back to the account; nothing charged |
+| a bridge transfer by CCTP, by rules | [`0xfd8b7209986aed74d7cee6a0534c3af83e6f4033a05c77fb583043ce42c35be9`](https://sepolia.etherscan.io/tx/0xfd8b7209986aed74d7cee6a0534c3af83e6f4033a05c77fb583043ce42c35be9) | 5 USDC burned for the account's own address on Base Sepolia (CCTP's domain 6) [V the messenger's event in that transaction: the depositor and the recipient are the account, the destination is 6]; 5 USDC charged |
+| a swap at Uniswap's SwapRouter02 | [`0x19c78c6a8cd1dd8a873ea612ad887e51f60298de9ffd22ef9355781b6e7e9706`](https://sepolia.etherscan.io/tx/0x19c78c6a8cd1dd8a873ea612ad887e51f60298de9ffd22ef9355781b6e7e9706) | 0.0002 WETH for 8.583915 USDC through the 0.05% pool, the least accepted being 4 USDC; 0.0002 WETH charged |
+| a 1inch limit order | [`0x8a5705b688ff989d68f8a39e85ed5698fbe4b521f6891a4948f9e29ef85f5537`](https://sepolia.etherscan.io/tx/0x8a5705b688ff989d68f8a39e85ed5698fbe4b521f6891a4948f9e29ef85f5537) | the order registered and charged; the account answers `isValidSignature` for its hash `0x1e361b72b3bb06be8c9a7bedcad4ac70c49cb7ce03225f416f5b7494cd8423ba` with the magic value, and refuses another digest with the same signature |
+| a CoW Swap order under the new policy | [`0x2bde34e2dbbf492e91812951baa5f188250b32d19412e0d9b5ac7b3be7ad9582`](https://sepolia.etherscan.io/tx/0x2bde34e2dbbf492e91812951baa5f188250b32d19412e0d9b5ac7b3be7ad9582) | the order registered and charged; CoW's order book took it, and a solver filled it within a minute: 0.0002 WETH for 7.903168 USDC [V [`0x8e7a877606cad11b83792a08e41432030d6a1eae312b18694a000f042dda069b`](https://sepolia.etherscan.io/tx/0x8e7a877606cad11b83792a08e41432030d6a1eae312b18694a000f042dda069b)] |
+
+**Refused, before anything was sent** (the CLI puts a call to the venue's
+decoder first, and the decoder refused): a supply to Aave on behalf of
+another address; a CCTP transfer for another recipient; a CCTP transfer to
+another chain than the one the owner set.
+
+**The other side of the bridge.** Circle attested the burn about an hour
+later, and the attestation was delivered to the message transmitter on Base
+Sepolia, which anyone may do: 5 USDC were minted there to the account's
+address [V
+[`0xa145a77742a009b57bb24e51530d22b2c1aae0a9e65fbf40e40a5dfd46d084a5`](https://sepolia.basescan.org/tx/0xa145a77742a009b57bb24e51530d22b2c1aae0a9e65fbf40e40a5dfd46d084a5),
+2026-11-27 10:15:43 UTC; the balance read afterwards]. The account does not
+exist on Base Sepolia yet: the USDC waits at its address, which the same
+creation data gives there.
+
+**The mandate's counters afterwards** [V `permission show`]: WETH 0.0006 of
+0.001, USDC 5 of 10, LINK 100 of 300, and 0.000111 ETH of gas against the
+native budget.
+
+**Not done in this run.**
+- The 1inch order was sent to no order book and had no taker: its fill at
+  the router is shown on a fork only.
+- No ERC-7562 trace was taken of these operations on the chain; the same
+  kinds of operation are traced on a local chain
+  ([`FUZZING.md`](FUZZING.md)).
+- One account, one chain, small amounts, one run of each.
 
 ## Never for an agent key
 

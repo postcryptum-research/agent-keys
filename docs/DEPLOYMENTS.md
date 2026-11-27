@@ -156,6 +156,16 @@ rules for Aave's pool
 rules for CCTP's messenger
 `0x225c3d4bd0bd706e394b6341124c19430e7e5ee807bd249e1687664a89aef79b`.
 
+[V] **Sources on the explorer.** Since 2026-11-27 the explorer shows
+verified source for every current instance on this chain (its
+`getsourcecode` answers for each, compiler 0.8.38): the instances of that
+day from `b11adb7cf2dcb2660b4c93c81c62f8945e246706`, and the seven of
+2026-11-25 from `60e773be7c7f071a4e5a69f84e7af3697092a4ef`, whose source
+files for those seven are the same as at
+`772e8f1608bcdf8bc966cb81ef27c7446c0677d0`, the commit they were deployed
+from here [V `git diff` of `contracts/src` between the two: only
+`AgentPolicy.sol` differs].
+
 `contracts/deployments/84532.enclave.json`, the variant the Secure Enclave
 runs use ([`SECURE_ENCLAVE.md`](SECURE_ENCLAVE.md)), names the same current
 instances. The paymaster it named before them is `whitelistPaymasterV2`
@@ -320,6 +330,13 @@ rules for Aave's pool
 `0xe4c94fa9fc749bc6946011db8711411432c433980b0116f9d170358337da8363`, the
 rules for CCTP's messenger
 `0x225c3d4bd0bd706e394b6341124c19430e7e5ee807bd249e1687664a89aef79b`.
+
+[V] **Sources on the explorer.** Since 2026-11-27 the explorer shows
+verified source for every current instance on this chain (its
+`getsourcecode` answers for each, compiler 0.8.38): the instances of that
+day from `b11adb7cf2dcb2660b4c93c81c62f8945e246706`, and the seven of
+2026-11-25 from `60e773be7c7f071a4e5a69f84e7af3697092a4ef`, the commit they
+were deployed from.
 
 ### Earlier instances, still recorded
 
