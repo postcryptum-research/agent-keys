@@ -11,12 +11,14 @@ import {SafeNonceAssert} from "../src/SafeNonceAssert.sol";
 import {CowSwapDecoder} from "../src/venues/CowSwapDecoder.sol";
 import {OneInchLimitOrderDecoder} from "../src/venues/OneInchLimitOrderDecoder.sol";
 import {SwapRouter02Decoder} from "../src/venues/SwapRouter02Decoder.sol";
+import {SeaportBidDecoder, ISeaport, IConduitController} from "../src/venues/SeaportBidDecoder.sol";
 import {WhitelistPaymaster} from "../src/WhitelistPaymaster.sol";
 import {DemoCounter} from "../src/demo/DemoCounter.sol";
 import {IEntryPoint} from "account-abstraction/interfaces/IEntryPoint.sol";
 
-/// Deploys the modules, the demo target and, where CoW Protocol runs, its
-/// order decoder deterministically through
+/// Deploys the modules, the demo target and, where a venue runs, its
+/// decoder (CoW Protocol, 1inch, Uniswap's SwapRouter02, Seaport)
+/// deterministically through
 /// the canonical CREATE2 deployer (salt 0), so addresses match on every
 /// chain. Kernel v3.3 itself is ZeroDev's canonical deployment. Re-running
 /// is a no-op for anything already deployed.
@@ -57,6 +59,24 @@ contract Deploy is Script {
     // only where it has code, and its constructor reverts unless that code
     // hashes an order as the decoder does.
     address internal constant ONE_INCH_ROUTER = 0x111111125421cA6dc452d289314280a0f8842A65;
+
+    // Seaport 1.6, the same address on every chain it is on, and the key of
+    // the conduit OpenSea's orders move their tokens through. The decoder is
+    // deployed only where Seaport has code and its conduit controller knows
+    // that key; its constructor reverts unless Seaport hashes an order as
+    // the decoder does.
+    address internal constant SEAPORT = 0x0000000000000068F116a894984e2DB1123eB395;
+    bytes32 internal constant SEAPORT_CONDUIT_KEY = 0x0000007b02230091a7ed01230072f7006a004d60a8d4e71d599b8104250f0000;
+
+    /// @dev Whether Seaport and the conduit of `SEAPORT_CONDUIT_KEY` are on this chain.
+    /// @return True where a bid decoder can be deployed.
+    function seaportIsHere() public view returns (bool) {
+        if (SEAPORT.code.length == 0) return false;
+        (,, address controller) = ISeaport(SEAPORT).information();
+        if (controller.code.length == 0) return false;
+        (, bool exists) = IConduitController(controller).getConduit(SEAPORT_CONDUIT_KEY);
+        return exists;
+    }
 
     /// @dev Uniswap's SwapRouter02, whose address differs from chain to chain
     /// (Uniswap's deployment pages; code of the same length and a `factory()`
@@ -116,8 +136,8 @@ contract Deploy is Script {
         );
         // The decoder reads the settlement's domain separator and spender when
         // it is created, so on each chain it is that chain's venue and no other.
-        // The venues' decoders, CoW Swap's, 1inch's and the swap router's: zero where the venue is not on this chain
-        address[3] memory decoders;
+        // The venues' decoders, CoW Swap's, 1inch's, the swap router's and Seaport's: zero where the venue is not on this chain
+        address[4] memory decoders;
         if (COW_SETTLEMENT.code.length > 0) {
             decoders[0] = _reuseOrDeploy(
                 recorded,
@@ -146,6 +166,17 @@ contract Deploy is Script {
                 abi.encodePacked(type(SwapRouter02Decoder).creationCode, abi.encode(swapRouter02()))
             );
         }
+        // A bid at Seaport, through the conduit of `SEAPORT_CONDUIT_KEY`: the
+        // decoder reads Seaport's domain separator and the conduit when it is
+        // created, so on each chain it is that chain's.
+        if (seaportIsHere()) {
+            decoders[3] = _reuseOrDeploy(
+                recorded,
+                "seaportBidDecoder",
+                "SeaportBidDecoder",
+                abi.encodePacked(type(SeaportBidDecoder).creationCode, abi.encode(SEAPORT, SEAPORT_CONDUIT_KEY))
+            );
+        }
         vm.stopBroadcast();
 
         string memory json = "deployment";
@@ -161,6 +192,7 @@ contract Deploy is Script {
         if (decoders[0] != address(0)) _supersede(json, recorded, "cowSwapDecoder", decoders[0]);
         if (decoders[1] != address(0)) _supersede(json, recorded, "oneInchLimitOrderDecoder", decoders[1]);
         if (decoders[2] != address(0)) _supersede(json, recorded, "swapRouter02Decoder", decoders[2]);
+        if (decoders[3] != address(0)) _supersede(json, recorded, "seaportBidDecoder", decoders[3]);
         vm.serializeUint(json, "chainId", block.chainid);
         vm.serializeString(json, "solc", SOLC);
         vm.serializeString(json, "evmVersion", EVM_VERSION);
@@ -180,6 +212,7 @@ contract Deploy is Script {
         if (decoders[0] != address(0)) vm.serializeAddress(json, "cowSwapDecoder", decoders[0]);
         if (decoders[1] != address(0)) vm.serializeAddress(json, "oneInchLimitOrderDecoder", decoders[1]);
         if (decoders[2] != address(0)) vm.serializeAddress(json, "swapRouter02Decoder", decoders[2]);
+        if (decoders[3] != address(0)) vm.serializeAddress(json, "seaportBidDecoder", decoders[3]);
         string memory out = vm.serializeAddress(json, "demoCounter", counter);
         vm.writeJson(out, path);
         console.log("wrote", path);

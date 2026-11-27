@@ -276,6 +276,24 @@ With one rule of a recipe loosened at a time (the recipient, the chain or
 the fee of the bridge; a receiver of the vault), its test fails: the
 refusals are the rules' doing.
 
+**A bid for an NFT at Seaport, verified in the contracts.**
+`SeaportBidDecoder` lets an agent bid for one item of a collection the
+owner listed, at no more than the collection's highest price, within the
+token's cap and budget: a named item or any item of the collection, with
+the marketplace's fees inside the price. Whichever way the bid is filled,
+the account pays the price and gets the item [V `SeaportTrading.t.sol`
+`SeaportRealTest`, against Seaport's own code on a fork of Base Sepolia on
+2026-11-27]. The owner lists a collection as a pair: the token paid, the
+collection, and "at least one item for each <highest price> of the token".
+A collection must say itself that it is an ERC-721: Seaport does not check,
+and would take a token listed as a collection in its units. Three things
+the owner should know are in
+[`docs/CONTRACTS.md`](CONTRACTS.md#seaportbiddecoder): an order can be
+validated at Seaport and then no longer asks the account; the allowance
+goes to a marketplace's conduit; with a bid for any item the seller picks
+the item. The CLI and the phone do not place or show bids yet, and no chain
+has the decoder: `[I]` for everything beyond the contracts.
+
 **The others are recipes to be written and tested,** each `[I]` until its
 test exists. The table says which rule opens what:
 
@@ -284,7 +302,7 @@ test exists. The table says which rule opens what:
 | One word = the account | Aave `supply`, `withdraw`, `repay` and its ETH gateway on Ethereum, BNB Chain and Sepolia; every ERC-4626 vault's `deposit` and `mint` (MetaMorpho, sDAI, sUSDS, Yearn, sUSDe, Aave's stata tokens); Lido and ether.fi withdrawal requests; Compound's `supplyTo` and `withdrawTo`; Uniswap v3 `collect` |
 | Two words = the account | every ERC-4626 vault's `withdraw` and `redeem` |
 | Words = values the owner sets | Morpho (the market: markets are permissionless, so the market itself is pinned); Circle's CCTP (the destination chain and recipient); the Base bridge's `bridgeETHTo` and `bridgeERC20To`; Uniswap v3 `mint` |
-| A decoder of its own | other swaps at a router (several pools, exact output, v2 pools, other routers); Seaport orders; GMX orders; Uniswap v4; Balancer; Pendle |
+| A decoder of its own | other swaps at a router (several pools, exact output, v2 pools, other routers); Seaport listings (a bid has its decoder, below); GMX orders; Uniswap v4; Balancer; Pendle |
 
 The CLI makes such calls, and the phone's core shows the owner each
 function with the rule for every argument [V
