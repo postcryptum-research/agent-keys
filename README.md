@@ -141,7 +141,7 @@ More, including a stolen device: [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md).
 
 > [!WARNING]
 > **No external audit yet.** The reviews so far are internal, not a professional third-party audit
-> ([`docs/FAQ.md`](docs/FAQ.md#is-it-audited)). agent-keys runs on a test network, Base Sepolia, and holds no
+> ([`docs/FAQ.md`](docs/FAQ.md#is-it-audited)). agent-keys runs on test networks (Base Sepolia, Sepolia, Arc testnet) and holds no
 > real funds. A third-party audit comes before any mainnet funds; until then, use it at your own risk.
 
 What runs today, phase by phase and backend by backend, with the transactions:
@@ -168,6 +168,10 @@ Ethereum, Base and four more networks, Compound, Morpho, Lido and other
 staking, vaults, Curve, Circle's bridge and Base's — which calls to allow,
 which need a rule for their arguments, and which never:
 [`docs/DAPPS.md`](docs/DAPPS.md).
+Circle's products under a mandate — USDC, EURC, CCTP, gas in USDC through
+Circle's paymaster, its x402 facilitator — what is in use, with its
+transactions, and what could be added:
+[`docs/CIRCLE.md`](docs/CIRCLE.md).
 A trading agent end to end — an account created by the agent, its owner key
 moved to a phone, a trading mandate approved there, and an order filled on
 CoW Swap — step by step, with every transaction:
