@@ -164,9 +164,9 @@ agent path adds about 79k gas per operation.
 Each contract, who calls it, what it keeps and what it refuses:
 [`docs/CONTRACTS.md`](docs/CONTRACTS.md).
 What an agent can do at well-known protocols under a mandate — Aave on
-Ethereum, Base and four more networks, Compound, Lido, a vault, Circle's
-bridge and others — which calls to allow, which need a rule for their
-arguments, and which never:
+Ethereum, Base and four more networks, Compound, Morpho, Lido and other
+staking, vaults, Curve, Circle's bridge and Base's — which calls to allow,
+which need a rule for their arguments, and which never:
 [`docs/DAPPS.md`](docs/DAPPS.md).
 A trading agent end to end — an account created by the agent, its owner key
 moved to a phone, a trading mandate approved there, and an order filled on

@@ -543,6 +543,59 @@ bridge, each at one block of a fork. The protocols are upgradeable or
 governed: what a function does with its arguments can change, and a
 mandate's rules do not follow it. Nothing was sent to a chain.
 
+### Fourteen more recipes, on a fork of Ethereum
+
+`contracts/test/MoreRecipes.t.sol` runs the recipes of
+[`docs/DAPPS.md`](DAPPS.md) that had been written down from a reading of
+the protocols' sources and had no test.
+
+| Recipe | What the tests hold |
+|---|---|
+| Lido's wrapper, by the allow-list | ether sent to wstETH is staked and wrapped for the account; `unwrap` and `wrap` act on it; the wstETH's `transfer` and `approve`, the stETH's `transfer`, an allowance left open and more ether than the cap are refused; the wrapper credits its caller |
+| ether.fi, by the allow-list | `deposit()` credits eETH to the account, weETH's `wrap` and `unwrap` act on it; over the native cap and the eETH's `transfer` are refused |
+| Rocket Pool, by the allow-list | `deposit()` mints rETH to the account, `burn` pays it ether; over the native cap and the rETH's `transfer` are refused |
+| EigenLayer, by the allow-list | `depositIntoStrategy` credits the strategy's shares to the account; `delegateTo` is refused |
+| Sky's staking rewards, by the allow-list | `stake`, `withdraw`, `getReward` and `exit` act on the account, and where the farm's period is running a payout is required; over the cap is refused; the farm credits its caller |
+| Curve's 3pool, by the allow-list | an exchange, liquidity added and removed, each to the account; a least received of nothing is accepted, and the token's budget stops the fourth trade |
+| Compound v3's rewards, by the allow-list | `claim` pays the account, also when a stranger calls; `claimTo` is refused by the mandate, and by the rewards contract from a stranger |
+| Aave V3's `repayWithATokens`, by the allow-list | the account's debt falls by what its aTokens pay; a borrow is refused |
+| Morpho Blue, by rules | a supply for the account and a withdrawal to it in the pinned market; another beneficiary, another market, callback data, over the cap, `setAuthorization` and `borrow` are refused; Morpho credits whoever is named |
+| Two ERC-4626 vaults (a MetaMorpho vault, sUSDS), by rules | a deposit and a redeem for the account; for somebody else and to somebody else are refused |
+| Lido's withdrawal queue, by rules | a request owned by the account, charged in stETH; another owner and two amounts in one call are refused; the queue gives the request to whoever is named |
+| The Base bridge on Ethereum, by rules | a token locked for the account's own address on Base, charged; another recipient, another token on the other side, more gas, extra data and over the cap are refused |
+| Aave V3's `repay`, by rules | the account's own debt repaid, charged; somebody else's debt, over the cap and a borrow are refused |
+| Compound v3's `supplyTo` and `withdrawTo`, by rules | a supply for the account and a withdrawal to it; for somebody else and to somebody else are refused |
+
+One more test holds a limit of the mandate itself: a function of a token's
+own (Lido's `submit` on stETH) and a limit for that token are not installed
+together.
+
+Run on 2026-11-27: 25 tests in 16 test contracts pass. Without
+`FORK_ETHEREUM_RPC_URL` they are skipped, so CI runs none of them.
+
+**That it bites.** Nineteen loosenings, one at a time, and each fails the
+refusal it aims at. By rules, with a word left to the agent: Morpho's
+beneficiary, its market's loan-to-value and the receiver of a withdrawal; a
+vault's receiver on a deposit and on a redeem; the owner of Lido's request;
+the bridge's recipient, its token on the other side and its gas bound;
+whose debt Aave's `repay` pays; Compound's beneficiary and receiver. By the
+allow-list, with one more entry or a wei more: the stETH's and the eETH's
+`transfer`; EigenLayer's `delegateTo`; Compound's `claimTo`; Aave's
+`borrow`; a wei more on Sky's cap; a wei more on Curve's budget. Two
+further loosenings cannot be made at all: with the `transfer` of wstETH or
+of rETH on the list, the policy does not install the mandate, as a transfer
+is listed only for a token with a limit.
+
+**What it does not cover.** One pool, market, vault, farm or strategy of
+each protocol, at one block of a fork. Compound paid no rewards on the
+markets read on that day, so the amount earned in its claim test is a
+stand-in for the market's answer (`vm.mockCall`); the payment is the
+rewards contract's own. Claiming a finalized withdrawal from Lido's queue,
+the far side of the Base bridge, and a payout at a Sky farm whose period
+has ended were not run. Rocket Pool's deposit pool is read from its storage
+contract at the fork's block and changes with its upgrades. The protocols
+are upgradeable or governed, as above. Nothing was sent to a chain.
+
 ## Rust
 
 Coverage-guided fuzzing with `cargo-fuzz` (libFuzzer, a nightly toolchain)

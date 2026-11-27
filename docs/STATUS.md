@@ -69,8 +69,11 @@ tx [`0x785332105fd8085d50e542ff9f677eba964399bbc0d71333ddd71fed03e669bb`](https:
   Circle's CCTP, a 1inch order and a CoW order under the new policy, all
   under one mandate approved on a phone; a bid for an NFT at Seaport within the owner's collections and
   highest prices, in the contracts and their tests only, shown against
-  Seaport's own code on the same fork; which calls of Aave, Compound, Lido
-  and others can go on a mandate, and which never:
+  Seaport's own code on the same fork; recipes for Compound, Lido, Morpho,
+  ether.fi, Rocket Pool, EigenLayer, Curve, Sky, ERC-4626 vaults and the
+  Base bridge, each shown against the protocol's own code on a fork and
+  not sent to a chain; which calls of these and others can go on a
+  mandate, and which never:
   [`docs/DAPPS.md`](DAPPS.md).
 - Existing agent frameworks on top — Coinbase AgentKit, a Claude Code /
   OpenClaw skill, Jinn, Olas and ElizaOS, each run on Base Sepolia; the

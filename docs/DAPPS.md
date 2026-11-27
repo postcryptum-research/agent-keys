@@ -72,17 +72,17 @@ protocol's own code; the others are `[I]` until their test exists.
 | Protocol | What to allow | Where | Status |
 |---|---|---|---|
 | **Aave V3** | the pool's compact forms `supply(bytes32)` `0xf7a73840`, `withdraw(bytes32)` `0x8e19899e`, `repay(bytes32)` `0x563dd613`: the pool uses its own caller as beneficiary | Base, Arbitrum, Base Sepolia (the pools there are L2 pools); on Ethereum, BNB Chain and Sepolia the pool has no compact forms, and Aave goes by rules (the table of networks below) | **[V]** on Base Sepolia, see below |
-| Aave V3 | `repayWithATokens`, rewards `claimRewardsToSelf`, `claimAllRewardsToSelf` | every chain | [I] |
-| **Compound v3** | `supply(address,uint256)` `0xf2b9fdb8`, `withdraw(address,uint256)` `0xf3fef3a3`, with the base token's `approve` and a limit for it | Ethereum, Base, Arbitrum, Sepolia, Base Sepolia | **[V]** on Base Sepolia, see below; rewards `claim` [I] |
-| **Lido** | `submit(address)` `0xa1903eab` (stake), under the native cap and budget | Ethereum | **[V]** on Ethereum, see below; wstETH `wrap` and `unwrap`, `claimWithdrawals`, `claimWithdrawal` [I] |
-| Rocket Pool | `deposit()`, rETH `burn` | Ethereum | [I] |
-| ether.fi | `deposit()`, `deposit(address)`, weETH `wrap` and `unwrap`, `claimWithdraw` | Ethereum | [I] |
-| EigenLayer | `depositIntoStrategy`, `queueWithdrawals`, `completeQueuedWithdrawal` | Ethereum, Sepolia | [I] |
-| Sky | staking rewards `stake`, `withdraw`, `getReward`, `exit` | Ethereum | [I] |
-| Curve | a classic pool's `exchange`, `add_liquidity`, `remove_liquidity` and its variants | per pool | [I] |
+| **Aave V3** | `repayWithATokens(asset, amount, rateMode)` `0x2dad97d4`: the caller's own debt, paid with its own aTokens | every chain | **[V]** on Ethereum, see below; rewards `claimRewardsToSelf`, `claimAllRewardsToSelf` [I] |
+| **Compound v3** | `supply(address,uint256)` `0xf2b9fdb8`, `withdraw(address,uint256)` `0xf3fef3a3`, with the base token's `approve` and a limit for it; rewards `claim(comet, src, shouldAccrue)` `0xb7034f7e` | Ethereum, Base, Arbitrum, Sepolia, Base Sepolia | **[V]** on Base Sepolia; the rewards claim **[V]** on Ethereum, see below |
+| **Lido** | `submit(address)` `0xa1903eab` (stake), under the native cap and budget; or a plain transfer of ether to wstETH, which stakes and wraps in one; wstETH `wrap` `0xea598cb0` and `unwrap` `0xde0e9a3e` | Ethereum | **[V]** on Ethereum, see below; `claimWithdrawals`, `claimWithdrawal` [I] |
+| **Rocket Pool** | the deposit pool's `deposit()` `0xd0e30db0`, rETH `burn(uint256)` `0x42966c68` | Ethereum | **[V]**, see below |
+| **ether.fi** | the pool's `deposit()` `0xd0e30db0`, weETH `wrap` and `unwrap` | Ethereum | **[V]**, see below; `deposit(address)`, `claimWithdraw` [I] |
+| **EigenLayer** | `depositIntoStrategy` `0xe7a050aa` | Ethereum, Sepolia | **[V]** on Ethereum, see below; `queueWithdrawals`, `completeQueuedWithdrawal` [I] |
+| **Sky** | staking rewards `stake` `0xa694fc3a`, `withdraw` `0x2e1a7d4d`, `getReward` `0x3d18b912`, `exit` `0xe9fad8ee` | Ethereum | **[V]**, see below |
+| **Curve** | a classic pool's `exchange` `0x3df02124`, `add_liquidity` `0x4515cef3`, `remove_liquidity` `0xecb586a5` | per pool | **[V]** for the 3pool, see below; other pools and the variants [I] |
 | Others | a Governor's `castVote`; a Merkle distributor's `claim`; a mint to the caller, under the native cap | per project | [I] |
 
-Three of these need a word of care:
+Four things need a word of care:
 
 - **Compound's `withdraw` borrows.** Asking for more of the base asset
   than the account supplied leaves a debt, while the account's collateral in
@@ -92,7 +92,14 @@ Three of these need a word of care:
   operator's slashing, with no amount to bound it.
 - **Curve's price is the agent's.** The minimum-out argument is the
   agent's own, so a bad trade loses up to what was allowed. The token's
-  budget bounds it; nothing holds a price.
+  budget bounds it; nothing holds a price [V `CurveRecipeTest`: a least of
+  nothing is accepted, and the budget stops the fourth trade].
+- **A token with a limit has its metered functions and no other.** A
+  protocol's own function on the token (Lido's `submit` on stETH) cannot be
+  on a mandate that also gives that token a limit, which the allowance of
+  a wrap needs: the policy does not install such a mandate [V
+  `LidoSubmitWithALimitTest`]. Stake through the wrapper there (a plain
+  transfer of ether to wstETH), or keep the two on separate mandates.
 
 ### Compound v3 and Lido, verified
 
@@ -116,6 +123,54 @@ Three of these need a word of care:
 cd contracts
 FORK_BASE_SEPOLIA_RPC_URL=<a Base Sepolia RPC> FORK_ETHEREUM_RPC_URL=<an Ethereum RPC> \
     forge test --evm-version osaka --match-path test/ProtocolRecipes.t.sol --match-test 'test_recipe|test_real'
+```
+
+### Eight more by the allow-list, verified on Ethereum
+
+[V `contracts/test/MoreRecipes.t.sol`, run on a fork of Ethereum on
+2026-11-27. Where a protocol pulls a token, the agent's operation is three
+calls: the allowance, the call, the allowance taken back.]
+
+- **Lido's wrapper** (`0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0`): ether
+  sent to wstETH is staked and wrapped for the sender (in the config a
+  plain transfer is the selector `0x00000000` at the wrapper); `unwrap`
+  gives the account stETH; `wrap` takes it back. The wstETH's and the
+  stETH's `transfer`, an allowance left open, and `submit` on the limited
+  stETH are refused.
+- **ether.fi** (pool `0x308861A430be4cce5502d0A12724771Fc6DaF216`, weETH
+  `0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee`): `deposit()` with value
+  credits eETH to the account; `wrap` and `unwrap` act on it.
+- **Rocket Pool** (rETH `0xae78736Cd615f374D3085123A210448E74Fc6393`; the
+  deposit pool's address is read from Rocket Pool's storage contract
+  `0x1d8f8f00cfa6758d7bE78336684788Fb0ee0Fa46`, and changes with its
+  upgrades): `deposit()` mints rETH to the account; `burn` pays it ether.
+- **EigenLayer** (strategy manager
+  `0x858646372CC42E1A627fcE94aa7A7033e7CF075A`, the stETH strategy):
+  `depositIntoStrategy` credits the shares to the account. `delegateTo` is
+  not listed and is refused.
+- **Sky's staking rewards** (`0x173e314C7635B45322cd8Cb14f44b312e079F3af`,
+  USDS staked, SPK paid): `stake`, `withdraw`, `getReward` and `exit` act
+  on the account, and a payout of SPK reached it; the farm credits its
+  caller. A farm pays in periods its project renews: the farm that paid SKY
+  (`0x0650CAF159C5A49f711e8169D4336ECB9b950275`) had ended its period on
+  that day, and there the same calls go through and pay nothing.
+- **Curve's 3pool** (`0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7`): an
+  exchange of DAI for USDC, liquidity added and removed, each to the
+  account.
+- **Compound v3's rewards** (`0x1B0e765F6224C21223AeA2af16c1C46E38885a40`):
+  `claim` pays what the account earned to the account, whoever calls;
+  `claimTo`, which names a recipient, is refused, and the rewards contract
+  itself refuses it from a stranger. No market read on that day paid
+  rewards (the speeds were zero on five markets of Ethereum and three of
+  Base), so the amount earned is a stand-in for the market's answer; the
+  payment is the rewards contract's own code.
+- **Aave V3's `repayWithATokens`** (the pool on Ethereum): the account's
+  debt falls by what its aTokens pay; a borrow is refused.
+
+```sh
+cd contracts
+FORK_ETHEREUM_RPC_URL=<an Ethereum RPC> \
+    forge test --evm-version osaka --match-path test/MoreRecipes.t.sol --match-test 'test_recipe|test_real'
 ```
 
 ### Aave V3 on Base Sepolia, verified
@@ -329,14 +384,71 @@ the item. The decoder is deployed on Sepolia and Base Sepolia since
 2026-11-27; the CLI and the phone do not place or show bids yet: `[I]` for
 everything beyond the contracts.
 
-**The others are recipes to be written and tested,** each `[I]` until its
-test exists. The table says which rule opens what:
+**Six more by rules, verified on Ethereum** [V
+`contracts/test/MoreRecipes.t.sol`, on a fork of Ethereum on 2026-11-27;
+each also with what the rules refuse].
+
+- **Morpho Blue** (`0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb`). Markets
+  are permissionless, so the rules pin the market itself, its five words.
+  A supply for the account with no callback data; a withdrawal from the
+  account's position to the account. Another market, another beneficiary,
+  callback data, `setAuthorization` and `borrow` are refused; Morpho itself
+  credits whoever is named.
+
+```json
+{"selector": "0xa99aad89", "words": [{"is": "<loan token>"}, {"is": "<collateral token>"}, {"is": "<oracle>"},
+                                    {"is": "<rate model>"}, {"is": "<loan-to-value>"}, {"charged": "<loan token>"},
+                                    {"is": "0"}, "account", {"is": "0x120"}, {"is": "0"}]},
+{"selector": "0x5c2bea49", "words": [{"is": "<loan token>"}, {"is": "<collateral token>"}, {"is": "<oracle>"},
+                                    {"is": "<rate model>"}, {"is": "<loan-to-value>"}, "any", "any", "account", "account"]}
+```
+
+- **Two more ERC-4626 vaults** by the three rules of sDAI above: a
+  MetaMorpho vault (`0xBEEF01735c132Ada46AA9aA4c54623cAA92A64CB`, USDC) and
+  Sky's savings vault (`0xa3931d71877C0E7a3148CB7Eb4463524FEc27fbD`, USDS).
+- **Lido's withdrawal queue** (`0x889edC2eDab5f40e902b864aD4d7AdE8E412F9B1`):
+  `requestWithdrawals(amounts, owner)` with the request held to the account
+  and the list to one amount, charged in stETH. The queue gives the request
+  to whoever is named. Claiming it later needs Lido's finalization and was
+  not run.
+
+```json
+{"selector": "0xd6681042", "words": [{"is": "0x40"}, "account", {"is": "1"}, {"charged": "<stETH>"}]}
+```
+
+- **The Base bridge on Ethereum**
+  (`0x3154Cf16ccdb4C6d922629664174b904d80F2C35`): `bridgeERC20To` with both
+  tokens set, the recipient the account's own address on Base, a bound on
+  the gas for the other side and no extra data; the amount charged. As
+  with CCTP above, that address is the owner's on Base only if the account
+  exists, or can be created, there. The test sees the token locked in the
+  bridge on Ethereum; the mint on Base was not run.
+
+```json
+{"selector": "0x540abf73", "words": [{"is": "<token here>"}, {"is": "<token on Base>"}, "account",
+                                    {"charged": "<token here>"}, {"atMost": "200000"}, {"is": "0xc0"}, {"is": "0"}]}
+```
+
+- **Aave V3's `repay`** with the debt held to the account's own.
+
+```json
+{"selector": "0x573ade81", "words": [{"is": "<asset>"}, {"charged": "<asset>"}, {"is": "2"}, "account"]}
+```
+
+- **Compound v3's `supplyTo` and `withdrawTo`,** each held to the account.
+
+```json
+{"selector": "0x4232cd63", "words": ["account", {"is": "<asset>"}, {"charged": "<asset>"}]},
+{"selector": "0xc3b35a7e", "words": ["account", {"is": "<asset>"}, "any"]}
+```
+
+**What is left,** each `[I]` until its test exists, or struck:
 
 | Opens with | What |
 |---|---|
-| One word = the account | Aave `repay` and its ETH gateway (its `supply` and `withdraw` are verified, above); every ERC-4626 vault's `deposit` and `mint` (MetaMorpho, sDAI, sUSDS, Yearn, sUSDe, Aave's stata tokens); Lido and ether.fi withdrawal requests; Compound's `supplyTo` and `withdrawTo`; Uniswap v3 `collect` |
-| Two words = the account | every ERC-4626 vault's `withdraw` and `redeem` |
-| Words = values the owner sets | Morpho (the market: markets are permissionless, so the market itself is pinned); Circle's CCTP (the destination chain and recipient); the Base bridge's `bridgeETHTo` and `bridgeERC20To`; Uniswap v3 `mint` |
+| One word = the account | Uniswap v3 `collect`; ether.fi's withdrawal request; other ERC-4626 vaults (Yearn, sUSDe, Aave's stata tokens), by the rules verified for three vaults |
+| Words = values the owner sets | Uniswap v3 `mint`. It pulls two tokens and a call has one charged word: the second token is held by a bound on its word and by its allowance |
+| **Not possible with rules as they are** | Aave's gateway for native ETH and the Base bridge's `bridgeETHTo`: they are paid in native value, and a call under rules carries none [V `test_poolRules_whatIsNotListedIsRefused` in `contracts/test/CallRules.t.sol`]. They need a decoder that judges a value |
 | A decoder of its own | other swaps at a router (several pools, exact output, v2 pools, other routers); Seaport listings (a bid has its decoder, below); GMX orders; Uniswap v4; Balancer; Pendle |
 
 The CLI makes such calls, and the phone's core shows the owner each
