@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.38;
 
 /// @title VenuePairs - the pairs an owner lets an agent trade, and their lowest prices
 /// @notice What a venue's decoder holds every order to, whatever the venue:

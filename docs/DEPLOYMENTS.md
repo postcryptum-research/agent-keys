@@ -34,6 +34,17 @@ missing from this page.
   `cbor_metadata = false`, so comments and paths do not move an address. Each
   file records the compiler settings its current instances were built with:
   `solc` 0.8.38 and `evmVersion` cancun [V `contracts/foundry.toml`].
+- **The pragma line follows the compiler at a contract's next deployment.**
+  Every build is made with the pinned compiler, whatever a file's pragma
+  admits. `AgentPolicy` and the venue contracts not yet on a chain
+  (`OneInchLimitOrderDecoder`, `SwapRouter02Decoder`, `CallRulesDecoder`,
+  `SeaportBidDecoder`, with `VenuePairs` and `VenueCalls`) say
+  `pragma solidity ^0.8.38;`: their source refuses the compilers with the
+  transient-storage bug (0.8.28 to 0.8.33) by itself. The contracts whose
+  current instances are already deployed and are not being replaced keep
+  `^0.8.24` until they are deployed again: a deployed contract's source is
+  not edited (house rule 3). The line is not in the bytecode: changing it
+  moved no address [V `scripts/source-record.sh`, 2026-11-27].
 - **The current instances are built from one commit.** Every contract
   carries `string public constant VERSION`. Until the first audited release
   every contract stays at 0.1.0 and a fix is carried by a redeploy, not by
