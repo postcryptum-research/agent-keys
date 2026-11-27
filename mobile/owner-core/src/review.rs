@@ -3544,7 +3544,9 @@ mod tests {
         let f = crate::facts::for_chain(11155111);
         let policy = f.trading_policy_modules[0];
         let signer = f.signer_modules[0];
-        let (decoder, venue) = f.venues.iter().next().map(|(d, v)| (*d, v.clone())).unwrap();
+        // CoW Swap's venue among those the build knows there
+        let decoder = address!("42F62bF7134F5eF6d46d4BC07d806E77D1Df641a");
+        let venue = f.venues[&decoder].clone();
         let usdc = address!("1c7D4B196Cb0C7B01d743Fbc6116a902379C7238");
         let weth = address!("fFf9976782d46CC05630D1f6eBAb18b2324d6B14");
         // never under 0.0002 WETH for a USDC, orders of 30 minutes at most
@@ -3603,6 +3605,128 @@ mod tests {
         // since it keeps the settlement's domain separator, which names the chain
         let base = crate::facts::for_chain(84532);
         refused(show(84532, base.trading_policy_modules[0], venue.code_hash), "pins other code");
+    }
+
+    /// The venues deployed on 2026-11-27, on Base Sepolia: a mandate with a
+    /// swap venue at Uniswap's router, with 1inch's limit orders, or with
+    /// rules for Aave's pool or for CCTP's messenger is shown from the
+    /// build's facts and can be signed; with another code for the decoder it
+    /// is refused, and so it is on the policy instance this one replaced,
+    /// which the build no longer reads.
+    #[test]
+    fn the_venues_deployed_with_the_current_policy_are_read_from_the_build_facts() {
+        let f = crate::facts::for_chain(84532);
+        let policy = f.trading_policy_modules[0];
+        assert_eq!(policy, address!("dA16ba0d5C8aC6D5599A444c1e1e3bCD6c97c0C6"));
+        let signer = f.signer_modules[0];
+        let usdc = address!("036CbD53842c5426634e7929541eC2318f3dCF7e");
+        let weth = address!("4200000000000000000000000000000000000006");
+        let price = [(usdc, weth, U256::from(200_000_000_000_000u64), U256::from(1_000_000))];
+        // Aave's supply for one asset and the account only, and its withdrawal to the account
+        let pool_rules = kernel::call_rules_config(&[
+            (
+                FixedBytes::from([0x61, 0x7b, 0xa0, 0x37]),
+                vec![
+                    kernel::WordRule::IsValue(U256::from_be_slice(usdc.as_slice())),
+                    kernel::WordRule::Charged(usdc),
+                    kernel::WordRule::IsAccount,
+                    kernel::WordRule::IsValue(U256::ZERO),
+                ],
+            ),
+            (
+                FixedBytes::from([0x69, 0x32, 0x8d, 0xec]),
+                vec![kernel::WordRule::IsValue(U256::from_be_slice(usdc.as_slice())), kernel::WordRule::Any, kernel::WordRule::IsAccount],
+            ),
+        ]);
+        // CCTP's `depositForBurn`: to the account's own address on the domain 0, no fee, standard finality
+        let bridge_rules = kernel::call_rules_config(&[(
+            FixedBytes::from([0x8e, 0x02, 0x50, 0xee]),
+            vec![
+                kernel::WordRule::Charged(usdc),
+                kernel::WordRule::IsValue(U256::ZERO),
+                kernel::WordRule::IsAccount,
+                kernel::WordRule::IsValue(U256::from_be_slice(usdc.as_slice())),
+                kernel::WordRule::IsValue(U256::ZERO),
+                kernel::WordRule::AtMost(U256::ZERO),
+                kernel::WordRule::IsValue(U256::from(2000)),
+            ],
+        )]);
+        let show = |policy: Address, decoder: Address, code_hash: B256, config: &Bytes| {
+            let venue = &f.venues[&decoder];
+            let params = kernel::PolicyParams {
+                targets: vec![policy],
+                selectors: vec![FixedBytes::from([0x27, 0xdd, 0xae, 0x76])],
+                max_value_per_op: 0,
+                budget: 10u128.pow(16),
+                valid_until: NOW + 30 * 86_400,
+                tokens: vec![(usdc, 20_000_000, 50_000_000, B256::ZERO)],
+                valid_after: 0,
+                payees: vec![],
+            };
+            let trading = kernel::Trading { period: 86_400, venues: vec![(decoder, code_hash, alloy_primitives::keccak256(config))], ids: vec![] };
+            let perm = FixedBytes::from([0x74, 0x72, 0x64, 0x31]);
+            let pdata = kernel::permission_data_with_trading(policy, &params, &trading, signer, &key(2));
+            let mut approve = SELECTOR_ERC20_APPROVE.to_vec();
+            approve.extend_from_slice(&[0u8; 12]);
+            approve.extend_from_slice(venue.spender.as_slice());
+            approve.extend_from_slice(&U256::from(50_000_000u64).to_be_bytes::<32>());
+            let mut o = op(kernel::execute_batch_calldata(vec![
+                (ACCOUNT, U256::ZERO, kernel::install_permission_calldata(perm, pdata, 1)),
+                (ACCOUNT, U256::ZERO, kernel::grant_execute_calldata(perm)),
+                (usdc, U256::ZERO, approve.into()),
+            ]));
+            o.gas_fees = kernel::pack_gas(1, 1);
+            let bytes = SignRequest::new(&o, ENTRY, 84532, NOW + 120, None, BTreeMap::new(), None)
+                .with_venue_configs(vec![config.clone()])
+                .to_bytes();
+            open_request_with_build_facts(&bytes, &commitment(&bytes), NOW, &[EnrolledAccount::new(84532, ENTRY, ACCOUNT)])
+        };
+        let cases: [(Address, Bytes, &str, &[&str]); 4] = [
+            (
+                address!("B29a80662d989c1C0E73dB824cD82d5890e795bC"),
+                kernel::swap_config(&price),
+                "Uniswap",
+                &["A swap is: made by the account itself, at once", "0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4 — Uniswap router (verified in this build)"],
+            ),
+            (
+                address!("AD754dA240f27dCe0cF79F6d323e56d5C29D08E6"),
+                kernel::one_inch_config(1800, &price),
+                "1inch",
+                &["Orders live: at most 30 minutes", "0x111111125421cA6dc452d289314280a0f8842A65 — 1inch router (verified in this build)"],
+            ),
+            (
+                address!("14b82e2cBF35926B6221d008e5A89DB1BD5D4887"),
+                pool_rules,
+                "Aave V3 pool",
+                &["0x8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27 — Aave V3 pool (verified in this build)", "0x617ba037", "0x69328dec"],
+            ),
+            (
+                address!("C5135aC6A911B692173F2626dD57ff1D80d16F62"),
+                bridge_rules,
+                "CCTP messenger",
+                &["0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA — CCTP messenger (verified in this build)", "0x8e0250ee"],
+            ),
+        ];
+        // the instance the current policy replaced: a name, and no module the build reads
+        let replaced = address!("530DD3C000b3939294072409834c4c4dd160BCd9");
+        for (decoder, config, name, needed) in cases {
+            let code = f.venues[&decoder].code_hash;
+            let r = show(policy, decoder, code, &config);
+            let t = r.text();
+            assert!(matches!(r.verdict, Verdict::Sign | Verdict::SignWithWarnings(_)), "{name}: {:?}\n{t}", r.verdict);
+            // a venue of rules is "Calls at", the others "Trading on"
+            let said = if f.venues[&decoder].kind == VenueKind::CallRules { "Calls at" } else { "Trading on" };
+            assert!(t.contains(&format!("{said}: {name} (decoder {} verified in this build)", decoder.to_checksum(None))), "{name}\n{t}");
+            for line in needed {
+                assert!(t.contains(line), "{name}: {line}\n{t}");
+            }
+            let other = show(policy, decoder, B256::repeat_byte(7), &config);
+            assert!(matches!(&other.verdict, Verdict::Refuse(m) if m.contains("pins other code")), "{name}: {:?}", other.verdict);
+            assert!(matches!(show(replaced, decoder, code, &config).verdict, Verdict::Refuse(_)), "{name}: on the replaced policy");
+        }
+        // Seaport's bid decoder is deployed there and is no venue of this build: a mandate that names it is refused
+        let seaport = address!("713165a6157a4B2952A775A9D1C9948D9a703128");
+        assert!(!f.venues.contains_key(&seaport));
     }
 
     /// What `AgentPolicy.onInstall` refuses, the review refuses first: a

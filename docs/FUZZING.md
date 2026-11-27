@@ -18,7 +18,7 @@ budget, one past it), with a share of damaged ones.
 | `testFuzz_model_decisionsAndCounters` | a second, plain statement of the rules (the model in the test) and the policy decide every operation alike, 40 in a row per seed, and count alike; no counter passes its limit |
 | `testFuzz_model_arbitraryCallDataIsRefused` | bytes that are no `execute` call are never let through |
 | `testFuzz_model_arbitraryExecuteBodyStaysWithinLimits` | an `execute` with arbitrary bytes behind it moves no counter past one operation's limits |
-| `testFuzz_differential_sourceAgainstTheDeployedInstance` | the policy in the source and the runtime code deployed to Base Sepolia on 2026-11-26 agree on every decision, every returned validation word and every view, 40 operations per seed, across uninstall and reinstall; here the operations also go through a Safe, MultiSend batches and x402 registrations. Between operations the account asks for a registered authorization back (`x402Reclaim`), as registered or with one field changed, after time has moved or the token has come to say the nonce was used: both answer alike, and as the rule says on its own (only what is registered, past its `validBefore` and not settled comes back, once, and the token's counter falls by exactly its value) |
+| `testFuzz_differential_sourceAgainstTheDeployedInstance` | the policy in the source and the runtime code deployed to Base Sepolia on 2026-11-27 agree on every decision, every returned validation word and every view, 40 operations per seed, across uninstall and reinstall; here the operations also go through a Safe, MultiSend batches and x402 registrations. Between operations the account asks for a registered authorization back (`x402Reclaim`), as registered or with one field changed, after time has moved or the token has come to say the nonce was used: both answer alike, and as the rule says on its own (only what is registered, past its `validBefore` and not settled comes back, once, and the token's counter falls by exactly its value) |
 | `testFuzz_differential_mandatesFromTheSeed` | both install or both refuse a mandate built from the seed (it draws from everything install must refuse), and what is then readable of it is the same |
 | `testFuzz_differential_arbitraryCallData`, `…arbitraryInstallData` | the same answer from both for arbitrary bytes |
 
@@ -27,8 +27,8 @@ instance differed only in where they kept their state
 ([#83](https://github.com/postcryptum-research/agent-keys/issues/83)): any
 difference in behaviour was a bug in one of them, and 10,000 runs found
 none. The vector in `contracts/test/vectors/` is now the runtime code of
-the `AgentPolicy` deployed on 2026-11-26 from commit
-`e48b93e001f34f460bd4845d231b8e0ee5d26ad6`, read from Base Sepolia, so both
+the `AgentPolicy` deployed on 2026-11-27 from commit
+`b11adb7cf2dcb2660b4c93c81c62f8945e246706`, read from Base Sepolia, so both
 sides are the same code: the tests hold what is deployed to the source, and
 guard the next change to it. Approvals are drawn with any amount and every
 mandate goes to both, since the instance has the source's rules (no
@@ -364,7 +364,8 @@ was not broken on purpose: no test has a decoder that builds other bytes.
 
 **What it does not cover.** The stand-in router models one function. The
 fork run is of one pool on one test network at one block. No swap was sent
-to a chain, and no chain has the decoder or this policy yet.
+to a chain: the decoder and this policy are deployed on Sepolia and Base
+Sepolia since 2026-11-27, and unused there so far.
 
 ## Contracts: calls with a rule for each argument
 

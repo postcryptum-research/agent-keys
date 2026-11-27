@@ -152,10 +152,10 @@ reserve 0 on Base Sepolia, so a supply of 100 USDC (100,000,000 units) is
 `0xf7a73840` followed by the word `100000000 << 16`. The widest amount in a
 withdrawal means "everything".
 
-**Not on a chain yet:** the test runs on a fork. A live run on Base Sepolia
-follows.
+**Not run on a chain yet:** the test runs on a fork. A live run on Base
+Sepolia follows.
 
-## A swap at Uniswap's router: built, not on a chain yet
+## A swap at Uniswap's router: deployed, not yet run on a chain
 
 A swap names a recipient, so it cannot go on an allow-list. It goes through
 a venue instead, like an order: the mandate names a decoder with the
@@ -206,12 +206,13 @@ agent-signer order swap --agent agent.json \
 In the config the venue is `{"kind": "uniswap", "decoder": …, "pairs": […]}`
 ([`AGENT_CONFIG.md`](AGENT_CONFIG.md)).
 
-**Not on a chain yet.** No network has this decoder, or the policy that
-admits a decoder's call, so no phone build names the venue. One pool and an
-exact amount sold only: paths through several pools, exact-output swaps and
-the router's v2 functions are not allowed.
+**Deployed on Sepolia and Base Sepolia on 2026-11-27,** with the policy
+that admits a decoder's call; the phone's core names the venue there
+([`DEPLOYMENTS.md`](DEPLOYMENTS.md)). No swap has been made through it on a
+chain yet. One pool and an exact amount sold only: paths through several
+pools, exact-output swaps and the router's v2 functions are not allowed.
 
-## With a rule for each argument: built, not on a chain yet
+## With a rule for each argument: deployed for two contracts, not yet run on a chain
 
 These are the same protocols' other functions, and whole families of
 protocols, whose calls name a beneficiary. `CallRulesDecoder` holds each
@@ -250,8 +251,10 @@ code of each pool's implementation on 2026-11-27 (the selectors
   withdraw. Nothing was sent to those chains.
 - **What it takes on a chain:** a `CallRulesDecoder` deployed for that
   chain's pool (`contracts/script/DeployCallRules.s.sol`), named in the
-  mandate with its code hash. None is on a chain yet; a mainnet gets one
-  only from an audited release (house rule 3).
+  mandate with its code hash. Sepolia and Base Sepolia have one for their
+  pool since 2026-11-27 ([`DEPLOYMENTS.md`](DEPLOYMENTS.md)); no other
+  chain has, and a mainnet gets one only from an audited release (house
+  rule 3).
 - **On Sepolia the pool's test USDC, DAI and USDT cannot be supplied:**
   they are above their supply caps (4.9, 6.1 and 4.7 billion supplied
   against caps of 2 billion, read on 2026-11-27), and the pool refuses a
@@ -320,8 +323,9 @@ the owner should know are in
 [`docs/CONTRACTS.md`](CONTRACTS.md#seaportbiddecoder): an order can be
 validated at Seaport and then no longer asks the account; the allowance
 goes to a marketplace's conduit; with a bid for any item the seller picks
-the item. The CLI and the phone do not place or show bids yet, and no chain
-has the decoder: `[I]` for everything beyond the contracts.
+the item. The decoder is deployed on Sepolia and Base Sepolia since
+2026-11-27; the CLI and the phone do not place or show bids yet: `[I]` for
+everything beyond the contracts.
 
 **The others are recipes to be written and tested,** each `[I]` until its
 test exists. The table says which rule opens what:
@@ -356,8 +360,10 @@ the asset, the second an amount charged to the asset's budget, the third
 this account, the fourth exactly 0; and for the withdrawal's amount, in
 bold, "anything — the agent picks it", with a warning.
 
-**Not on a chain yet.** No network has such a decoder, so no phone build
-names one.
+**Deployed for two contracts on each test network on 2026-11-27:** Aave
+V3's pool and CCTP's messenger, on Sepolia and on Base Sepolia; the phone's
+core names both ([`DEPLOYMENTS.md`](DEPLOYMENTS.md)). No call has gone
+through one on a chain yet.
 
 Without its rules none of these is safe on a mandate. A pull-side function
 (`supply`, `deposit`) left unpinned loses at most what the token's budget

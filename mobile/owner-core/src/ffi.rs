@@ -559,7 +559,7 @@ mod tests {
     #[test]
     fn enrollment_is_opened_with_the_builds_view_of_its_pins() {
         use alloy_primitives::{address, B256};
-        let known = address!("530DD3C000b3939294072409834c4c4dd160BCd9");
+        let known = address!("dA16ba0d5C8aC6D5599A444c1e1e3bCD6c97c0C6");
         let unknown = address!("05a97329397200dF8795A882da0b5b1aD894EB97");
         let pins = [(known, "MyPolicy".to_string()), (unknown, "test paymaster".to_string())].into_iter().collect();
         let entry = address!("0000000071727De22E5E9d8BAf0edAc6f37da032");

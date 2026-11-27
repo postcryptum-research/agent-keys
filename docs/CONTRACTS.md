@@ -20,18 +20,18 @@ commit `e48b93e001f34f460bd4845d231b8e0ee5d26ad6` builds them, every contract at
 | `P256Validator` | the owner key, as the account's root | Kernel, from the account | `0x9b6f7A83e10F3360af6B34F672c0AC5295f72d63` |
 | `P256RecoveryValidator` | the recovery key, granted only `changeRootValidator` | Kernel, from the account | `0xb7a06e6c7B5cC9852578EF89f38d161C31218047` |
 | `P256Signer` | the agent key, as one Kernel permission | Kernel, from the account | `0xd88d25Ca3e042A28893781935756ee90Bc2d2769` |
-| `AgentPolicy` | the agent's mandate, as that permission's policy | Kernel, from the account; the account, for x402 and orders | `0x530DD3C000b3939294072409834c4c4dd160BCd9` |
+| `AgentPolicy` | the agent's mandate, as that permission's policy | Kernel, from the account; the account, for x402 and orders | `0xdA16ba0d5C8aC6D5599A444c1e1e3bCD6c97c0C6` |
 | `P256Point` | the on-curve check (library) | the key modules, at install | none: compiled into them |
 | `SafeNonceAssert` | the replay guard of an agent's Safe transaction | the account, in a batch | `0x29f600cBcdC5221a63bD5c88F4a75E20c5CBe219` |
 | `WhitelistPaymaster` | a gas sponsor with a budget per account | the EntryPoint; its owner | `0x657792557C1D40f2Da031FD7aB277078D2c0a4cb` |
 | `IVenueDecoder` | what a trading venue is to the policy (interface) | the policy; the owner's tools | none: an interface |
 | `CowSwapDecoder` | CoW Protocol's orders under that interface | the policy; the owner's tools | `0x42F62bF7134F5eF6d46d4BC07d806E77D1Df641a` |
 | `VenuePairs` | the listed pairs and their lowest prices (library) | the 1inch and swap decoders | none: compiled into them |
-| `OneInchLimitOrderDecoder` | plain 1inch limit orders under that interface | the policy; the owner's tools | not deployed yet |
+| `OneInchLimitOrderDecoder` | plain 1inch limit orders under that interface | the policy; the owner's tools | `0xAD754dA240f27dCe0cF79F6d323e56d5C29D08E6` |
 | `VenueCalls` | how a call is named between a decoder and the policy (library) | the policy; the swap decoder | none: compiled into them |
-| `SwapRouter02Decoder` | a swap at Uniswap's SwapRouter02, as a call the account makes | the policy; the owner's tools | not deployed yet |
-| `CallRulesDecoder` | calls at one contract, each argument word held to a rule | the policy; the owner's tools | not deployed yet; one per contract it speaks for |
-| `SeaportBidDecoder` | a bid for one NFT at Seaport 1.6 under that interface | the policy; the owner's tools | not deployed yet |
+| `SwapRouter02Decoder` | a swap at Uniswap's SwapRouter02, as a call the account makes | the policy; the owner's tools | `0xB29a80662d989c1C0E73dB824cD82d5890e795bC` |
+| `CallRulesDecoder` | calls at one contract, each argument word held to a rule | the policy; the owner's tools | one per contract it speaks for: `0x14b82e2cBF35926B6221d008e5A89DB1BD5D4887` for Aave V3's pool, `0xC5135aC6A911B692173F2626dD57ff1D80d16F62` for CCTP's messenger |
+| `SeaportBidDecoder` | a bid for one NFT at Seaport 1.6 under that interface | the policy; the owner's tools | `0x713165a6157a4B2952A775A9D1C9948D9a703128` |
 | `DemoCounter` | a demo target | anyone; the agent in demos | `0x29da894F3E456CAC92b3EC76710524E74411E99f` |
 
 The addresses are the file's current entries [V `contracts/deployments/84532.json`].
@@ -611,10 +611,11 @@ which refuses the operation all the same [I].
   the CLI builds the plain form only; a hook needs those two, not a new
   policy.
 
-**Instances.** The current one, `0x530DD3C000b3939294072409834c4c4dd160BCd9`,
+**Instances.** The current one, `0xdA16ba0d5C8aC6D5599A444c1e1e3bCD6c97c0C6`,
 is `agentPolicy` on both chains: built from commit
-`e48b93e001f34f460bd4845d231b8e0ee5d26ad6`, with every rule of this
-section, periods, venues and the venue's spender as a place (#149) [V
+`b11adb7cf2dcb2660b4c93c81c62f8945e246706`, with every rule of this
+section, periods, venues, a call a venue's decoder judged (#222) and the
+venue's spender as a place (#149) [V
 `contracts/deployments/84532.json`, `contracts/deployments/11155111.json`,
 `docs/DEPLOYMENTS.md`]. The instances it replaced stay recorded, each with
 the commit named in `docs/DEPLOYMENTS.md`; master's source no longer builds
@@ -848,9 +849,12 @@ change when a second venue arrives.
 plain order of 1inch's Limit Order Protocol v4, which is part of 1inch's
 router, AggregationRouterV6, at `0x111111125421cA6dc452d289314280a0f8842A65`
 [V source]. The CLI places such orders (`"kind": "1inch"` in a config's
-`venues`, `order sell`), and the phone's core reads the venue's terms; no
-chain has the decoder yet, so no phone build names it
-([`docs/AGENT_CONFIG.md`](AGENT_CONFIG.md)).
+`venues`, `order sell`), and the phone's core reads the venue's terms. It
+is deployed on Sepolia and Base Sepolia since 2026-11-27, and the phone's
+core names it there by address and code
+([`docs/DEPLOYMENTS.md`](DEPLOYMENTS.md),
+[`docs/AGENT_CONFIG.md`](AGENT_CONFIG.md)); no order has gone through it on
+a chain yet.
 
 **State.** None: no storage, no upgrade path, no `delegatecall`, no
 `selfdestruct`. The router's address and its EIP-712 domain separator are
@@ -951,8 +955,11 @@ call: a swap of an exact amount through one Uniswap v3 pool, at Uniswap's
 SwapRouter02 (`exactInputSingle`, selector `0x04e45aaf`) [V source]. It
 judges a call, not an order. The CLI swaps there (`"kind": "uniswap"` in a
 config's `venues`, `order swap`), and the phone's core reads the venue's
-terms; no chain has the decoder yet, so no phone build names it
-([`docs/AGENT_CONFIG.md`](AGENT_CONFIG.md)).
+terms. It is deployed on Sepolia and Base Sepolia since 2026-11-27, and the
+phone's core names it there by address and code
+([`docs/DEPLOYMENTS.md`](DEPLOYMENTS.md),
+[`docs/AGENT_CONFIG.md`](AGENT_CONFIG.md)); no swap has gone through it on
+a chain yet.
 
 **State.** None: no storage, no upgrade path, no `delegatecall`, no
 `selfdestruct`. The router's address is kept as two immutables (`venue`,
@@ -1033,9 +1040,12 @@ call, not an order. One decoder is deployed for each contract it speaks for
 (`contracts/script/DeployCallRules.s.sol`): the policy admits a decoder's
 call at the decoder's own venue and nowhere else. The CLI calls there
 (`"kind": "rules"` in a config's `venues`, `order call`), and the phone's
-core shows each function with the rule for every argument; no chain has
-such a decoder yet, so no phone build names one
-([`docs/AGENT_CONFIG.md`](AGENT_CONFIG.md)).
+core shows each function with the rule for every argument. Two are
+deployed on Sepolia and on Base Sepolia since 2026-11-27, one for Aave
+V3's pool and one for CCTP's messenger, and the phone's core names them
+there by address and code ([`docs/DEPLOYMENTS.md`](DEPLOYMENTS.md),
+[`docs/AGENT_CONFIG.md`](AGENT_CONFIG.md)); no call has gone through one on
+a chain yet.
 
 **State.** None. The venue and the spender (the contract the account
 approves there; the venue itself where it pulls tokens itself) are
@@ -1106,8 +1116,10 @@ address on every chain it is on): the account offers an amount of an
 ERC-20 token for one ERC-721 item of a collection the owner listed [V
 source]. It judges an order: the account vouches for it when Seaport asks
 (ERC-1271), as for a CoW or a 1inch order. The contract and its tests are
-here; the CLI and the phone do not place or show such bids yet, and no
-chain has the decoder.
+here; the CLI and the phone do not place or show such bids yet. The
+decoder is deployed on Sepolia and Base Sepolia since 2026-11-27
+([`docs/DEPLOYMENTS.md`](DEPLOYMENTS.md)), and the phone refuses a mandate
+that names it: its core knows it as a name and not as a venue.
 
 **State.** None: no storage, no upgrade path, no `delegatecall`, no
 `selfdestruct`. Immutables: `venue` (Seaport), `conduitKey` (the conduit an
