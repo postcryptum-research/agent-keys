@@ -363,9 +363,9 @@ comparison of its call with the decoder's `swapCall` before sending
 was not broken on purpose: no test has a decoder that builds other bytes.
 
 **What it does not cover.** The stand-in router models one function. The
-fork run is of one pool on one test network at one block. No swap was sent
-to a chain: the decoder and this policy are deployed on Sepolia and Base
-Sepolia since 2026-11-27, and unused there so far.
+fork run is of one pool on one test network at one block. On a chain, one
+swap: on Sepolia on 2026-11-27, through the decoder and the policy deployed
+that day ([`DAPPS.md`](DAPPS.md#on-a-chain-the-runs-on-sepolia-of-2026-11-27)).
 
 ## Contracts: calls with a rule for each argument
 

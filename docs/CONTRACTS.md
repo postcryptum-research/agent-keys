@@ -853,8 +853,9 @@ router, AggregationRouterV6, at `0x111111125421cA6dc452d289314280a0f8842A65`
 is deployed on Sepolia and Base Sepolia since 2026-11-27, and the phone's
 core names it there by address and code
 ([`docs/DEPLOYMENTS.md`](DEPLOYMENTS.md),
-[`docs/AGENT_CONFIG.md`](AGENT_CONFIG.md)); no order has gone through it on
-a chain yet.
+[`docs/AGENT_CONFIG.md`](AGENT_CONFIG.md)). An order was registered
+through it on Sepolia on 2026-11-27, and the account vouched for it there;
+it was sent to no order book and not filled ([`docs/DAPPS.md`](DAPPS.md#on-a-chain-the-runs-on-sepolia-of-2026-11-27)).
 
 **State.** None: no storage, no upgrade path, no `delegatecall`, no
 `selfdestruct`. The router's address and its EIP-712 domain separator are
@@ -958,8 +959,8 @@ config's `venues`, `order swap`), and the phone's core reads the venue's
 terms. It is deployed on Sepolia and Base Sepolia since 2026-11-27, and the
 phone's core names it there by address and code
 ([`docs/DEPLOYMENTS.md`](DEPLOYMENTS.md),
-[`docs/AGENT_CONFIG.md`](AGENT_CONFIG.md)); no swap has gone through it on
-a chain yet.
+[`docs/AGENT_CONFIG.md`](AGENT_CONFIG.md)). The first swap through it on
+a chain was made on Sepolia on 2026-11-27 ([`docs/DAPPS.md`](DAPPS.md#on-a-chain-the-runs-on-sepolia-of-2026-11-27)).
 
 **State.** None: no storage, no upgrade path, no `delegatecall`, no
 `selfdestruct`. The router's address is kept as two immutables (`venue`,
@@ -1044,8 +1045,9 @@ core shows each function with the rule for every argument. Two are
 deployed on Sepolia and on Base Sepolia since 2026-11-27, one for Aave
 V3's pool and one for CCTP's messenger, and the phone's core names them
 there by address and code ([`docs/DEPLOYMENTS.md`](DEPLOYMENTS.md),
-[`docs/AGENT_CONFIG.md`](AGENT_CONFIG.md)); no call has gone through one on
-a chain yet.
+[`docs/AGENT_CONFIG.md`](AGENT_CONFIG.md)). Both were used on Sepolia on
+2026-11-27: a supply and a withdrawal at Aave, a transfer by CCTP
+([`docs/DAPPS.md`](DAPPS.md#on-a-chain-the-runs-on-sepolia-of-2026-11-27)).
 
 **State.** None. The venue and the spender (the contract the account
 approves there; the venue itself where it pulls tokens itself) are
