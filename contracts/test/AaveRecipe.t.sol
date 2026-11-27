@@ -32,8 +32,10 @@ interface IAavePoolForRecipe {
 /// no rule on the calls' arguments. It works where the pool has the compact
 /// forms `supply(bytes32)` and `withdraw(bytes32)` (Base, Arbitrum, Base
 /// Sepolia): they take no beneficiary, the pool uses its own caller. The
-/// forms with `onBehalfOf` and `to` are not on the allow-list, and stay off
-/// until a rule can pin those words to the account.
+/// forms with `onBehalfOf` and `to` are not on the allow-list: they go by a
+/// rule that pins those words to the account (`CallRules.t.sol`,
+/// `PoolForkTest`), which is how Aave is used where the pool has no compact
+/// forms (Ethereum, BNB Chain, Sepolia).
 ///
 /// Run against the pool itself, on a fork of Base Sepolia:
 ///

@@ -71,7 +71,7 @@ protocol's own code; the others are `[I]` until their test exists.
 
 | Protocol | What to allow | Where | Status |
 |---|---|---|---|
-| **Aave V3** | the pool's compact forms `supply(bytes32)` `0xf7a73840`, `withdraw(bytes32)` `0x8e19899e`, `repay(bytes32)` `0x563dd613`: the pool uses its own caller as beneficiary | Base, Arbitrum, Base Sepolia (the pools there are L2 pools) | **[V]** on Base Sepolia, see below |
+| **Aave V3** | the pool's compact forms `supply(bytes32)` `0xf7a73840`, `withdraw(bytes32)` `0x8e19899e`, `repay(bytes32)` `0x563dd613`: the pool uses its own caller as beneficiary | Base, Arbitrum, Base Sepolia (the pools there are L2 pools); on Ethereum, BNB Chain and Sepolia the pool has no compact forms, and Aave goes by rules (the table of networks below) | **[V]** on Base Sepolia, see below |
 | Aave V3 | `repayWithATokens`, rewards `claimRewardsToSelf`, `claimAllRewardsToSelf` | every chain | [I] |
 | **Compound v3** | `supply(address,uint256)` `0xf2b9fdb8`, `withdraw(address,uint256)` `0xf3fef3a3`, with the base token's `approve` and a limit for it | Ethereum, Base, Arbitrum, Sepolia, Base Sepolia | **[V]** on Base Sepolia, see below; rewards `claim` [I] |
 | **Lido** | `submit(address)` `0xa1903eab` (stake), under the native cap and budget | Ethereum | **[V]** on Ethereum, see below; wstETH `wrap` and `unwrap`, `claimWithdrawals`, `claimWithdrawal` [I] |
@@ -225,18 +225,47 @@ with its rules, and a call is two legs of one operation, like a swap.
 amount, onBehalfOf, referralCode)` with the asset set, the amount charged,
 `onBehalfOf` the account and no referral; `withdraw(asset, amount, to)`
 with the asset set and `to` the account
-[V `contracts/test/CallRules.t.sol` `PoolForkTest`, on a fork of Base
-Sepolia on 2026-11-26 against the pool
-`0x8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27`: the agent supplies and the
-aTokens are the account's; a supply for somebody else, a withdrawal to
-somebody else, a borrow and an amount over the cap are refused]. These are
-the forms Ethereum, BNB Chain and Sepolia have, where the compact forms
-above do not exist.
+[V `contracts/test/CallRules.t.sol`, `PoolForkTest` and the five
+`PoolOn…Test` contracts, each on a fork of its chain against Aave's pool
+there: the agent supplies and the aTokens are the account's; a supply for
+somebody else, a withdrawal to somebody else, a borrow and an amount over
+the cap are refused]. These are the only forms the pools of Ethereum, BNB
+Chain and Sepolia have, so with the rules an agent can use Aave there too.
+
+**Aave V3, network by network.** Which forms a pool has was read in the
+code of each pool's implementation on 2026-11-27 (the selectors
+`0xf7a73840` and `0x617ba037`).
+
+| Network | Aave V3's pool | Compact forms: the allow-list alone | Forms with a beneficiary: rules |
+|---|---|---|---|
+| Ethereum | `0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2` | not in the pool | **[V]** with USDC, 2026-11-27 |
+| BNB Chain | `0x6807dc923806fE8Fd134338EABCA509979a7e0cB` | not in the pool | **[V]** with USDC, 2026-11-27 |
+| Sepolia | `0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951` | not in the pool | **[V]** with the pool's test WETH, 2026-11-27 |
+| Arbitrum | `0x794a61358D6845594F94dc1DB02A252b5b4814aD` | in the pool; not run [I] | **[V]** with USDC, 2026-11-27 |
+| Base | `0xA238Dd80C259a72e81d7e4664a9801593F98d1c5` | in the pool; not run [I] | **[V]** with USDC, 2026-11-27 |
+| Base Sepolia | `0x8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27` | **[V]** with the pool's test USDC, 2026-11-26 | **[V]** with the pool's test USDC, 2026-11-26 |
+
+- **Verified means on a fork,** with this build's policy and a rules
+  decoder deployed in the test for that pool: one asset, supply and
+  withdraw. Nothing was sent to those chains.
+- **What it takes on a chain:** a `CallRulesDecoder` deployed for that
+  chain's pool (`contracts/script/DeployCallRules.s.sol`), named in the
+  mandate with its code hash. None is on a chain yet; a mainnet gets one
+  only from an audited release (house rule 3).
+- **On Sepolia the pool's test USDC, DAI and USDT cannot be supplied:**
+  they are above their supply caps (4.9, 6.1 and 4.7 billion supplied
+  against caps of 2 billion, read on 2026-11-27), and the pool refuses a
+  supply of them whoever makes it. Its test WETH and LINK have no cap.
+- **Not verified on any network:** `repay`, the gateway for native ETH,
+  the rewards controller.
 
 ```sh
 cd contracts
 FORK_BASE_SEPOLIA_RPC_URL=<a Base Sepolia RPC> \
     forge test --evm-version osaka --match-contract PoolForkTest
+FORK_ETHEREUM_RPC_URL=<an Ethereum RPC> FORK_SEPOLIA_RPC_URL=<Sepolia> FORK_ARBITRUM_RPC_URL=<Arbitrum> \
+FORK_BNB_RPC_URL=<BNB Chain> FORK_BASE_RPC_URL=<Base> \
+    forge test --evm-version osaka --match-contract PoolOn --match-test 'test_fork|test_real'
 ```
 
 **An ERC-4626 vault, verified.** sDAI on Ethereum
@@ -299,7 +328,7 @@ test exists. The table says which rule opens what:
 
 | Opens with | What |
 |---|---|
-| One word = the account | Aave `supply`, `withdraw`, `repay` and its ETH gateway on Ethereum, BNB Chain and Sepolia; every ERC-4626 vault's `deposit` and `mint` (MetaMorpho, sDAI, sUSDS, Yearn, sUSDe, Aave's stata tokens); Lido and ether.fi withdrawal requests; Compound's `supplyTo` and `withdrawTo`; Uniswap v3 `collect` |
+| One word = the account | Aave `repay` and its ETH gateway (its `supply` and `withdraw` are verified, above); every ERC-4626 vault's `deposit` and `mint` (MetaMorpho, sDAI, sUSDS, Yearn, sUSDe, Aave's stata tokens); Lido and ether.fi withdrawal requests; Compound's `supplyTo` and `withdrawTo`; Uniswap v3 `collect` |
 | Two words = the account | every ERC-4626 vault's `withdraw` and `redeem` |
 | Words = values the owner sets | Morpho (the market: markets are permissionless, so the market itself is pinned); Circle's CCTP (the destination chain and recipient); the Base bridge's `bridgeETHTo` and `bridgeERC20To`; Uniswap v3 `mint` |
 | A decoder of its own | other swaps at a router (several pools, exact output, v2 pools, other routers); Seaport listings (a bid has its decoder, below); GMX orders; Uniswap v4; Balancer; Pendle |

@@ -565,31 +565,57 @@ contract CallRulesTradingTest is TradingTest {
 
 /// The same against Aave V3's pool on Base Sepolia, by the pool's functions
 /// that name a beneficiary: what the allow-list cannot hold, the rules do.
+/// The contracts after this one run it against Aave's pools on Ethereum,
+/// Sepolia, Arbitrum, BNB Chain and Base: the pools of Ethereum, Sepolia
+/// and BNB Chain have these forms and no others.
 ///
 ///     FORK_BASE_SEPOLIA_RPC_URL=<a Base Sepolia RPC> \
 ///         forge test --evm-version osaka --match-contract PoolForkTest
+///     FORK_ETHEREUM_RPC_URL=<an Ethereum RPC> FORK_SEPOLIA_RPC_URL=… FORK_ARBITRUM_RPC_URL=… \
+///     FORK_BNB_RPC_URL=… FORK_BASE_RPC_URL=… \
+///         forge test --evm-version osaka --match-contract 'PoolOn' --match-test 'test_fork|test_real'
 ///
-/// Skipped without the variable: CI has no RPC.
+/// Each is skipped without its variable: CI has no RPC.
 contract PoolForkTest is TradingTest {
-    address internal constant POOL = 0x8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27;
-    IERC20ForRules internal constant USDC = IERC20ForRules(0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f);
+    /// The pool and one of its assets on the chain the test forks: set by `_onTheFork`.
+    address internal POOL;
+    IERC20ForRules internal USDC;
     uint128 internal constant USDC_MAX = 100e6;
     uint128 internal constant USDC_BUDGET = 300e6;
 
     CallRulesDecoder internal rules;
     IERC20ForRules internal aUsdc;
 
-    function _onBaseSepolia() internal returns (bool) {
-        string memory rpc = vm.envOr("FORK_BASE_SEPOLIA_RPC_URL", string(""));
+    /// Where the test runs: the variable that holds the chain's RPC, the
+    /// chain's id, Aave V3's pool there (Aave's address book) and one of the
+    /// pool's assets.
+    function _where()
+        internal
+        pure
+        virtual
+        returns (string memory variable, uint256 chain, address pool, address asset)
+    {
+        return (
+            "FORK_BASE_SEPOLIA_RPC_URL",
+            84532,
+            0x8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27,
+            0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f
+        );
+    }
+
+    function _onTheFork() internal returns (bool) {
+        (string memory variable, uint256 chain, address pool, address asset) = _where();
+        string memory rpc = vm.envOr(variable, string(""));
         if (bytes(rpc).length == 0) {
             vm.skip(true);
             return false;
         }
         vm.createSelectFork(rpc);
-        assertEq(block.chainid, 84532, "not Base Sepolia");
+        assertEq(block.chainid, chain, "not the chain this test is for");
         // the EntryPoint, the account and the policy of this build, on the fork
         setUp();
         _world();
+        (POOL, USDC) = (pool, IERC20ForRules(asset));
         // the reserve's aToken, as the pool has it: word 8 of `getReserveData`
         (bool ok, bytes memory data) =
             POOL.staticcall(abi.encodeWithSignature("getReserveData(address)", address(USDC)));
@@ -626,18 +652,18 @@ contract PoolForkTest is TradingTest {
         return true;
     }
 
-    function _rulesConfig() internal pure returns (bytes memory) {
+    function _rulesConfig() internal view returns (bytes memory) {
         CallRulesDecoder.Function[] memory fs = new CallRulesDecoder.Function[](2);
         fs[0] = PoolRules.supply(address(USDC));
         fs[1] = PoolRules.withdraw(address(USDC));
         return abi.encode(CallRulesDecoder.Config(fs));
     }
 
-    function _supply(uint256 amount, address onBehalfOf) internal pure returns (bytes memory) {
+    function _supply(uint256 amount, address onBehalfOf) internal view returns (bytes memory) {
         return abi.encodeWithSelector(PoolRules.SUPPLY, address(USDC), amount, onBehalfOf, uint256(0));
     }
 
-    function _withdraw(uint256 amount, address to) internal pure returns (bytes memory) {
+    function _withdraw(uint256 amount, address to) internal view returns (bytes memory) {
         return abi.encodeWithSelector(PoolRules.WITHDRAW, address(USDC), amount, to);
     }
 
@@ -665,7 +691,7 @@ contract PoolForkTest is TradingTest {
 
     /// The agent supplies by the form that names a beneficiary, and withdraws by the form that names a receiver.
     function test_fork_suppliedForTheAccountAndWithdrawnToIt() public {
-        if (!_onBaseSepolia()) return;
+        if (!_onTheFork()) return;
         uint256 before = USDC.balanceOf(acct);
         _send(_batch(_legs(_supply(100e6, acct))));
         assertEq(USDC.balanceOf(acct), before - 100e6);
@@ -679,7 +705,7 @@ contract PoolForkTest is TradingTest {
 
     /// What the allow-list could not hold: the same two functions, for anybody else.
     function test_fork_theBeneficiaryIsTheAccount() public {
-        if (!_onBaseSepolia()) return;
+        if (!_onTheFork()) return;
         address thief = makeAddr("thief");
         _send(_batch(_legs(_supply(100e6, acct))));
         _expectRefused(_batch(_legs(_supply(100e6, thief))));
@@ -697,7 +723,7 @@ contract PoolForkTest is TradingTest {
 
     /// Why the beneficiary is held: the pool credits whoever the caller names.
     function test_real_thePoolCreditsWhoeverIsNamed() public {
-        if (!_onBaseSepolia()) return;
+        if (!_onTheFork()) return;
         address other = makeAddr("other");
         vm.prank(acct);
         (bool ok,) = POOL.call(_supply(10e6, other));
@@ -708,7 +734,7 @@ contract PoolForkTest is TradingTest {
 
     /// Why the allowance may stand: the pool takes a supply from its caller only.
     function test_real_thePoolTakesFromItsCallerOnly() public {
-        if (!_onBaseSepolia()) return;
+        if (!_onTheFork()) return;
         address stranger = makeAddr("stranger");
         uint256 before = USDC.balanceOf(acct);
         vm.prank(stranger);
@@ -716,5 +742,68 @@ contract PoolForkTest is TradingTest {
         assertFalse(ok, "a stranger's supply does not spend the account's allowance");
         assertEq(USDC.balanceOf(acct), before);
         assertEq(USDC.allowance(acct, POOL), USDC_BUDGET);
+    }
+}
+
+/// Aave V3's pool on Ethereum, with USDC: the forms that name a beneficiary are the only ones it has.
+contract PoolOnEthereumTest is PoolForkTest {
+    function _where() internal pure override returns (string memory, uint256, address, address) {
+        return (
+            "FORK_ETHEREUM_RPC_URL",
+            1,
+            0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2,
+            0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48
+        );
+    }
+}
+
+/// Aave V3's pool on Sepolia, with its test WETH. The pool's test USDC, DAI
+/// and USDT are above their supply caps there (read on 2026-11-27: 4.9, 6.1
+/// and 4.7 billion supplied against caps of 2 billion), so the pool itself
+/// refuses a supply of them; WETH and LINK have no cap.
+contract PoolOnSepoliaTest is PoolForkTest {
+    function _where() internal pure override returns (string memory, uint256, address, address) {
+        return (
+            "FORK_SEPOLIA_RPC_URL",
+            11155111,
+            0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951,
+            0xC558DBdd856501FCd9aaF1E62eae57A9F0629a3c
+        );
+    }
+}
+
+/// Aave V3's pool on Arbitrum, with USDC.
+contract PoolOnArbitrumTest is PoolForkTest {
+    function _where() internal pure override returns (string memory, uint256, address, address) {
+        return (
+            "FORK_ARBITRUM_RPC_URL",
+            42161,
+            0x794a61358D6845594F94dc1DB02A252b5b4814aD,
+            0xaf88d065e77c8cC2239327C5EDb3A432268e5831
+        );
+    }
+}
+
+/// Aave V3's pool on BNB Chain, with USDC (18 decimals there).
+contract PoolOnBnbTest is PoolForkTest {
+    function _where() internal pure override returns (string memory, uint256, address, address) {
+        return (
+            "FORK_BNB_RPC_URL",
+            56,
+            0x6807dc923806fE8Fd134338EABCA509979a7e0cB,
+            0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d
+        );
+    }
+}
+
+/// Aave V3's pool on Base, with USDC.
+contract PoolOnBaseTest is PoolForkTest {
+    function _where() internal pure override returns (string memory, uint256, address, address) {
+        return (
+            "FORK_BASE_RPC_URL",
+            8453,
+            0xA238Dd80C259a72e81d7e4664a9801593F98d1c5,
+            0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+        );
     }
 }
