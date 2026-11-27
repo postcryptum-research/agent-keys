@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.38;
 
 import {TradingTest} from "./Trading.t.sol";
 import {MockToken, Counter} from "./AgentPermission.t.sol";

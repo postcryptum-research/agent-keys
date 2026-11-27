@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.38;
 
 import {ECDSA} from "solady/utils/ECDSA.sol";
 import {P256} from "solady/utils/P256.sol";

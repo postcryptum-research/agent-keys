@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.38;
 
 /// @title DemoCounter - a demo target for the agent
 /// @notice Demo target for the agent: the paper's "logger". It records who

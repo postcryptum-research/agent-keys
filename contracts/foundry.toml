@@ -9,6 +9,8 @@ solc = "0.8.38"
 # Pinned so bytecode and CREATE2 addresses are reproducible across machines and
 # chains (with bytecode_hash = none the address depends on source + solc). >= 0.8.34
 # avoids the 0.8.28-0.8.33 transient-storage codegen bug; see issue #123.
+# Every source file says `pragma solidity ^0.8.38;`: that is what a source
+# admits; this line says what is used.
 evm_version = "cancun"  # lowest common denominator with transient storage, for multi-chain; see #123
 # No metadata in bytecode: solc's metadata hash embeds compiler settings
 # (remappings included), so with it any config change would move every

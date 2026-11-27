@@ -34,6 +34,15 @@ missing from this page.
   `cbor_metadata = false`, so comments and paths do not move an address. Each
   file records the compiler settings its current instances were built with:
   `solc` 0.8.38 and `evmVersion` cancun [V `contracts/foundry.toml`].
+- **One version in every source file.** Every Solidity file of this
+  repository says `pragma solidity ^0.8.38;`, and every build is made with
+  the pinned compiler, 0.8.38. The pragma is what a source admits: with
+  `^0.8.38` it refuses by itself the compilers with the transient-storage
+  bug (0.8.28 to 0.8.33). The line is not in the bytecode: changing it from
+  `^0.8.24` moved no address and changed no contract's code [V
+  `scripts/source-record.sh`, 2026-11-27]. The instances deployed before
+  that change were built from commits whose files said `^0.8.24`, with the
+  same compiler; each is recorded with its commit, below.
 - **The current instances are built from one commit.** Every contract
   carries `string public constant VERSION`. Until the first audited release
   every contract stays at 0.1.0 and a fix is carried by a redeploy, not by

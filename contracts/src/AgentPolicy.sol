@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.38;
 
 import {IPolicy} from "kernel/src/interfaces/IERC7579Modules.sol";
 import {IERC7579Account} from "kernel/src/interfaces/IERC7579Account.sol";

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.38;
 
 /// @title VenueCalls - how a call the account is to make is named between a decoder and the policy
 /// @notice A decoder may judge a call the account makes now (a swap at a

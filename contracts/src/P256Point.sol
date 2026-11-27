@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.38;
 
 /// @title P256Point - the check that a public key is a point on NIST P-256
 /// @notice Whether `(x, y)` is a point on NIST P-256 (secp256r1).
