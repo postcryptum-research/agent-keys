@@ -43,10 +43,12 @@ const TOKENS: &[(u64, Address, &str, u8, B256)] = &[
 ];
 
 /// The current `AgentPolicy`, the same address on both chains: built from
-/// commit `e48b93e001f34f460bd4845d231b8e0ee5d26ad6`, with every feature of
+/// commit `b11adb7cf2dcb2660b4c93c81c62f8945e246706`, with every feature of
 /// the source (payee lists, x402, a budget per period, venues, limits per
-/// ERC-6909 id).
-const CURRENT_POLICY: Address = address!("530DD3C000b3939294072409834c4c4dd160BCd9");
+/// ERC-6909 id), and the first with a call a venue's decoder judged (a swap
+/// at a router, a call held to a rule for each argument): the kinds of venue
+/// that judge calls are known to this build only together with it.
+const CURRENT_POLICY: Address = address!("dA16ba0d5C8aC6D5599A444c1e1e3bCD6c97c0C6");
 
 /// The tokens of `TOKENS` that wrap their chain's native currency: the review
 /// reads `deposit()` and `withdraw(uint256)` there only (issue #213).
@@ -80,8 +82,7 @@ const TRADING_POLICIES: &[Address] = &[address!("2511FF556aa1534676A34F9B7152329
 /// entry here the review refuses a mandate with id limits on it.
 const ID_POLICIES: &[Address] = &[CURRENT_POLICY];
 
-/// `(chain, decoder, venue name, the decoder's code hash, the venue's own
-/// contract, who takes the sold tokens, that address's name)`. CoW Swap:
+/// The venues this build knows, each by its decoder's address and code. CoW Swap:
 /// the decoder built from `contracts/src/venues/CowSwapDecoder.sol` at
 /// commit `60e773be7c7f071a4e5a69f84e7af3697092a4ef`, at the same address
 /// on both chains. Its code differs by chain: the constructor stores the
@@ -119,6 +120,101 @@ const VENUES: &[(u64, VenueKind, Address, &str, B256, Address, Address, &str, &s
         address!("C92E8bdf79f0507f65a392b0ab4667716BFE0110"),
         "CoW Swap vault relayer",
         "cowSwapDecoder",
+    ),
+    // The four venues deployed on 2026-11-27 from commit
+    // `b11adb7cf2dcb2660b4c93c81c62f8945e246706`, on each chain: 1inch's
+    // limit orders, a swap at Uniswap's SwapRouter02, and calls held to
+    // rules at Aave V3's pool and at CCTP's messenger. Each hash is the
+    // decoder's code as read from the chain that day, and each venue and
+    // spender is what the decoder itself answers there (`venue()`,
+    // `spender()`).
+    (
+        84532,
+        VenueKind::OneInchLimitOrder,
+        address!("AD754dA240f27dCe0cF79F6d323e56d5C29D08E6"),
+        "1inch",
+        b256!("c92a126f6f7e1a4d7e23cb8ac0095583217cf70dee15ba725d437c9e1fb9f5e6"),
+        address!("111111125421cA6dc452d289314280a0f8842A65"),
+        address!("111111125421cA6dc452d289314280a0f8842A65"),
+        "1inch router",
+        "oneInchLimitOrderDecoder",
+    ),
+    (
+        84532,
+        VenueKind::SwapRouter02,
+        address!("B29a80662d989c1C0E73dB824cD82d5890e795bC"),
+        "Uniswap",
+        b256!("ab35fcf0ec7fadd6334fee76ca12de98089a679071f24088508a5f74da2e02bd"),
+        address!("94cC0AaC535CCDB3C01d6787D6413C739ae12bc4"),
+        address!("94cC0AaC535CCDB3C01d6787D6413C739ae12bc4"),
+        "Uniswap router",
+        "swapRouter02Decoder",
+    ),
+    (
+        84532,
+        VenueKind::CallRules,
+        address!("14b82e2cBF35926B6221d008e5A89DB1BD5D4887"),
+        "Aave V3 pool",
+        b256!("9573c5a426dc99b7897b4ea34e3657bf513e1efd8af85cde845c3bbd4325bf26"),
+        address!("8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27"),
+        address!("8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27"),
+        "Aave V3 pool",
+        "callRulesAaveV3Pool",
+    ),
+    (
+        84532,
+        VenueKind::CallRules,
+        address!("C5135aC6A911B692173F2626dD57ff1D80d16F62"),
+        "CCTP messenger",
+        b256!("225c3d4bd0bd706e394b6341124c19430e7e5ee807bd249e1687664a89aef79b"),
+        address!("8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA"),
+        address!("8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA"),
+        "CCTP messenger",
+        "callRulesCctpMessenger",
+    ),
+    (
+        11155111,
+        VenueKind::OneInchLimitOrder,
+        address!("AD754dA240f27dCe0cF79F6d323e56d5C29D08E6"),
+        "1inch",
+        b256!("8e3d50b49bd323ca9bb0cf19d4e520cae768b92cb895f07c8ca288321a3bbab5"),
+        address!("111111125421cA6dc452d289314280a0f8842A65"),
+        address!("111111125421cA6dc452d289314280a0f8842A65"),
+        "1inch router",
+        "oneInchLimitOrderDecoder",
+    ),
+    (
+        11155111,
+        VenueKind::SwapRouter02,
+        address!("6D7e83461cd295AEf006F9A76009b662d6b06b6b"),
+        "Uniswap",
+        b256!("2794dd3a9eb98177a134d50783f43a3ac9bbb643d7ab95310f7b1d532721613f"),
+        address!("3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E"),
+        address!("3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E"),
+        "Uniswap router",
+        "swapRouter02Decoder",
+    ),
+    (
+        11155111,
+        VenueKind::CallRules,
+        address!("112b620C87A7C4b9f53566dD422f20704140dbfe"),
+        "Aave V3 pool",
+        b256!("e4c94fa9fc749bc6946011db8711411432c433980b0116f9d170358337da8363"),
+        address!("6Ae43d3271ff6888e7Fc43Fd7321a503ff738951"),
+        address!("6Ae43d3271ff6888e7Fc43Fd7321a503ff738951"),
+        "Aave V3 pool",
+        "callRulesAaveV3Pool",
+    ),
+    (
+        11155111,
+        VenueKind::CallRules,
+        address!("C5135aC6A911B692173F2626dD57ff1D80d16F62"),
+        "CCTP messenger",
+        b256!("225c3d4bd0bd706e394b6341124c19430e7e5ee807bd249e1687664a89aef79b"),
+        address!("8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA"),
+        address!("8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA"),
+        "CCTP messenger",
+        "callRulesCctpMessenger",
     ),
 ];
 
@@ -249,6 +345,12 @@ const CONTRACTS: &[(&str, &str, bool)] = &[
     ("demoCounter", "demo counter", true),
     ("cowSwapDecoder", "CoW Swap order decoder", true),
     ("oneInchLimitOrderDecoder", "1inch limit order decoder", true),
+    ("swapRouter02Decoder", "Uniswap swap decoder", true),
+    // deployed, and not a venue this build reads: a mandate that names it is refused
+    ("seaportBidDecoder", "Seaport bid decoder", true),
+    // a decoder of rules is one per contract, each under a key of its own
+    ("callRulesAaveV3Pool", "Aave V3 pool rules decoder", false),
+    ("callRulesCctpMessenger", "CCTP messenger rules decoder", false),
     ("entryPoint", "EntryPoint v0.7", false),
 ];
 
@@ -321,7 +423,7 @@ mod tests {
     fn sepolia() {
         let f = for_chain(11155111);
         assert!(chains().contains(&11155111));
-        let policy = address!("530DD3C000b3939294072409834c4c4dd160BCd9");
+        let policy = address!("dA16ba0d5C8aC6D5599A444c1e1e3bCD6c97c0C6");
         assert_eq!(f.names[&policy], "AgentPolicy");
         assert_eq!((&f.policy_modules, &f.payee_policy_modules, &f.trading_policy_modules), (&vec![policy], &vec![policy], &vec![policy]));
         let first = address!("5Cfa68d42e4245c9Ba71e6103D4E2D99F3E40b42");
@@ -340,12 +442,18 @@ mod tests {
         for list in [&f.policy_modules, &f.payee_policy_modules, &f.trading_policy_modules, &f.id_policy_modules] {
             assert!(!list.contains(&fourth));
         }
+        // the instance of 2026-11-26, replaced by the one that also judges calls
+        let fifth = address!("530DD3C000b3939294072409834c4c4dd160BCd9");
+        assert_eq!(f.names[&fifth], "AgentPolicy v5 (superseded)");
+        for list in [&f.policy_modules, &f.payee_policy_modules, &f.trading_policy_modules, &f.id_policy_modules] {
+            assert!(!list.contains(&fifth));
+        }
         assert_eq!(f.signer_modules, vec![address!("d88d25Ca3e042A28893781935756ee90Bc2d2769")]);
         assert_eq!(f.entry_point, Some(address!("0000000071727De22E5E9d8BAf0edAc6f37da032")));
 
         let decoder = address!("42F62bF7134F5eF6d46d4BC07d806E77D1Df641a");
         let (settlement, relayer) = (address!("9008D19f58AAbD9eD0D60971565AA8510560ab41"), address!("C92E8bdf79f0507f65a392b0ab4667716BFE0110"));
-        assert_eq!(f.venues.len(), 1);
+        assert_eq!(f.venues.len(), 5, "CoW Swap, 1inch, Uniswap, Aave V3's pool and CCTP's messenger");
         let v = &f.venues[&decoder];
         assert_eq!((v.name.as_str(), v.place, v.spender), ("CoW Swap", settlement, relayer));
         assert_eq!(v.code_hash, b256!("e11511d23d679dd68a71be1cfd2d6714ba3fb10e077c4db6c4bf3fe96d21e47e"));
@@ -384,8 +492,8 @@ mod tests {
         assert!(for_chain(84532).wrapped_native.is_empty());
     }
 
-    /// The redeploys of 2026-11-25 and 2026-11-26 (the policy from
-    /// `e48b93e001f34f460bd4845d231b8e0ee5d26ad6`): on both
+    /// The redeploys of 2026-11-25 and 2026-11-27 (the policy from
+    /// `b11adb7cf2dcb2660b4c93c81c62f8945e246706`): on both
     /// chains the current policy is read with every feature, CoW's venue is
     /// known with that chain's decoder code, and each instance it replaced
     /// is named under its versioned key as superseded.
@@ -418,9 +526,65 @@ mod tests {
         // the decoder keeps the settlement's domain separator, which names the chain
         assert_ne!(hashes[0], hashes[1]);
 
+        // the venues of 2026-11-27: each known by its decoder, with its kind, its contract and its spender
+        let router = address!("111111125421cA6dc452d289314280a0f8842A65");
+        let messenger = address!("8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA");
+        for (chain, swap_decoder, swap_router, pool_decoder, pool) in [
+            (
+                84532,
+                address!("B29a80662d989c1C0E73dB824cD82d5890e795bC"),
+                address!("94cC0AaC535CCDB3C01d6787D6413C739ae12bc4"),
+                address!("14b82e2cBF35926B6221d008e5A89DB1BD5D4887"),
+                address!("8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27"),
+            ),
+            (
+                11155111,
+                address!("6D7e83461cd295AEf006F9A76009b662d6b06b6b"),
+                address!("3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E"),
+                address!("112b620C87A7C4b9f53566dD422f20704140dbfe"),
+                address!("6Ae43d3271ff6888e7Fc43Fd7321a503ff738951"),
+            ),
+        ] {
+            let f = for_chain(chain);
+            let known = |decoder: Address| {
+                let v = &f.venues[&decoder];
+                (v.name.clone(), v.kind, v.place, v.spender)
+            };
+            let limit = address!("AD754dA240f27dCe0cF79F6d323e56d5C29D08E6");
+            assert_eq!(known(limit), ("1inch".to_string(), VenueKind::OneInchLimitOrder, router, router), "{chain}");
+            assert_eq!(known(swap_decoder), ("Uniswap".to_string(), VenueKind::SwapRouter02, swap_router, swap_router), "{chain}");
+            assert_eq!(known(pool_decoder), ("Aave V3 pool".to_string(), VenueKind::CallRules, pool, pool), "{chain}");
+            let cctp = address!("C5135aC6A911B692173F2626dD57ff1D80d16F62");
+            assert_eq!(known(cctp), ("CCTP messenger".to_string(), VenueKind::CallRules, messenger, messenger), "{chain}");
+            for (addr, name) in [
+                (limit, "1inch limit order decoder"),
+                (swap_decoder, "Uniswap swap decoder"),
+                (pool_decoder, "Aave V3 pool rules decoder"),
+                (cctp, "CCTP messenger rules decoder"),
+                (router, "1inch router"),
+                (swap_router, "Uniswap router"),
+                (pool, "Aave V3 pool"),
+                (messenger, "CCTP messenger"),
+            ] {
+                assert_eq!(f.names[&addr], name, "{chain} {addr}");
+            }
+            // Seaport's bid decoder is deployed and named, and is no venue of this build
+            let seaport = address!("713165a6157a4B2952A775A9D1C9948D9a703128");
+            assert_eq!(f.names[&seaport], "Seaport bid decoder", "{chain}");
+            assert!(!f.venues.contains_key(&seaport), "{chain}");
+            assert_eq!(f.venues.len(), 5, "{chain}");
+        }
+        // one decoder's code is the same on both chains only where nothing in it names the chain
+        let code = |chain: u64, decoder: Address| for_chain(chain).venues[&decoder].code_hash;
+        let (limit, cctp) = (address!("AD754dA240f27dCe0cF79F6d323e56d5C29D08E6"), address!("C5135aC6A911B692173F2626dD57ff1D80d16F62"));
+        assert_ne!(code(84532, limit), code(11155111, limit), "1inch's domain separator names the chain");
+        assert_eq!(code(84532, cctp), code(11155111, cctp), "the messenger is at one address on both");
+
         // what the redeploy replaced keeps its address under the next versioned name
         let superseded = [
             (84532, address!("12b7E79974CC4F4181a40Aa11f9d3170018ae0E2"), "AgentPolicy v9 (superseded)"),
+            (84532, address!("530DD3C000b3939294072409834c4c4dd160BCd9"), "AgentPolicy v12 (superseded)"),
+            (11155111, address!("530DD3C000b3939294072409834c4c4dd160BCd9"), "AgentPolicy v5 (superseded)"),
             (84532, address!("dA4cd5c37a5B888826A7A9e09dF6A9033A1550c2"), "P256Validator v2 (superseded)"),
             (84532, address!("63dd80Fc5E109A44fd179F85050487E02c5e6958"), "P256RecoveryValidator v2 (superseded)"),
             (84532, address!("a19e6061b1C193573e5fe46c39363FfDd5CCA22E"), "P256Signer v2 (superseded)"),
@@ -455,6 +619,9 @@ mod tests {
             ("safeNonceAssertV1", "SafeNonceAssert v1 (superseded)"),
             ("demoCounterV1", "demo counter v1 (superseded)"),
             ("cowSwapDecoderV1", "CoW Swap order decoder v1 (superseded)"),
+            ("oneInchLimitOrderDecoderV1", "1inch limit order decoder v1 (superseded)"),
+            ("swapRouter02DecoderV1", "Uniswap swap decoder v1 (superseded)"),
+            ("seaportBidDecoderV1", "Seaport bid decoder v1 (superseded)"),
             ("whitelistPaymasterV2", "WhitelistPaymaster v2 (superseded)"),
             ("p256ValidatorV2", "P256Validator v2 (superseded)"),
             ("p256SignerV2", "P256Signer v2 (superseded)"),
@@ -468,8 +635,12 @@ mod tests {
         assert_eq!(contract_name("agentPolicyV"), None);
         assert_eq!(contract_name("agentPolicyVx"), None);
         assert_eq!(contract_name("usdcV2"), None);
+        // a decoder of rules has a key of its own and no versions under it; another contract's rules are not named
+        assert_eq!(contract_name("callRulesAaveV3Pool"), Some(("Aave V3 pool rules decoder".to_string(), false)));
+        assert_eq!(contract_name("callRulesAaveV3PoolV1"), None);
+        assert_eq!(contract_name("callRulesSomethingElse"), None);
         // the names a laptop's pin may not carry
-        for reserved in ["AgentPolicy", "agentpolicy", " P256Validator ", "P256Validator v1", "AgentPolicy v6 (superseded)", "demo counter", "USDC", "EntryPoint", "EntryPoint v0.7"] {
+        for reserved in ["AgentPolicy", "agentpolicy", " P256Validator ", "P256Validator v1", "AgentPolicy v6 (superseded)", "demo counter", "USDC", "EntryPoint", "EntryPoint v0.7", "1inch router", "Uniswap router", "Aave V3 pool", "CCTP messenger", "Seaport bid decoder"] {
             assert!(is_build_name(reserved), "{reserved:?}");
         }
         for free in ["policy module (config)", "my vault", "AgentPolicy2", "paymaster (config)", "counter"] {
@@ -480,7 +651,7 @@ mod tests {
     #[test]
     fn base_sepolia() {
         let f = for_chain(84532);
-        let policy = address!("530DD3C000b3939294072409834c4c4dd160BCd9");
+        let policy = address!("dA16ba0d5C8aC6D5599A444c1e1e3bCD6c97c0C6");
         let signer = address!("d88d25Ca3e042A28893781935756ee90Bc2d2769");
         assert_eq!(f.names[&policy], "AgentPolicy");
         assert_eq!((&f.policy_modules, &f.signer_modules), (&vec![policy], &vec![signer]), "the current policy and signer only, each in its slot");
@@ -511,6 +682,12 @@ mod tests {
         assert_eq!(f.names[&v11], "AgentPolicy v11 (superseded)");
         for list in [&f.policy_modules, &f.payee_policy_modules, &f.trading_policy_modules, &f.id_policy_modules] {
             assert!(!list.contains(&v11));
+        }
+        // the instance of e48b93e, replaced by the one that also judges calls: named, and read by nothing
+        let v12 = address!("530DD3C000b3939294072409834c4c4dd160BCd9");
+        assert_eq!(f.names[&v12], "AgentPolicy v12 (superseded)");
+        for list in [&f.policy_modules, &f.payee_policy_modules, &f.trading_policy_modules, &f.id_policy_modules] {
+            assert!(!list.contains(&v12));
         }
         assert_eq!(f.payee_policy_modules, vec![policy]);
         assert_eq!(f.names[&address!("68544284bfDbbd6bDB9F6A1D80D05C387015daA9")], "P256Signer v1 (superseded)");

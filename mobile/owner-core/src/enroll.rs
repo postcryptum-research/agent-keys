@@ -393,7 +393,7 @@ mod tests {
 
     #[test]
     fn laptop_pins_travel_checked_and_split_by_what_the_build_knows() {
-        let known = address!("530DD3C000b3939294072409834c4c4dd160BCd9"); // AgentPolicy on Base Sepolia
+        let known = address!("dA16ba0d5C8aC6D5599A444c1e1e3bCD6c97c0C6"); // AgentPolicy on Base Sepolia
         let unknown = address!("05a97329397200dF8795A882da0b5b1aD894EB97");
         let with = |pins: Vec<(Address, &str)>, label: &str| {
             EnrollRequest::new(84532, known, unknown, label, B256::ZERO, 2_000_000_000)
