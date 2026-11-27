@@ -27,6 +27,7 @@ Legend: **[V]** — verified by reading the code (file:line), **[I]** — infere
 > commits, plus a hermetic test that runs the full solution loop with a Kernel-owned Safe (patch 0004) item 9, readers that bind Safe calls inside `EntryPoint.handleOps` (patch 0005), item 8, the agent's direct ERC-8004 calls through agent-signer (patch 0006), item 7, CLI verbs on the Kernel (patch 0007), item 10, the keystore EOA as a pure attestation key (patch 0008), and `jinn signer-migrate`, the one-step handover of an existing operator (patch 0009), on `next` `151a464aa` — [`patches/`](patches/), described in [`README.md`](README.md#integrating-into-jinn-the-patch-series-first-version).
 > The §5 "side finding" is confirmed and fixed there (patch 0001).
 > The "no on-chain authority" of §4 option 2 covers the Safe's modules as well as its owners: while the keystore EOA is an enabled module of the Safe the daemon does not boot and the migration hands nothing over, and every other enabled module is reported to the operator (patch 0010; the internal audit of 2026-11-28, finding AK-2026-11-28-02).
+> In the migration the Safe's standing approval on the IdentityRegistry (`setApprovalForAll(Safe, true)`) is the owner's root operation: the migration reads it and never sends it with the agent's permission, since `AgentPolicy` refuses an operator grant that the agent leaves open. The Kernel's agent key signs, under its mandate (the attestation key of item 10), before the Safe changes hands (patch 0011; the internal audit of 2026-11-28, finding AK-2026-11-28-03).
 
 ---
 
