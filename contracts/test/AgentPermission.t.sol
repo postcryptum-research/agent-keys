@@ -1822,6 +1822,114 @@ contract AgentPermissionTest is Test {
         assertEq(_spent(AGENT_ID), GAS_PER_OP);
     }
 
+    /// The EntryPoint takes the paymaster from the field's first twenty
+    /// bytes, not from the field's length. A field of 52 bytes that names the
+    /// zero address is "no paymaster" to it: the account pays, the field's
+    /// two gas limits included. The policy used to count gas for an empty
+    /// field only, so such an operation ran uncounted: with a large
+    /// `preVerificationGas` the account paid more than its whole native
+    /// budget to the beneficiary that the caller of `handleOps` named, and
+    /// `spent` stayed 0 (#244, the internal audit of 2026-11-28, finding
+    /// AK-2026-11-28-01). Refused now, with nothing paid.
+    function test_gas_aPaymasterFieldThatNamesNoPaymasterIsRefused() public {
+        address payable beneficiary = payable(makeAddr("beneficiary"));
+        // the account can pay it: a refusal below is the policy's, not a lack of funds
+        vm.deal(acct, 10 ether);
+        // 300,000,000 gas at 1 gwei is 0.3 ether, over the budget of 0.25
+        uint256 preVerificationGas = 300_000_000;
+        assertGt(preVerificationGas * 1 gwei, BUDGET);
+
+        // the control: an empty field, the account pays, the gas is counted and is over the budget
+        _expectRefusedPaying(_agentOpPaying(preVerificationGas, ""), beneficiary);
+
+        uint256 funds = acct.balance + entryPoint.balanceOf(acct);
+        bytes[3] memory fields = [
+            // the zero address and no paymaster gas
+            abi.encodePacked(address(0), uint128(0), uint128(0)),
+            // the zero address with paymaster gas limits, which the EntryPoint adds to the account's prefund
+            abi.encodePacked(address(0), uint128(500_000), uint128(500_000)),
+            // and with data after the fixed part
+            abi.encodePacked(address(0), uint128(0), uint128(0), bytes32(uint256(1)))
+        ];
+        for (uint256 i; i < fields.length; i++) {
+            _expectRefusedPaying(_agentOpPaying(preVerificationGas, fields[i]), beneficiary);
+            // with an ordinary gas figure too: the field is refused, not the amount
+            _expectRefusedPaying(_agentOpPaying(100_000, fields[i]), beneficiary);
+            assertEq(_policyVerdict(_incrementCall(), fields[i]), 1, "the refusal is the policy's");
+        }
+        assertEq(counter.count(), 0, "nothing ran");
+        assertEq(_spent(AGENT_ID), 0);
+        assertEq(acct.balance + entryPoint.balanceOf(acct), funds, "the account paid nothing");
+        assertEq(beneficiary.balance, 0, "and the beneficiary received nothing");
+    }
+
+    /// A field shorter than a paymaster's 52 fixed bytes names no paymaster
+    /// either. The EntryPoint refuses such an operation itself; the policy
+    /// does not rest on that.
+    function test_gas_aPaymasterFieldShorterThanItsFixedPartIsRefused() public {
+        bytes memory whole = abi.encodePacked(address(0xbeef), uint128(1), uint128(1));
+        for (uint256 length = 1; length < 52; length++) {
+            bytes memory field = new bytes(length);
+            for (uint256 i; i < length; i++) field[i] = whole[i];
+            uint256 snap = vm.snapshotState();
+            assertEq(_policyVerdict(_incrementCall(), field), 1, "a cut field");
+            vm.revertToState(snap);
+        }
+        // the whole field names a paymaster: the policy passes the operation and counts no gas for the account
+        assertTrue(_policyVerdict(_incrementCall(), whole) != 1, "a paymaster's field");
+        assertEq(_spent(AGENT_ID), 0);
+    }
+
+    /// For any paymaster field. An operation the policy passes has an empty
+    /// field, and then its gas is counted for the account; or it names a
+    /// paymaster as the EntryPoint unpacks one (52 bytes or more, an address
+    /// that is not zero), and then nothing is counted because the account
+    /// pays nothing. Every other field is refused.
+    function testFuzz_gas_whoPaysIsWhatTheEntryPointReads(bytes memory field, bool zeroed) public {
+        // random bytes seldom start with twenty zeros: make half of the runs do
+        if (zeroed) for (uint256 i; i < field.length && i < 20; i++) field[i] = 0;
+        address paymaster;
+        if (field.length >= 20) {
+            assembly ("memory-safe") {
+                paymaster := shr(96, mload(add(field, 32)))
+            }
+        }
+        bool namesAPaymaster = field.length >= 52 && paymaster != address(0);
+        uint256 verdict = _policyVerdict(_incrementCall(), field);
+        if (field.length == 0) {
+            assertTrue(verdict != 1, "an empty field passes");
+            assertEq(_spent(AGENT_ID), GAS_PER_OP, "and the account's gas is counted");
+        } else if (namesAPaymaster) {
+            assertTrue(verdict != 1, "a paymaster's field passes");
+            assertEq(_spent(AGENT_ID), 0, "and nothing is counted for the account");
+        } else {
+            assertEq(verdict, 1, "a field that names no paymaster is refused");
+        }
+    }
+
+    function _incrementCall() internal view returns (bytes memory) {
+        return _singleCall(address(counter), 0, abi.encodeWithSelector(Counter.increment.selector));
+    }
+
+    /// An agent's call of the counter with the gas figure and the paymaster field under test.
+    function _agentOpPaying(uint256 preVerificationGas, bytes memory paymasterAndData)
+        internal
+        view
+        returns (PackedUserOperation memory op)
+    {
+        op = _op(_permissionNonce(AGENT_ID), _incrementCall());
+        op.preVerificationGas = preVerificationGas;
+        op.paymasterAndData = paymasterAndData;
+        op.signature = abi.encodePacked(bytes1(0xff), _sign(AGENT, entryPoint.getUserOpHash(op)));
+    }
+
+    function _expectRefusedPaying(PackedUserOperation memory op, address payable beneficiary) internal {
+        PackedUserOperation[] memory ops = new PackedUserOperation[](1);
+        ops[0] = op;
+        vm.expectRevert();
+        entryPoint.handleOps(ops, beneficiary);
+    }
+
     /// F4: a Safe transaction outside the nonce-guarded pair is refused, and
     /// a replay of a guarded one cannot execute twice.
     function test_safe_unguardedIsRefused() public {
@@ -2819,6 +2927,120 @@ contract AgentPermissionTest is Test {
         token.approve(acct, 1 ether);
         _send(_payeeOp(address(token), abi.encodeCall(MockToken.transferFrom, (STRANGER, PAYEE_2, 1 ether))));
         assertEq(token.balanceOf(PAYEE_2), 1 ether);
+    }
+
+    // --- `transferFrom` and its source (#247: the internal audit of 2026-11-28, finding AK-2026-11-28-04) ---
+
+    PermissionId internal constant PULL_ID = PermissionId.wrap(0x70756c6c); // "pull"
+
+    /// A Safe of the account's, and a mandate that lists `transferFrom` on
+    /// the token, for a direct call and for a call inside a Safe transaction:
+    /// with PAYEE as the token's only payee, or with no payee list.
+    function _withTransferFrom(bool listed) internal returns (Safe safe) {
+        address[] memory owners = new address[](1);
+        owners[0] = acct;
+        bytes memory setup =
+            abi.encodeCall(Safe.setup, (owners, 1, address(0), "", address(0), address(0), 0, payable(address(0))));
+        safe = Safe(payable(address(new SafeProxyFactory().createProxyWithNonce(address(new Safe()), setup, 0))));
+        address[] memory targets = new address[](2);
+        bytes4[] memory selectors = new bytes4[](2);
+        (targets[0], selectors[0]) = (address(safe), Safe.execTransaction.selector);
+        (targets[1], selectors[1]) = (address(token), MockToken.transferFrom.selector);
+        bytes memory params;
+        if (listed) {
+            AgentPolicy.TokenPayees[] memory lists = new AgentPolicy.TokenPayees[](1);
+            lists[0] = _list(address(token), PAYEE, address(0));
+            params = abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, _tokenCaps(), uint48(0), lists);
+        } else {
+            params = abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, _tokenCaps(), uint48(0));
+        }
+        bytes[] memory entries = new bytes[](2);
+        entries[0] = abi.encodePacked(bytes2(0), address(policy), params);
+        entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(agentX, agentY));
+        ValidationId vId = ValidatorLib.permissionToIdentifier(PULL_ID);
+        Execution[] memory batch = new Execution[](2);
+        batch[0] = Execution(acct, 0, _installCall(vId, Kernel(payable(acct)).currentNonce(), abi.encode(entries)));
+        batch[1] = Execution(acct, 0, abi.encodeCall(Kernel.grantAccess, (vId, Kernel.execute.selector, true)));
+        _send(
+            _rootOp(
+                abi.encodeWithSelector(
+                    Kernel.execute.selector, ExecMode.wrap(bytes32(CallType.unwrap(CALLTYPE_BATCH))), ExecLib.encodeBatch(batch)
+                )
+            )
+        );
+    }
+
+    /// `transferFrom(from, to, amount)` by a direct call of the account.
+    function _pull(address from, address to, uint256 amount) internal view returns (PackedUserOperation memory) {
+        return _agentOpWith(AGENT, PULL_ID, address(token), 0, abi.encodeCall(MockToken.transferFrom, (from, to, amount)));
+    }
+
+    /// The same call inside a Safe transaction, after the nonce assertion.
+    function _pullViaSafe(Safe safe, address from, address to, uint256 amount)
+        internal
+        view
+        returns (PackedUserOperation memory)
+    {
+        bytes memory inner = abi.encodeCall(MockToken.transferFrom, (from, to, amount));
+        Execution[] memory calls = new Execution[](2);
+        calls[0] = Execution(address(nonceAssert), 0, abi.encodeCall(SafeNonceAssert.check, (address(safe), safe.nonce())));
+        calls[1] = Execution(address(safe), 0, _safeExec(safe, address(token), 0, inner, Enum.Operation.Call, 0));
+        return _agentBatchWith(AGENT, PULL_ID, calls);
+    }
+
+    /// The policy holds `transferFrom` by its amount and its recipient, and
+    /// does not judge its source. A mandate that lists it hands the agent
+    /// what others approved to the account, and inside a Safe transaction
+    /// what others approved to the Safe: within the token's cap and budget,
+    /// and to its payees where it has a list. An owner reads this in
+    /// docs/AGENT_CONFIG.md and docs/CONTRACTS.md. Held here for both
+    /// contexts and both kinds of payee list.
+    function test_token_transferFromMovesWhatOthersApproved() public {
+        for (uint256 listed; listed < 2; listed++) {
+            uint256 snap = vm.snapshotState();
+            _transferFromInBothContexts(listed == 1);
+            vm.revertToState(snap);
+        }
+    }
+
+    function _transferFromInBothContexts(bool listed) internal {
+        Safe safe = _withTransferFrom(listed);
+        address third = makeAddr("a third party");
+        token.mint(third, 100 ether);
+        vm.startPrank(third);
+        token.approve(acct, 50 ether);
+        token.approve(address(safe), 50 ether);
+        vm.stopPrank();
+        uint256 own = token.balanceOf(acct);
+        uint256 spentBefore = policy.tokenLimit(acct, bytes32(PermissionId.unwrap(PULL_ID)), address(token)).spent;
+
+        // by a direct call: what the third party approved to the account
+        _send(_pull(third, PAYEE, 2 ether));
+        // inside a Safe transaction: what it approved to the Safe
+        _send(_pullViaSafe(safe, third, PAYEE, 3 ether));
+        assertEq(token.balanceOf(PAYEE), 5 ether);
+        assertEq(token.balanceOf(third), 95 ether, "the third party's tokens moved");
+        assertEq(token.balanceOf(acct), own, "not the account's");
+        assertEq(token.balanceOf(address(safe)), 0, "and not the Safe's");
+        // each is charged to the token's budget like a transfer
+        assertEq(
+            policy.tokenLimit(acct, bytes32(PermissionId.unwrap(PULL_ID)), address(token)).spent, spentBefore + 5 ether
+        );
+
+        // the cap per operation holds in both contexts
+        _expectRefused(_pull(third, PAYEE, TOKEN_MAX + 1));
+        _expectRefused(_pullViaSafe(safe, third, PAYEE, TOKEN_MAX + 1));
+
+        // the recipient: a listed payee only, where the token has a list
+        if (listed) {
+            _expectRefused(_pull(third, STRANGER, 1 ether));
+            _expectRefused(_pullViaSafe(safe, third, STRANGER, 1 ether));
+            assertEq(token.balanceOf(STRANGER), 0);
+        } else {
+            _send(_pull(third, STRANGER, 1 ether));
+            _send(_pullViaSafe(safe, third, STRANGER, 1 ether));
+            assertEq(token.balanceOf(STRANGER), 2 ether);
+        }
     }
 
     /// A token reads the low 160 bits of an address word. The same word must

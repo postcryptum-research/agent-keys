@@ -357,7 +357,14 @@ which refuses the operation all the same [I].
   legs included, is at most `maxValuePerOp`, and is charged to `budget`
   together with the gas the account pays for itself (the EntryPoint's
   prefund, when there is no paymaster) (`test_agent_valueCapAndBudget`,
-  `test_gas_selfPaidCountsAgainstBudget`).
+  `test_gas_selfPaidCountsAgainstBudget`). Who pays is read as the
+  EntryPoint reads it, by the address in the paymaster field and not by
+  the field's length: an empty field means the account, and its gas is
+  counted; a field that names no paymaster (shorter than its 52 fixed
+  bytes, or the zero address) is refused, because the EntryPoint would
+  take that operation's prefund from the account with nothing counted
+  (#244; `test_gas_aPaymasterFieldThatNamesNoPaymasterIsRefused`,
+  `test_gas_aPaymasterFieldShorterThanItsFixedPartIsRefused`).
 - *Tokens.* `transfer`, `transferFrom`, `approve` and `increaseAllowance`
   of a token need a limit. Their amounts, summed over the operation's
   calls with x402 registrations and orders, are at most the token's
@@ -370,6 +377,13 @@ which refuses the operation all the same [I].
   the four go to a token with a limit only: such an entry on any other
   target would be refused at every operation, so install refuses the
   mandate (#175, `test_probe2_installRefusesAMeteredFunctionWithoutALimit`).
+  `transferFrom(from, to, amount)` is held by its amount and its recipient;
+  its source is not judged. A mandate that lists it lets the agent move
+  what others approved to the account, and inside a Safe transaction what
+  others approved to the Safe, within the token's limits and to its payees
+  (#247; `test_token_transferFromMovesWhatOthersApproved`). ERC-6909's
+  `transferFrom(sender, receiver, id, amount)` is held the same way: by
+  the id's limits, not by its sender.
   ERC-721's `approve(to, tokenId)` and `transferFrom` carry the ERC-20
   selectors, so on an NFT contract they are metered functions and need a
   limit, which an NFT contract does not meaningfully have: they cannot be
@@ -393,9 +407,9 @@ which refuses the operation all the same [I].
   payee list and no x402: the agent picks the receiver and the spender.
   An id's limit is kept as a token's, under a key made of the contract
   and the id (the low 160 bits of a tagged hash; `idAsset`). The
-  contract's runtime size is 24,376 bytes of the 24,576 a
+  contract's runtime size is 24,437 bytes of the 24,576 a
   contract may have, with the calls through a decoder (below) in it
-  [V `forge build --sizes`, 2026-11-26]: the next change has 200 bytes
+  [V `forge build --sizes`, 2026-11-27]: the next change has 139 bytes
   ([#224](https://github.com/postcryptum-research/agent-keys/issues/224)).
   An approval is charged like a transfer; what the spender later pulls is
   not seen.
