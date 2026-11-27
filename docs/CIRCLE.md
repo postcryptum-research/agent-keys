@@ -32,7 +32,8 @@ one balance.
 address is the account's there only if the account exists, or can be
 created, at it. An account has the same address on every chain where the
 contracts are at the same addresses and it is created from the same keys
-and first mandate [V: the first Arc account has the address
+and first mandate, or from the same owner key alone with `ownerKeyOnly`
+([`AGENT_CONFIG.md`](AGENT_CONFIG.md)) [V: the first Arc account has the address
 `0xae7b1a3f214d27C55129896CD92B742C311C8BC8` on Arc testnet and on Base
 Sepolia, where it was created on 2026-11-27].
 
