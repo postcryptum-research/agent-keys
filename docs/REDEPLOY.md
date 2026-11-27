@@ -8,14 +8,19 @@ Sepolia (11155111). What is deployed where, with every earlier instance:
 
 ## When
 
-- **Before the first audited release**, a fix to a contract is carried by a
-  redeploy. Every contract keeps `VERSION` 0.1.0 until that release (house
-  rule 9 in `CLAUDE.md`), so the commit an instance was built from is what
-  tells two instances apart, and `DEPLOYMENTS.md` names it (house rule 3).
-  Only test networks are deployed to.
-- **From the first audited release on**, only an audited release tag goes to
-  a mainnet (house rule 3), and a change to a contract's bytecode raises its
-  `VERSION` (house rule 9).
+- **In development**, before the first external audit or mainnet
+  deployment, a fix to a contract is carried by the next redeploy, which
+  gathers what changed since the last one: a redeploy is not made for each
+  fix. Until it is made, `DEPLOYMENTS.md` says what the deployed instances
+  lack. Every contract keeps `VERSION` 0.1.0 (house rule 9 in
+  `CLAUDE.md`), so the commit an instance was built from is what tells two
+  instances apart, and `DEPLOYMENTS.md` names it (house rule 3). Only test
+  networks are deployed to.
+- **From the first tag on** (the commit given to the first external audit,
+  or deployed first to a mainnet), a change to a contract's bytecode raises
+  its `VERSION` (house rule 9), and only an audited release tag goes to a
+  mainnet (house rule 3). How a deployment on a mainnet answers a finding
+  is a matter of its own (#253).
 
 ## Before the broadcast
 

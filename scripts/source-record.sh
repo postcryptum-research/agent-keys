@@ -138,7 +138,7 @@ if [ "$failed" = 1 ]; then
   exit 1
 fi
 if [ "${kept:-0}" = 1 ]; then
-  echo "No release tag yet: every contract stays at 0.1.0, and the test networks are redeployed to carry a fix (rule 9)."
+  echo "No release tag yet: every contract stays at 0.1.0, and a fix waits for the next redeploy of the test networks (rule 9)."
 else
   echo "Every contract whose bytecode differs has a new VERSION, or its key changed in a deployments file."
 fi
