@@ -28,11 +28,12 @@ ignored_warnings_from = ["lib"]
 # depends on it.
 isolate = false
 
-# RIP-7212 P-256 precompile at 0x100 — live on Base / OP-Stack chains and
-# enabled locally in forge/anvil by the `odyssey` flag. Without it the Solady
-# verifier falls back to a deployed verifier contract (absent locally) and
-# every P-256 check fails closed.
-odyssey = true
+# The P-256 precompile at 0x100 (RIP-7212, EIP-7951) comes with the Osaka
+# rules: run the tests as `forge test --evm-version osaka` (forge 1.8 or
+# later). Without it the Solady verifier falls back to a deployed verifier
+# contract (absent locally) and every P-256 check fails closed. Earlier forge
+# versions took the precompile from an `odyssey` key here; forge no longer
+# knows that key and warned about it on every run, so it is gone.
 
 remappings = [
     "forge-std/=lib/forge-std/src/",

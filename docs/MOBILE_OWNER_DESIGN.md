@@ -1129,9 +1129,9 @@ not written.
    the phone, one root operation, then the recovery drill back to a
    non-phone key.
 
-Note for the "Start here" step in the plan: with forge 1.8.x, `odyssey` in
-`foundry.toml` is ignored, so `forge test` must be run as
-`forge test --evm-version osaka`. The anvil harness already copes with
+Note for the "Start here" step in the plan: `forge test` is run as
+`forge test --evm-version osaka` (forge 1.8 or later; the P-256 precompile
+comes with Osaka). The anvil harness already copes with
 both (V, `anvil_cli.rs`).
 
 ## 10. Threat model

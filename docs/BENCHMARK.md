@@ -18,7 +18,7 @@ validation path and a real paymaster.
 
 ## Results (execution gas, warm, forge local)
 
-`forge test --match-contract GasBenchmark -vv` → `contracts/benchmarks/gas.json`
+`forge test --evm-version osaka --match-contract GasBenchmark -vv` → `contracts/benchmarks/gas.json`
 
 | payload | address-only | k1 signature | p256 signature | p256 agent + paymaster |
 |---:|---:|---:|---:|---:|
@@ -107,10 +107,10 @@ around the measured execution.
 
 ```sh
 cd contracts
-forge test --match-contract GasBenchmark -vv
+forge test --evm-version osaka --match-contract GasBenchmark -vv
 cat benchmarks/gas.json
 ```
 
 The benchmark deploys the real EntryPoint v0.7 bytecode, Kernel v3.3, the
-three modules and the paymaster locally; `odyssey = true` in `foundry.toml`
-provides the RIP-7212 precompile.
+three modules and the paymaster locally; `--evm-version osaka` provides the
+P-256 precompile (RIP-7212).

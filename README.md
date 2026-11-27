@@ -119,7 +119,7 @@ cargo test -p agent-signer --features insecure-software-keys --test anvil_cli
 cd ../contracts && forge test --evm-version osaka
 ```
 
-An older Foundry runs plain `forge test`: the config enables the precompile there with `odyssey = true`.
+Foundry 1.8 or later: the P-256 precompile the tests need comes with the Osaka rules.
 
 Linux with a TPM, the `vector` command and the other platforms:
 [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md#quick-start).
