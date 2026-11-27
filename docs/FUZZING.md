@@ -389,6 +389,17 @@ somebody else and a borrow are refused, and two tests show on the pool's
 own code why the rules are what they are (the pool credits whoever the
 caller names; it takes a supply from its caller only).
 
+**Against Aave's pools on five more networks.** The same four tests run on
+forks of Ethereum, BNB Chain, Sepolia, Arbitrum and Base, each against
+that chain's pool (`PoolOnEthereumTest`, `PoolOnBnbTest`,
+`PoolOnSepoliaTest`, `PoolOnArbitrumTest`, `PoolOnBaseTest`; the pools'
+addresses are in [`docs/DAPPS.md`](DAPPS.md)). Run on 2026-11-27: 24 of 24
+pass over the six pools. The first run on Sepolia failed two tests with
+the pool's test USDC: that reserve is above its supply cap, and the pool
+refuses a supply of it from anyone; the test uses the pool's test WETH
+there. One asset and two functions on each network, at one block of a
+fork; nothing was sent to a chain.
+
 ```sh
 cd contracts
 FORK_BASE_SEPOLIA_RPC_URL=<a Base Sepolia RPC> \
