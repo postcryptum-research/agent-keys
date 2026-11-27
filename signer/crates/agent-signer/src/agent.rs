@@ -522,6 +522,13 @@ pub struct AgentConfig {
     /// [`AgentConfig::pre_verification_factor`].
     #[serde(default)]
     pub bundler_pre_verification_factor: Option<u64>,
+    /// `true`: the account is created from the owner's key alone, and its
+    /// first mandate is the owner's first root operation (#251, decision 3).
+    /// Its address then depends on the owner's key and the deployed contracts
+    /// only, whatever its mandates. Absent or `false`: the account is created
+    /// with this config's mandate already in it, as before, so that a config
+    /// written earlier still derives the same address.
+    pub owner_key_only: Option<bool>,
     pub policy: PolicyConfig,
 }
 
@@ -593,6 +600,11 @@ impl AgentConfig {
     }
 
     /// Hex number (`0x0`, `0x1`, …), right-aligned into 32 bytes.
+    /// Whether the account is created from the owner's key alone (`ownerKeyOnly`).
+    pub fn owner_key_only(&self) -> bool {
+        self.owner_key_only.unwrap_or(false)
+    }
+
     pub fn salt(&self) -> Result<B256> {
         match &self.salt {
             None => Ok(B256::ZERO),

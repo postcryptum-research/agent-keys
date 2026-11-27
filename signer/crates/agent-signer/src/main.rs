@@ -696,6 +696,13 @@ enum AccountCmd {
         #[command(flatten)]
         agent: AgentArgs,
     },
+    /// Create the account with a plain call of the factory, from the gas
+    /// wallet. For an account made from the owner's key alone (`ownerKeyOnly`):
+    /// the owner then installs the first mandate (`permission add`).
+    Create {
+        #[command(flatten)]
+        agent: AgentArgs,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1495,6 +1502,11 @@ async fn run() -> Result<()> {
                 let tx = s.fund(amount).await?;
                 println!("funded {} with {amount} wei: tx {tx}", s.account);
             }
+            AccountCmd::Create { agent } => {
+                let s = session(&agent).await?;
+                let tx = s.create().await?;
+                println!("created {}: tx {tx}", s.account);
+            }
             AccountCmd::InitData { agent } => {
                 let s = session(&agent).await?;
                 println!("account:  {}", s.account);
@@ -1708,7 +1720,10 @@ async fn run() -> Result<()> {
             PermissionCmd::Show { agent } => session(&agent).await?.permission_show().await?,
             PermissionCmd::Add { agent, sponsored, dry_run } => {
                 let s = session(&agent).await?;
-                if !s.pinned {
+                // An unpinned config derives the account from its mandate, which
+                // then is not the account's: pin it first. An account made from
+                // the owner's key alone is derived from that key only.
+                if !s.pinned && !s.cfg.owner_key_only() {
                     bail!("pin the deployed account in the config (\"account\": \"0x…\") before adding a permission");
                 }
                 if dry_run {
@@ -1735,7 +1750,10 @@ async fn run() -> Result<()> {
             PermissionCmd::Rotate { agent, old_id, old_config, sponsored, dry_run } => {
                 let old = old_config.as_deref().map(AgentConfig::load).transpose()?.map(|c| c.0);
                 let s = session(&agent).await?;
-                if !s.pinned {
+                // An unpinned config derives the account from its mandate, which
+                // then is not the account's: pin it first. An account made from
+                // the owner's key alone is derived from that key only.
+                if !s.pinned && !s.cfg.owner_key_only() {
                     bail!("pin the deployed account in the config (\"account\": \"0x…\") before rotating");
                 }
                 if dry_run {

@@ -63,6 +63,18 @@ $B demo           --agent $A --env-file $E   # first op deploys the account
 $B op send --agent $A --env-file $E --target 0x... --data 0x...   # anything the mandate allows
 ```
 
+With `"ownerKeyOnly": true` in the config the account is created from the
+owner's key alone, so its address does not depend on the mandate; then the
+account is created first and the owner installs the first mandate before
+the agent's first operation:
+
+```sh
+$B account fund     --agent $A --env-file $E --wei 2000000000000000
+$B account create   --agent $A --env-file $E   # a plain call of the factory, from the gas wallet
+$B permission add   --agent $A --env-file $E   # the owner's first operation, or from the phone
+$B demo             --agent $A --env-file $E
+```
+
 `account fund` simulates `createAccount` first and refuses to send ETH to an
 address that could never be deployed. It reports the transfer as done only
 when the chain says it ran: a transaction that was included and reverted is

@@ -360,6 +360,24 @@ pub fn init_data(
     .into()
 }
 
+/// `Kernel.initialize(...)` calldata with the owner key as root and nothing
+/// else (#251, decision 3). The account's address then follows from the
+/// owner's key, the factory, the Kernel implementation and the root
+/// validator alone, the same on every chain where those are at the same
+/// addresses, whatever mandate the account receives later. The first
+/// mandate is the owner's first root operation.
+pub fn init_data_owner_key_only(validator: Address, owner_key: &PublicKey) -> Bytes {
+    IKernel::initializeCall {
+        rootValidator: validator_id(validator),
+        hook: Address::ZERO,
+        validatorData: encode_pubkey(owner_key),
+        hookData: Bytes::new(),
+        initConfig: vec![],
+    }
+    .abi_encode()
+    .into()
+}
+
 /// `execute(batch/default, abi.encode(Execution[]))` — several calls in one
 /// operation; self-calls let a root operation reconfigure the account.
 pub fn execute_batch_calldata(calls: Vec<(Address, U256, Bytes)>) -> Bytes {

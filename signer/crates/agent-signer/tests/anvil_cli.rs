@@ -4609,3 +4609,64 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
     // the generator reaches each side's yes and no, and the one-way difference between them
     assert!(both * 7 >= cases && neither * 5 >= cases && chain_only * 100 >= cases, "the generator has drifted: {both} / {chain_only} / {neither}");
 }
+
+/// An account created from the owner's key alone (`ownerKeyOnly`, #251
+/// decision 3): its address does not depend on the mandate; the agent is
+/// refused, with the owner's two steps named, until the account exists and
+/// has a mandate; `account create` and `permission add` give it one. The
+/// owner's `permission add` before `account create` is refused too.
+#[test]
+fn owner_key_only_account() {
+    let chain = chain_or_skip!("ownerkeyonly");
+    let (owner, agent) = (key(1), key(2));
+    let counter = chain.addr("demoCounter");
+    let until = far_future(&chain);
+    let with = |name: &str, permission: &str, allow: Vec<(String, &'static str)>, salt: &str, owner_key_only: bool| {
+        let path = chain.config(name, &Cfg {
+            owner: &owner, agent: &agent, permission, allow, account: None, recovery: None, valid_after: 0,
+            valid_until: until, tokens: Value::Null,
+        });
+        let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        v["salt"] = json!(salt);
+        if owner_key_only {
+            v["ownerKeyOnly"] = json!(true);
+        }
+        std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+        path
+    };
+    let account_of = |cfg: &str| {
+        let init = chain.ok(&["account", "init-data", "--agent", cfg]);
+        init.lines().find_map(|l| l.strip_prefix("account:")).unwrap().trim().to_string()
+    };
+    let one = with("one.json", "0x6f6b6f31", vec![(counter.clone(), INCREMENT)], "0x0", true);
+    let other = with("other.json", "0x6f6b6f32", vec![(counter.clone(), INCREMENT), (counter.clone(), "0x00000000")], "0x0", true);
+    let old_form = with("old.json", "0x6f6b6f31", vec![(counter.clone(), INCREMENT)], "0x0", false);
+    // the address follows from the owner's key, not from the mandate
+    let account = account_of(&one);
+    assert_eq!(account_of(&other), account, "another first mandate, the same account");
+    assert_ne!(account_of(&old_form), account, "the form with the mandate in it is another account");
+
+    // the agent before the account exists: refused, and told what comes first
+    chain.ok(&["account", "fund", "--agent", &one, "--wei", "1000000000000000000"]);
+    let refused = chain.fails(&["demo", "--agent", &one]);
+    assert!(refused.contains("account create") && refused.contains("permission add"), "{refused}");
+    // created, the account has the owner's key and no mandate: the agent is still refused
+    chain.ok(&["account", "create", "--agent", &one]);
+    assert!(chain.rpc("eth_getCode", json!([account, "latest"])).as_str().unwrap().len() > 2, "no code at {account}");
+    assert!(chain.fails(&["account", "create", "--agent", &one]).contains("exists already"));
+    let before = chain.counter();
+    chain.fails(&["demo", "--agent", &one]);
+    assert_eq!(chain.counter(), before);
+    // the owner installs the first mandate; then the agent acts under it
+    chain.ok(&["permission", "add", "--agent", &one]);
+    chain.ok(&["demo", "--agent", &one]);
+    assert_eq!(chain.counter(), before + U256::from(1));
+
+    // the owner, too, waits for the account: `permission add` first is refused, and names the step
+    let fresh = with("fresh.json", "0x6f6b6f33", vec![(counter.clone(), INCREMENT)], "0x1", true);
+    let second = account_of(&fresh);
+    assert_ne!(second, account);
+    let refused = chain.fails(&["permission", "add", "--agent", &fresh]);
+    assert!(refused.contains("account create"), "{refused}");
+    assert_eq!(chain.rpc("eth_getCode", json!([second, "latest"])).as_str().unwrap(), "0x", "nothing created");
+}

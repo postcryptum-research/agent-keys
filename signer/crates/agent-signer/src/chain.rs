@@ -163,6 +163,7 @@ pub fn account_material(
         &agent_key,
     );
     let init_data = match &cfg.owner_public_key {
+        Some(pk) if cfg.owner_key_only() => Some(kernel::init_data_owner_key_only(dep.p256_validator, &pk.parse()?)),
         Some(pk) => Some(kernel::init_data(dep.p256_validator, &pk.parse()?, perm, permission_data.clone())),
         None => None,
     };
@@ -592,6 +593,39 @@ impl Session {
             eprintln!("factory:        the staker {staker} holds no stake at the EntryPoint now: a bundler that enforces ERC-7562 will refuse this first operation");
         }
         Ok(kernel::init_code_staked(staker, self.dep.kernel_factory, data, salt))
+    }
+
+    /// For an account created from the owner's key alone (`ownerKeyOnly`):
+    /// refuses until it exists, and names the two owner steps that come first.
+    async fn require_created(&self) -> Result<()> {
+        if self.cfg.owner_key_only() && !self.is_deployed().await? {
+            bail!(
+                "the account {} does not exist yet, and it is created from the owner's key alone (ownerKeyOnly): \
+                 create it (`account create`), then the owner installs the first mandate (`permission add`)",
+                self.account
+            );
+        }
+        Ok(())
+    }
+
+    /// Create the account the config describes with a plain call of Kernel's
+    /// factory, from the gas wallet. Anyone may make this call: the address
+    /// commits to the init data, so it creates nothing but what the config
+    /// describes. For an account made from the owner's key alone
+    /// (`ownerKeyOnly`) the owner then installs the first mandate (`permission
+    /// add`), from the phone too, which signs for existing accounts only.
+    pub async fn create(&self) -> Result<B256> {
+        self.require_gas_wallet("account create")?;
+        if self.is_deployed().await? {
+            bail!("the account {} exists already", self.account);
+        }
+        let factory = IKernelFactory::new(self.dep.kernel_factory, self.provider.clone());
+        let create = factory.createAccount(self.init_data()?.clone(), self.cfg.salt()?);
+        let simulated = create.call().await.context("createAccount simulation reverted: the account cannot be created")?;
+        if simulated != self.account {
+            bail!("the account-creation simulation returned {simulated}, expected {}", self.account);
+        }
+        done("account create", &create.send().await?.get_receipt().await?)
     }
 
     /// Send ETH from the gas wallet to the (possibly counterfactual) account.
@@ -1494,6 +1528,7 @@ impl Session {
     }
 
     pub async fn add_calldata(&self) -> Result<Bytes> {
+        self.require_created().await?;
         self.check_mandate_targets()?;
         let new = self.cfg.permission_id()?;
         let kernel_account = IKernel::new(self.account, self.provider.clone());
@@ -1652,6 +1687,12 @@ impl Session {
             Bytes::new()
         };
         let init_code = if deployed {
+            Bytes::new()
+        } else if self.cfg.owner_key_only() {
+            // Created from the owner's key alone, it is created first, by
+            // `account create`: an operation that also creates it could not
+            // be estimated, since its calls go to the account itself
+            self.require_created().await?;
             Bytes::new()
         } else {
             // the first operation installs the mandate: same rule as `permission add`
