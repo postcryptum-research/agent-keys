@@ -2231,7 +2231,7 @@ fn trading_orders_under_a_mandate() {
 
     // the policy of this source in the place of the deployed one: its only
     // constructor-set state is an immutable, which is part of its code
-    let built = deploy("agentPolicyInitCode", word(&chain.addr("safeNonceAssert")));
+    let built = deploy("agentPolicyInitCode", [word(&chain.addr("safeNonceAssert")), word(&chain.addr("safeShapes"))].concat());
     let code = chain.rpc("eth_getCode", json!([built, "latest"]));
     chain.rpc("anvil_setCode", json!([policy, code]));
 
@@ -2497,7 +2497,7 @@ fn one_inch_orders_under_a_mandate() {
     let word = |a: &str| a.parse::<Address>().unwrap().abi_encode();
 
     // the policy of this source in the place of the deployed one
-    let built = deploy("agentPolicyInitCode", word(&chain.addr("safeNonceAssert")));
+    let built = deploy("agentPolicyInitCode", [word(&chain.addr("safeNonceAssert")), word(&chain.addr("safeShapes"))].concat());
     let code = chain.rpc("eth_getCode", json!([built, "latest"]));
     chain.rpc("anvil_setCode", json!([policy, code]));
 
@@ -2805,7 +2805,7 @@ fn swaps_under_a_mandate() {
     let word = |a: &str| a.parse::<Address>().unwrap().abi_encode();
 
     // the policy of this source in the place of the deployed one
-    let built = deploy("agentPolicyInitCode", word(&chain.addr("safeNonceAssert")));
+    let built = deploy("agentPolicyInitCode", [word(&chain.addr("safeNonceAssert")), word(&chain.addr("safeShapes"))].concat());
     let code = chain.rpc("eth_getCode", json!([built, "latest"]));
     chain.rpc("anvil_setCode", json!([policy, code]));
 
@@ -2981,7 +2981,7 @@ fn calls_with_rules_under_a_mandate() {
     let word = |a: &str| a.parse::<Address>().unwrap().abi_encode();
 
     // the policy of this source in the place of the deployed one
-    let built = deploy("agentPolicyInitCode", word(&chain.addr("safeNonceAssert")));
+    let built = deploy("agentPolicyInitCode", [word(&chain.addr("safeNonceAssert")), word(&chain.addr("safeShapes"))].concat());
     let code = chain.rpc("eth_getCode", json!([built, "latest"]));
     chain.rpc("anvil_setCode", json!([policy, code]));
 

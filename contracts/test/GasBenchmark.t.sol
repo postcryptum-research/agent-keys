@@ -6,6 +6,7 @@ import {Test, console} from "forge-std/Test.sol";
 import {P256Validator} from "../src/P256Validator.sol";
 import {P256Signer} from "../src/P256Signer.sol";
 import {AgentPolicy} from "../src/AgentPolicy.sol";
+import {SafeShapes} from "../src/judges/SafeShapes.sol";
 import {SafeNonceAssert} from "../src/SafeNonceAssert.sol";
 import {WhitelistPaymaster} from "../src/WhitelistPaymaster.sol";
 import {Logger} from "../src/demo/Logger.sol";
@@ -100,7 +101,7 @@ contract GasBenchmarkTest is Test {
     /// The agent's mandate: `Logger.log` only, no value.
     function _permissionData() internal returns (bytes memory) {
         P256Signer signer = new P256Signer();
-        AgentPolicy policy = new AgentPolicy(address(new SafeNonceAssert()));
+        AgentPolicy policy = new AgentPolicy(address(new SafeNonceAssert()), address(new SafeShapes()));
         (uint256 ax, uint256 ay) = vm.publicKeyP256(AGENT);
         address[] memory targets = new address[](1);
         bytes4[] memory selectors = new bytes4[](1);

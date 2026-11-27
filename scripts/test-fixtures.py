@@ -29,11 +29,12 @@ RUNTIME = {
     "p256Signer": "P256Signer.sol/P256Signer",
     "agentPolicy": "AgentPolicy.sol/AgentPolicy",
     "safeNonceAssert": "SafeNonceAssert.sol/SafeNonceAssert",
+    "safeShapes": "SafeShapes.sol/SafeShapes",
     "demoCounter": "DemoCounter.sol/DemoCounter",
 }
 # runtime code has no constructor run: an immutable is written in by hand.
 # AgentPolicy's one immutable is the SafeNonceAssert address it is deployed with.
-IMMUTABLES = {"agentPolicy": "safeNonceAssert"}
+IMMUTABLES = {"agentPolicy": {"NONCE_ASSERT": "safeNonceAssert", "SAFE_SHAPES": "safeShapes"}}
 # creation code, by file and key
 CREATION = {
     "chain-code.json": {
@@ -70,22 +71,45 @@ def runtime(key, contracts):
     if refs and key not in IMMUTABLES:
         sys.exit(f"{key} has an immutable and this script does not know its value")
     if key in IMMUTABLES:
-        if len(refs) != 1:
-            sys.exit(f"{key}: one immutable expected, the build has {len(refs)}")
-        word = contracts[IMMUTABLES[key]]["address"].removeprefix("0x").lower().rjust(64, "0")
-        for ref in next(iter(refs.values())):
-            start, length = ref["start"] * 2, ref["length"] * 2
-            if length != 64:
-                sys.exit(f"{key}: an immutable of {ref['length']} bytes")
-            code = code[:start] + word + code[start + length :]
+        # each immutable by its name: the build's syntax tree names the ids
+        # that `immutableReferences` is keyed by
+        names = immutable_names(RUNTIME[key])
+        if sorted(names.get(ref_id, "?") for ref_id in refs) != sorted(IMMUTABLES[key]):
+            sys.exit(f"{key}: immutables {sorted(IMMUTABLES[key])} expected, the build has {sorted(names.get(r, r) for r in refs)}")
+        for ref_id, places in refs.items():
+            word = contracts[IMMUTABLES[key][names[ref_id]]]["address"].removeprefix("0x").lower().rjust(64, "0")
+            for ref in places:
+                start, length = ref["start"] * 2, ref["length"] * 2
+                if length != 64:
+                    sys.exit(f"{key}: an immutable of {ref['length']} bytes")
+                code = code[:start] + word + code[start + length :]
     return "0x" + code
+
+
+def immutable_names(name):
+    """The names of a contract's immutables, by the ids its code refers to them by."""
+    found = {}
+
+    def walk(node):
+        if isinstance(node, dict):
+            if node.get("nodeType") == "VariableDeclaration" and node.get("mutability") == "immutable":
+                found[str(node["id"])] = node["name"]
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(artifact(name).get("ast") or {})
+    return found
 
 
 def main():
     write = sys.argv[1:] == ["--write"]
     if sys.argv[1:] and not write:
         sys.exit(__doc__)
-    subprocess.run(["forge", "build", "--evm-version", "osaka"], cwd=ROOT / "contracts", check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # --ast: the syntax tree names the immutables (immutable_names)
+    subprocess.run(["forge", "build", "--evm-version", "osaka", "--ast"], cwd=ROOT / "contracts", check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     behind = []
     for file in ("chain-code.json", "trading-code.json"):
         path = FIXTURES / file

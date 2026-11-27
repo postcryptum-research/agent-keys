@@ -7,6 +7,7 @@ import {P256Validator} from "../src/P256Validator.sol";
 import {P256RecoveryValidator} from "../src/P256RecoveryValidator.sol";
 import {P256Signer} from "../src/P256Signer.sol";
 import {AgentPolicy} from "../src/AgentPolicy.sol";
+import {SafeShapes} from "../src/judges/SafeShapes.sol";
 import {SafeNonceAssert} from "../src/SafeNonceAssert.sol";
 
 import {Kernel} from "kernel/src/Kernel.sol";
@@ -289,6 +290,42 @@ contract MockOperators {
 /// The agent may call `counter.increment()` and send small amounts to it,
 /// and nothing else. The owner key can do anything — including revoking the
 /// agent or rotating it to a new key.
+/// A judge of Safe shapes that answers with positions past the end of what
+/// it was given. With `batchOnly`, the Safe transaction is read truly and
+/// only the batch's leg points outside.
+contract FarJudge {
+    bool internal immutable batchOnly;
+
+    constructor(bool onlyTheBatch) {
+        batchOnly = onlyTheBatch;
+    }
+
+    function readSafeTransaction(bytes calldata d)
+        external
+        view
+        returns (bool, address, uint256, uint256, uint256, uint256)
+    {
+        if (!batchOnly) return (true, address(uint160(uint256(bytes32(d[4:36])))), 0, 0, 0, d.length + 1);
+        // the truth, read as the Safe reads it: to, value, operation, the data
+        uint256 head = 4 + uint256(bytes32(d[68:100]));
+        uint256 length = uint256(bytes32(d[head:head + 32]));
+        return (
+            true,
+            address(uint160(uint256(bytes32(d[4:36])))),
+            uint256(bytes32(d[36:68])),
+            uint256(bytes32(d[100:132])),
+            head + 32,
+            head + 32 + length
+        );
+    }
+
+    function readMultiSend(bytes calldata d) external pure returns (bool, SafeShapes.Leg[] memory legs) {
+        legs = new SafeShapes.Leg[](1);
+        legs[0] = SafeShapes.Leg(address(0xC0FFEE), 0, 0, d.length + 1);
+        return (true, legs);
+    }
+}
+
 contract AgentPermissionTest is Test {
     uint256 internal constant N =
         0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551;
@@ -331,7 +368,7 @@ contract AgentPermissionTest is Test {
         rootValidator = new P256Validator();
         signer = new P256Signer();
         nonceAssert = new SafeNonceAssert();
-        policy = new AgentPolicy(address(nonceAssert));
+        policy = new AgentPolicy(address(nonceAssert), address(new SafeShapes()));
         token = new MockToken();
         counter = new Counter();
         forbidden = new Counter();
@@ -841,6 +878,72 @@ contract AgentPermissionTest is Test {
         assertEq(counter.count(), 1);
         assertEq(address(counter).balance, 0.05 ether);
         assertEq(_spent(SAFE_ID), 0.05 ether + GAS_PER_OP);
+    }
+
+    // --- the cost of validation, by shape (#251) ---
+    // A record, not a bound: each shape's validation gas, asked directly as
+    // Kernel asks it, with the policy's storage cold. Read with `-vv` before
+    // and after a change to how the policy is divided (`docs/CONTRACTS.md`).
+
+    function test_measure_validationGas_aCall() public {
+        _logValidation("a call", AGENT_ID, _singleCall(address(counter), 0, abi.encodeWithSelector(Counter.increment.selector)));
+    }
+
+    function test_measure_validationGas_aTokenTransfer() public {
+        bytes memory transfer = abi.encodeCall(MockToken.transfer, (makeAddr("someone"), 1 ether));
+        _logValidation("a token transfer", AGENT_ID, _singleCall(address(token), 0, transfer));
+    }
+
+    function test_measure_validationGas_aSafeTransaction() public {
+        Safe safe = _withSafe();
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+        bytes memory exec = _safeExec(safe, address(counter), 0, inc, Enum.Operation.Call, 0);
+        _logValidation("a Safe transaction", SAFE_ID, _agentViaSafe(safe, exec).callData);
+    }
+
+    function test_measure_validationGas_aSafeMultiSendOfTwo() public {
+        Safe safe = _withSafe();
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+        bytes memory txs = bytes.concat(_legOf(0, address(counter), 0, inc), _legOf(0, address(counter), 0.05 ether, ""));
+        bytes memory exec = _batch(safe, address(multiSend), txs, Enum.Operation.DelegateCall);
+        _logValidation("a Safe multiSend of two legs", SAFE_ID, _agentViaSafe(safe, exec).callData);
+    }
+
+    /// The judge answers with positions, and the policy slices its own
+    /// calldata at them only within it. Positions past the end would make
+    /// the slice revert; the policy refuses instead, for a Safe transaction
+    /// and for a batch's leg alike (#251).
+    function test_safe_aJudgesPositionsOutsideTheCalldataAreRefused() public {
+        Safe safe = _withSafe();
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+        bytes memory single = _agentViaSafe(safe, _safeExec(safe, address(counter), 0, inc, Enum.Operation.Call, 0)).callData;
+        bytes memory txs = _legOf(0, address(counter), 0, inc);
+        bytes memory batch = _agentViaSafe(safe, _batch(safe, address(multiSend), txs, Enum.Operation.DelegateCall)).callData;
+        // with the real judge both pass
+        assertTrue(_verdictOf(SAFE_ID, single) != 1, "a Safe transaction");
+        assertTrue(_verdictOf(SAFE_ID, batch) != 1, "a batch");
+        // a judge that points past the end of what it was given
+        vm.etch(address(policy.SAFE_SHAPES()), address(new FarJudge(false)).code);
+        assertEq(_verdictOf(SAFE_ID, single), 1, "a Safe transaction, positions outside");
+        vm.etch(address(policy.SAFE_SHAPES()), address(new FarJudge(true)).code);
+        assertEq(_verdictOf(SAFE_ID, batch), 1, "a batch's leg, positions outside");
+    }
+
+    function _verdictOf(PermissionId id, bytes memory callData) internal returns (uint256) {
+        PackedUserOperation memory op = _op(_permissionNonce(id), callData);
+        vm.prank(acct);
+        return policy.checkUserOpPolicy(bytes32(PermissionId.unwrap(id)), op);
+    }
+
+    function _logValidation(string memory shape, PermissionId id, bytes memory callData) internal {
+        PackedUserOperation memory op = _op(_permissionNonce(id), callData);
+        vm.cool(address(policy));
+        vm.prank(acct);
+        uint256 before = gasleft();
+        uint256 verdict = policy.checkUserOpPolicy(bytes32(PermissionId.unwrap(id)), op);
+        uint256 used = before - gasleft();
+        assertTrue(verdict != 1, shape);
+        emit log_named_uint(string.concat("validation gas, ", shape), used);
     }
 
     function test_batch_everyLegIsJudged() public {

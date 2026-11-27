@@ -24,6 +24,7 @@ commit `e48b93e001f34f460bd4845d231b8e0ee5d26ad6` builds them, every contract at
 | `AgentPolicy` | the agent's mandate, as that permission's policy | Kernel, from the account; the account, for x402 and orders | `0xdA16ba0d5C8aC6D5599A444c1e1e3bCD6c97c0C6` |
 | `P256Point` | the on-curve check (library) | the key modules, at install | none: compiled into them |
 | `SafeNonceAssert` | the replay guard of an agent's Safe transaction | the account, in a batch | `0x29f600cBcdC5221a63bD5c88F4a75E20c5CBe219` |
+| `SafeShapes` | where the calls inside a Safe transaction and a `multiSend` batch lie (a judge, #251) | the policy, in validation | none yet: the instances above do not use it |
 | `WhitelistPaymaster` | a gas sponsor with a budget per account | the EntryPoint; its owner | `0x657792557C1D40f2Da031FD7aB277078D2c0a4cb` |
 | `IVenueDecoder` | what a trading venue is to the policy (interface) | the policy; the owner's tools | none: an interface |
 | `CowSwapDecoder` | CoW Protocol's orders under that interface | the policy; the owner's tools | `0x42F62bF7134F5eF6d46d4BC07d806E77D1Df641a` |
@@ -408,9 +409,10 @@ which refuses the operation all the same [I].
   payee list and no x402: the agent picks the receiver and the spender.
   An id's limit is kept as a token's, under a key made of the contract
   and the id (the low 160 bits of a tagged hash; `idAsset`). The
-  contract's runtime size is 24,437 bytes of the 24,576 a
-  contract may have, with the calls through a decoder (below) in it
-  [V `forge build --sizes`, 2026-11-27]: the next change has 139 bytes
+  contract's runtime size is 23,920 bytes of the 24,576 a
+  contract may have, with the calls through a decoder (below) in it and
+  the reading of Safe transactions in the `SafeShapes` judge
+  [V `forge build --sizes`, 2026-11-27]: the next change has 656 bytes
   ([#224](https://github.com/postcryptum-research/agent-keys/issues/224)).
   An approval is charged like a transfer; what the spender later pulls is
   not seen.
@@ -615,6 +617,10 @@ which refuses the operation all the same [I].
   `test_safe_refusesDelegatecallRefundsAndNesting`,
   `test_trading_aVenuePlaceIsNoLongerASafesBatcher`,
   `test_batch_everyLegIsJudged`).
+  The Safe transaction and the batch are read by the `SafeShapes` judge
+  (below), which says where the calls inside them lie; the policy slices
+  its own calldata at those positions, only within it, and judges each
+  call itself (`test_safe_aJudgesPositionsOutsideTheCalldataAreRefused`).
 - *A permission with an execution hook.* Kernel requires such a
   permission's `callData` to be `executeUserOp`'s selector followed by the
   `execute(...)` call, and runs that call as it is (`Kernel.sol:264-271`,
@@ -665,6 +671,39 @@ the check accepts them, while the modules read `x == 0` as "no key", so such
 a key would install and then verify nothing [V source; b's Legendre symbol
 modulo p computed as 1]. A key made in a chip is one of them with a chance
 of about 2^-255 [I].
+
+## SafeShapes
+
+`contracts/src/judges/SafeShapes.sol`. The first judge of the division of
+`AgentPolicy` (#251): a contract without state that reads a
+`Safe.execTransaction` call and a `multiSend` batch and says where the
+calls inside them lie, as positions in the bytes it was given. It reads
+the words the Safe and `MultiSendCallOnly` read, the way they read them:
+the head words of `execTransaction`, which must ask for no refund
+(`safeTxGas`, `baseGas` and `gasPrice` 0) and carry whole address words;
+and the packed legs of a batch, CALL legs only, at least one.
+
+**Who calls it, and when.** `AgentPolicy`, with a static call, in the
+validation phase. It reads no storage and no clock (ERC-7562), and it does
+not revert on what it is given: what it cannot read is answered
+`ok == false` (`testFuzz_theJudgeDoesNotRevert`). The policy holds its
+address as `SAFE_SHAPES`, an immutable, for now; the division pins judges
+per mandate (#251).
+
+**What it holds.** That its positions slice out exactly the inner call and
+the legs Solidity's decoder reads from any well-formed encoding
+(`testFuzz_aSafeTransactionIsReadAsTheSafeDecodesIt`,
+`testFuzz_aBatchIsReadLegByLeg`), and that a refund, a gas figure for the
+Safe's own call, a dirty address word, data outside the calldata, a
+DELEGATECALL leg, a cut leg and an empty batch are refused
+(`contracts/test/SafeShapes.t.sol`).
+
+**What it costs** [V `test_measure_validationGas_*` in
+`contracts/test/AgentPermission.t.sol`, 2026-11-27]: `AgentPolicy` is 517
+bytes smaller (23,920 of 24,576); validation of a Safe transaction costs
+4,087 gas more (46,790), and of a Safe `multiSend` of two legs 11,214 more
+(71,427): a cold static call, the copy of the calldata into it, and the
+judge's own reading. A plain call and a token transfer do not call it.
 
 ## SafeNonceAssert
 

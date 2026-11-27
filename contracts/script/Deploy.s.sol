@@ -7,6 +7,7 @@ import {P256Validator} from "../src/P256Validator.sol";
 import {P256RecoveryValidator} from "../src/P256RecoveryValidator.sol";
 import {P256Signer} from "../src/P256Signer.sol";
 import {AgentPolicy} from "../src/AgentPolicy.sol";
+import {SafeShapes} from "../src/judges/SafeShapes.sol";
 import {SafeNonceAssert} from "../src/SafeNonceAssert.sol";
 import {CowSwapDecoder} from "../src/venues/CowSwapDecoder.sol";
 import {OneInchLimitOrderDecoder} from "../src/venues/OneInchLimitOrderDecoder.sol";
@@ -118,11 +119,12 @@ contract Deploy is Script {
         address signer = _reuseOrDeploy(recorded, "p256Signer", "P256Signer", type(P256Signer).creationCode);
         address nonceAssert =
             _reuseOrDeploy(recorded, "safeNonceAssert", "SafeNonceAssert", type(SafeNonceAssert).creationCode);
+        safeShapes = _reuseOrDeploy(recorded, "safeShapes", "SafeShapes", type(SafeShapes).creationCode);
         address policy = _reuseOrDeploy(
             recorded,
             "agentPolicy",
             "AgentPolicy",
-            abi.encodePacked(type(AgentPolicy).creationCode, abi.encode(nonceAssert))
+            abi.encodePacked(type(AgentPolicy).creationCode, abi.encode(nonceAssert, safeShapes))
         );
         address counter = _reuseOrDeploy(recorded, "demoCounter", "DemoCounter", type(DemoCounter).creationCode);
         // The paymaster is owned by whoever runs this script (the sponsor);
@@ -186,6 +188,7 @@ contract Deploy is Script {
         _supersede(json, recorded, "p256RecoveryValidator", recoveryValidator);
         _supersede(json, recorded, "p256Signer", signer);
         _supersede(json, recorded, "safeNonceAssert", nonceAssert);
+        _supersede(json, recorded, "safeShapes", safeShapes);
         _supersede(json, recorded, "agentPolicy", policy);
         _supersede(json, recorded, "whitelistPaymaster", paymaster);
         _supersede(json, recorded, "demoCounter", counter);
@@ -207,6 +210,7 @@ contract Deploy is Script {
         vm.serializeAddress(json, "p256Signer", signer);
         vm.serializeAddress(json, "agentPolicy", policy);
         vm.serializeAddress(json, "safeNonceAssert", nonceAssert);
+        vm.serializeAddress(json, "safeShapes", safeShapes);
         vm.serializeAddress(json, "whitelistPaymaster", paymaster);
         vm.serializeAddress(json, "paymasterOwner", sponsor);
         if (decoders[0] != address(0)) vm.serializeAddress(json, "cowSwapDecoder", decoders[0]);
@@ -220,6 +224,9 @@ contract Deploy is Script {
 
     /// @dev True when this run deploys from the build rather than reusing what is recorded.
     bool internal redeploy;
+    /// The SafeShapes judge of this run, which AgentPolicy is built with. A
+    /// field and not a local: `run` has no stack slot left.
+    address internal safeShapes;
 
     /// @dev Keeps every superseded version the file records (`<name>V<n>`):
     /// live permissions and accounts installed with them keep pointing there

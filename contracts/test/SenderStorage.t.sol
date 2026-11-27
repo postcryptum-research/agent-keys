@@ -5,7 +5,7 @@ import "./PayeeProbes2.t.sol";
 
 /// The policy with one more function: a read of its transient storage.
 contract TransientReader is AgentPolicy {
-    constructor(address nonceAssert) AgentPolicy(nonceAssert) {}
+    constructor(address nonceAssert, address safeShapes) AgentPolicy(nonceAssert, safeShapes) {}
 
     function transientAt(uint256 slot) external view returns (uint256 value) {
         assembly {
@@ -137,7 +137,7 @@ contract SenderStorage is PayeeProbes2 {
 
     /// Puts the reader's code at the policy's address; storage stays.
     function _reader() internal returns (TransientReader) {
-        vm.etch(address(policy), address(new TransientReader(address(nonceAssert))).code);
+        vm.etch(address(policy), address(new TransientReader(address(nonceAssert), address(policy.SAFE_SHAPES()))).code);
         return TransientReader(address(policy));
     }
 

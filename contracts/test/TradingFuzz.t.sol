@@ -8,6 +8,7 @@ import {Execution} from "kernel/src/types/Structs.sol";
 import {ExecMode} from "kernel/src/types/Types.sol";
 import {ExecLib} from "kernel/src/utils/ExecLib.sol";
 import {AgentPolicy} from "../src/AgentPolicy.sol";
+import {SafeShapes} from "../src/judges/SafeShapes.sol";
 import {CowSwapDecoder} from "../src/venues/CowSwapDecoder.sol";
 
 /// The account, as far as the policy is concerned, and the EntryPoint's
@@ -156,7 +157,7 @@ contract TradingFuzzModel is Test {
 
     function setUp() public {
         vm.warp(START);
-        policy = new AgentPolicy(NONCE_ASSERT);
+        policy = new AgentPolicy(NONCE_ASSERT, address(new SafeShapes()));
         settlement = new FuzzSettlement();
         decoder = new CowSwapDecoder(address(settlement));
         account = new TradeAccount();

@@ -18,6 +18,7 @@ import {ExecLib} from "kernel/src/utils/ExecLib.sol";
 import {LibERC7579} from "kernel/lib/solady/src/accounts/LibERC7579.sol";
 
 import {SafeNonceAssert} from "./SafeNonceAssert.sol";
+import {SafeShapes} from "./judges/SafeShapes.sol";
 import {IVenueDecoder} from "./venues/IVenueDecoder.sol";
 import {VenueCalls} from "./venues/VenueCalls.sol";
 
@@ -415,6 +416,12 @@ contract AgentPolicy is IPolicy {
     /// argument it is part of the policy's CREATE2 address too.
     address public immutable NONCE_ASSERT;
 
+    /// The judge that reads a Safe transaction and a multiSend batch and
+    /// says where the calls inside them lie (issue #251). Part of the code,
+    /// as `NONCE_ASSERT` is: validation asks it with a static call and reads
+    /// no storage for it.
+    SafeShapes public immutable SAFE_SHAPES;
+
     // Storage layout. Validation reads and writes this contract's storage
     // on the account's behalf, and ERC-7562 lets a bundler admit that only
     // for slots that belong to the account: `keccak256(account ‖ x) + n`
@@ -472,8 +479,10 @@ contract AgentPolicy is IPolicy {
 
     /// @dev Policy constructor.
     /// @param nonceAssert The SafeNonceAssert on this chain, kept as `NONCE_ASSERT`.
-    constructor(address nonceAssert) {
+    /// @param safeShapes The SafeShapes judge on this chain, kept as `SAFE_SHAPES`.
+    constructor(address nonceAssert, address safeShapes) {
         NONCE_ASSERT = nonceAssert;
+        SAFE_SHAPES = SafeShapes(safeShapes);
     }
 
     /// @dev One installation of a permission: the id and its epoch, which
@@ -1944,7 +1953,7 @@ contract AgentPolicy is IPolicy {
         // Only the account's own nonce-guarded call; Safes do not nest.
         if (from != FROM_ACCOUNT_GUARDED) return (false, 0);
         // The parts of the call the policy rules on
-        (bool decoded, address to, uint256 innerValue, uint256 operation, bytes calldata inner) = _decodeSafeExec(data);
+        (bool decoded, address to, uint256 innerValue, uint256 operation, bytes calldata inner) = _readSafe(data);
         if (!decoded) return (false, 0);
         // CALL (0): the inner call is judged like any other, from the Safe.
         // DELEGATECALL (1): only into an allow-listed MultiSend batch that is
@@ -2026,131 +2035,42 @@ contract AgentPolicy is IPolicy {
     /// @return True if every leg passes; an empty batch is refused.
     /// @return moved The native value the legs move, together.
     function _judgeBatch(bytes32 m, bytes calldata d) internal returns (bool, uint256 moved) {
-        // The packed transactions, at least one byte of them
-        (bool ok, bytes calldata txs) = _batchTransactions(d);
-        if (!ok || txs.length == 0) return (false, 0);
-        uint256 i;
-        // Leg by leg to the end; one refused leg refuses the batch
-        while (i < txs.length) {
+        // The legs, read by the judge: at least one, each a whole CALL leg
+        (bool ok, SafeShapes.Leg[] memory legs) = SAFE_SHAPES.readMultiSend(d);
+        if (!ok || legs.length == 0) return (false, 0);
+        // Leg by leg; one refused leg refuses the batch. Each is sliced from
+        // this calldata, within it, and judged as a batch leg: it runs as the Safe
+        for (uint256 i; i < legs.length; i++) {
+            SafeShapes.Leg memory leg = legs[i];
+            if (leg.start > leg.end || leg.end > d.length) return (false, 0);
             uint256 legMoved;
-            (ok, legMoved, i) = _judgeLeg(m, txs, i);
+            (ok, legMoved) = _judge(m, leg.to, leg.value, d[leg.start:leg.end], FROM_BATCH);
             if (!ok) return (false, 0);
             moved += legMoved;
         }
         return (true, moved);
     }
 
-    /// @dev Judges the batch leg at `i` and returns where the next one starts.
-    /// @param m The mandate key.
-    /// @param txs The packed transactions.
-    /// @param i Where the leg starts.
-    /// @return ok True if the leg passes.
-    /// @return moved The native value it moves.
-    /// @return next Where the next leg starts.
-    function _judgeLeg(bytes32 m, bytes calldata txs, uint256 i)
-        internal
-        returns (bool ok, uint256 moved, uint256 next)
-    {
-        // A whole CALL leg
-        (bool parsed, address to, uint256 value, bytes calldata data) = _leg(txs, i);
-        if (!parsed) return (false, 0, 0);
-        // Judged as a batch leg: it runs as the Safe
-        (ok, moved) = _judge(m, to, value, data, FROM_BATCH);
-        // After its 85-byte header and its data
-        next = i + 85 + data.length;
-    }
-
-    /// @dev The `bytes transactions` argument of a `multiSend` call.
-    /// @param d The `multiSend` calldata, selector included.
-    /// @return ok True if the argument lies within the calldata.
-    /// @return txs The packed transactions.
-    function _batchTransactions(bytes calldata d) internal pure returns (bool ok, bytes calldata txs) {
-        txs = d[0:0];
-        // selector + offset + length
-        if (d.length < 68) return (false, txs);
-        // The offset, bounded by the calldata before any sum
-        uint256 offset = uint256(bytes32(d[4:36]));
-        if (offset > d.length) return (false, txs);
-        // The length word, then the bytes, within the calldata
-        uint256 start = 4 + offset;
-        if (d.length < start + 32) return (false, txs);
-        uint256 length = uint256(bytes32(d[start:start + 32]));
-        if (length > d.length || d.length < start + 32 + length) return (false, txs);
-        return (true, d[start + 32:start + 32 + length]);
-    }
-
-    /// @dev The batch leg starting at `i`; CALL legs only.
-    /// @param txs The packed transactions.
-    /// @param i Where the leg starts.
-    /// @return ok True if the leg is a whole CALL leg.
-    /// @return to The leg's target.
-    /// @return value The leg's native value.
-    /// @return data The leg's calldata.
-    function _leg(bytes calldata txs, uint256 i)
-        internal
-        pure
-        returns (bool ok, address to, uint256 value, bytes calldata data)
-    {
-        data = txs[0:0];
-        // A whole header, and operation 0 (CALL)
-        if (txs.length < i + 85 || uint8(txs[i]) != 0) return (false, address(0), 0, data);
-        // to (20 bytes), value (32), the data's length (32)
-        to = address(bytes20(txs[i + 1:i + 21]));
-        value = uint256(bytes32(txs[i + 21:i + 53]));
-        uint256 length = uint256(bytes32(txs[i + 53:i + 85]));
-        // The data, within the packed bytes
-        if (length > txs.length || txs.length < i + 85 + length) return (false, address(0), 0, data);
-        data = txs[i + 85:i + 85 + length];
-        ok = true;
-    }
-
-    /// @dev Reads the parts of a `Safe.execTransaction` call the policy rules
-    /// on, straight from the ABI head (the Safe decodes the same words), and
-    /// refuses gas refunds.
+    /// @dev The parts of a `Safe.execTransaction` call the policy rules on,
+    /// as the judge reads them; the inner call is sliced from this calldata,
+    /// within it.
     /// @param d The `execTransaction` calldata, selector included.
     /// @return ok True if the call is well formed and asks for no refund.
     /// @return to The inner call's target.
     /// @return value The inner call's native value.
     /// @return operation 0 for CALL, 1 for DELEGATECALL.
     /// @return inner The inner call's calldata.
-    function _decodeSafeExec(bytes calldata d)
+    function _readSafe(bytes calldata d)
         internal
-        pure
+        view
         returns (bool ok, address to, uint256 value, uint256 operation, bytes calldata inner)
     {
         inner = d[0:0];
-        // selector + ten head words
-        if (d.length < 324) return (false, address(0), 0, 0, inner);
-        // Head words 0, 7 and 8 are addresses (to, gasToken, refundReceiver):
-        // whole words only. A Safe built with a decoder that masks the word
-        // would call the address judged here; one built with a decoder that
-        // validates it reverts at execution, with the operation charged
-        if ((uint256(bytes32(d[4:36])) | uint256(bytes32(d[228:260])) | uint256(bytes32(d[260:292]))) >> 160 != 0) {
-            return (false, address(0), 0, 0, inner);
-        }
-        // Head words 0 to 3: to, value, the data's offset, operation
-        to = address(uint160(uint256(bytes32(d[4:36]))));
-        value = uint256(bytes32(d[36:68]));
-        uint256 dataOffset = uint256(bytes32(d[68:100]));
-        operation = uint256(bytes32(d[100:132]));
-        // Head words 4 to 6: safeTxGas, baseGas, gasPrice, all 0. With a
-        // gasPrice the Safe would pay a refund out of its own funds to a
-        // receiver the agent picks. With a safeTxGas (or a gasPrice) the Safe
-        // does not revert when its inner call does, and validation would have
-        // counted a call that was not made: a withdrawal of an allowance, say.
-        // With all three 0 the Safe's transaction fails with its inner call.
-        if ((uint256(bytes32(d[132:164])) | uint256(bytes32(d[164:196])) | uint256(bytes32(d[196:228]))) != 0) {
-            return (false, address(0), 0, 0, inner);
-        }
-
-        // The data: its offset bounded before any sum, then its length and bytes within the calldata
-        if (dataOffset > d.length) return (false, address(0), 0, 0, inner);
-        uint256 start = 4 + dataOffset;
-        if (d.length < start + 32) return (false, address(0), 0, 0, inner);
-        uint256 length = uint256(bytes32(d[start:start + 32]));
-        if (length > d.length || d.length < start + 32 + length) return (false, address(0), 0, 0, inner);
-        inner = d[start + 32:start + 32 + length];
-        ok = true;
+        uint256 start;
+        uint256 end;
+        (ok, to, value, operation, start, end) = SAFE_SHAPES.readSafeTransaction(d);
+        if (!ok || start > end || end > d.length) return (false, address(0), 0, 0, inner);
+        inner = d[start:end];
     }
 
     /// @dev `0x00000000` stands for "no calldata": a plain value transfer.

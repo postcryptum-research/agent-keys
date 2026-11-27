@@ -4,6 +4,7 @@ pragma solidity ^0.8.38;
 import {Test} from "forge-std/Test.sol";
 
 import {AgentPolicy} from "../src/AgentPolicy.sol";
+import {SafeShapes} from "../src/judges/SafeShapes.sol";
 import {SafeNonceAssert} from "../src/SafeNonceAssert.sol";
 
 import {Kernel} from "kernel/src/Kernel.sol";
@@ -296,7 +297,7 @@ contract PolicyFuzzModel is PolicyFuzzBase {
 
     function setUp() public {
         account = new FuzzAccount();
-        policy = new AgentPolicy(NONCE_ASSERT);
+        policy = new AgentPolicy(NONCE_ASSERT, address(new SafeShapes()));
         account.install(policy, _installData(policy));
     }
 
@@ -481,7 +482,7 @@ contract PolicyFuzzDifferential is PolicyFuzzBase {
         bytes memory nonces = address(new SettledNonces()).code;
         vm.etch(TOKEN_A, nonces);
         vm.etch(TOKEN_B, nonces);
-        fresh = new AgentPolicy(NONCE_ASSERT);
+        fresh = new AgentPolicy(NONCE_ASSERT, address(new SafeShapes()));
         deployed = AgentPolicy(address(0xDE9107ED));
         vm.etch(address(deployed), vm.parseBytes(vm.readFile("test/vectors/agent-policy-84532-0xdA16ba0d.hex")));
         assertEq(deployed.NONCE_ASSERT(), NONCE_ASSERT, "the vector is not the instance it is taken for");

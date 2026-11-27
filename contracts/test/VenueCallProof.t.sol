@@ -2,6 +2,7 @@
 pragma solidity ^0.8.38;
 
 import {AgentPolicy} from "../src/AgentPolicy.sol";
+import {SafeShapes} from "../src/judges/SafeShapes.sol";
 import {VenueCalls} from "../src/venues/VenueCalls.sol";
 import {Kernel} from "kernel/src/Kernel.sol";
 import {PackedUserOperation} from "kernel/src/interfaces/PackedUserOperation.sol";
@@ -82,7 +83,7 @@ contract VenueCallProof {
     uint48 internal constant INDEX = 20_000;
 
     function setUp() public {
-        policy = new AgentPolicy(NONCE_ASSERT);
+        policy = new AgentPolicy(NONCE_ASSERT, address(new SafeShapes()));
         acct = new Acct();
         token = address(new Recorder());
         place = address(new Recorder());

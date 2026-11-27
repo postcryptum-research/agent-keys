@@ -2,6 +2,7 @@
 pragma solidity ^0.8.38;
 
 import {AgentPolicy} from "../src/AgentPolicy.sol";
+import {SafeShapes} from "../src/judges/SafeShapes.sol";
 import {Kernel} from "kernel/src/Kernel.sol";
 import {PackedUserOperation} from "kernel/src/interfaces/PackedUserOperation.sol";
 import {ExecLib} from "kernel/src/utils/ExecLib.sol";
@@ -122,7 +123,7 @@ contract BudgetProof {
     uint48 internal constant UNTIL = type(uint48).max;
 
     function setUp() public {
-        policy = new AgentPolicy(NONCE_ASSERT);
+        policy = new AgentPolicy(NONCE_ASSERT, address(new SafeShapes()));
         acct = new Acct();
         token = address(new Recorder());
         vm.deal(address(acct), 10 ether);

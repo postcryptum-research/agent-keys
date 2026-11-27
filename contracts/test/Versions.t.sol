@@ -3,6 +3,7 @@ pragma solidity ^0.8.38;
 
 import {Test} from "forge-std/Test.sol";
 import {AgentPolicy} from "../src/AgentPolicy.sol";
+import {SafeShapes} from "../src/judges/SafeShapes.sol";
 import {P256Validator} from "../src/P256Validator.sol";
 import {P256RecoveryValidator} from "../src/P256RecoveryValidator.sol";
 import {P256Signer} from "../src/P256Signer.sol";
@@ -43,7 +44,8 @@ contract VersionsTest is Test {
         assertEq(new DemoCounter().VERSION(), FIRST, "DemoCounter");
         assertEq(new Logger(address(this), address(this), bytes32(0), bytes32(0)).VERSION(), FIRST, "Logger");
         // Contracts with constructor arguments, given stand-ins
-        assertEq(new AgentPolicy(address(new SafeNonceAssert())).VERSION(), FIRST, "AgentPolicy");
+        assertEq(new AgentPolicy(address(new SafeNonceAssert()), address(new SafeShapes())).VERSION(), FIRST, "AgentPolicy");
+        assertEq(new SafeShapes().VERSION(), FIRST, "SafeShapes");
         assertEq(new CowSwapDecoder(address(new SettlementForVersion())).VERSION(), FIRST, "CowSwapDecoder");
         assertEq(
             new OneInchLimitOrderDecoder(address(new RouterStandIn())).VERSION(), FIRST, "OneInchLimitOrderDecoder"
