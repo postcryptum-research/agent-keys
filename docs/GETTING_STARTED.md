@@ -64,8 +64,12 @@ $B op send --agent $A --env-file $E --target 0x... --data 0x...   # anything the
 ```
 
 `account fund` simulates `createAccount` first and refuses to send ETH to an
-address that could never be deployed. Operations outside the mandate are
-rejected during simulation, before any gas is spent.
+address that could never be deployed. It reports the transfer as done only
+when the chain says it ran: a transaction that was included and reverted is
+an error that names it, and so it is for `paymaster deposit`, `sponsor` and
+`stake` [V `anvil_cli.rs`
+`a_transaction_included_and_reverted_is_not_reported_as_done`]. Operations
+outside the mandate are rejected during simulation, before any gas is spent.
 
 For programs driving the CLI, `op send --json` prints one JSON line
 (`account`, `userOpHash`, `nonce`, `tx`, `block`, `gasUsed`) and keeps progress
