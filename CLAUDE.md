@@ -20,6 +20,7 @@ The idea on one page: `docs/HOW_IT_WORKS.md`. The design:
 | `examples/` | agent frameworks on top of the CLI |
 | `scripts/erc7562/` | the ERC-7562 check of validation traces |
 | `docs/` | platform guides, FAQ, resilience, the agent config (`AGENT_CONFIG.md`) |
+| `audits/` | the reports of the audits, each with its commit and the issue and pull request of each finding |
 
 ## Commands that work
 

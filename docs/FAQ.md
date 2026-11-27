@@ -591,6 +591,12 @@ issues: six fixed in code, one fixed in its code part (where the owner key
 lives stays the deployer's choice), one documented; the fixes were
 re-checked ([`AUDIT-2026-10-20.md`](AUDIT-2026-10-20.md)).
 
+Two internal audits of a named commit followed: on 2026-11-24 (1 High, 1
+Medium, 5 Low and eight notes, all resolved) and on 2026-11-28 (2 High, 1
+Medium, 1 Low, filed as #244 to #247, their fixes in review). The reports,
+each finding with its issue and its pull request:
+[`../audits/`](../audits/README.md).
+
 As of 2026-11-19 the internal review covers the whole codebase as code
 ([`audit/REVIEW-SCOPE-2026-11-19.md`](audit/REVIEW-SCOPE-2026-11-19.md)):
 the on-chain policy and its P256 validator and signer, the recovery
