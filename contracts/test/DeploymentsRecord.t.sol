@@ -11,7 +11,7 @@ import {Deploy} from "../script/Deploy.s.sol";
 contract DeploymentsRecordTest is Test {
     /// @dev Chains with a deployments file in this repository: Base Sepolia
     /// and Sepolia. A chain listed here whose file does not exist yet is skipped.
-    uint256[2] internal chains = [uint256(84532), uint256(11155111)];
+    uint256[3] internal chains = [uint256(84532), uint256(11155111), uint256(5042002)];
 
     function test_recordedBuildIsFoundryToml() public {
         // The settings foundry.toml builds every contract with
