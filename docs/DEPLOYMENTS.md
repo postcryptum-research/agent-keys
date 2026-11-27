@@ -14,6 +14,13 @@ them too. For an account set up between 2026-11-25 and 2026-11-27 that is
 `AgentPolicy` alone: its permissions are on the instance that the one of
 2026-11-27 replaced.
 
+**The `AgentPolicy` instances on this page were built before the fix of
+#244.** They count no gas for an operation whose paymaster field names the
+zero address, and the account pays it past its native budget
+([`audits/audit2`](../audits/audit2/README.md), finding
+AK-2026-11-28-01). The source refuses such a field; the test networks
+carry that after their next redeploy.
+
 The record itself is `contracts/deployments/<chainId>.json`: the CLI reads
 it, the phone's build embeds them, and
 `contracts/test/DeploymentsRecord.t.sol` fails when an address in it is

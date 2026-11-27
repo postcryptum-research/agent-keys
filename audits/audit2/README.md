@@ -43,10 +43,10 @@ Findings 01 to 03 were made in the first step.
 
 | # | Severity | Where | Summary | Issue | Fix | State |
 |---|---|---|---|---|---|---|
-| AK-2026-11-28-01 | High | `AgentPolicy` | A paymaster field that names the zero address is not charged to the native budget, and the account pays | #244 | | open |
+| AK-2026-11-28-01 | High | `AgentPolicy` | A paymaster field that names the zero address is not charged to the native budget, and the account pays | #244 | #249 | fixed in the source, in review; the test networks carry the fix after a redeploy |
 | AK-2026-11-28-02 | High | Jinn example | After the handover the former EOA keeps full power over the Safe where it is an enabled module | #245 | | open |
 | AK-2026-11-28-03 | Medium | Jinn example | The migration's first step, a lone operator grant by the agent, is refused by the current policy | #246 | | open |
-| AK-2026-11-28-04 | Low | `AgentPolicy` | `transferFrom` is not held to a source: tokens a third party approved to the account can be moved | #247 | | open |
+| AK-2026-11-28-04 | Low | `AgentPolicy` | `transferFrom` is not held to a source: tokens a third party approved to the account can be moved | #247 | #249 | accepted as the function's meaning: stated for owners and held by tests, in review |
 
 ## The findings
 
@@ -87,6 +87,20 @@ affected; the operation's calls can all be allowed ones.
 **Recommended.** Take sponsorship from the unpacked address, not from the
 length; count the whole prefund where the address is zero, or refuse such
 a field. A regression through `handleOps` with the 52-byte field.
+
+**Resolution (#249).** Who pays is read as the EntryPoint reads it. An
+empty field is charged as before; a field that names no paymaster, shorter
+than its 52 fixed bytes or with the zero address, is refused; a
+paymaster's field passes uncounted as before. Held by
+`test_gas_aPaymasterFieldThatNamesNoPaymasterIsRefused` (through
+`handleOps`, with the account funded to pay: nothing runs, nothing is
+spent, no beneficiary is paid), by
+`test_gas_aPaymasterFieldShorterThanItsFixedPartIsRefused` and by
+`testFuzz_gas_whoPaysIsWhatTheEntryPointReads` over any field. The rule
+was broken once in two ways and the tests failed. The `AgentPolicy`
+instances on the test networks were built before the fix and carry the
+finding until they are redeployed
+([`docs/DEPLOYMENTS.md`](../../docs/DEPLOYMENTS.md)).
 
 ### AK-2026-11-28-02 (High): the former EOA as a Safe module
 
@@ -164,6 +178,18 @@ not a drain of the account.
 the Safe inside a Safe transaction), or state that allowances others gave
 are within what such a mandate hands to the agent. Tests for both
 contexts and both kinds of payee list.
+
+**Resolution (#249).** The second answer: no change in the code. An
+account pays out of its own balance with `transfer`; `transferFrom` on an
+account is for collecting what others approved to it, and holding `from`
+to the account would leave it without a use. The rule is stated where an
+owner writes a mandate
+([`docs/AGENT_CONFIG.md`](../../docs/AGENT_CONFIG.md)) and in
+[`docs/CONTRACTS.md`](../../docs/CONTRACTS.md), for ERC-6909's form too:
+listing `transferFrom` hands the agent what others approved to the account
+and, inside a Safe transaction, to the Safe. `test_token_transferFromMovesWhatOthersApproved`
+holds it for a direct call and a Safe transaction, with a payee list and
+without.
 
 ## The findings of audit 1, read again
 

@@ -959,10 +959,25 @@ contract AgentPolicy is IPolicy {
         // And no call a decoder judged is left unmade: its registration without it is refused
         if (_tload(_thisOperation(EXPECTED_CALL)) != 0) return SIG_VALIDATION_FAILED_UINT;
 
-        // Without a paymaster the account pays for gas out of its own
-        // deposit: count the most it can be charged against the budget.
+        // Who pays for gas is read as the EntryPoint reads it: by the
+        // address in the paymaster field's first twenty bytes, not by the
+        // field's length. An empty field: the account pays out of its own
+        // deposit, and the most it can be charged counts against the budget.
+        // A field that names no paymaster, shorter than its 52 fixed bytes
+        // or with the zero address: refused. The EntryPoint takes such an
+        // operation's prefund from the account, the field's two gas limits
+        // included, and nothing here would have counted it (#244).
         uint256 charged = value;
-        if (userOp.paymasterAndData.length == 0) charged += _maxGasCost(userOp);
+        bytes calldata paymasterField = userOp.paymasterAndData;
+        if (paymasterField.length == 0) charged += _maxGasCost(userOp);
+        else {
+            // the address the EntryPoint unpacks: the field's first twenty bytes
+            uint256 paymaster;
+            assembly ("memory-safe") {
+                paymaster := shr(96, calldataload(paymasterField.offset))
+            }
+            if (paymasterField.length < 52 || paymaster == 0) return SIG_VALIDATION_FAILED_UINT;
+        }
         // The native budget; `spent` stays within it, so the cast cuts nothing
         uint256 spent = c.spent + charged;
         if (spent > c.budget) return SIG_VALIDATION_FAILED_UINT;
