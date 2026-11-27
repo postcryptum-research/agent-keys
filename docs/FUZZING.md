@@ -596,6 +596,47 @@ has ended were not run. Rocket Pool's deposit pool is read from its storage
 contract at the fork's block and changes with its upgrades. The protocols
 are upgradeable or governed, as above. Nothing was sent to a chain.
 
+### Further recipes: two-step withdrawals, a position, more pools and vaults
+
+`contracts/test/FurtherRecipes.t.sol`, on a fork of Ethereum.
+
+| Recipe | What the tests hold |
+|---|---|
+| Lido's claim, by the allow-list | after the finalization the agent claims the account's request and the ether is the account's; `claimWithdrawalsTo` is refused; before the finalization the claim is accepted by the mandate and pays nothing; the queue refuses a stranger's claim and pays the owner |
+| EigenLayer's withdrawal, by the allow-list | the agent queues the account's shares and, after the delay, completes the withdrawal: the stETH is back in the account; before the delay nothing is paid; `delegateTo` is refused; the field that names a withdrawer is ignored, and nobody else completes the withdrawal |
+| ether.fi's withdrawal: the request by rules, the claim by the allow-list | a request owned by the account, charged in eETH; a request for somebody else and one over the cap are refused, and the pool gives the request to whoever is named; after the finalization the agent claims and the ether is the account's; the request's `transferFrom` and a request by the allow-list are refused; a claim by anybody pays the request's owner |
+| A Curve crypto pool (tricrypto2), by the allow-list | WETH for USDT, to the account; the form with a flag for native ether is refused |
+| A Curve stableswap-ng pool, by the allow-list | USDC for PYUSD, to the account; the form with a receiver is refused, and the pool pays whoever that form names |
+| A Uniswap v3 position, by rules | `mint` for the account in the set pool and range, the first token charged and the second within its bound; all of it taken out and collected to the account; a position for somebody else, another token, fee or range, more than a bound or the cap, a collection to somebody else, `increaseLiquidity` and the position's own `transferFrom` and `approve` are refused; the manager adds a caller's tokens to anybody's position |
+| Three more vaults (Yearn v3, Aave's wrapped aToken, staked USDe), by rules | a deposit and a redeem for the account; for somebody else and to somebody else are refused |
+
+Run on 2026-11-27: 17 tests in 9 test contracts pass. Without
+`FORK_ETHEREUM_RPC_URL` they are skipped, so CI runs none of them.
+
+**That it bites.** Thirteen loosenings, one at a time, and each fails the
+refusal it aims at while the recipe's other tests pass. By rules, with a
+word left to the agent or a unit more: the position's recipient, its second
+token, its fee and its lower tick; a wei more of the second token's bound
+and a unit more of the first token's cap; the recipient of a collection;
+the recipient of ether.fi's request. By the allow-list, with one more
+entry: Lido's `claimWithdrawalsTo`; EigenLayer's `delegateTo`; the crypto
+pool's form with a flag for native ether; the ng pool's form with a
+receiver; ether.fi's request beside its claim. The three vaults run the
+rules whose loosenings are counted above.
+
+**What it does not cover.** Lido's finalization is made in the test in
+Lido's name, for every open request and with no discount; a finalization
+at a discount, and Lido's bunker mode, were not run. ether.fi's is made
+in the name of its admin contract. EigenLayer's delay is
+passed by moving the fork's block number, and that one step runs under
+Cancun's rules, because forge 1.8.5 stalls after such a move under Osaka's;
+there the account's P-256 check goes through the verifier contract on the
+chain in place of the precompile. A slashed or delegated staker's
+withdrawal was not run. At Uniswap: one pool, one range across all prices,
+and no fees earned between the mint and the collection. Staked USDe with a
+cooldown set was not run. Aave's reward claims stay untested: no emission
+was live on the pool's reserves that day. Nothing was sent to a chain.
+
 ## Rust
 
 Coverage-guided fuzzing with `cargo-fuzz` (libFuzzer, a nightly toolchain)

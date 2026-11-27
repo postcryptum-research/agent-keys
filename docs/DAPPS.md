@@ -72,14 +72,14 @@ protocol's own code; the others are `[I]` until their test exists.
 | Protocol | What to allow | Where | Status |
 |---|---|---|---|
 | **Aave V3** | the pool's compact forms `supply(bytes32)` `0xf7a73840`, `withdraw(bytes32)` `0x8e19899e`, `repay(bytes32)` `0x563dd613`: the pool uses its own caller as beneficiary | Base, Arbitrum, Base Sepolia (the pools there are L2 pools); on Ethereum, BNB Chain and Sepolia the pool has no compact forms, and Aave goes by rules (the table of networks below) | **[V]** on Base Sepolia, see below |
-| **Aave V3** | `repayWithATokens(asset, amount, rateMode)` `0x2dad97d4`: the caller's own debt, paid with its own aTokens | every chain | **[V]** on Ethereum, see below; rewards `claimRewardsToSelf`, `claimAllRewardsToSelf` [I] |
+| **Aave V3** | `repayWithATokens(asset, amount, rateMode)` `0x2dad97d4`: the caller's own debt, paid with its own aTokens | every chain | **[V]** on Ethereum, see below; rewards `claimRewardsToSelf`, `claimAllRewardsToSelf` [I]: no emission was live on any of the pool's 68 reserves on Ethereum on 2026-11-27, so a payout could not be shown |
 | **Compound v3** | `supply(address,uint256)` `0xf2b9fdb8`, `withdraw(address,uint256)` `0xf3fef3a3`, with the base token's `approve` and a limit for it; rewards `claim(comet, src, shouldAccrue)` `0xb7034f7e` | Ethereum, Base, Arbitrum, Sepolia, Base Sepolia | **[V]** on Base Sepolia; the rewards claim **[V]** on Ethereum, see below |
-| **Lido** | `submit(address)` `0xa1903eab` (stake), under the native cap and budget; or a plain transfer of ether to wstETH, which stakes and wraps in one; wstETH `wrap` `0xea598cb0` and `unwrap` `0xde0e9a3e` | Ethereum | **[V]** on Ethereum, see below; `claimWithdrawals`, `claimWithdrawal` [I] |
+| **Lido** | `submit(address)` `0xa1903eab` (stake), under the native cap and budget; or a plain transfer of ether to wstETH, which stakes and wraps in one; wstETH `wrap` `0xea598cb0` and `unwrap` `0xde0e9a3e`; the queue's `claimWithdrawal(uint256)` `0xf8444436` and `claimWithdrawals(uint256[],uint256[])` `0xe3afe0a3` | Ethereum | **[V]** on Ethereum, see below |
 | **Rocket Pool** | the deposit pool's `deposit()` `0xd0e30db0`, rETH `burn(uint256)` `0x42966c68` | Ethereum | **[V]**, see below |
-| **ether.fi** | the pool's `deposit()` `0xd0e30db0`, weETH `wrap` and `unwrap` | Ethereum | **[V]**, see below; `deposit(address)`, `claimWithdraw` [I] |
-| **EigenLayer** | `depositIntoStrategy` `0xe7a050aa` | Ethereum, Sepolia | **[V]** on Ethereum, see below; `queueWithdrawals`, `completeQueuedWithdrawal` [I] |
+| **ether.fi** | the pool's `deposit()` `0xd0e30db0`, weETH `wrap` and `unwrap`; the claim of a withdrawal, `claimWithdraw(uint256)` `0xb13acedd` and `batchClaimWithdraw(uint256[])` `0x24fccdcf` (the request itself names a recipient and goes by rules, below) | Ethereum | **[V]**, see below; `deposit(address)` [I] |
+| **EigenLayer** | `depositIntoStrategy` `0xe7a050aa`; `queueWithdrawals` `0x0dd8dd02` and `completeQueuedWithdrawal` `0xe4cc3f90` at the delegation manager | Ethereum, Sepolia | **[V]** on Ethereum, see below |
 | **Sky** | staking rewards `stake` `0xa694fc3a`, `withdraw` `0x2e1a7d4d`, `getReward` `0x3d18b912`, `exit` `0xe9fad8ee` | Ethereum | **[V]**, see below |
-| **Curve** | a classic pool's `exchange` `0x3df02124`, `add_liquidity` `0x4515cef3`, `remove_liquidity` `0xecb586a5` | per pool | **[V]** for the 3pool, see below; other pools and the variants [I] |
+| **Curve** | a classic or stableswap-ng pool's `exchange(int128,int128,uint256,uint256)` `0x3df02124`, `add_liquidity` `0x4515cef3`, `remove_liquidity` `0xecb586a5`; a crypto pool's `exchange(uint256,uint256,uint256,uint256)` `0x5b41b908` | per pool | **[V]** for the 3pool, a stableswap-ng pool and tricrypto2, see below; the forms with a receiver or a flag for native ether stay off the mandate |
 | Others | a Governor's `castVote`; a Merkle distributor's `claim`; a mint to the caller, under the native cap | per project | [I] |
 
 Four things need a word of care:
@@ -171,6 +171,50 @@ calls: the allowance, the call, the allowance taken back.]
 cd contracts
 FORK_ETHEREUM_RPC_URL=<an Ethereum RPC> \
     forge test --evm-version osaka --match-path test/MoreRecipes.t.sol --match-test 'test_recipe|test_real'
+```
+
+### Withdrawals in two steps, and two more kinds of Curve pool, verified on Ethereum
+
+[V `contracts/test/FurtherRecipes.t.sol`, run on a fork of Ethereum on
+2026-11-27.]
+
+- **Lido's claim.** After Lido finalizes a request,
+  `claimWithdrawal(uint256)` and `claimWithdrawals(uint256[],uint256[])`
+  pay its ether to the request's owner, who has to be the caller: the
+  agent claims the account's request and the ether is the account's.
+  `claimWithdrawalsTo` names a recipient and is refused. A stranger's claim
+  of the account's request is refused by the queue. Before the
+  finalization the mandate accepts the claim and the queue refuses it: the
+  operation is included, nothing is paid, and its gas is spent. The
+  finalization itself is Lido's step and is made in the test in Lido's
+  name.
+- **EigenLayer's way out.** `queueWithdrawals` takes the account's own
+  shares into a withdrawal of the account's; after the delay (100,800
+  blocks on that day) `completeQueuedWithdrawal` pays the stETH back to the
+  account. The field that names a withdrawer is ignored: the withdrawal
+  stays its staker's, and nobody else completes it. `delegateTo` is not
+  listed and is refused.
+- **ether.fi's claim.** After ether.fi finalizes a request (an NFT at
+  `0x7d5706f6ef3F89B3951E23e557CDFBC3239D4E2c`), `claimWithdraw(uint256)`
+  pays its ether to the request's owner: the agent claims the account's
+  request and the ether is the account's. Whoever makes the claim, the
+  owner is paid: a stranger's claim of the account's request goes through
+  and pays the account. The request's own `transferFrom`, and a new
+  request by the allow-list, are refused. The finalization is ether.fi's
+  step and is made in the test in the name of its admin contract.
+- **A Curve crypto pool** (tricrypto2,
+  `0xD51a44d3FaE010294C616388b506AcdA1bfAAE46`): WETH for USDT by
+  `exchange(uint256,uint256,uint256,uint256)`, to the account. The form
+  with a flag for native ether is not listed.
+- **A Curve stableswap-ng pool** (PYUSD and USDC,
+  `0x383E6b4437b59fff47B619CBA855CA29342A8559`): USDC for PYUSD by the
+  classic `exchange`, to the account. The form with a receiver is not
+  listed: the pool pays whoever is named there.
+
+```sh
+cd contracts
+FORK_ETHEREUM_RPC_URL=<an Ethereum RPC> \
+    forge test --evm-version osaka --match-path test/FurtherRecipes.t.sol --match-test 'test_recipe|test_real'
 ```
 
 ### Aave V3 on Base Sepolia, verified
@@ -442,12 +486,67 @@ each also with what the rules refuse].
 {"selector": "0xc3b35a7e", "words": ["account", {"is": "<asset>"}, "any"]}
 ```
 
+**A liquidity position at Uniswap v3, verified** [V
+`FurtherRecipes.t.sol` `UniswapPositionRecipeTest`, on a fork of Ethereum
+on 2026-11-27, at the position manager
+`0xC36442b4a4522E871399CD717aBDD847Ab11FE88` and the pool of USDC and WETH
+at 0.05%]. `mint` with the pool (both tokens and the fee), the range and
+the recipient set: the position is the account's. `collect` with the
+recipient the account. `decreaseLiquidity` names nobody: what it frees
+stays owed to the position until it is collected. The agent provides,
+takes all of it out and collects it, and the tokens are back in the
+account. A position for somebody else, another token, fee or range, more
+than a bound, a collection to somebody else, and the position's own
+`transferFrom` and `approve` are refused.
+
+```json
+{"selector": "0x88316456", "words": [{"is": "<token0>"}, {"is": "<token1>"}, {"is": "<fee>"},
+                                    {"is": "<lower tick>"}, {"is": "<upper tick>"},
+                                    {"charged": "<token0>"}, {"atMost": "<the most of token1>"},
+                                    "any", "any", "account", "any"]},
+{"selector": "0xfc6f7865", "words": ["any", "account", "any", "any"]},
+{"selector": "0x0c49ccbe", "words": ["any", "any", "any", "any", "any"]}
+```
+
+Three things to know about it:
+
+- **A `mint` pulls two tokens and a call charges one.** The first token's
+  amount is charged against its limit. The second token's is held by the
+  bound on its word, for one call, and by the allowance the owner gave the
+  position manager for it, in all: that allowance is its budget.
+- **A tick is a signed number.** Its word is the 256-bit two's complement:
+  a negative tick is written as that number in the config.
+- **`increaseLiquidity` is left out.** The position manager takes the
+  caller's tokens into any position, whoever owns it [V
+  `test_real_uniswapPosition_anIncreaseFeedsAnybodysPosition`]. Give it
+  only with the position's number set as a value.
+
+**ether.fi's withdrawal request, verified** [V `FurtherRecipes.t.sol`
+`EtherFiRequestRecipeTest`, the same day]. `requestWithdraw(recipient,
+amount)` at the pool `0x308861A430be4cce5502d0A12724771Fc6DaF216` takes
+eETH from the account and gives the request to `recipient`: the rules hold
+the recipient to the account and charge the amount. A request for
+somebody else and one over the cap are refused; the pool gives the request
+to whoever is named. Its claim is on the allow-list, above.
+
+```json
+{"selector": "0x397a1b28", "words": ["account", {"charged": "<eETH>"}]}
+```
+
+**Three more vaults by the rules of sDAI, verified** [V
+`FurtherRecipes.t.sol`, the same day]: a Yearn v3 vault
+(`0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204`, USDC), Aave's wrapped aToken
+for USDC (`0xD4fa2D31b7968E448877f69A96DE69f5de8cD23E`) and Ethena's staked
+USDe (`0x9D39A5DE30e57443BfF2A8307A4256c8797A3497`). Staked USDe's `redeem`
+and `withdraw` work while its cooldown is zero, as it was that day; with a
+cooldown set, leaving goes by `cooldownShares` and `unstake(receiver)`,
+which these rules do not hold.
+
 **What is left,** each `[I]` until its test exists, or struck:
 
 | Opens with | What |
 |---|---|
-| One word = the account | Uniswap v3 `collect`; ether.fi's withdrawal request; other ERC-4626 vaults (Yearn, sUSDe, Aave's stata tokens), by the rules verified for three vaults |
-| Words = values the owner sets | Uniswap v3 `mint`. It pulls two tokens and a call has one charged word: the second token is held by a bound on its word and by its allowance |
+| One word = the account | staked USDe's `unstake(receiver)` after a cooldown |
 | **Not possible with rules as they are** | Aave's gateway for native ETH and the Base bridge's `bridgeETHTo`: they are paid in native value, and a call under rules carries none [V `test_poolRules_whatIsNotListedIsRefused` in `contracts/test/CallRules.t.sol`]. They need a decoder that judges a value |
 | A decoder of its own | other swaps at a router (several pools, exact output, v2 pools, other routers); Seaport listings (a bid has its decoder, below); GMX orders; Uniswap v4; Balancer; Pendle |
 
