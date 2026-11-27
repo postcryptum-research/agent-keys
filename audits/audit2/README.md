@@ -44,8 +44,8 @@ Findings 01 to 03 were made in the first step.
 | # | Severity | Where | Summary | Issue | Fix | State |
 |---|---|---|---|---|---|---|
 | AK-2026-11-28-01 | High | `AgentPolicy` | A paymaster field that names the zero address is not charged to the native budget, and the account pays | #244 | #249 | fixed in the source, in review; the test networks carry the fix after a redeploy |
-| AK-2026-11-28-02 | High | Jinn example | After the handover the former EOA keeps full power over the Safe where it is an enabled module | #245 | | open |
-| AK-2026-11-28-03 | Medium | Jinn example | The migration's first step, a lone operator grant by the agent, is refused by the current policy | #246 | | open |
+| AK-2026-11-28-02 | High | Jinn example | After the handover the former EOA keeps full power over the Safe where it is an enabled module | #245 | #252 | fixed in the example, in review |
+| AK-2026-11-28-03 | Medium | Jinn example | The migration's first step, a lone operator grant by the agent, is refused by the current policy | #246 | #252 | fixed in the example, in review |
 | AK-2026-11-28-04 | Low | `AgentPolicy` | `transferFrom` is not held to a source: tokens a third party approved to the account can be moved | #247 | #249 | accepted as the function's meaning: stated for owners and held by tests, in review |
 
 ## The findings
@@ -136,6 +136,19 @@ refuse while the EOA is one, or disable it in the same step as the swap.
 Other modules have the same power: have the operator review each. A
 regression in which the former EOA is a module.
 
+**Resolution (#252, patch 0010 of the example).** The check and the
+migration read the Safe's modules: while the EOA is an enabled module the
+migration refuses before anything changes hands, in a dry run too, and the
+daemon refuses to boot. Every other module is named for the operator's
+review (`safe-modules: review`). Held by unit tests and, on Safe 1.3.0's
+own bytecode on Jinn's snapshot, by
+`test/hermetic/signer-migrate-refusals.test.ts`: the migration refuses and
+the owner is unchanged; after a swap done by hand the former owner still
+pays out of the Safe and the check refuses. Jinn's full solution loop
+showed why the review matters: a service Safe that stOLAS creates has
+three modules from the start (its distributor, its guard and the recovery
+module), and the loop now asserts that the step names them.
+
 ### AK-2026-11-28-03 (Medium): the migration against the current policy
 
 **Where:** the Jinn example, `examples/jinn/patches/0009-…`, the step
@@ -156,6 +169,17 @@ right would be gone again.
 **Recommended.** A grant that stays is the owner's: sign it on the root
 path. Split the migration into the owner's step and the agent's steps, and
 run it against the current policy, not an older bytecode fixture.
+
+**Resolution (#252, patch 0011 of the example).** The migration never
+sends the grant. Its step `owner-approved-safe` reads
+`isApprovedForAll(Kernel, Safe)`; when the grant is missing it changes
+nothing and prints the owner's root command. The proof that the Kernel's
+agent key signs before the Safe changes hands is now a call the mandate
+lists and the current policy admits: the publication of the attestation
+key. The loop's bytecode fixture carries the `AgentPolicy` of #249, and
+Jinn's full solution loop with a Kernel owner passes on it with an
+`agent-signer` built with software keys
+([`examples/jinn/README.md`](../../examples/jinn/README.md)).
 
 ### AK-2026-11-28-04 (Low): `transferFrom` and its source
 
