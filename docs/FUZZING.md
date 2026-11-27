@@ -456,6 +456,55 @@ that protocol, and each recipe in `docs/DAPPS.md` is held by a test of its
 own or marked `[I]`. The fork run is of one asset on one test network. No
 call was sent to a chain.
 
+## Contracts: the Seaport bid decoder
+
+`contracts/test/SeaportBidDecoder.t.sol` holds `SeaportBidDecoder` on its
+own, and `contracts/test/SeaportTrading.t.sol` under the policy, with a
+Kernel account and a mandate of two venues
+([#80](https://github.com/postcryptum-research/agent-keys/issues/80)).
+
+| Test | What must hold |
+|---|---|
+| `test_theRecordedOrder` | an order hash the deployed Seaport gave, and its domain separator on Base Sepolia: the stand-in hashes as Seaport does, and the decoder's digest is the one Seaport will ask for |
+| `testFuzz_theDigestIsSeaports` | for any price, fee, id, zone, zone word, salt, counter and end: the digest is Seaport's, the most sold is the price, the end and the earliest registration are the order's |
+| `test_everyFieldIsInTheDigest` | twelve fields changed one at a time: each changes the digest |
+| one test for each rule of `judge` | the rule's refusal, with its boundary where it has one (fees equal to the price pass, a wei more does not; eight things asked for pass, nine do not) |
+| `test_checkConfig_aCollectionSaysItIsOne` | a token, a contract that answers no, an answer of two words or of one byte, and a failed call whose data reads like a yes are no collection |
+| `test_theJudgmentAtTheLimits_isInsideTheGasBound` | sixteen pairs and eight things asked for: under half of the gas the policy gives a decoder |
+| `test_seaport_*` (nine) | under the policy: a bid is charged when registered, vouched for, filled once for its price; it ends; the refusals; one budget with CoW Swap; the owner cancels at Seaport; a validated order; Seaport and its conduit are no targets |
+
+**Seaport is a stand-in, and Seaport itself.** The stand-in is written
+from Seaport's source and models the one way of filling a bid that the
+tests use. `SeaportRealTest` runs the nine tests under the policy against
+Seaport's own code on a fork of Base Sepolia, and ten more: the other ways
+Seaport has of filling an order (the basic route with a tip, the advanced
+route with another recipient and with criteria, matching), a part of a
+bid, a zone that agrees and one that refuses, and what Seaport does with
+four kinds of order the decoder refuses.
+
+```sh
+cd contracts
+forge test --evm-version osaka --match-path test/SeaportBidDecoder.t.sol
+forge test --evm-version osaka --match-contract SeaportTradingTest --match-test test_seaport
+FORK_BASE_SEPOLIA_RPC_URL=<an RPC of Base Sepolia> \
+    forge test --evm-version osaka --match-contract SeaportRealTest --match-test 'test_seaport|test_real'
+```
+
+Run on 2026-11-27: 29, 9 and 19 pass. Without the variable the fork tests
+are skipped, so CI runs the first two.
+
+**That it bites.** 67 breaks of the decoder, one at a time (a rule
+removed, a boundary moved by one, a field left out of the hash, an answer
+replaced): each fails a test. The first run left one unfound, a failed
+call to a collection whose data reads like a yes; its test was added.
+
+**What it does not cover.** The stand-in models one way of filling;
+the others are held only by the fork run. Bulk signatures, ERC-1155 items
+and contract orders are refused by the decoder and not exercised at
+Seaport. The conduit's owner and its channels are a chain's state, not
+read here. No order was posted to a marketplace, and nothing was sent to
+a chain.
+
 ## Contracts: recipes against the protocols' own code
 
 `contracts/test/ProtocolRecipes.t.sol` runs four recipes of

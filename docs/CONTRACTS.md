@@ -31,6 +31,7 @@ commit `e48b93e001f34f460bd4845d231b8e0ee5d26ad6` builds them, every contract at
 | `VenueCalls` | how a call is named between a decoder and the policy (library) | the policy; the swap decoder | none: compiled into them |
 | `SwapRouter02Decoder` | a swap at Uniswap's SwapRouter02, as a call the account makes | the policy; the owner's tools | not deployed yet |
 | `CallRulesDecoder` | calls at one contract, each argument word held to a rule | the policy; the owner's tools | not deployed yet; one per contract it speaks for |
+| `SeaportBidDecoder` | a bid for one NFT at Seaport 1.6 under that interface | the policy; the owner's tools | not deployed yet |
 | `DemoCounter` | a demo target | anyone; the agent in demos | `0x29da894F3E456CAC92b3EC76710524E74411E99f` |
 
 The addresses are the file's current entries [V `contracts/deployments/84532.json`].
@@ -1096,6 +1097,120 @@ goes with the call. A config at both limits is judged in 70,135 gas of the
 **Other functions.** `untouched` is always false. `checkConfig(config)`
 returns true or reverts `InvalidConfig`: the rules above for every function
 whether or not it is called, and code at each charged token.
+
+## SeaportBidDecoder
+
+`contracts/src/venues/SeaportBidDecoder.sol`. `IVenueDecoder` for a bid at
+Seaport 1.6 (`0x0000000000000068F116a894984e2DB1123eB395`, the same
+address on every chain it is on): the account offers an amount of an
+ERC-20 token for one ERC-721 item of a collection the owner listed [V
+source]. It judges an order: the account vouches for it when Seaport asks
+(ERC-1271), as for a CoW or a 1inch order. The contract and its tests are
+here; the CLI and the phone do not place or show such bids yet, and no
+chain has the decoder.
+
+**State.** None: no storage, no upgrade path, no `delegatecall`, no
+`selfdestruct`. Immutables: `venue` (Seaport), `conduitKey` (the conduit an
+order must name; zero is Seaport itself), `spender` (that conduit, or
+Seaport: the address the owner's allowance is given to) and
+`domainSeparator`.
+
+**The constructor asks Seaport three things** [V source;
+`test_aSeparatorOfAnotherChain_orAnotherAddress`,
+`test_aKeyWithoutAConduit`, `test_aSeaportThatHashesOtherwise`]:
+
+- its domain separator (`information()`), which must be the one of the
+  name `Seaport`, Seaport's own version, this chain and Seaport's address,
+  or `NotSeaportsDomain`;
+- the conduit behind the key, from Seaport's conduit controller, or
+  `NoSuchConduit`;
+- its hash of a probe order with a different value in every field
+  (`getOrderHash`), which must be the hash built here, or
+  `NotSeaportsHash`: the decoder writes the hash from Seaport's type
+  strings, and cannot be deployed for a Seaport that hashes otherwise.
+
+**The config** is `abi.encode(Config{maxLife, pairs})`. A pair is
+`VenuePairs.Pair`: `sellToken` the token paid, `buyToken` the collection,
+and its price reads "at least `minBuy` items for each `perSell` of the
+token", so one item costs at most `perSell / minBuy`. **The order** is
+`abi.encode` of Seaport's order components, as Seaport lays them out.
+
+**`judge` allows an order only if** [V source; one test for each in
+`SeaportBidDecoder.t.sol`]:
+
+| Rule | Refused with |
+|---|---|
+| the account is the offerer | `NotTheAccountsOrder` |
+| one thing is offered: an amount of an ERC-20 token, not zero, without an id | `NotABid` |
+| every amount is the same at the order's start and at its end | `AmountChangesWithTime` |
+| one to eight things are asked for | `NotTheConsiderationOfABid` |
+| the first is one ERC-721 item to the account: a named item, or one by criteria | `NotAnItemForTheAccount` |
+| every other is an amount of the offered token (a fee), and together they are no more than the offered amount | `NotAFeeInTheOfferedToken`, `FeesAboveTheOffer` |
+| the order is filled whole: Seaport's type 0, or type 2 (which its zone may refuse) | `NotFilledWhole` |
+| it has an end that fits 48 bits | `NeverEnds` |
+| its conduit key is the decoder's | `NotThisConduit` |
+| the token and the collection are a listed pair, and the price is no more than the pair's | `VenuePairs.PairNotListed`, `BelowTheLowestPrice` |
+
+It answers: the offered token, the offered amount as the most the order
+can take, the order's end, the end less `maxLife` as the earliest time it
+may be registered, and Seaport's EIP-712 digest of the order. The zone, its
+word, the salt, the start, the counter and the item's id or criteria are
+the agent's to choose: each is in the digest, and none changes what the
+account pays or receives.
+
+**What the rules rest on in Seaport** [V the source of seaport-core
+v1.6.6, read on 2026-11-27; each also run against Seaport's own code on a
+fork of Base Sepolia, `SeaportRealTest`]:
+
+- Whichever of Seaport's ways an order is filled, the offered amount leaves
+  the offerer and no more. The standard routes send it whole to the filler,
+  who pays the fees; the basic route pays the fees, and what the filler
+  adds, out of it; matching splits it
+  [V `test_real_everyWayOfFillingTakesThePriceAndGivesTheItem`,
+  `test_real_feesComeOutOfThePriceInTheBasicRoute`].
+- What the order asks for goes to the recipient the order names, in full,
+  or the fill reverts. With criteria the filler picks the item
+  [V `test_real_aBidForAnyItemOfTheCollection`].
+- A part of a "full" order is refused, and it fills once
+  [V `test_real_aPartOfABidIsRefused`].
+- With unequal start and end amounts Seaport takes what the moment says
+  [V `test_real_anOfferThatRisesTakesMoreLater`].
+- A zone can make a fill revert and can cancel the order; it changes
+  nothing of what moves [V `test_real_aZoneCanOnlyRefuse`].
+- The order's conduit key says whose allowance is spent
+  [V `test_real_theKeySaysWhichAllowanceIsSpent`].
+- The digest is of the components with the offerer's counter at the time of
+  the fill: a bid carries the current counter, or it is dead.
+
+**What the decoder cannot hold:**
+
+- **Seaport keeps a signature it has checked.** Anyone may have an order
+  the account vouches for validated at Seaport (`validate`); from then on
+  Seaport fills it without asking the account, until the order's end.
+  Removing the mandate does not stop such an order. Cancelling at Seaport
+  (`cancel`, or `incrementCounter` for every order of the account) does,
+  and so does taking the allowance back, which the owner's tools do when a
+  mandate is removed. What a validated order can take is still its own
+  price, once, before its end [V
+  `test_seaport_aValidatedOrderIsNotAskedAgain`,
+  `test_seaport_theOwnerCancelsAtSeaport`].
+- **The allowance to a conduit** is an allowance to whoever the conduit's
+  owner opens it to: an open channel can move any token approved to the
+  conduit [V source, `Conduit.execute`]. It is bounded by what the owner
+  approved: one budget.
+- **Seaport does not check what a token is.** It moves an ERC-721 item and
+  an ERC-20 amount by the same call: with a token listed as a collection,
+  "the item 5" is five units of it [V
+  `test_real_aTokenListedAsACollectionIsPaidInItsUnits`]. The collections
+  are the owner's list, and `checkConfig` asks each whether it is an
+  ERC-721.
+
+**Other functions.** `untouched(account, order)` is true when Seaport's
+record of the order shows no fill and no cancellation; Seaport keeps that
+record for good. `checkConfig(config)` returns true or reverts
+`InvalidConfig`: a lifetime, one to sixteen pairs, none twice, a price for
+each, code at each token, and at each collection a contract that answers
+ERC-165 that it is an ERC-721 (one word, true).
 
 ## DemoCounter
 

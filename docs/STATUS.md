@@ -62,8 +62,11 @@ tx [`0x785332105fd8085d50e542ff9f677eba964399bbc0d71333ddd71fed03e669bb`](https:
   decoder judged, shown against the router's own code on the same fork and
   not on a chain yet; a pool's functions that name a beneficiary, each
   argument held to a rule the owner wrote, shown against Aave's pool there
-  too; which calls of Aave, Compound, Lido and others can go on a mandate,
-  and which never: [`docs/DAPPS.md`](DAPPS.md).
+  too; a bid for an NFT at Seaport within the owner's collections and
+  highest prices, in the contracts and their tests only, shown against
+  Seaport's own code on the same fork; which calls of Aave, Compound, Lido
+  and others can go on a mandate, and which never:
+  [`docs/DAPPS.md`](DAPPS.md).
 - Existing agent frameworks on top — Coinbase AgentKit, a Claude Code /
   OpenClaw skill, Jinn, Olas and ElizaOS, each run on Base Sepolia; the
   ElizaOS agent also pays for APIs with x402

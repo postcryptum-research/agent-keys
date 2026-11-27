@@ -8,6 +8,8 @@ import {Deploy} from "../script/Deploy.s.sol";
 /// replaces it (`REDEPLOY=true`, house rule 9): `<name>V<n>`, one above the
 /// highest version the file records, so that live accounts can still be
 /// found and moved.
+import {ConduitStandIn} from "./SeaportTrading.t.sol";
+
 contract DeployScriptTest is Test {
     Deploy internal script = new Deploy();
 
@@ -28,6 +30,20 @@ contract DeployScriptTest is Test {
             (v,,) = script.versionOf(not_[i]);
             assertFalse(v, not_[i]);
         }
+    }
+
+    /// The bid decoder is deployed where Seaport is, with the conduit its orders name.
+    function test_seaportIsHereOnlyWithItsConduit() public {
+        address seaport = 0x0000000000000068F116a894984e2DB1123eB395;
+        bytes32 key = 0x0000007b02230091a7ed01230072f7006a004d60a8d4e71d599b8104250f0000;
+        assertFalse(script.seaportIsHere(), "no code at Seaport's address");
+        // a Seaport whose controller knows another key
+        deployCodeTo(
+            "SeaportTrading.t.sol:SeaportStandIn", abi.encode(bytes32(uint256(key) ^ 1), new ConduitStandIn()), seaport
+        );
+        assertFalse(script.seaportIsHere(), "no conduit behind the key");
+        deployCodeTo("SeaportTrading.t.sol:SeaportStandIn", abi.encode(key, new ConduitStandIn()), seaport);
+        assertTrue(script.seaportIsHere());
     }
 
     /// A decoder of rules has a key of its own, which a rewrite of the file keeps.
