@@ -77,7 +77,7 @@ class MainActivity : AppCompatActivity() {
         const val ALIAS = "tpmsign-p0-owner"
         /** One key per enrolled account (§5.1): alias by chain and account. */
         fun aliasFor(chainId: String, account: String) = "tpmsign-owner-$chainId-${account.lowercase()}"
-        const val APP_VERSION = "0.4.4"
+        const val APP_VERSION = "0.4.7"
         /** Added to a failed request to the laptop's session, a plain HTTP request on the local network. */
         const val UNREACHABLE = "\n\nThe phone could not reach the laptop's session. Both must be on the same local network; a VPN on the phone can stand in the way."
         const val PREFS = "enrollments"
@@ -316,7 +316,7 @@ class MainActivity : AppCompatActivity() {
             val e = JSONObject(v.toString())
             if (!isConfirmed(v.toString())) null else FfiEnrolledAccount(
                 chainId = e.getString("chainId").toULong(), entryPoint = e.getString("entryPoint"), account = e.getString("account"),
-                validator = null, gasCapWei = defaultGasCapWei(), expertMode = false, pins = pinsOf(e)
+                validator = null, gasCapWei = defaultGasCapWeiFor(e.getString("chainId").toULong()), expertMode = false, pins = pinsOf(e)
             )
         }
         val review = openRequest(bytes, commitment, now.toULong(), enrolled)

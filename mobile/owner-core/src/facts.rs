@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use alloy_primitives::{address, b256, Address, B256};
 
-use crate::review::{Facts, Token, Venue, VenueKind};
+use crate::review::{Facts, Native, Token, Venue, VenueKind};
 
 /// `contracts/deployments/84532.json`, the canonical file. Variants such as
 /// `84532.enclave.json` (a developer's test paymaster) are never embedded.
@@ -18,6 +18,10 @@ const BASE_SEPOLIA: &str = include_str!("../../../contracts/deployments/84532.js
 /// `contracts/deployments/11155111.json`: Sepolia, where CoW Protocol runs
 /// and the first orders of issue #80 are placed.
 const SEPOLIA: &str = include_str!("../../../contracts/deployments/11155111.json");
+
+/// `contracts/deployments/5042002.json`: Arc testnet, whose gas token is
+/// USDC. The same commit as on the other two chains, at the same addresses.
+const ARC_TESTNET: &str = include_str!("../../../contracts/deployments/5042002.json");
 
 /// `(chain, token, symbol, decimals, EIP-712 domain separator)`. USDC on Base
 /// Sepolia: `symbol()`, `decimals()` and `DOMAIN_SEPARATOR()` read from the
@@ -40,7 +44,52 @@ const TOKENS: &[(u64, Address, &str, u8, B256)] = &[
         b256!("b90e5057db141a932946e64d09ccb7ffc9b00bd79fec26f698d29af0c83320a6"),
     ),
     (11155111, address!("fFf9976782d46CC05630D1f6eBAb18b2324d6B14"), "WETH", 18, B256::ZERO),
+    // Arc testnet, read on 2026-11-27: the ERC-20 face of the chain's gas
+    // token, with name "USDC" and version "2" like the others
+    (
+        5042002,
+        address!("3600000000000000000000000000000000000000"),
+        "USDC",
+        6,
+        b256!("361191522483d32a83e70ae7183b4b9629442c13a78bc9921d6f707911c8c6b0"),
+    ),
+    // Circle's two other tokens there, read the same day: EURC (name "EURC")
+    // and cirBTC (name "Circle Wrapped Bitcoin"), each with version "2"
+    (
+        5042002,
+        address!("89B50855Aa3bE2F677cD6303Cec089B5F319D72a"),
+        "EURC",
+        6,
+        b256!("649ec6b0634bd74f28684781d2c9ae49dff14ba3d5f9bb5d70c1e1f0e1ebf160"),
+    ),
+    (
+        5042002,
+        address!("f0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF"),
+        "cirBTC",
+        8,
+        b256!("5b21e39ccfd3b6622b70bb0d9fcf3d9db5b5199a6c7491708831130adcc95250"),
+    ),
 ];
+
+/// A chain whose gas token is not ether: `(chain, the symbol of its native
+/// balance, the ERC-20 that moves the same balance)`. On Arc testnet the gas
+/// token is USDC: 18 decimals as a native balance (value sent, gas) and 6 as
+/// the token at `0x3600000000000000000000000000000000000000`, one balance
+/// behind both (read on 2026-11-27: a native transfer and the token's
+/// `balanceOf` moved together).
+const NATIVE: &[(u64, &str, Address)] = &[(5042002, "USDC", address!("3600000000000000000000000000000000000000"))];
+
+/// The most an owner's operation may cost in gas where an enrollment sets
+/// no cap of its own: 0.005 of the gas token, and 3 on Arc testnet, where
+/// the token is USDC. On 2026-11-27 the fee there moved between 30 and 566
+/// gwei within hours, and a mandate's install came to a maximum of 0.83
+/// USDC at the higher one (against a few wei of fee on Sepolia).
+pub fn default_gas_cap_wei(chain_id: u64) -> u128 {
+    match chain_id {
+        5042002 => 3_000_000_000_000_000_000,
+        _ => crate::review::DEFAULT_GAS_CAP_WEI,
+    }
+}
 
 /// The current `AgentPolicy`, the same address on both chains: built from
 /// commit `b11adb7cf2dcb2660b4c93c81c62f8945e246706`, with every feature of
@@ -216,6 +265,43 @@ const VENUES: &[(u64, VenueKind, Address, &str, B256, Address, Address, &str, &s
         "CCTP messenger",
         "callRulesCctpMessenger",
     ),
+    // Sepolia, two more decoders of rules from the same commit (dry run of
+    // 2026-11-27; the code hash is the build's with the venue filled in)
+    (
+        11155111,
+        VenueKind::CallRules,
+        address!("467b0caE921ceEaf64D832eFD242A2260e057E60"),
+        "Compound v3 USDC market",
+        b256!("69d1e9bf07069eb098604962272a415811ae4c4f2a6cd7e8af7f7dfada4f159d"),
+        address!("Aec1F48e02Cfb822Be958B68C7957156EB3F0b6e"),
+        address!("Aec1F48e02Cfb822Be958B68C7957156EB3F0b6e"),
+        "Compound v3 USDC market",
+        "callRulesCompoundV3Usdc",
+    ),
+    (
+        11155111,
+        VenueKind::CallRules,
+        address!("1CC3c09765f4867e440Dd9b7F61c227E2338e254"),
+        "Uniswap v3 position manager",
+        b256!("c30fbabcfe8545837a22df63b331eec5435e8a00cb92d1044e759b1a1c751ed2"),
+        address!("1238536071E1c677A632429e3655c799b22cDA52"),
+        address!("1238536071E1c677A632429e3655c799b22cDA52"),
+        "Uniswap v3 position manager",
+        "callRulesUniswapV3Positions",
+    ),
+    // Arc testnet: the messenger and its decoder are at the same addresses,
+    // with the same code, as on the other two chains
+    (
+        5042002,
+        VenueKind::CallRules,
+        address!("C5135aC6A911B692173F2626dD57ff1D80d16F62"),
+        "CCTP messenger",
+        b256!("225c3d4bd0bd706e394b6341124c19430e7e5ee807bd249e1687664a89aef79b"),
+        address!("8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA"),
+        address!("8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA"),
+        "CCTP messenger",
+        "callRulesCctpMessenger",
+    ),
 ];
 
 /// The name of a venue's own contract.
@@ -230,7 +316,7 @@ fn place_name(kind: VenueKind, venue: &str) -> String {
 
 /// The chains this build has facts for.
 pub fn chains() -> Vec<u64> {
-    let mut chains = vec![84532, 11155111];
+    let mut chains = vec![84532, 11155111, 5042002];
     if cfg!(feature = "test-chains") {
         chains.push(31337);
     }
@@ -243,6 +329,7 @@ pub fn for_chain(chain_id: u64) -> Facts {
     match chain_id {
         84532 => from_deployments(BASE_SEPOLIA, chain_id, true),
         11155111 => from_deployments(SEPOLIA, chain_id, true),
+        5042002 => from_deployments(ARC_TESTNET, chain_id, true),
         // Development builds only. The CLI's anvil harness installs Base
         // Sepolia's runtime code at the same addresses
         // (agent-signer/tests/fixtures/chain-code.json), so the current
@@ -326,6 +413,8 @@ fn from_deployments(json: &str, chain_id: u64, canonical: bool) -> Facts {
                 f.wrapped_native.push(*token);
             }
         }
+        f.native =
+            NATIVE.iter().find(|n| n.0 == chain_id).map(|(_, symbol, token)| Native { symbol: symbol.to_string(), token: *token });
     }
     f
 }
@@ -351,6 +440,8 @@ const CONTRACTS: &[(&str, &str, bool)] = &[
     // a decoder of rules is one per contract, each under a key of its own
     ("callRulesAaveV3Pool", "Aave V3 pool rules decoder", false),
     ("callRulesCctpMessenger", "CCTP messenger rules decoder", false),
+    ("callRulesCompoundV3Usdc", "Compound v3 USDC market rules decoder", false),
+    ("callRulesUniswapV3Positions", "Uniswap v3 position manager rules decoder", false),
     ("entryPoint", "EntryPoint v0.7", false),
 ];
 
@@ -403,7 +494,7 @@ mod tests {
     /// is reviewed.
     #[test]
     fn every_key_of_the_embedded_file_is_accounted_for() {
-        for (file, chain) in [(BASE_SEPOLIA, 84532), (SEPOLIA, 11155111)] {
+        for (file, chain) in [(BASE_SEPOLIA, 84532), (SEPOLIA, 11155111), (ARC_TESTNET, 5042002)] {
             let map: BTreeMap<String, serde_json::Value> = serde_json::from_str(file).unwrap();
             assert_eq!(map["chainId"].as_u64(), Some(chain));
             for (key, value) in &map {
@@ -453,7 +544,8 @@ mod tests {
 
         let decoder = address!("42F62bF7134F5eF6d46d4BC07d806E77D1Df641a");
         let (settlement, relayer) = (address!("9008D19f58AAbD9eD0D60971565AA8510560ab41"), address!("C92E8bdf79f0507f65a392b0ab4667716BFE0110"));
-        assert_eq!(f.venues.len(), 5, "CoW Swap, 1inch, Uniswap, Aave V3's pool and CCTP's messenger");
+        // CoW Swap, 1inch, Uniswap, and rules for Aave V3's pool, CCTP's messenger, Compound's market and Uniswap's positions
+        assert_eq!(f.venues.len(), 7);
         let v = &f.venues[&decoder];
         assert_eq!((v.name.as_str(), v.place, v.spender), ("CoW Swap", settlement, relayer));
         assert_eq!(v.code_hash, b256!("e11511d23d679dd68a71be1cfd2d6714ba3fb10e077c4db6c4bf3fe96d21e47e"));
@@ -490,6 +582,140 @@ mod tests {
         // Sepolia's WETH is the chain's wrapped ether, and nothing else is; Base Sepolia has none
         assert_eq!(f.wrapped_native, vec![address!("fFf9976782d46CC05630D1f6eBAb18b2324d6B14")]);
         assert!(for_chain(84532).wrapped_native.is_empty());
+    }
+
+    /// Arc testnet (chain 5042002), deployed on 2026-11-27 from the commit of
+    /// the other two chains: the same contracts at the same addresses, the
+    /// messenger's rules decoder as the one venue, USDC as a token with its
+    /// signing domain, and USDC as the gas token, with a gas cap of its own.
+    #[test]
+    fn arc_testnet_is_known_with_usdc_as_its_gas_token() {
+        assert!(chains().contains(&5042002));
+        let f = for_chain(5042002);
+        let p = vec![CURRENT_POLICY];
+        assert_eq!(f.names[&CURRENT_POLICY], "AgentPolicy");
+        assert_eq!(
+            (
+                &f.policy_modules,
+                &f.payee_policy_modules,
+                &f.trading_policy_modules,
+                &f.id_policy_modules
+            ),
+            (&p, &p, &p, &p)
+        );
+        assert_eq!(
+            f.signer_modules,
+            vec![address!("d88d25Ca3e042A28893781935756ee90Bc2d2769")]
+        );
+        assert_eq!(
+            f.sponsoring_paymasters,
+            vec![address!("657792557C1D40f2Da031FD7aB277078D2c0a4cb")]
+        );
+        assert_eq!(
+            f.recovery_validators,
+            vec![address!("b7a06e6c7B5cC9852578EF89f38d161C31218047")]
+        );
+        assert_eq!(
+            f.entry_point,
+            Some(address!("0000000071727De22E5E9d8BAf0edAc6f37da032"))
+        );
+        // one venue: the rules decoder for CCTP's messenger, the code that is on the other chains
+        let messenger = address!("8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA");
+        let decoder = address!("C5135aC6A911B692173F2626dD57ff1D80d16F62");
+        assert_eq!(f.venues.len(), 1);
+        let v = &f.venues[&decoder];
+        assert_eq!(
+            (v.name.as_str(), v.kind, v.place, v.spender),
+            ("CCTP messenger", VenueKind::CallRules, messenger, messenger)
+        );
+        assert_eq!(v.code_hash, for_chain(11155111).venues[&decoder].code_hash);
+        assert_eq!(f.names[&decoder], "CCTP messenger rules decoder");
+        // USDC: the token, with the domain its name and version give on this chain
+        let usdc_at = address!("3600000000000000000000000000000000000000");
+        let usdc = &f.tokens[&usdc_at];
+        assert_eq!((usdc.symbol.as_str(), usdc.decimals), ("USDC", 6));
+        use alloy_primitives::{keccak256, U256};
+        use alloy_sol_types::SolValue;
+        let domain = keccak256(
+            (
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256("USDC"),
+                keccak256("2"),
+                U256::from(5042002),
+                usdc_at,
+            )
+                .abi_encode(),
+        );
+        assert_eq!(usdc.domain, domain);
+        // Circle's two other tokens there, each with the domain its name and version give
+        for (at, symbol, decimals, name) in [
+            (address!("89B50855Aa3bE2F677cD6303Cec089B5F319D72a"), "EURC", 6, "EURC"),
+            (address!("f0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF"), "cirBTC", 8, "Circle Wrapped Bitcoin"),
+        ] {
+            let t = &f.tokens[&at];
+            assert_eq!((t.symbol.as_str(), t.decimals), (symbol, decimals));
+            let domain = keccak256(
+                (
+                    keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                    keccak256(name),
+                    keccak256("2"),
+                    U256::from(5042002),
+                    at,
+                )
+                    .abi_encode(),
+            );
+            assert_eq!(t.domain, domain, "{symbol}");
+            assert!(is_build_name(symbol));
+        }
+        // and the gas token: named on the screen, the same balance as the token
+        assert_eq!(f.native_symbol(), "USDC");
+        assert_eq!(f.native.as_ref().map(|n| n.token), Some(usdc_at));
+        assert!(f.wrapped_native.is_empty());
+        // a mandate's install came to 0.83 USDC there at a high fee: the default cap is 3, and 0.005 of ether elsewhere
+        assert_eq!(default_gas_cap_wei(5042002), 3_000_000_000_000_000_000);
+        for chain in [84532, 11155111, 31337, 1] {
+            assert_eq!(
+                default_gas_cap_wei(chain),
+                crate::review::DEFAULT_GAS_CAP_WEI,
+                "{chain}"
+            );
+            assert_eq!(for_chain(chain).native_symbol(), "ETH", "{chain}");
+        }
+        assert_eq!(
+            crate::review::EnrolledAccount::new(5042002, Address::ZERO, Address::ZERO).gas_cap_wei,
+            3_000_000_000_000_000_000
+        );
+    }
+
+    /// Sepolia's two decoders of rules of 2026-11-27 for a live run of two
+    /// recipes: Compound v3's USDC market and Uniswap v3's position manager.
+    #[test]
+    fn sepolia_knows_the_rules_decoders_of_the_recipes() {
+        let f = for_chain(11155111);
+        for (decoder, name, place) in [
+            (
+                address!("467b0caE921ceEaf64D832eFD242A2260e057E60"),
+                "Compound v3 USDC market",
+                address!("Aec1F48e02Cfb822Be958B68C7957156EB3F0b6e"),
+            ),
+            (
+                address!("1CC3c09765f4867e440Dd9b7F61c227E2338e254"),
+                "Uniswap v3 position manager",
+                address!("1238536071E1c677A632429e3655c799b22cDA52"),
+            ),
+        ] {
+            let v = &f.venues[&decoder];
+            assert_eq!(
+                (v.name.as_str(), v.kind, v.place, v.spender),
+                (name, VenueKind::CallRules, place, place)
+            );
+            assert_eq!(f.names[&decoder], format!("{name} rules decoder"));
+            assert_eq!(f.names[&place], name);
+            assert!(is_build_name(name), "{name}");
+            // not on the other chains
+            assert!(!for_chain(84532).venues.contains_key(&decoder));
+            assert!(!for_chain(5042002).venues.contains_key(&decoder));
+        }
     }
 
     /// The redeploys of 2026-11-25 and 2026-11-27 (the policy from
@@ -572,7 +798,8 @@ mod tests {
             let seaport = address!("713165a6157a4B2952A775A9D1C9948D9a703128");
             assert_eq!(f.names[&seaport], "Seaport bid decoder", "{chain}");
             assert!(!f.venues.contains_key(&seaport), "{chain}");
-            assert_eq!(f.venues.len(), 5, "{chain}");
+            // Sepolia has two decoders of rules more, for the recipes run there
+            assert_eq!(f.venues.len(), if chain == 11155111 { 7 } else { 5 }, "{chain}");
         }
         // one decoder's code is the same on both chains only where nothing in it names the chain
         let code = |chain: u64, decoder: Address| for_chain(chain).venues[&decoder].code_hash;
@@ -724,12 +951,12 @@ mod tests {
         assert!(none.names.is_empty() && none.policy_modules.is_empty() && none.sponsoring_paymasters.is_empty());
         let anvil = for_chain(31337);
         if cfg!(feature = "test-chains") {
-            assert_eq!(chains(), vec![84532, 11155111, 31337]);
+            assert_eq!(chains(), vec![84532, 11155111, 5042002, 31337]);
             assert!(anvil.demo_counter.is_some() && anvil.policy_modules.len() == 1 && anvil.signer_modules.len() == 1);
             assert!(anvil.sponsoring_paymasters.is_empty() && anvil.tokens.is_empty(), "the harness deploys those afresh");
             assert!(anvil.names.values().all(|n| !n.contains("superseded")));
         } else {
-            assert_eq!(chains(), vec![84532, 11155111]);
+            assert_eq!(chains(), vec![84532, 11155111, 5042002]);
             assert!(anvil.names.is_empty(), "a release build knows no test chain");
         }
     }

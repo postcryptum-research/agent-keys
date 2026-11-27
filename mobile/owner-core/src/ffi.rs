@@ -433,6 +433,13 @@ pub fn default_gas_cap_wei() -> String {
     review::DEFAULT_GAS_CAP_WEI.to_string()
 }
 
+/// The default cap on an owner operation's gas cost on `chain_id`, in the
+/// chain's gas token: the one above wherever the build records no other.
+#[uniffi::export]
+pub fn default_gas_cap_wei_for(chain_id: u64) -> String {
+    crate::facts::default_gas_cap_wei(chain_id).to_string()
+}
+
 /// The crate's version; a development build that knows the test chain says so.
 #[uniffi::export]
 pub fn core_version() -> String {

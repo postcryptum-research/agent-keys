@@ -156,6 +156,17 @@ Still open on a phone: the 7-day expiry of a free account's profile and
 what a rebuild after it keeps, a key after a change of the enrolled
 biometrics, Touch ID, and everything about distribution.
 
+## A chain whose gas token is not ether (version 0.4.7)
+
+The core this app is built on knows Arc testnet (chain 5042002), where the
+gas token is USDC: native amounts are named in the chain's token, a
+mandate's review says that the gas token and the token spend one balance,
+and the default gas cap is the chain's (3 USDC there). What changed is in
+the Android page
+([`../android/README.md`](../android/README.md#a-chain-whose-gas-token-is-not-ether-versions-045-to-047)).
+[I] Not built and not run on an iPhone or in the simulator with this core:
+the app's one changed line passes the chain to the core's default gas cap.
+
 ## A failure is shown at the top of the screen (version 0.4.4, issue #215)
 
 A failure is shown at the top of the screen, under "That did not work",

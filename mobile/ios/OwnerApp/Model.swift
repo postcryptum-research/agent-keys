@@ -203,7 +203,7 @@ final class Model: ObservableObject {
         let confirmed = enrollments.filter(\.confirmed)
         let review = try openRequest(bytes: bytes, commitment: qr.commitment, now: now, enrolled: confirmed.map {
             FfiEnrolledAccount(
-                chainId: $0.chainId, entryPoint: $0.entryPoint, account: $0.account, validator: nil, gasCapWei: defaultGasCapWei(), expertMode: false,
+                chainId: $0.chainId, entryPoint: $0.entryPoint, account: $0.account, validator: nil, gasCapWei: defaultGasCapWeiFor(chainId: $0.chainId), expertMode: false,
                 pins: $0.pins.map { FfiPin(address: $0.address, label: $0.label) }
             )
         })

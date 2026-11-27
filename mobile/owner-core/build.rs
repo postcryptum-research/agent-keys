@@ -4,6 +4,7 @@
 fn main() {
     check("../../contracts/deployments/84532.json", 84532);
     check("../../contracts/deployments/11155111.json", 11155111);
+    check("../../contracts/deployments/5042002.json", 5042002);
 }
 
 fn check(path: &str, chain_id: u64) {

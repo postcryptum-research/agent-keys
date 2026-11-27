@@ -212,6 +212,33 @@ gave root to a key nobody held. Two changes in the app, one on the laptop:
   <label>`, and `key check --phone <label>` at any time. The CLI accepts
   this app from version code 11.
 
+### A chain whose gas token is not ether (versions 0.4.5 to 0.4.7)
+
+The build knows Arc testnet (chain 5042002), where the gas token is USDC,
+beside Base Sepolia and Sepolia.
+
+- Every native amount on the review is named in the chain's gas token: on
+  Arc "Maximum gas cost: … USDC", "Budget: … USDC".
+- A mandate's review there says that USDC is the gas token and also a
+  token, that each has its limit, and that both spend one balance.
+- The default cap on an owner operation's gas cost is the chain's: 0.005
+  of ether, and 3 USDC on Arc testnet (1 before 0.4.7). On 2026-11-27 the
+  fee there moved between 30 and 566 gwei, and a mandate's install came to
+  a maximum of 0.83 USDC.
+- An allowance set to zero for the spender of a venue that leaves a mandate
+  is accepted with the mandate that follows: it takes an allowance back and
+  grants nothing. Before 0.4.6 the phone refused such an operation.
+- The policy's two calls for x402 are named on a mandate's allow-list
+  (`x402Authorize`, `x402Reclaim`), from 0.4.7. Before, they were shown as
+  `0x4993d616` and `0xf3ea183e`.
+- The app states its own version to the laptop as the build's, from 0.4.7:
+  0.4.5 and 0.4.6 said "0.4.4".
+
+[V] 0.4.6 with core 0.3.7 approved two mandates on Arc testnet and one on
+Sepolia on 2026-11-27 ([`docs/CIRCLE.md`](../../docs/CIRCLE.md),
+[`docs/DAPPS.md`](../../docs/DAPPS.md)). 0.4.7 with core 0.3.8 passes the
+core's tests and builds; it was not run on a phone.
+
 ### A failure is shown as a dialog (version 0.4.4, issue #215)
 
 A failure opens a dialog "That did not work" with the reason, and stays in
