@@ -12,9 +12,7 @@ cd ../../signer
 # modules, a Safe, a paymaster, a fake bundler and an x402 server (software
 # keys, so only in this test-only build)
 cargo test -p agent-signer --features insecure-software-keys --test anvil_cli
-cd ../contracts && forge test      # RIP-7212 enabled locally via odyssey = true
-# forge 1.8+ dropped `odyssey`; there the precompile comes with the Osaka
-# EVM: forge test --evm-version osaka
+cd ../contracts && forge test --evm-version osaka   # forge 1.8 or later: the P-256 precompile comes with Osaka
 ```
 
 Linux with a TPM 2.0:

@@ -161,9 +161,8 @@ Any platform — software backend, no hardware needed:
 ```sh
 cd signer && cargo test
 cd contracts && forge test --evm-version osaka
-# The P-256 precompile (RIP-7212): an older forge takes it from `odyssey = true`
-# in foundry.toml, a newer one ignores that key and has it with Osaka only, so
-# without the flag every P-256 check fails there (AA24). CI runs forge 1.10.0.
+# The P-256 precompile (RIP-7212) comes with the Osaka rules (forge 1.8 or
+# later): without the flag every P-256 check fails (AA24). CI runs forge 1.10.0.
 ```
 
 Linux — TPM backend:
@@ -365,7 +364,7 @@ Lessons that cost real debugging time:
   still succeeds and the sponsor pays; `agent-signer` now estimates the
   execution as a call from the EntryPoint and treats
   `UserOperationEvent.success == false` as failure. `cast run` replays in a
-  local EVM without RIP-7212 unless given `--odyssey`, so it shows
+  local EVM without RIP-7212 unless given `--evm-version osaka`, so it shows
   `AA24 signature error` for operations the chain accepted; use it only
   with the flag, or trace the execution calldata with `cast call --from
   <EntryPoint> --trace`, where no signature is involved.

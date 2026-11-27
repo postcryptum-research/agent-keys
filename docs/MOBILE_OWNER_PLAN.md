@@ -33,8 +33,7 @@ sync to the cloud): [`PHONE_OWNER.md`](PHONE_OWNER.md).
    - `cargo test -p agent-signer --features insecure-software-keys --test anvil_cli`
      — end-to-end tests on a local anvil, needs Foundry. It is the harness
      to reuse for the phone's signatures.
-   - `cd contracts && forge test` — with forge 1.8.x, which ignores
-     `odyssey`, run `forge test --evm-version osaka`
+   - `cd contracts && forge test --evm-version osaka` (forge 1.8 or later)
 3. **Decisions are made** (see "Decisions" below): both platforms, and
    the design document is drafted —
    [`MOBILE_OWNER_DESIGN.md`](MOBILE_OWNER_DESIGN.md). The owner confirmed

@@ -314,8 +314,7 @@ OK
 ```
 
 The file is committed; `P256Vector.t.sol` picks it up with the others.
-With forge 1.8.x (`odyssey` is no longer a known option there, so the
-precompile must come from the Osaka EVM):
+With forge 1.8 or later, where the precompile comes with the Osaka rules:
 
 ```
 $ cd ../contracts && forge test --evm-version osaka --match-contract P256Vector
