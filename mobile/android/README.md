@@ -236,8 +236,20 @@ beside Base Sepolia and Sepolia.
 
 [V] 0.4.6 with core 0.3.7 approved two mandates on Arc testnet and one on
 Sepolia on 2026-11-27 ([`docs/CIRCLE.md`](../../docs/CIRCLE.md),
-[`docs/DAPPS.md`](../../docs/DAPPS.md)). 0.4.7 with core 0.3.8 passes the
-core's tests and builds; it was not run on a phone.
+[`docs/DAPPS.md`](../../docs/DAPPS.md)).
+
+[V] 0.4.7 with core 0.3.8 on a phone, 2026-11-27, updated in place over
+0.4.6 (`adb install -r`; the enrollments were kept). The app's first line
+read "owner-core 0.3.8 loaded". The payments mandate of the account on Arc
+testnet was sent to the phone twice, to be installed again as it was. The
+review, read from the phone's screen over USB, named both calls:
+`AgentPolicy (verified in this build) · x402Authorize (0x4993d616)` and
+`· x402Reclaim (0xf3ea183e)`, with the maximum gas cost in USDC and the
+"One balance" line. The first was refused on the phone and nothing was
+sent. The second was confirmed, and the operation the phone signed ran:
+[`0x3bee588be33d2435214cba38dbfcf5b277e665c7552fd2a6d666364e79450ed9`](https://explorer.testnet.arc.io/tx/0x3bee588be33d2435214cba38dbfcf5b277e665c7552fd2a6d666364e79450ed9).
+A third party's call on an allow-list is still shown by its selector: the
+phone names what its build can vouch for.
 
 ### A failure is shown as a dialog (version 0.4.4, issue #215)
 

@@ -45,6 +45,9 @@ on. The owner approved two mandates on the phone (Android owner app 0.4.6,
 core 0.3.7): payments, with a payee list for each token, in
 [`0xf8b9dbc226b1f2713fb669f67b292e3a6c09291a4d6366edbf7ce9179320002a`](https://explorer.testnet.arc.io/tx/0xf8b9dbc226b1f2713fb669f67b292e3a6c09291a4d6366edbf7ce9179320002a), and the
 bridge in [`0x5e18bdf13240d06d4a0749089b6134a69d64e2d79e8f7d077ac2f3f15ccc8b30`](https://explorer.testnet.arc.io/tx/0x5e18bdf13240d06d4a0749089b6134a69d64e2d79e8f7d077ac2f3f15ccc8b30).
+After the runs below the payments mandate was installed again, unchanged,
+with app 0.4.7 (core 0.3.8):
+[`0x3bee588be33d2435214cba38dbfcf5b277e665c7552fd2a6d666364e79450ed9`](https://explorer.testnet.arc.io/tx/0x3bee588be33d2435214cba38dbfcf5b277e665c7552fd2a6d666364e79450ed9).
 They are two because the phone does not let a venue charge a token whose
 payees a mandate lists: what a venue takes does not go to a listed payee.
 The agent's operations went through a public bundler, the account paying
