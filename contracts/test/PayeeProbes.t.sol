@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.38;
 
 // Two probes of the payee lists written by the reviewer of #71: a Safe that
 // holds a bound token, and the first head word of the install data.

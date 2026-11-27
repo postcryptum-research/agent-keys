@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.38;
 
 /// @title IVenueDecoder - what a trading venue is to AgentPolicy
 /// @notice What a trading venue is to `AgentPolicy`: a contract without

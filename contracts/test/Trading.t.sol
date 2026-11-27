@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.38;
 
 import {AgentPermissionTest, MockToken, MockUSDC, MockOperators, Counter} from "./AgentPermission.t.sol";
 import {AgentPolicy} from "../src/AgentPolicy.sol";

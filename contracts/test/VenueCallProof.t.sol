@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.38;
 
 import {AgentPolicy} from "../src/AgentPolicy.sol";
 import {VenueCalls} from "../src/venues/VenueCalls.sol";

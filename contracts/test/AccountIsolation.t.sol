@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.38;
 
 // Tests by the reviewer of #87 for the storage layout of issue #83. With the account as the innermost key, two accounts that
 // install the SAME permission id share every outer key (the id, its epoch,

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.38;
 
 // Further probes by the reviewer of #71: the per-operation token cap, the
 // zero selector, the rule for limited tokens and the refusal of Permit2.
