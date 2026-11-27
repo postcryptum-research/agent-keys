@@ -3954,6 +3954,48 @@ impl Chain {
     }
 }
 
+/// A transaction can be included and still have done nothing: its gas
+/// estimate passed and its execution reverted. (Seen on a fork of a chain
+/// whose gas rules the node's estimate did not follow: a transfer that
+/// creates an account was sent with the gas of a plain one.) The four
+/// commands that send a transaction from the gas wallet say so, and do not
+/// report it as done.
+///
+/// The stand-in for such a destination is code that reverts whenever a gas
+/// price is paid: a node estimates at no price, and the transaction pays one.
+#[test]
+fn a_transaction_included_and_reverted_is_not_reported_as_done() {
+    // GASPRICE ISZERO PUSH1 08 JUMPI PUSH0 PUSH0 REVERT JUMPDEST STOP
+    const REVERTS_WHEN_PAID: &str = "0x3a156008575f5ffd5b00";
+    let chain = chain_or_skip!("reverted");
+    let (owner, agent) = (key(1), key(2));
+    let paymaster = chain.with_paymaster();
+    let cfg = chain.config("agent.json", &base_cfg(&owner, &agent, &chain.addr("demoCounter"), far_future(&chain)));
+    let init = chain.ok(&["account", "init-data", "--agent", &cfg]);
+    let account = init.lines().find_map(|l| l.strip_prefix("account:")).unwrap().trim().to_string();
+    let balance = |who: &str| U256::from_str_radix(chain.rpc("eth_getBalance", json!([who, "latest"])).as_str().unwrap().trim_start_matches("0x"), 16).unwrap();
+
+    // the stand-in does what it is here for: an estimate passes, the transaction reverts
+    chain.rpc("anvil_setCode", json!([account, REVERTS_WHEN_PAID]));
+    let estimate = chain.rpc("eth_estimateGas", json!([{"from": FACILITATOR, "to": account, "value": "0x1"}]));
+    assert!(estimate.as_str().is_some(), "no estimate: {estimate}");
+
+    let said = chain.fails(&["account", "fund", "--agent", &cfg, "--wei", "1000"]);
+    assert!(said.contains("was included") && said.contains("reverted") && !said.contains("funded"), "{said}");
+    assert!(balance(&account).is_zero(), "nothing arrived");
+
+    chain.rpc("anvil_setCode", json!([paymaster, REVERTS_WHEN_PAID]));
+    for args in [
+        &["paymaster", "deposit", "--agent", &cfg, "--wei", "1000"][..],
+        &["paymaster", "stake", "--agent", &cfg, "--wei", "1000"][..],
+        &["paymaster", "sponsor", "--agent", &cfg, "--budget", "1000", "--max-per-op", "10"][..],
+    ] {
+        let said = chain.fails(args);
+        assert!(said.contains("was included") && said.contains("reverted"), "{args:?}: {said}");
+    }
+    assert!(balance(&paymaster).is_zero(), "nothing arrived at the paymaster");
+}
+
 /// An account with no ETH at all: deployed and run on the paymaster's
 /// deposit; then operations delivered through an ERC-4337 bundler, sponsored
 /// and not.

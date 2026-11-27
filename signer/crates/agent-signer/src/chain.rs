@@ -480,8 +480,7 @@ impl Session {
     pub async fn paymaster_deposit(&self, amount: U256) -> Result<B256> {
         self.require_gas_wallet("paymaster deposit")?;
         let paymaster = IWhitelistPaymaster::new(self.paymaster()?, self.provider.clone());
-        let receipt = paymaster.deposit().value(amount).send().await?.get_receipt().await?;
-        Ok(receipt.transaction_hash)
+        done("paymaster deposit", &paymaster.deposit().value(amount).send().await?.get_receipt().await?)
     }
 
     /// List (or delist) this account for sponsorship. Only the paymaster's
@@ -489,8 +488,7 @@ impl Session {
     pub async fn sponsor(&self, budget: u128, max_per_op: u128) -> Result<B256> {
         self.require_gas_wallet("paymaster sponsor")?;
         let paymaster = IWhitelistPaymaster::new(self.paymaster()?, self.provider.clone());
-        let receipt = paymaster.setSponsored(self.account, budget, max_per_op).send().await?.get_receipt().await?;
-        Ok(receipt.transaction_hash)
+        done("paymaster sponsor", &paymaster.setSponsored(self.account, budget, max_per_op).send().await?.get_receipt().await?)
     }
 
     /// Stake the paymaster in the EntryPoint so public bundlers relay its
@@ -498,8 +496,7 @@ impl Session {
     pub async fn paymaster_stake(&self, amount: U256, unstake_delay_sec: u32) -> Result<B256> {
         self.require_gas_wallet("paymaster stake")?;
         let paymaster = IWhitelistPaymaster::new(self.paymaster()?, self.provider.clone());
-        let receipt = paymaster.addStake(unstake_delay_sec).value(amount).send().await?.get_receipt().await?;
-        Ok(receipt.transaction_hash)
+        done("paymaster stake", &paymaster.addStake(unstake_delay_sec).value(amount).send().await?.get_receipt().await?)
     }
 
     pub async fn counter(&self) -> Result<U256> {
@@ -590,8 +587,7 @@ impl Session {
             }
         }
         let tx = TransactionRequest::default().with_to(self.account).with_value(amount);
-        let receipt = self.provider.send_transaction(tx).await?.get_receipt().await?;
-        Ok(receipt.transaction_hash)
+        done("account fund", &self.provider.send_transaction(tx).await?.get_receipt().await?)
     }
 
     /// Build, sign in hardware, and submit one `execute(single)` operation.
@@ -2285,6 +2281,22 @@ mod forbidden_target_tests {
         assert!(venue_target(&venues, relayer).unwrap().contains("holds the owner's allowance"));
         assert!(venue_target(&venues, at(0xc0)).is_none());
     }
+}
+
+/// The hash of a transaction that did what it was sent for, or the refusal:
+/// a receipt says the transaction was included, not that it ran. One that
+/// was included and reverted changed nothing but the gas wallet's balance
+/// (its gas estimate passed and its execution did not: a gas rule the node's
+/// estimate does not follow, a state that changed in between).
+fn done(what: &str, receipt: &alloy::rpc::types::TransactionReceipt) -> Result<B256> {
+    if !receipt.status() {
+        bail!(
+            "{what}: transaction {} was included{} and reverted: nothing was done, and its gas is spent",
+            receipt.transaction_hash,
+            receipt.block_number.map(|n| format!(" in block {n}")).unwrap_or_default()
+        );
+    }
+    Ok(receipt.transaction_hash)
 }
 
 /// `gas` with a margin, as tenths: 13 gives 130%. Refused, not wrapped, when

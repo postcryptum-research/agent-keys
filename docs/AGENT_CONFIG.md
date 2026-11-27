@@ -226,7 +226,7 @@ its module until then; `permission show` names it.
 | `key create --phone` | `account`, `deployments` | nothing on-chain: enrolls a new key on the phone for the account and prints the `phone` key spec | — (the phone's user confirms) |
 | `key show --phone <label> --agent <cfg>` | the `phone` key spec with that label | nothing: prints the enrolled key from the file, no session | — |
 | `key check --phone <label> --agent <cfg>` | the `phone` key spec, `account`, `deployments` | nothing on-chain: the phone signs a fresh digest, which shows that it still holds the key | — (the phone's user confirms) |
-| `account fund`, `paymaster deposit` / `sponsor` / `stake` | `account`, `deployments` | ETH transfers / paymaster settings | gas wallet / paymaster owner |
+| `account fund`, `paymaster deposit` / `sponsor` / `stake` | `account`, `deployments` | ETH transfers / paymaster settings; each fails, naming the transaction, when it was included and reverted | gas wallet / paymaster owner |
 
 Every command that takes `--agent` parses the whole file and reads
 `deployments`. `permission rotate` / `add`, `key create --phone` and
