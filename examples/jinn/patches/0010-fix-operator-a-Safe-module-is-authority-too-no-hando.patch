@@ -1,0 +1,730 @@
+From d78d8e14fa9f67d33487c1a10292bb243dd9d774 Mon Sep 17 00:00:00 2001
+From: agent-keys <noreply@agent-keys.invalid>
+Date: Fri, 27 Nov 2026 20:53:56 +0000
+Subject: [PATCH 10/11] fix(operator): a Safe module is authority too -- no
+ handover while the agent EOA is one
+
+`assertAgentEoaHasNoAuthority` and `jinn signer-migrate` looked at the Safe's
+owners and at the agent NFT only. A module is not an owner:
+`execTransactionFromModule` runs any call or delegatecall from the Safe for an
+enabled module, with no owner's signature, and `swapOwner` does not remove it.
+A keystore EOA that was a module of the Safe kept the Safe after a migration
+that reported "the EOA has no authority" (the internal audit of 2026-11-28,
+finding AK-2026-11-28-02).
+
+- signer/attestation.ts: readSafeModuleAuthority reads the Safe's modules
+  (`isModuleEnabled(eoa)` and the whole `getModulesPaginated` list; it goes on
+  from the last module read, because Safe 1.3.0 returns the following page's
+  first module as `next` and a read that starts there leaves it out).
+  assertAgentEoaHasNoAuthority refuses while the EOA is an enabled module and
+  resolves with the Safe's other modules.
+- signer/migrate.ts: a first step, `safe-modules`, before anything changes
+  hands and in a dry run too. It refuses while the EOA is a module; every
+  other module is listed with the status `review` (and in `modules`), for the
+  operator to review: each has the same power over the Safe.
+- main.ts: at boot the daemon warns about each other module.
+- tests: unit (the EOA as a module; other modules named; paging as Safe 1.3.0
+  and 1.4.1 do it; a list that does not end). On Safe 1.3.0's own bytecode,
+  test/hermetic/signer-migrate-refusals.test.ts: the migration refuses and
+  nothing is swapped; after a swap done by hand the former owner still pays
+  out of the Safe and neither the check nor a re-run reports that Safe as
+  handed over; three modules are listed across pages.
+- test/hermetic/full-loop-kernel-owner.test.ts: on Jinn's snapshot the staked
+  service Safe has modules already (stOLAS creates it with the distributor and
+  its guard enabled, next to the recovery module), none of them the agent EOA:
+  the step reports `review` and names each, and the loop asserts both.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ operator/src/cli/commands/signer-migrate.ts   |   5 +
+ operator/src/main.ts                          |   5 +-
+ operator/src/signer/attestation.ts            |  69 ++++++-
+ operator/src/signer/migrate.ts                |  37 +++-
+ .../hermetic/full-loop-kernel-owner.test.ts   |  22 ++-
+ .../hermetic/signer-migrate-refusals.test.ts  | 183 ++++++++++++++++++
+ operator/test/signer/attestation.test.ts      |  87 ++++++++-
+ operator/test/signer/migrate.test.ts          |  31 ++-
+ operator/vitest.config.ts                     |   3 +
+ 9 files changed, 420 insertions(+), 22 deletions(-)
+ create mode 100644 operator/test/hermetic/signer-migrate-refusals.test.ts
+
+diff --git a/operator/src/cli/commands/signer-migrate.ts b/operator/src/cli/commands/signer-migrate.ts
+index cf1ddfcab..83ff9982a 100644
+--- a/operator/src/cli/commands/signer-migrate.ts
++++ b/operator/src/cli/commands/signer-migrate.ts
+@@ -147,6 +147,11 @@ agent-signer and its mandate is checked to admit the Safe. The agent EOA
+ stays as the agent's attestation key (off-chain documents only) and is
+ published as \`jinn.attestationKey\`.
+ 
++The Safe's modules are read first: a module runs any call from the Safe
++without an owner signing, and the handover does not remove it. While the
++agent EOA is an enabled module the command refuses; every other enabled
++module is listed (\`safe-modules  review\`) for you to review.
++
+ Idempotent: every step reads the chain first; re-run after an interruption.
+ Run with the daemon stopped. The agent EOA pays the gas of the two handover
+ transactions; the Kernel pays its own.
+diff --git a/operator/src/main.ts b/operator/src/main.ts
+index 975cd8a17..f1226c9ee 100644
+--- a/operator/src/main.ts
++++ b/operator/src/main.ts
+@@ -1458,10 +1458,13 @@ export async function main(): Promise<DaemonStartupInfo | SetupHaltedInfo | void
+     const identity = agentId && identityRegistryAddress
+       ? { identityRegistry: identityRegistryAddress as `0x${string}`, agentId: BigInt(agentId) }
+       : undefined;
+-    await assertAgentEoaHasNoAuthority({
++    const { otherSafeModules } = await assertAgentEoaHasNoAuthority({
+       publicClient: agentClients.publicClient, agentEoa: agentEoaAddress, safeAddress: safeAddress as `0x${string}`,
+       ...(identity ?? {}),
+     });
++    for (const module of otherSafeModules) {
++      console.warn(`[main] signer: the service Safe ${safeAddress} has module ${module} enabled: it runs any call from the Safe without the Kernel and outside its mandate -- review it`);
++    }
+     if (identity !== undefined) {
+       try {
+         const binding = await ensureAttestationKeyBinding({
+diff --git a/operator/src/signer/attestation.ts b/operator/src/signer/attestation.ts
+index eba803c33..4c9dc9052 100644
+--- a/operator/src/signer/attestation.ts
++++ b/operator/src/signer/attestation.ts
+@@ -11,17 +11,25 @@
+ //
+ // Two things make that a guarantee rather than an assumption:
+ //   - `assertAgentEoaHasNoAuthority` refuses to boot while the EOA still owns the Safe or the
+-//     agent NFT (an unfinished migration);
++//     agent NFT (an unfinished migration), or is an enabled module of the Safe: a module runs
++//     any call from the Safe with no owner's signature, and `swapOwner` does not remove it;
+ //   - `ensureAttestationKeyBinding` has the Kernel publish, under the agent's ERC-8004 identity,
+ //     which address signs its documents (`jinn.attestationKey`), so a verifier can bind a
+ //     document signer to the agent on-chain.
+-import { encodeFunctionData, getAddress, parseAbi, type Address, type Hex, type PublicClient, type WalletClient } from 'viem';
++import {
++  encodeFunctionData, getAddress, parseAbi, zeroAddress, type Address, type Hex, type PublicClient, type WalletClient,
++} from 'viem';
+ 
+ import { viemSendTransactionWithRetry, type TxRetryWalletClient } from '../tx-retry.js';
+ 
+ export const ATTESTATION_KEY_METADATA = 'jinn.attestationKey';
+ 
+-const SAFE_ABI = parseAbi(['function isOwner(address owner) view returns (bool)']);
++const SENTINEL_MODULES = '0x0000000000000000000000000000000000000001' as Address;
++const SAFE_ABI = parseAbi([
++  'function isOwner(address owner) view returns (bool)',
++  'function isModuleEnabled(address module) view returns (bool)',
++  'function getModulesPaginated(address start, uint256 pageSize) view returns (address[] array, address next)',
++]);
+ const IDENTITY_ABI = parseAbi([
+   'function ownerOf(uint256 tokenId) view returns (address)',
+   'function getMetadata(uint256 agentId, string metadataKey) view returns (bytes)',
+@@ -30,19 +38,69 @@ const IDENTITY_ABI = parseAbi([
+ 
+ type Reader = Pick<PublicClient, 'readContract'>;
+ 
+-/** Refuse while the agent EOA still has on-chain authority over the Safe or the agent NFT. */
++/**
++ * Who holds a Safe through its modules. A module is not an owner: `execTransactionFromModule`
++ * runs any call or delegatecall from the Safe for it, with no owner's signature and outside the
++ * Kernel's mandate, and `swapOwner` leaves it enabled.
++ *
++ * `agentEoaIsModule` is `isModuleEnabled(agentEoa)` (or the EOA in the list); `others` is every
++ * other enabled module, read page by page.
++ */
++export async function readSafeModuleAuthority(input: {
++  readonly publicClient: Reader;
++  readonly safeAddress: Address;
++  readonly agentEoa: Address;
++  /** Modules per read; the tests lower it to cross a page boundary. */
++  readonly pageSize?: bigint;
++}): Promise<{ readonly agentEoaIsModule: boolean; readonly others: readonly Address[] }> {
++  const eoa = getAddress(input.agentEoa);
++  const pageSize = input.pageSize ?? 50n;
++  const modules: Address[] = [];
++  let start = SENTINEL_MODULES;
++  let complete = false;
++  for (let page = 0; page < 20 && !complete; page += 1) {
++    const [array, next] = await input.publicClient.readContract({
++      address: input.safeAddress, abi: SAFE_ABI, functionName: 'getModulesPaginated', args: [start, pageSize],
++    });
++    modules.push(...array.map((module) => getAddress(module)));
++    complete = array.length === 0 || next === zeroAddress || getAddress(next) === SENTINEL_MODULES;
++    // Go on from the last module read, never from `next`: Safe 1.3.0 returns the following
++    // page's first module there, and a read that starts at it leaves that module out.
++    if (!complete) start = array.at(-1)!;
++  }
++  if (!complete) {
++    throw new Error(`the Safe ${input.safeAddress} has more than ${modules.length} modules: they cannot all be listed, so none of them is taken as reviewed`);
++  }
++  const enabled = await input.publicClient.readContract({
++    address: input.safeAddress, abi: SAFE_ABI, functionName: 'isModuleEnabled', args: [eoa],
++  });
++  return { agentEoaIsModule: enabled || modules.includes(eoa), others: modules.filter((module) => module !== eoa) };
++}
++
++/**
++ * Refuse while the agent EOA still has on-chain authority over the Safe (as an owner or as an
++ * enabled module) or over the agent NFT. Resolves with the Safe's other enabled modules: each
++ * has a module's full power over the Safe, so the caller shows them for the operator's review.
++ */
+ export async function assertAgentEoaHasNoAuthority(input: {
+   readonly publicClient: Reader;
+   readonly agentEoa: Address;
+   readonly safeAddress: Address;
+   readonly identityRegistry?: Address;
+   readonly agentId?: bigint;
+-}): Promise<void> {
++}): Promise<{ readonly otherSafeModules: readonly Address[] }> {
+   const problems: string[] = [];
+   const safeOwner = await input.publicClient.readContract({
+     address: input.safeAddress, abi: SAFE_ABI, functionName: 'isOwner', args: [input.agentEoa],
+   });
+   if (safeOwner) problems.push(`it is still an owner of the service Safe ${input.safeAddress} (swapOwner it out)`);
++  const modules = await readSafeModuleAuthority(input);
++  if (modules.agentEoaIsModule) {
++    problems.push(
++      `it is still an enabled module of the service Safe ${input.safeAddress}: a module runs any call from the Safe `
++      + 'without an owner signing (disableModule it, by a transaction of the Safe)',
++    );
++  }
+   if (input.identityRegistry !== undefined && input.agentId !== undefined) {
+     const nftOwner = await input.publicClient.readContract({
+       address: input.identityRegistry, abi: IDENTITY_ABI, functionName: 'ownerOf', args: [input.agentId],
+@@ -57,6 +115,7 @@ export async function assertAgentEoaHasNoAuthority(input: {
+       + `Kernel account owns the agent, but ${problems.join('; ')}`,
+     );
+   }
++  return { otherSafeModules: modules.others };
+ }
+ 
+ export type AttestationBinding =
+diff --git a/operator/src/signer/migrate.ts b/operator/src/signer/migrate.ts
+index d974b9374..c79e3fdb5 100644
+--- a/operator/src/signer/migrate.ts
++++ b/operator/src/signer/migrate.ts
+@@ -4,6 +4,10 @@
+ // (`jinn signer-migrate`). Every step reads the chain first and is skipped when already done, so
+ // the command is safe to re-run after an interruption.
+ //
++//   0. safe-modules           the Safe's enabled modules are read first. A module runs any call
++//                             from the Safe with no owner's signature and `swapOwner` does not
++//                             remove it: while the agent EOA is one, nothing is handed over; any
++//                             other module is listed for the operator's review (`review`);
+ //   1. kernel-approves-safe   the Kernel calls IdentityRegistry.setApprovalForAll(Safe, true)
+ //                             through agent-signer -- deploying the account if needed and, above
+ //                             all, PROVING that the hardware key can sign for it under its
+@@ -14,7 +18,8 @@
+ //                             (Safe.execTransaction(swapOwner) with a pre-validated signature);
+ //   4. agent-nft              the agent EOA transfers the ERC-8004 agent NFT to the Kernel;
+ //   5. attestation-key        the Kernel publishes the EOA as jinn.attestationKey;
+-//   6. eoa-has-no-authority   final check: the EOA owns neither the Safe nor the NFT.
++//   6. eoa-has-no-authority   final check: the EOA owns neither the Safe nor the NFT and is not
++//                             a module of the Safe.
+ //
+ // Steps 1-2 precede the swap on purpose: the Safe is never handed to an address that cannot
+ // operate it.
+@@ -30,7 +35,9 @@ import {
+ } from 'viem';
+ 
+ import { viemSendTransactionWithRetry, type TxRetryWalletClient } from '../tx-retry.js';
+-import { assertAgentEoaHasNoAuthority, ensureAttestationKeyBinding, readAttestationKey } from './attestation.js';
++import {
++  assertAgentEoaHasNoAuthority, ensureAttestationKeyBinding, readAttestationKey, readSafeModuleAuthority,
++} from './attestation.js';
+ 
+ const SENTINEL_OWNERS = '0x0000000000000000000000000000000000000001' as Address;
+ const EXEC_TRANSACTION_SELECTOR = '0x6a761202' as Hex;
+@@ -55,6 +62,7 @@ const POLICY_ABI = parseAbi([
+ ]);
+ 
+ export type MigrationStepName =
++  | 'safe-modules'
+   | 'kernel-approves-safe'
+   | 'mandate-admits-safe'
+   | 'safe-owner'
+@@ -64,10 +72,15 @@ export type MigrationStepName =
+ 
+ export interface MigrationStep {
+   readonly step: MigrationStepName;
+-  /** done: this run changed it; already: it was so; would: --dry-run; checked: a pure check passed. */
+-  readonly status: 'done' | 'already' | 'would' | 'checked' | 'not-applicable';
++  /**
++   * done: this run changed it; already: it was so; would: --dry-run; checked: a pure check passed;
++   * review: nothing is refused, but the operator has to look at what `detail` names.
++   */
++  readonly status: 'done' | 'already' | 'would' | 'checked' | 'review' | 'not-applicable';
+   readonly txHash?: Hex;
+   readonly detail?: string;
++  /** safe-modules: the Safe's enabled modules (never the agent EOA: that one is refused). */
++  readonly modules?: readonly Address[];
+ }
+ 
+ export interface MigrationInput {
+@@ -118,6 +131,22 @@ export async function migrateToKernelOwner(input: MigrationInput): Promise<reado
+   }
+   if (threshold !== 1n) throw new Error(`the Safe ${safe} has threshold ${threshold}; this migration handles 1/1 Safes only`);
+ 
++  // 0. Who else holds the Safe: its modules. Read before anything changes hands, in a dry run too.
++  const modules = await readSafeModuleAuthority({ publicClient: pc, safeAddress: safe, agentEoa: eoa });
++  if (modules.agentEoaIsModule) {
++    throw new Error(
++      `the agent EOA ${eoa} is an enabled module of the Safe ${safe}: a module runs any call or delegatecall from the Safe `
++      + 'without an owner signing, and swapOwner does not remove it, so the EOA would keep the Safe after the handover. '
++      + `Disable it first (Safe.disableModule(prevModule, ${eoa}), a transaction of the Safe by its current owner), then re-run`,
++    );
++  }
++  steps.push(modules.others.length === 0
++    ? { step: 'safe-modules', status: 'checked', detail: 'no module is enabled' }
++    : {
++        step: 'safe-modules', status: 'review', modules: modules.others,
++        detail: `enabled, each runs any call from the Safe without the Kernel and outside its mandate: ${modules.others.join(', ')}`,
++      });
++
+   // 1. The Kernel signs once, before it receives anything.
+   if (identity === undefined) {
+     steps.push({ step: 'kernel-approves-safe', status: 'not-applicable', detail: 'no ERC-8004 identity' });
+diff --git a/operator/test/hermetic/full-loop-kernel-owner.test.ts b/operator/test/hermetic/full-loop-kernel-owner.test.ts
+index 1d5633383..4445663cf 100644
+--- a/operator/test/hermetic/full-loop-kernel-owner.test.ts
++++ b/operator/test/hermetic/full-loop-kernel-owner.test.ts
+@@ -74,6 +74,7 @@ import { migrateToKernelOwner } from '../../src/signer/migrate.js';
+ import { createMetadataPublisherFromViem } from '../../src/solvernets/daemon-init.js';
+ import { PRODUCTION_DEPS } from '../../src/cli/commands/solver-plugins.js';
+ import { buildPluginMetadataKey } from '../../src/erc8004/plugin-registry.js';
++import { STOLAS_DISTRIBUTOR } from '../../src/contracts/addresses.js';
+ 
+ const TEST_DIR = dirname(fileURLToPath(import.meta.url));
+ const SNAPSHOT_STATE = resolve(TEST_DIR, '..', '_support', 'fixtures', 'anvil-base-v3-state', 'state.json');
+@@ -93,6 +94,7 @@ const PROVENANCE = {
+ 
+ const SAFE_ABI = parseAbi([
+   'function getOwners() view returns (address[])',
++  'function getModulesPaginated(address start, uint256 pageSize) view returns (address[] array, address next)',
+   'function swapOwner(address prevOwner, address oldOwner, address newOwner)',
+   'function addOwnerWithThreshold(address owner, uint256 _threshold)',
+   'function execTransaction(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, bytes signatures) payable returns (bool)',
+@@ -219,15 +221,27 @@ describeMaybe('hermetic daemon solution loop, Safe owned by a hardware-signed Ke
+           agentId,
+         };
+         const statusOf = (steps: readonly { step: string; status: string }[]) => Object.fromEntries(steps.map((s) => [s.step, s.status]));
++        // A staked service Safe is not free of modules: stOLAS creates it with the distributor
++        // itself and its guard enabled as modules, next to the recovery module
++        // (ExternalStakingDistributor `_createMultisigWithSelfAsModule`). Each runs any call from
++        // the Safe without an owner signing. None is the agent EOA, so the migration refuses
++        // nothing and names each of them for the operator's review (`safe-modules: review`).
++        const [safeModules] = await fixture.publicClient.readContract({
++          address: operator.safeAddress, abi: SAFE_ABI, functionName: 'getModulesPaginated', args: [SENTINEL_OWNERS, 10n],
++        });
++        expect(safeModules).toContain(getAddress(STOLAS_DISTRIBUTOR));
++        expect(safeModules).not.toContain(getAddress(operator.agentAddress));
+         // --dry-run: a plan from the chain, nothing sent.
+-        expect(statusOf(await migrateToKernelOwner({ ...migration, dryRun: true }))).toEqual({
+-          'kernel-approves-safe': 'would', 'mandate-admits-safe': 'would', 'safe-owner': 'would', 'agent-nft': 'would', 'attestation-key': 'would',
++        const plan = await migrateToKernelOwner({ ...migration, dryRun: true });
++        expect(statusOf(plan)).toEqual({
++          'safe-modules': 'review', 'kernel-approves-safe': 'would', 'mandate-admits-safe': 'would', 'safe-owner': 'would', 'agent-nft': 'would', 'attestation-key': 'would',
+         });
++        expect(plan[0]).toMatchObject({ step: 'safe-modules', modules: safeModules });
+         expect(await fixture.publicClient.readContract({ address: operator.safeAddress, abi: SAFE_ABI, functionName: 'getOwners' }))
+           .toEqual([getAddress(operator.agentAddress)]);
+         // The migration: the Kernel signs first (deploying itself), then receives the Safe and the NFT.
+         expect(statusOf(await migrateToKernelOwner(migration))).toEqual({
+-          'kernel-approves-safe': 'done', 'mandate-admits-safe': 'checked', 'safe-owner': 'done', 'agent-nft': 'done',
++          'safe-modules': 'review', 'kernel-approves-safe': 'done', 'mandate-admits-safe': 'checked', 'safe-owner': 'done', 'agent-nft': 'done',
+           'attestation-key': 'done', 'eoa-has-no-authority': 'checked',
+         });
+         expect(await fixture.publicClient.readContract({ address: operator.safeAddress, abi: SAFE_ABI, functionName: 'getOwners' }))
+@@ -236,7 +250,7 @@ describeMaybe('hermetic daemon solution loop, Safe owned by a hardware-signed Ke
+           .toBe(kernel);
+         // Idempotent: a re-run changes nothing.
+         expect(statusOf(await migrateToKernelOwner(migration))).toEqual({
+-          'kernel-approves-safe': 'already', 'mandate-admits-safe': 'checked', 'safe-owner': 'already', 'agent-nft': 'already',
++          'safe-modules': 'review', 'kernel-approves-safe': 'already', 'mandate-admits-safe': 'checked', 'safe-owner': 'already', 'agent-nft': 'already',
+           'attestation-key': 'already', 'eoa-has-no-authority': 'checked',
+         });
+ 
+diff --git a/operator/test/hermetic/signer-migrate-refusals.test.ts b/operator/test/hermetic/signer-migrate-refusals.test.ts
+new file mode 100644
+index 000000000..666037d77
+--- /dev/null
++++ b/operator/test/hermetic/signer-migrate-refusals.test.ts
+@@ -0,0 +1,183 @@
++/**
++ * Hermetic gate -- what `jinn signer-migrate` (src/signer/migrate.ts) and the "no authority"
++ * check (src/signer/attestation.ts) refuse, on a real Safe.
++ *
++ * A Safe module is not an owner: `execTransactionFromModule` runs any call from the Safe for it,
++ * with no owner's signature, and `swapOwner` leaves it enabled. A keystore EOA that is a module of
++ * the Safe would keep the Safe after a handover that reports "the EOA has no authority". Mocks
++ * cannot show that; these cases run against Safe 1.3.0's own bytecode, on a Safe created from the
++ * snapshot's proxy factory:
++ *
++ *   - the migration refuses while the agent EOA is an enabled module, and nothing changes hands;
++ *   - after a swap done by hand the former owner still moves value out of the Safe, and neither
++ *     the check nor a re-run of the migration reports that Safe as handed over;
++ *   - every other module is listed for review, across pages (Safe 1.3.0 returns the following
++ *     page's first module as `next`).
++ *
++ * Every case stops before the Kernel is asked for anything, so there is no Kernel here and no
++ * agent-signer: the complete handover is `full-loop-kernel-owner.test.ts`.
++ *
++ * Deterministic on the snapshot (spawnAnvilFromState, no live RPC). SKIP-CLEAN when the fixture
++ * is absent.
++ */
++
++import { existsSync } from 'node:fs';
++import { dirname, resolve } from 'node:path';
++import { fileURLToPath } from 'node:url';
++import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
++import {
++  createPublicClient,
++  createWalletClient,
++  decodeEventLog,
++  encodeFunctionData,
++  http,
++  parseAbi,
++  parseEther,
++  zeroAddress,
++  type Address,
++  type Hex,
++  type PublicClient,
++  type WalletClient,
++} from 'viem';
++import { base } from 'viem/chains';
++import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
++
++import { spawnAnvilFromState, type AnvilHarness } from '../_support/chain/anvil.js';
++import { assertAgentEoaHasNoAuthority, readSafeModuleAuthority } from '../../src/signer/attestation.js';
++import { migrateToKernelOwner } from '../../src/signer/migrate.js';
++
++const TEST_DIR = dirname(fileURLToPath(import.meta.url));
++const SNAPSHOT_STATE = resolve(TEST_DIR, '..', '_support', 'fixtures', 'anvil-base-v3-state', 'state.json');
++const describeMaybe = existsSync(SNAPSHOT_STATE) ? describe : describe.skip;
++
++// Safe 1.3.0 on the snapshot (the canonical deployment addresses).
++const SAFE_SINGLETON = '0xd9Db270c1B5E3Bd161E8c8503c55cEABeE709552' as Address;
++const SAFE_PROXY_FACTORY = '0xa6B71E26C5e0845f74c812102Ca7114b6a896AB2' as Address;
++const SENTINEL = '0x0000000000000000000000000000000000000001' as Address;
++
++const FACTORY_ABI = parseAbi([
++  'function createProxyWithNonce(address singleton, bytes initializer, uint256 saltNonce) returns (address proxy)',
++  'event ProxyCreation(address proxy, address singleton)',
++]);
++const SAFE_ABI = parseAbi([
++  'function setup(address[] owners, uint256 threshold, address to, bytes data, address fallbackHandler, address paymentToken, uint256 payment, address paymentReceiver)',
++  'function getOwners() view returns (address[])',
++  'function isOwner(address owner) view returns (bool)',
++  'function isModuleEnabled(address module) view returns (bool)',
++  'function enableModule(address module)',
++  'function swapOwner(address prevOwner, address oldOwner, address newOwner)',
++  'function execTransaction(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, bytes signatures) payable returns (bool)',
++  'function execTransactionFromModule(address to, uint256 value, bytes data, uint8 operation) returns (bool)',
++]);
++
++const fresh = (): Address => privateKeyToAccount(generatePrivateKey()).address;
++
++describeMaybe('signer-migrate on a real Safe: what it refuses before anything changes hands', () => {
++  let anvil: AnvilHarness;
++  let publicClient: PublicClient;
++  const eoaAccount = privateKeyToAccount(generatePrivateKey());
++  const eoa = eoaAccount.address;
++  let eoaWallet: WalletClient;
++  // Where the Safe would go. Nothing here reaches it: it has no code and is never asked to sign.
++  const kernel = fresh();
++  const kernelSend = vi.fn(async (): Promise<Hex> => { throw new Error('the Kernel was asked to sign'); });
++
++  beforeAll(async () => {
++    anvil = await spawnAnvilFromState({ statePath: SNAPSHOT_STATE });
++    publicClient = createPublicClient({ chain: base, transport: http(anvil.rpcUrl) }) as unknown as PublicClient;
++    eoaWallet = createWalletClient({ account: eoaAccount, chain: base, transport: http(anvil.rpcUrl) });
++    await anvil.setBalance(eoa, parseEther('10'));
++  });
++  afterAll(async () => { await anvil?.teardown(); });
++
++  async function mined(hash: Hex) {
++    const receipt = await publicClient.waitForTransactionReceipt({ hash });
++    expect(receipt.status).toBe('success');
++    return receipt;
++  }
++
++  /** A 1/1 Safe 1.3.0 owned by the agent EOA, as the operator's service Safe is. */
++  async function newSafe(): Promise<Address> {
++    const initializer = encodeFunctionData({
++      abi: SAFE_ABI, functionName: 'setup', args: [[eoa], 1n, zeroAddress, '0x', zeroAddress, zeroAddress, 0n, zeroAddress],
++    });
++    const receipt = await mined(await eoaWallet.writeContract({
++      account: eoaAccount, chain: base, address: SAFE_PROXY_FACTORY, abi: FACTORY_ABI, functionName: 'createProxyWithNonce',
++      args: [SAFE_SINGLETON, initializer, BigInt(generatePrivateKey())],
++    }));
++    const created = receipt.logs.find((log) => log.address.toLowerCase() === SAFE_PROXY_FACTORY.toLowerCase())!;
++    return decodeEventLog({ abi: FACTORY_ABI, data: created.data, topics: created.topics }).args.proxy;
++  }
++
++  /** A transaction of the Safe to itself, by its owner the EOA (pre-validated signature). */
++  async function safeAdmin(safe: Address, data: Hex): Promise<void> {
++    const signature = `0x${eoa.slice(2).toLowerCase().padStart(64, '0')}${'0'.repeat(64)}01` as Hex;
++    await mined(await eoaWallet.writeContract({
++      account: eoaAccount, chain: base, address: safe, abi: SAFE_ABI, functionName: 'execTransaction',
++      args: [safe, 0n, data, 0, 0n, 0n, 0n, zeroAddress, zeroAddress, signature],
++    }));
++  }
++  const enableModule = (safe: Address, module: Address) =>
++    safeAdmin(safe, encodeFunctionData({ abi: SAFE_ABI, functionName: 'enableModule', args: [module] }));
++
++  const migration = (safe: Address) => ({
++    publicClient: publicClient as never,
++    agentEoaWallet: eoaWallet as never,
++    kernelWallet: { account: { address: kernel, type: 'json-rpc' }, sendTransaction: kernelSend } as never,
++    kernel,
++    permissionId: '0x6a696e6e' as Hex,
++    safeAddress: safe,
++  });
++  const ownersOf = (safe: Address) => publicClient.readContract({ address: safe, abi: SAFE_ABI, functionName: 'getOwners' });
++
++  // The internal audit of 2026-11-28, finding AK-2026-11-28-02.
++  it('refuses while the agent EOA is an enabled module of the Safe, and nothing changes hands', async () => {
++    const safe = await newSafe();
++    await enableModule(safe, eoa);
++    expect(await publicClient.readContract({ address: safe, abi: SAFE_ABI, functionName: 'isModuleEnabled', args: [eoa] })).toBe(true);
++
++    const sentBefore = await publicClient.getTransactionCount({ address: eoa });
++    for (const dryRun of [true, false]) {
++      await expect(migrateToKernelOwner({ ...migration(safe), dryRun })).rejects.toThrow(/is an enabled module of the Safe .*disableModule/);
++    }
++    expect(await ownersOf(safe)).toEqual([eoa]);
++    expect(await publicClient.getTransactionCount({ address: eoa })).toBe(sentBefore);
++    expect(kernelSend).not.toHaveBeenCalled();
++  });
++
++  it('after a swap alone the former owner still moves value out of the Safe, and that Safe is not reported as handed over', async () => {
++    const safe = await newSafe();
++    await enableModule(safe, eoa);
++    await safeAdmin(safe, encodeFunctionData({ abi: SAFE_ABI, functionName: 'swapOwner', args: [SENTINEL, eoa, kernel] }));
++    expect(await ownersOf(safe)).toEqual([kernel]);
++    expect(await publicClient.readContract({ address: safe, abi: SAFE_ABI, functionName: 'isOwner', args: [eoa] })).toBe(false);
++
++    // Not an owner any more, no owner signs: the module path pays out of the Safe.
++    await anvil.setBalance(safe, parseEther('1'));
++    const payee = fresh();
++    await mined(await eoaWallet.writeContract({
++      account: eoaAccount, chain: base, address: safe, abi: SAFE_ABI, functionName: 'execTransactionFromModule',
++      args: [payee, parseEther('0.25'), '0x', 0],
++    }));
++    expect(await publicClient.getBalance({ address: payee })).toBe(parseEther('0.25'));
++
++    await expect(assertAgentEoaHasNoAuthority({ publicClient, agentEoa: eoa, safeAddress: safe }))
++      .rejects.toThrow(/still an enabled module of the service Safe/);
++    await expect(migrateToKernelOwner(migration(safe))).rejects.toThrow(/is an enabled module of the Safe/);
++  });
++
++  it('lists every other module of the Safe for review, across pages', async () => {
++    const safe = await newSafe();
++    const enabled = [fresh(), fresh(), fresh()];
++    for (const module of enabled) await enableModule(safe, module);
++    // The Safe lists the newest first. With two a page, the oldest is what 1.3.0 returns as `next`.
++    const listed = [...enabled].reverse();
++    await expect(readSafeModuleAuthority({ publicClient, safeAddress: safe, agentEoa: eoa, pageSize: 2n }))
++      .resolves.toEqual({ agentEoaIsModule: false, others: listed });
++
++    const steps = await migrateToKernelOwner({ ...migration(safe), dryRun: true });
++    expect(steps[0]).toMatchObject({ step: 'safe-modules', status: 'review', modules: listed });
++    for (const module of enabled) expect(steps[0]!.detail).toContain(module);
++    expect(await ownersOf(safe)).toEqual([eoa]);
++  });
++});
+diff --git a/operator/test/signer/attestation.test.ts b/operator/test/signer/attestation.test.ts
+index eab8f97b5..593adfa10 100644
+--- a/operator/test/signer/attestation.test.ts
++++ b/operator/test/signer/attestation.test.ts
+@@ -1,13 +1,15 @@
+-// Off-chain signing under a Kernel owner: the keystore agent EOA may only attest (no Safe, no
+-// agent NFT), and the Kernel publishes it as the agent's attestation key, once.
++// Off-chain signing under a Kernel owner: the keystore agent EOA may only attest (no Safe, as an
++// owner or as a module, and no agent NFT), and the Kernel publishes it as the agent's attestation
++// key, once.
+ import { describe, expect, it, vi } from 'vitest';
+-import { decodeFunctionData, parseAbi, type Address, type Hex } from 'viem';
++import { decodeFunctionData, getAddress, parseAbi, type Address, type Hex } from 'viem';
+ 
+ import {
+   ATTESTATION_KEY_METADATA,
+   assertAgentEoaHasNoAuthority,
+   ensureAttestationKeyBinding,
+   readAttestationKey,
++  readSafeModuleAuthority,
+ } from '../../src/signer/attestation.js';
+ import { markUserOperationWallet } from '../../src/tx-retry.js';
+ 
+@@ -16,11 +18,35 @@ const KERNEL = '0xEdB645B14e2f952C5784e34949b58F0826fBc9E9' as Address;
+ const SAFE = '0xd0b972a8ee7D8AB91a2e3381Eb6F10550B80E52A' as Address;
+ const REGISTRY = '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432' as Address;
+ const TX = `0x${'c3'.repeat(32)}` as Hex;
++const SENTINEL = '0x0000000000000000000000000000000000000001' as Address;
++const ZERO = '0x0000000000000000000000000000000000000000' as Address;
++// Five other modules, in the order the Safe lists them.
++const MODULES = [1, 2, 3, 4, 5].map((n) => getAddress(`0x${'0'.repeat(38)}a${n}`));
+ 
+-function chain(state: { safeOwner: boolean; nftOwner: Address; metadata: Hex }) {
++/**
++ * `Safe.getModulesPaginated` over the Safe's linked list. What `next` says when modules remain
++ * differs by version: 1.3.0 gives the first module of the following page, 1.4.1 the last one of
++ * this page.
++ */
++function modulesPage(version: '1.3.0' | '1.4.1', modules: readonly Address[], start: Address, pageSize: bigint): [Address[], Address] {
++  const at = modules.indexOf(start);
++  if (start !== SENTINEL && at < 0) return [[], ZERO];
++  const page = modules.slice(at + 1, at + 1 + Number(pageSize));
++  const following = modules[at + 1 + page.length];
++  if (following === undefined) return [page, SENTINEL];
++  return [page, version === '1.3.0' ? following : page.at(-1)!];
++}
++
++function chain(state: {
++  safeOwner: boolean; nftOwner: Address; metadata: Hex; modules?: readonly Address[]; safeVersion?: '1.3.0' | '1.4.1';
++}) {
+   return {
+     async readContract(args: { functionName: string; args: readonly unknown[] }) {
+       if (args.functionName === 'isOwner') return state.safeOwner && args.args[0] === EOA;
++      if (args.functionName === 'isModuleEnabled') return (state.modules ?? []).includes(args.args[0] as Address);
++      if (args.functionName === 'getModulesPaginated') {
++        return modulesPage(state.safeVersion ?? '1.3.0', state.modules ?? [], args.args[0] as Address, args.args[1] as bigint);
++      }
+       if (args.functionName === 'ownerOf') return state.nftOwner;
+       if (args.functionName === 'getMetadata') {
+         expect(args.args[1]).toBe(ATTESTATION_KEY_METADATA);
+@@ -47,7 +73,58 @@ describe('assertAgentEoaHasNoAuthority', () => {
+   it('passes once the Kernel owns both', async () => {
+     await expect(assertAgentEoaHasNoAuthority({
+       publicClient: chain({ safeOwner: false, nftOwner: KERNEL, metadata: '0x' }) as never, agentEoa: EOA, safeAddress: SAFE, ...identity,
+-    })).resolves.toBeUndefined();
++    })).resolves.toEqual({ otherSafeModules: [] });
++  });
++
++  // A module is not an owner and swapOwner does not remove it: the former owner would still run
++  // any call from the Safe (the internal audit of 2026-11-28, finding AK-2026-11-28-02).
++  it('refuses while the EOA is an enabled module of the Safe, though it owns neither the Safe nor the NFT', async () => {
++    await expect(assertAgentEoaHasNoAuthority({
++      publicClient: chain({ safeOwner: false, nftOwner: KERNEL, metadata: '0x', modules: [MODULES[0]!, EOA] }) as never,
++      agentEoa: EOA, safeAddress: SAFE, ...identity,
++    })).rejects.toThrow(/still an enabled module of the service Safe/);
++  });
++
++  it('passes with other modules enabled, and names each of them', async () => {
++    await expect(assertAgentEoaHasNoAuthority({
++      publicClient: chain({ safeOwner: false, nftOwner: KERNEL, metadata: '0x', modules: MODULES }) as never,
++      agentEoa: EOA, safeAddress: SAFE, ...identity,
++    })).resolves.toEqual({ otherSafeModules: MODULES });
++  });
++});
++
++describe('readSafeModuleAuthority', () => {
++  // With two modules a page, the third module is what Safe 1.3.0 returns as `next`: a reader that
++  // starts the following page at `next` never sees it.
++  it.each(['1.3.0', '1.4.1'] as const)('lists every module across pages of a Safe %s', async (safeVersion) => {
++    const read = (modules: readonly Address[]) => readSafeModuleAuthority({
++      publicClient: chain({ safeOwner: false, nftOwner: KERNEL, metadata: '0x', modules, safeVersion }) as never,
++      safeAddress: SAFE, agentEoa: EOA, pageSize: 2n,
++    });
++    await expect(read(MODULES)).resolves.toEqual({ agentEoaIsModule: false, others: MODULES });
++    await expect(read([MODULES[0]!, MODULES[1]!, EOA, MODULES[3]!])).resolves.toEqual({
++      agentEoaIsModule: true, others: [MODULES[0], MODULES[1], MODULES[3]],
++    });
++    await expect(read([])).resolves.toEqual({ agentEoaIsModule: false, others: [] });
++  });
++
++  it('takes the EOA as a module when the list names it, whatever isModuleEnabled answers', async () => {
++    const publicClient = chain({ safeOwner: false, nftOwner: KERNEL, metadata: '0x', modules: [EOA] });
++    const readContract = publicClient.readContract;
++    publicClient.readContract = async (args) => (args.functionName === 'isModuleEnabled' ? false : readContract(args));
++    await expect(readSafeModuleAuthority({ publicClient: publicClient as never, safeAddress: SAFE, agentEoa: EOA }))
++      .resolves.toEqual({ agentEoaIsModule: true, others: [] });
++  });
++
++  it('refuses a list that does not end', async () => {
++    const publicClient = {
++      async readContract(args: { functionName: string }) {
++        if (args.functionName === 'getModulesPaginated') return [[MODULES[0]], MODULES[0]];
++        throw new Error(`unexpected ${args.functionName}`);
++      },
++    };
++    await expect(readSafeModuleAuthority({ publicClient: publicClient as never, safeAddress: SAFE, agentEoa: EOA }))
++      .rejects.toThrow(/cannot all be listed/);
+   });
+ });
+ 
+diff --git a/operator/test/signer/migrate.test.ts b/operator/test/signer/migrate.test.ts
+index 536b8c910..dc96aa963 100644
+--- a/operator/test/signer/migrate.test.ts
++++ b/operator/test/signer/migrate.test.ts
+@@ -1,6 +1,6 @@
+ // The migration's safety order: the Safe is never handed to a Kernel that cannot operate it.
+ import { describe, expect, it, vi } from 'vitest';
+-import type { Address, Hex } from 'viem';
++import { getAddress, type Address, type Hex } from 'viem';
+ 
+ import { migrateToKernelOwner } from '../../src/signer/migrate.js';
+ import { markUserOperationWallet } from '../../src/tx-retry.js';
+@@ -11,12 +11,18 @@ const SAFE = '0xd0b972a8ee7D8AB91a2e3381Eb6F10550B80E52A' as Address;
+ const POLICY = '0x8347dBC3d7A71DAFDeED5975ce85638494865F73' as Address;
+ const TX = `0x${'c3'.repeat(32)}` as Hex;
+ 
+-function setup(chain: { kernelCode: Hex; admits: boolean; threshold?: bigint; owners?: Address[] }) {
++const SENTINEL = '0x0000000000000000000000000000000000000001' as Address;
++const MODULE_A = getAddress('0x00000000000000000000000000000000000000a1');
++const MODULE_B = getAddress('0x00000000000000000000000000000000000000a2');
++
++function setup(chain: { kernelCode: Hex; admits: boolean; threshold?: bigint; owners?: Address[]; modules?: Address[] }) {
+   const publicClient = {
+-    async readContract(args: { functionName: string }) {
++    async readContract(args: { functionName: string; args?: readonly unknown[] }) {
+       switch (args.functionName) {
+         case 'getOwners': return chain.owners ?? [EOA];
+         case 'getThreshold': return chain.threshold ?? 1n;
++        case 'getModulesPaginated': return [chain.modules ?? [], SENTINEL];
++        case 'isModuleEnabled': return (chain.modules ?? []).includes(args.args![0] as Address);
+         case 'permissionConfig': return { permissionFlag: '0x0000', signer: KERNEL, policyData: [`0x0000${POLICY.slice(2)}`] };
+         case 'isAllowed': return chain.admits;
+         default: throw new Error(`unexpected ${args.functionName}`);
+@@ -57,10 +63,29 @@ describe('migrateToKernelOwner', () => {
+       .rejects.toThrow(/owned by neither/);
+   });
+ 
++  // The internal audit of 2026-11-28, finding AK-2026-11-28-02: swapOwner does not remove a module.
++  it('hands nothing over while the agent EOA is an enabled module of the Safe, in a dry run too', async () => {
++    for (const dryRun of [false, true]) {
++      const { input, eoaSend, kernelSend } = setup({ kernelCode: '0x6001', admits: true, modules: [MODULE_A, EOA] });
++      await expect(migrateToKernelOwner({ ...input, dryRun })).rejects.toThrow(/is an enabled module of the Safe .*disableModule/);
++      expect(eoaSend).not.toHaveBeenCalled();
++      expect(kernelSend).not.toHaveBeenCalled();
++    }
++  });
++
++  it('lists every other module of the Safe for review', async () => {
++    const { input } = setup({ kernelCode: '0x6001', admits: true, modules: [MODULE_A, MODULE_B] });
++    const steps = await migrateToKernelOwner({ ...input, dryRun: true });
++    expect(steps[0]).toMatchObject({ step: 'safe-modules', status: 'review', modules: [MODULE_A, MODULE_B] });
++    expect(steps[0]!.detail).toContain(MODULE_A);
++    expect(steps[0]!.detail).toContain(MODULE_B);
++  });
++
+   it('a dry run sends nothing', async () => {
+     const { input, eoaSend, kernelSend } = setup({ kernelCode: '0x6001', admits: true });
+     const steps = await migrateToKernelOwner({ ...input, dryRun: true });
+     expect(steps.map((s) => [s.step, s.status])).toEqual([
++      ['safe-modules', 'checked'],
+       ['kernel-approves-safe', 'not-applicable'], ['mandate-admits-safe', 'checked'], ['safe-owner', 'would'],
+       ['agent-nft', 'not-applicable'], ['attestation-key', 'not-applicable'],
+     ]);
+diff --git a/operator/vitest.config.ts b/operator/vitest.config.ts
+index 71a5a104e..e2281afd6 100644
+--- a/operator/vitest.config.ts
++++ b/operator/vitest.config.ts
+@@ -51,6 +51,9 @@ const exclude = [
+   // compiles contracts/ first, which this file's `yarn compile` step needs).
+   // `task-creator:public-repo-anvil-e2e` is the single-file local shortcut.
+   'test/hermetic/public-repo-anvil-lifecycle.test.ts',
++  // Spawns Anvil on the committed snapshot (a real Safe, no daemon): hermetic gate only, like the
++  // files above.
++  'test/hermetic/signer-migrate-refusals.test.ts',
+ ];
+ 
+ const alias = {

@@ -73,7 +73,7 @@ refused under both.
 ## Integrating into Jinn: the patch series (first version)
 
 [`patches/`](patches/) is a first version of `ADAPTATION.md` §5 Phase 1, as
-nine commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
+ten commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
 
 | Patch | What |
 |---|---|
@@ -86,6 +86,7 @@ nine commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
 | `0007-feat-operator-CLI-verbs-on-a-Kernel-owned-Safe…` | `ADAPTATION.md` §5 item 7: one-shot CLI verbs (`jinn tasks submit`, `jinn solver-plugins publish / revoke / block / feedback`) use the Kernel when `config.signer` is set — a `KernelSafeBroadcaster` on the daemon's own venue state (cross-process lock, shared ledger), no keystore decrypted |
 | `0008-feat-operator-the-keystore-agent-EOA-as-a-pure-attes…` | `ADAPTATION.md` §5 item 10 (§4 option 2): the keystore agent EOA keeps signing Jinn's off-chain documents but must hold no on-chain authority — the daemon refuses to boot while it still owns the Safe or the agent NFT — and the Kernel publishes it as the agent's `jinn.attestationKey` |
 | `0009-feat-operator-jinn-signer-migrate-one-step-handover…` | `jinn signer-migrate`: hands a bootstrapped operator over to the Kernel in one idempotent command — the Kernel signs first and its mandate is checked, then the Safe(s) and the agent NFT move, and the attestation key is published; `--dry-run` shows the plan from the chain |
+| `0010-fix-operator-a-Safe-module-is-authority-too…` | a Safe module is authority too: the "no authority" check of patch 0008 and the migration read the Safe's modules. While the agent EOA is an enabled module the daemon refuses to boot and the migration hands nothing over; every other enabled module is listed for the operator's review; + `test/hermetic/signer-migrate-refusals.test.ts` on Safe 1.3.0's own bytecode (the internal audit of 2026-11-28, finding AK-2026-11-28-02, #245) |
 
 Apply and enable:
 
@@ -113,13 +114,14 @@ jinn signer-migrate --yes               # the handover; safe to re-run
 ```
 
 ```
-Migrated: agent EOA 0x7471bE25Ec54354c8D70491Ae10bd86705fAD030 -> Kernel 0x86A6…CB1a
-  service Safe 0xD4a2…f86B
-    kernel-approves-safe   done     0x…   (the Kernel signs first: deployed, key proven)
+Migrated: agent EOA 0x7471bE25Ec54354c8D70491Ae10bd86705fAD030 -> Kernel <Kernel address>
+  service Safe <Safe address>
+    safe-modules           checked        (no module is enabled)
+    kernel-approves-safe   done     <tx>  (the Kernel signs first: deployed, key proven)
     mandate-admits-safe    checked        (AgentPolicy admits Safe.execTransaction)
-    safe-owner             done     0x…   (swapOwner: EOA -> Kernel)
-    agent-nft              done     0x…   (ERC-8004 NFT -> Kernel)
-    attestation-key        done     0x…   (jinn.attestationKey = the EOA)
+    safe-owner             done     <tx>  (swapOwner: EOA -> Kernel)
+    agent-nft              done     <tx>  (ERC-8004 NFT -> Kernel)
+    attestation-key        done     <tx>  (jinn.attestationKey = the EOA)
     eoa-has-no-authority   checked
 ```
 
@@ -136,6 +138,25 @@ operation, before the migration: `agent-signer op send --root --target
 then finds it and reports the step as `already`; the mandate needs no
 `setApprovalForAll` entry. A separate fleet
 identity Safe is migrated in the same run.
+
+**The Safe's modules** (`safe-modules`). A module is not an owner:
+`execTransactionFromModule` runs any call or delegatecall from the Safe for
+an enabled module, with no owner's signature and past `AgentPolicy` and
+`SafeNonceAssert`, and `swapOwner` does not remove it. The migration reads
+the modules before anything else. While the agent EOA is an enabled module
+it refuses, in a dry run too, and nothing changes hands: disable the module
+with a transaction of the Safe (`disableModule`) and re-run. Every other
+enabled module has the same power over the Safe and is the operator's to
+review; nothing is refused for it, and the plan and the result name each:
+
+```
+    safe-modules           review         (enabled, each runs any call from the Safe without the Kernel and outside its mandate: <module address>, <module address>)
+```
+
+The daemon makes the same check at boot (patch 0008's
+`assertAgentEoaHasNoAuthority`): it refuses while the EOA owns the Safe or
+the agent NFT or is an enabled module of the Safe, and warns about every
+other module.
 
 How `KernelSafeBroadcaster` keeps a Safe transaction from running twice (a
 `v = 1` signature does not commit to the Safe nonce): agent-signer asserts the
@@ -173,14 +194,29 @@ Verified:
   run needs no live RPC; Jinn's baseline `full-loop.test.ts` still passes
   next to it (two consecutive runs, ~77 s for both). Run it with
   `TPM_SIGN_AGENT_SIGNER=…/agent-signer TPM_SIGN_KEYS=…/agent.json`
-  (skipped otherwise; Foundry `nightly-1c7c4beb…`, the version Jinn's CI
+  (skipped otherwise; Foundry
+  `nightly-1c7c4bebce1e075989780fd401bf6bffcb424746`, the version Jinn's CI
   pins, is needed for the snapshot);
 - live, Base Sepolia, agent key in TROPIC01: the operator's
   `KernelSafeBroadcaster` on venue-base's ledger and lock ran a Safe
   transaction (counter 25 → 26, tx
   `0xb57ad3641c3c0fad1fb6e00c3dad3cb2b17db51e4ea97754b932cdae0673d7e7`, ledger
   row resolved, logs cut to our userOp) and got `addOwnerWithThreshold` on
-  the Safe refused by AgentPolicy (`policy-denied` → `permanent`).
+  the Safe refused by AgentPolicy (`policy-denied` → `permanent`);
+- patch 0010 (2026-11-27), in runs that need no `agent-signer`: the
+  operator's unit tests of the check and of the migration
+  (`test/signer/attestation.test.ts`, `migrate.test.ts`: 16 pass), and
+  `test/hermetic/signer-migrate-refusals.test.ts` on Jinn's snapshot with
+  the anvil of the Foundry named above (3 pass). The second runs against
+  Safe 1.3.0's own bytecode: with the agent EOA as a module the migration
+  refuses and the Safe's owner is unchanged; after a swap done by hand the
+  former owner still pays out of the Safe and the check refuses; three
+  modules are listed across pages. Each rule was broken once on purpose and
+  a test caught it (the module check in the daemon's check and in the
+  migration, the paging). **Not re-run with this patch: the full loop
+  above.** It needs an `agent-signer` built with a key backend and the
+  monorepo's packages. `main.ts` and the CLI verb were not compiled against
+  the monorepo's packages either.
 
 Found by the Anvil run and fixed in agent-signer: the first operation of a
 not-yet-deployed account used a fixed 300k `callGasLimit` (nothing to
@@ -241,7 +277,8 @@ verifiers check against the address inside the document; a P-256 key in
 hardware cannot produce them, and no verifier calls ERC-1271. So the agent
 EOA keeps signing them, but as a **pure attestation key**: with
 `config.signer` the daemon refuses to boot while that EOA still owns the
-service Safe or the agent NFT, and the Kernel publishes
+service Safe or the agent NFT, or is an enabled module of that Safe (patch
+0010), and the Kernel publishes
 `jinn.attestationKey = <EOA>` under the agent's ERC-8004 identity (once;
 `readAttestationKey` reads it back for a verifier). Its compromise forges
 attestations — a reputational risk — but moves no funds and no rights;
