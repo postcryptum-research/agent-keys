@@ -8,6 +8,7 @@ import {Execution} from "kernel/src/types/Structs.sol";
 import {ExecMode} from "kernel/src/types/Types.sol";
 import {ExecLib} from "kernel/src/utils/ExecLib.sol";
 import {AgentPolicy} from "../src/AgentPolicy.sol";
+import {TokenLimit} from "../src/policy/PolicyStorage.sol";
 import {SafeShapes} from "../src/judges/SafeShapes.sol";
 import {CowSwapDecoder} from "../src/venues/CowSwapDecoder.sol";
 
@@ -504,7 +505,7 @@ contract TradingFuzzModel is Test {
 
             (,,,, uint128 native,) = policy.configs(address(account), ID);
             assertEq(native, spent, "native spent");
-            AgentPolicy.TokenLimit memory s = policy.tokenLimit(address(account), ID, SELL);
+            TokenLimit memory s = policy.tokenLimit(address(account), ID, SELL);
             assertEq(s.spent, sSpent, "token spent");
             (, uint48 periodSeen) = policy.period(address(account), ID);
             assertEq(periodSeen, seen, "the period seen");

@@ -4,6 +4,7 @@ pragma solidity ^0.8.38;
 import {Test} from "forge-std/Test.sol";
 
 import {AgentPolicy} from "../src/AgentPolicy.sol";
+import {TokenLimit} from "../src/policy/PolicyStorage.sol";
 import {SafeShapes} from "../src/judges/SafeShapes.sol";
 import {SafeNonceAssert} from "../src/SafeNonceAssert.sol";
 
@@ -421,8 +422,8 @@ contract PolicyFuzzModel is PolicyFuzzBase {
             if (ok) accepted++;
 
             assertEq(_spentOnChain(), spent, "native spent");
-            AgentPolicy.TokenLimit memory a = policy.tokenLimit(address(account), ID, TOKEN_A);
-            AgentPolicy.TokenLimit memory b = policy.tokenLimit(address(account), ID, TOKEN_B);
+            TokenLimit memory a = policy.tokenLimit(address(account), ID, TOKEN_A);
+            TokenLimit memory b = policy.tokenLimit(address(account), ID, TOKEN_B);
             assertEq(a.spent, tokenSpent[TOKEN_A], "token A spent");
             assertEq(b.spent, tokenSpent[TOKEN_B], "token B spent");
             // the limits themselves, whatever the model says

@@ -7,6 +7,7 @@ import {P256Validator} from "../src/P256Validator.sol";
 import {P256RecoveryValidator} from "../src/P256RecoveryValidator.sol";
 import {P256Signer} from "../src/P256Signer.sol";
 import {AgentPolicy} from "../src/AgentPolicy.sol";
+import {TokenLimit} from "../src/policy/PolicyStorage.sol";
 import {SafeShapes} from "../src/judges/SafeShapes.sol";
 import {SafeNonceAssert} from "../src/SafeNonceAssert.sol";
 
@@ -1168,7 +1169,7 @@ contract AgentPermissionTest is Test {
         _send(_agentOpWith(AGENT, id, address(t), 0, abi.encodeWithSelector(bytes4(0xfe99049a), acct, to, 7, 5)));
         assertEq(t.balanceOf(to, 7), 8);
         // the id's limit is read as a token's, under the id's key
-        AgentPolicy.TokenLimit memory limit =
+        TokenLimit memory limit =
             policy.tokenLimit(acct, bytes32(PermissionId.unwrap(id)), policy.idAsset(address(t), 7));
         assertEq(limit.spent, 8);
         assertEq(limit.budget, 8);

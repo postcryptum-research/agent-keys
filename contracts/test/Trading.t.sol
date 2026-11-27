@@ -3,6 +3,7 @@ pragma solidity ^0.8.38;
 
 import {AgentPermissionTest, MockToken, MockUSDC, MockOperators, Counter} from "./AgentPermission.t.sol";
 import {AgentPolicy} from "../src/AgentPolicy.sol";
+import {VenuePin} from "../src/policy/PolicyStorage.sol";
 import {CowSwapDecoder} from "../src/venues/CowSwapDecoder.sol";
 import {IVenueDecoder} from "../src/venues/IVenueDecoder.sol";
 import {Kernel} from "kernel/src/Kernel.sol";
@@ -308,7 +309,7 @@ contract TradingTest is AgentPermissionTest {
 
     function test_trading_installPinsTheVenueAndThePeriod() public {
         _with(DAY);
-        AgentPolicy.VenuePin memory pin = policy.venue(acct, TRD, address(decoder));
+        VenuePin memory pin = policy.venue(acct, TRD, address(decoder));
         assertEq(pin.codeHash, address(decoder).codehash);
         assertEq(pin.configHash, keccak256(_cowConfig()));
         (uint32 seconds_, uint48 seen) = policy.period(acct, TRD);

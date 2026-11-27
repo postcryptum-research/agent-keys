@@ -100,7 +100,10 @@ def immutable_names(name):
             for value in node:
                 walk(value)
 
-    walk(artifact(name).get("ast") or {})
+    tree = artifact(name).get("ast")
+    if tree is None:
+        sys.exit(f"{name}: the artifact has no syntax tree; foundry.toml sets `ast = true`, rebuild with --force")
+    walk(tree)
     return found
 
 
@@ -108,8 +111,8 @@ def main():
     write = sys.argv[1:] == ["--write"]
     if sys.argv[1:] and not write:
         sys.exit(__doc__)
-    # --ast: the syntax tree names the immutables (immutable_names)
-    subprocess.run(["forge", "build", "--evm-version", "osaka", "--ast"], cwd=ROOT / "contracts", check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # the build carries the syntax tree (`ast = true` in foundry.toml), which names the immutables
+    subprocess.run(["forge", "build", "--evm-version", "osaka"], cwd=ROOT / "contracts", check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     behind = []
     for file in ("chain-code.json", "trading-code.json"):
         path = FIXTURES / file

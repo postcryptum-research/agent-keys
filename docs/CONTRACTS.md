@@ -25,6 +25,7 @@ commit `e48b93e001f34f460bd4845d231b8e0ee5d26ad6` builds them, every contract at
 | `P256Point` | the on-curve check (library) | the key modules, at install | none: compiled into them |
 | `SafeNonceAssert` | the replay guard of an agent's Safe transaction | the account, in a batch | `0x29f600cBcdC5221a63bD5c88F4a75E20c5CBe219` |
 | `SafeShapes` | where the calls inside a Safe transaction and a `multiSend` batch lie (a judge, #251) | the policy, in validation | none yet: the instances above do not use it |
+| `PolicyStorage` | the policy's storage, one layout (library) | the policy and its fixed parts | none: compiled into them |
 | `WhitelistPaymaster` | a gas sponsor with a budget per account | the EntryPoint; its owner | `0x657792557C1D40f2Da031FD7aB277078D2c0a4cb` |
 | `IVenueDecoder` | what a trading venue is to the policy (interface) | the policy; the owner's tools | none: an interface |
 | `CowSwapDecoder` | CoW Protocol's orders under that interface | the policy; the owner's tools | `0x42F62bF7134F5eF6d46d4BC07d806E77D1Df641a` |
@@ -225,27 +226,31 @@ source].
   `x402Reclaim`, by the agent (with `(agentPolicy, x402Reclaim)` on its
   allow-list) or the owner [V source; `docs/AGENT_CONFIG.md`].
 
-**State per account.** [V source; the slots from `forge inspect AgentPolicy
-storageLayout`]
+**State per account.** [V source: `PolicyStorage.Layout`]
 
-- `_configs[id][account]`: a permission's `Config`, in three slots:
+- `configs[id][account]`: a permission's `Config`, in three slots:
   (`validUntil`, 0 meaning not installed; `epoch`; `maxValuePerOp`),
   (`budget`; `spent`), (`validAfter`; `period`; `periodSeen`).
 - `usedIds[account]`: how many of the account's permissions have a mandate
   here.
 - Keyed by the mandate, `m = keccak256(id, epoch)`, one installation of a
-  permission: the allow-list `_allowed[keccak256(m, target, selector)]`;
-  the token limits `_tokens[keccak256(m, token)]` (`TokenLimit`, three
-  slots); the payee lists `_payees[keccak256(m, token, payee)]`; the
-  registered x402 authorizations and orders `_x402[keccak256(m, digest)]`
+  permission: the allow-list `allowed[keccak256(m, target, selector)]`;
+  the token limits `tokens[keccak256(m, token)]` (`TokenLimit`, three
+  slots); the payee lists `payees[keccak256(m, token, payee)]`; the
+  registered x402 authorizations and orders `x402[keccak256(m, digest)]`
   (`Pending`, two slots) and the window each was charged in,
-  `_chargedIn[keccak256(m, digest)]`; the window each token's count is in,
-  `_tokenPeriod[keccak256(m, token)]`; the venues
-  `_venues[keccak256(m, decoder)]` (`VenuePin`, two slots).
-- `_venuePlaces[place][account]`: every venue's own contract, decoder and
+  `chargedIn[keccak256(m, digest)]`; the window each token's count is in,
+  `tokenPeriod[keccak256(m, token)]`; the venues
+  `venues[keccak256(m, decoder)]` (`VenuePin`, two slots).
+- `venuePlaces[place][account]`: every venue's own contract, decoder and
   spender the account has pinned in any mandate; never cleared.
 
-In every mapping the account is the innermost key, so each slot is
+These mappings are the members of one layout, `PolicyStorage.Layout`
+(`contracts/src/policy/PolicyStorage.sol`), so that the fixed code the
+policy reaches by DELEGATECALL (#251) reads and writes the same storage
+without inheritance. The layout sits at slot 0, and each mapping keeps the
+slot it had as a state variable. In every mapping the account is the
+innermost key, so each slot is
 `keccak256(account ‖ x) + n` with `n` at most 2: storage ERC-7562 lets the
 account's validation read and write. With the account outermost the same
 data would sit in slots a rule-enforcing bundler refuses (#83) [V source;
@@ -409,10 +414,10 @@ which refuses the operation all the same [I].
   payee list and no x402: the agent picks the receiver and the spender.
   An id's limit is kept as a token's, under a key made of the contract
   and the id (the low 160 bits of a tagged hash; `idAsset`). The
-  contract's runtime size is 23,920 bytes of the 24,576 a
+  contract's runtime size is 23,854 bytes of the 24,576 a
   contract may have, with the calls through a decoder (below) in it and
   the reading of Safe transactions in the `SafeShapes` judge
-  [V `forge build --sizes`, 2026-11-27]: the next change has 656 bytes
+  [V `forge build --sizes`, 2026-11-27]: the next change has 722 bytes
   ([#224](https://github.com/postcryptum-research/agent-keys/issues/224)).
   An approval is charged like a transfer; what the spender later pulls is
   not seen.
