@@ -26,6 +26,8 @@ commit `e48b93e001f34f460bd4845d231b8e0ee5d26ad6` builds them, every contract at
 | `SafeNonceAssert` | the replay guard of an agent's Safe transaction | the account, in a batch | `0x29f600cBcdC5221a63bD5c88F4a75E20c5CBe219` |
 | `SafeShapes` | where the calls inside a Safe transaction and a `multiSend` batch lie (a judge, #251) | the policy, in validation | none yet: the instances above do not use it |
 | `PolicyStorage` | the policy's storage, one layout (library) | the policy and its fixed parts | none: compiled into them |
+| `PolicyRules` | the keys and rules the policy's validation and its install share (library) | the policy and `PolicyInstall` | none: compiled into them |
+| `PolicyInstall` | the install of a mandate, as fixed code of the policy (#251) | the policy, by DELEGATECALL, in the owner's operation | none yet: created by the policy's constructor, at its CREATE address |
 | `WhitelistPaymaster` | a gas sponsor with a budget per account | the EntryPoint; its owner | `0x657792557C1D40f2Da031FD7aB277078D2c0a4cb` |
 | `IVenueDecoder` | what a trading venue is to the policy (interface) | the policy; the owner's tools | none: an interface |
 | `CowSwapDecoder` | CoW Protocol's orders under that interface | the policy; the owner's tools | `0x42F62bF7134F5eF6d46d4BC07d806E77D1Df641a` |
@@ -290,7 +292,10 @@ canonical encodings only [V source].
   the id has one for the account, `UnknownEntryPoint` if the account does
   not answer `entrypoint()`, `ForbiddenTarget` for an entry no agent may
   have, `InvalidConfig` for malformed data or a broken rule. Emits
-  `AgentPolicySet(account, id, validUntil, maxValuePerOp, budget)`.
+  `AgentPolicySet(account, id, validUntil, maxValuePerOp, budget)`. The
+  code that does it is `PolicyInstall` (below), which the policy runs by
+  DELEGATECALL on its own storage; the errors and the event are the
+  policy's, with the same signatures.
 - `onUninstall(bytes32(id) ‖ …)`: sets `validUntil` and `validAfter` to 0,
   moves the epoch on, decrements `usedIds`; reverts `NotInitialized` if
   the id has no mandate. The venue places stay.
@@ -414,10 +419,11 @@ which refuses the operation all the same [I].
   payee list and no x402: the agent picks the receiver and the spender.
   An id's limit is kept as a token's, under a key made of the contract
   and the id (the low 160 bits of a tagged hash; `idAsset`). The
-  contract's runtime size is 23,854 bytes of the 24,576 a
-  contract may have, with the calls through a decoder (below) in it and
-  the reading of Safe transactions in the `SafeShapes` judge
-  [V `forge build --sizes`, 2026-11-27]: the next change has 722 bytes
+  contract's runtime size is 17,715 bytes of the 24,576 a
+  contract may have, with the calls through a decoder (below) in it, the
+  reading of Safe transactions in the `SafeShapes` judge and the install in
+  `PolicyInstall` [V `forge build --sizes`, 2026-11-27]: the next change
+  has 6,861 bytes
   ([#224](https://github.com/postcryptum-research/agent-keys/issues/224)).
   An approval is charged like a transfer; what the spender later pulls is
   not seen.
@@ -709,6 +715,32 @@ bytes smaller (23,920 of 24,576); validation of a Safe transaction costs
 4,087 gas more (46,790), and of a Safe `multiSend` of two legs 11,214 more
 (71,427): a cold static call, the copy of the calldata into it, and the
 judge's own reading. A plain call and a token transfer do not call it.
+
+## PolicyInstall
+
+`contracts/src/policy/PolicyInstall.sol`. The install of a mandate, moved
+out of `AgentPolicy` (#251): the decoding of the four forms of install
+data, the allow-list and its forbidden targets, the token limits, the
+payee lists, the period and venues, the id limits, and the rules that tie
+them together. Its code is what `AgentPolicy`'s was, reading the mandate's
+keys through `PolicyRules` and its storage through `PolicyStorage`.
+
+**Who calls it, and when.** `AgentPolicy`, from `onInstall`, by
+DELEGATECALL: in the execution phase of the owner's operation, not in
+validation, so ERC-7562 does not bind it. The account stays the caller and
+the policy's storage is what it writes. The policy creates it in its
+constructor and holds its address as `INSTALL`, so the two are always a
+pair; its address is the policy's CREATE address with nonce 1. Called
+directly it writes its own storage, which installs no mandate anyone reads
+(`test_install_theInstallCodeWritesThePolicysStorageOnlyThroughThePolicy`).
+
+**What it costs** [V `test_measure_installGas` and
+`test_measure_validationGas_*`, 2026-11-27]: `AgentPolicy` is 6,139 bytes
+smaller (17,715); `PolicyInstall` is 8,145, with its own copy of the shared
+rules. An install of two entries and a token limit costs 3,688 gas more
+(182,034): one cold DELEGATECALL and the data encoded for it. Validation
+costs 48 to 139 gas less by shape than before the step: the shared rules
+are called directly.
 
 ## SafeNonceAssert
 

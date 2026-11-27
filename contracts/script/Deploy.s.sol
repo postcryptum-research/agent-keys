@@ -190,6 +190,8 @@ contract Deploy is Script {
         _supersede(json, recorded, "safeNonceAssert", nonceAssert);
         _supersede(json, recorded, "safeShapes", safeShapes);
         _supersede(json, recorded, "agentPolicy", policy);
+        // the policy's install code, which its constructor creates (#251)
+        _supersede(json, recorded, "policyInstall", AgentPolicy(policy).INSTALL());
         _supersede(json, recorded, "whitelistPaymaster", paymaster);
         _supersede(json, recorded, "demoCounter", counter);
         if (decoders[0] != address(0)) _supersede(json, recorded, "cowSwapDecoder", decoders[0]);
@@ -209,6 +211,7 @@ contract Deploy is Script {
         vm.serializeAddress(json, "p256RecoveryValidator", recoveryValidator);
         vm.serializeAddress(json, "p256Signer", signer);
         vm.serializeAddress(json, "agentPolicy", policy);
+        vm.serializeAddress(json, "policyInstall", AgentPolicy(policy).INSTALL());
         vm.serializeAddress(json, "safeNonceAssert", nonceAssert);
         vm.serializeAddress(json, "safeShapes", safeShapes);
         vm.serializeAddress(json, "whitelistPaymaster", paymaster);

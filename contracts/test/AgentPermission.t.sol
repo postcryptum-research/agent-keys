@@ -7,6 +7,8 @@ import {P256Validator} from "../src/P256Validator.sol";
 import {P256RecoveryValidator} from "../src/P256RecoveryValidator.sol";
 import {P256Signer} from "../src/P256Signer.sol";
 import {AgentPolicy} from "../src/AgentPolicy.sol";
+import {PolicyInstall} from "../src/policy/PolicyInstall.sol";
+import {ORDER_REGISTER, X402_AUTHORIZE, X402_RECLAIM} from "../src/policy/PolicyRules.sol";
 import {TokenLimit} from "../src/policy/PolicyStorage.sol";
 import {SafeShapes} from "../src/judges/SafeShapes.sol";
 import {SafeNonceAssert} from "../src/SafeNonceAssert.sol";
@@ -928,6 +930,58 @@ contract AgentPermissionTest is Test {
         assertEq(_verdictOf(SAFE_ID, single), 1, "a Safe transaction, positions outside");
         vm.etch(address(policy.SAFE_SHAPES()), address(new FarJudge(true)).code);
         assertEq(_verdictOf(SAFE_ID, batch), 1, "a batch's leg, positions outside");
+    }
+
+    /// The gas of installing a mandate of two entries and one token limit,
+    /// asked directly as Kernel asks it, with the policy's storage cold. A
+    /// record, as the validation figures are (#251).
+    function test_measure_installGas() public {
+        address[] memory targets = new address[](2);
+        bytes4[] memory selectors = new bytes4[](2);
+        (targets[0], selectors[0]) = (address(counter), Counter.increment.selector);
+        (targets[1], selectors[1]) = (address(token), MockToken.transfer.selector);
+        bytes memory data = abi.encodePacked(
+            bytes32(bytes4(0x6d656173)), abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, _tokenCaps(), uint48(0))
+        );
+        vm.cool(address(policy));
+        vm.prank(acct);
+        uint256 before = gasleft();
+        policy.onInstall(data);
+        emit log_named_uint("install gas, two entries and a token limit", before - gasleft());
+        assertTrue(policy.isAllowed(acct, bytes32(bytes4(0x6d656173)), address(counter), Counter.increment.selector));
+    }
+
+    /// The install code is the policy's own (#251): created by its
+    /// constructor, run by its DELEGATECALL on its storage. Called directly
+    /// it writes its own storage, which installs no mandate anyone reads.
+    function test_install_theInstallCodeWritesThePolicysStorageOnlyThroughThePolicy() public {
+        PolicyInstall install = PolicyInstall(policy.INSTALL());
+        assertGt(address(install).code.length, 0, "created with the policy");
+        bytes32 id = bytes32(bytes4(0x64697263));
+        address[] memory targets = new address[](1);
+        bytes4[] memory selectors = new bytes4[](1);
+        (targets[0], selectors[0]) = (address(counter), Counter.increment.selector);
+        bytes memory data = abi.encodePacked(
+            id, abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, new AgentPolicy.TokenCap[](0), uint48(0))
+        );
+        // called directly: the policy holds no mandate for the id
+        vm.prank(acct);
+        install.onInstall(data);
+        assertFalse(policy.isAllowed(acct, id, address(counter), Counter.increment.selector), "directly");
+        (uint48 validUntil,,,,,) = policy.configs(acct, id);
+        assertEq(validUntil, 0);
+        // through the policy the same data installs
+        vm.prank(acct);
+        policy.onInstall(data);
+        assertTrue(policy.isAllowed(acct, id, address(counter), Counter.increment.selector), "through the policy");
+    }
+
+    /// The selectors the shared rules know the policy's entry points by are
+    /// the policy's own.
+    function test_install_theSharedSelectorsAreThePolicys() public pure {
+        assertEq(X402_AUTHORIZE, AgentPolicy.x402Authorize.selector);
+        assertEq(X402_RECLAIM, AgentPolicy.x402Reclaim.selector);
+        assertEq(ORDER_REGISTER, AgentPolicy.orderRegister.selector);
     }
 
     function _verdictOf(PermissionId id, bytes memory callData) internal returns (uint256) {

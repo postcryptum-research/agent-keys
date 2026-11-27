@@ -30,11 +30,13 @@ RUNTIME = {
     "agentPolicy": "AgentPolicy.sol/AgentPolicy",
     "safeNonceAssert": "SafeNonceAssert.sol/SafeNonceAssert",
     "safeShapes": "SafeShapes.sol/SafeShapes",
+    # AgentPolicy's install code, which its constructor creates at its CREATE address (nonce 1)
+    "policyInstall": "PolicyInstall.sol/PolicyInstall",
     "demoCounter": "DemoCounter.sol/DemoCounter",
 }
 # runtime code has no constructor run: an immutable is written in by hand.
 # AgentPolicy's one immutable is the SafeNonceAssert address it is deployed with.
-IMMUTABLES = {"agentPolicy": {"NONCE_ASSERT": "safeNonceAssert", "SAFE_SHAPES": "safeShapes"}}
+IMMUTABLES = {"agentPolicy": {"NONCE_ASSERT": "safeNonceAssert", "SAFE_SHAPES": "safeShapes", "INSTALL": "policyInstall"}}
 # creation code, by file and key
 CREATION = {
     "chain-code.json": {
