@@ -414,6 +414,15 @@ decoder first, and the decoder refused): a supply to Aave on behalf of
 another address; a CCTP transfer for another recipient; a CCTP transfer to
 another chain than the one the owner set.
 
+**The other side of the bridge.** Circle attested the burn about an hour
+later, and the attestation was delivered to the message transmitter on Base
+Sepolia, which anyone may do: 5 USDC were minted there to the account's
+address [V
+[`0xa145a77742a009b57bb24e51530d22b2c1aae0a9e65fbf40e40a5dfd46d084a5`](https://sepolia.basescan.org/tx/0xa145a77742a009b57bb24e51530d22b2c1aae0a9e65fbf40e40a5dfd46d084a5),
+2026-11-27 10:15:43 UTC; the balance read afterwards]. The account does not
+exist on Base Sepolia yet: the USDC waits at its address, which the same
+creation data gives there.
+
 **The mandate's counters afterwards** [V `permission show`]: WETH 0.0006 of
 0.001, USDC 5 of 10, LINK 100 of 300, and 0.000111 ETH of gas against the
 native budget.
@@ -421,10 +430,6 @@ native budget.
 **Not done in this run.**
 - The 1inch order was sent to no order book and had no taker: its fill at
   the router is shown on a fork only.
-- The bridged USDC was not minted on Base Sepolia: somebody has to deliver
-  Circle's attestation there, and it was still pending when this was
-  written. The account does not exist on Base Sepolia yet; the USDC would
-  wait at its address.
 - No ERC-7562 trace was taken of these operations on the chain; the same
   kinds of operation are traced on a local chain
   ([`FUZZING.md`](FUZZING.md)).
