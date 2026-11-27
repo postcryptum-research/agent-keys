@@ -58,7 +58,7 @@ struct AgentArgs {
     /// Agent account config (keys, mandate, deployments).
     #[arg(long)]
     agent: PathBuf,
-    /// Optional .env with BASE_SEPOLIA_RPC_URL, GAS_WALLET_KEYFILE and BUNDLER_URL.
+    /// Optional .env with BASE_SEPOLIA_RPC_URL, GAS_WALLET_KEYFILE, BUNDLER_URL and GAS_TOKEN_PAYMASTER.
     #[arg(long)]
     env_file: Option<PathBuf>,
     /// Deliver operations through this ERC-4337 bundler RPC instead of our
