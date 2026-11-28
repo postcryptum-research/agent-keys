@@ -190,8 +190,10 @@ contract Deploy is Script {
         _supersede(json, recorded, "safeNonceAssert", nonceAssert);
         _supersede(json, recorded, "safeShapes", safeShapes);
         _supersede(json, recorded, "agentPolicy", policy);
-        // the policy's install code, which its constructor creates (#251)
-        _supersede(json, recorded, "policyInstall", AgentPolicy(policy).INSTALL());
+        // the policy's install code, which its constructor creates (#251); a
+        // recorded policy from before the division has none
+        policyInstall = installOf(policy);
+        if (policyInstall != address(0)) _supersede(json, recorded, "policyInstall", policyInstall);
         _supersede(json, recorded, "whitelistPaymaster", paymaster);
         _supersede(json, recorded, "demoCounter", counter);
         if (decoders[0] != address(0)) _supersede(json, recorded, "cowSwapDecoder", decoders[0]);
@@ -211,7 +213,7 @@ contract Deploy is Script {
         vm.serializeAddress(json, "p256RecoveryValidator", recoveryValidator);
         vm.serializeAddress(json, "p256Signer", signer);
         vm.serializeAddress(json, "agentPolicy", policy);
-        vm.serializeAddress(json, "policyInstall", AgentPolicy(policy).INSTALL());
+        if (policyInstall != address(0)) vm.serializeAddress(json, "policyInstall", policyInstall);
         vm.serializeAddress(json, "safeNonceAssert", nonceAssert);
         vm.serializeAddress(json, "safeShapes", safeShapes);
         vm.serializeAddress(json, "whitelistPaymaster", paymaster);
@@ -227,9 +229,21 @@ contract Deploy is Script {
 
     /// @dev True when this run deploys from the build rather than reusing what is recorded.
     bool internal redeploy;
-    /// The SafeShapes judge of this run, which AgentPolicy is built with. A
-    /// field and not a local: `run` has no stack slot left.
+    /// The SafeShapes judge of this run, which a mandate pins (#251), and the
+    /// policy's install code. Fields and not locals: `run` has no stack slot left.
     address internal safeShapes;
+    address internal policyInstall;
+
+    /// @dev The install code a policy created in its constructor (#251), or
+    /// zero for a policy from before the division, which has none.
+    /// @param policy The AgentPolicy.
+    /// @return The policy's `INSTALL`, or zero.
+    function installOf(address policy) public view returns (address) {
+        // a low-level call: one to an address without code reverts past a `try`
+        (bool ok, bytes memory answer) = policy.staticcall(abi.encodeWithSignature("INSTALL()"));
+        if (!ok || answer.length != 32) return address(0);
+        return abi.decode(answer, (address));
+    }
 
     /// @dev Keeps every superseded version the file records (`<name>V<n>`):
     /// live permissions and accounts installed with them keep pointing there

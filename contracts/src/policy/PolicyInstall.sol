@@ -11,9 +11,15 @@ import {
     ERC20_INCREASE_ALLOWANCE,
     ERC20_TRANSFER,
     ERC20_TRANSFER_FROM,
+    ERC6909_APPROVE,
+    ERC6909_TRANSFER,
+    ERC6909_TRANSFER_FROM,
     MULTI_SEND,
+    ORDER_REGISTER,
     PolicyRules,
-    SAFE_EXEC_TRANSACTION
+    SAFE_EXEC_TRANSACTION,
+    X402_AUTHORIZE,
+    X402_RECLAIM
 } from "./PolicyRules.sol";
 
 /// The one Kernel view the policy reads at install time: which EntryPoint
@@ -29,13 +35,20 @@ interface IKernelEntryPoint {
 /// creates it in its constructor and runs it by DELEGATECALL from
 /// `onInstall`, on the policy's own storage (`PolicyStorage`), with the
 /// account as the caller. It runs in the execution phase of the owner's
-/// operation, not in validation, so ERC-7562 does not bind it. Called
+/// operation, or in the validation of an account's first operation, whose
+/// `initCode` installs its first mandate through a staked factory; there it
+/// touches only the account's slots of the policy, and calls code by STATICCALL
+/// alone. Called
 /// directly, it writes its own storage, which nothing reads: a mandate is
 /// what the policy's storage holds.
 contract PolicyInstall {
     /// @dev The version of this contract's code (semantic versioning), raised with
     /// any change to its bytecode. A release tag names the versions it carries.
     string public constant VERSION = "0.1.0";
+
+    /// @dev Who paused a module: the account (the owner) and the mandate's guardian.
+    uint8 internal constant PAUSED_BY_OWNER = 1;
+    uint8 internal constant PAUSED_BY_GUARDIAN = 2;
 
     // The errors and the event of `AgentPolicy` that an install raises, with
     // the same signatures, so that the policy's callers see them as its own.
@@ -235,15 +248,33 @@ contract PolicyInstall {
             // a judge that is the account or this policy would close the account's own paths
             if (judge == msg.sender || judge == address(this)) revert InvalidConfig();
             (bytes4[] memory selectors, uint8[] memory roles) = IShapeJudge(judge).shapes();
-            if (selectors.length == 0 || selectors.length != roles.length) revert InvalidConfig();
+            // eight at most: they are recorded in one word for `pause`
+            if (selectors.length == 0 || selectors.length > 8 || selectors.length != roles.length) revert InvalidConfig();
+            bytes32 packed;
             for (uint256 j; j < selectors.length; j++) {
                 if (roles[j] != SHAPE_WALLET && roles[j] != SHAPE_BATCH) revert InvalidConfig();
+                // never a selector the policy meters or answers itself
+                if (_policyOwns(selectors[j])) revert InvalidConfig();
+                packed |= bytes32(selectors[j]) >> (32 * j);
                 ShapePin storage pin = PolicyStorage.store().shapes[keccak256(abi.encode(m, selectors[j]))][msg.sender];
                 // one judge per selector: a second judge, or the same twice, is refused
                 if (pin.judge != address(0)) revert InvalidConfig();
                 (pin.judge, pin.role) = (judge, roles[j]);
             }
+            PolicyStorage.store().judgeSelectors[keccak256(abi.encode(m, judge))][msg.sender] = packed;
         }
+    }
+
+    /// @dev The selectors the policy gives a meaning of its own: no data, the
+    /// token functions it meters, and its own entry points. A judge never
+    /// takes one of them over.
+    /// @param s The selector.
+    /// @return True if the policy owns it.
+    function _policyOwns(bytes4 s) internal pure returns (bool) {
+        return s == bytes4(0) || s == ERC20_TRANSFER || s == ERC20_TRANSFER_FROM || s == ERC20_APPROVE
+            || s == ERC20_INCREASE_ALLOWANCE || s == ERC6909_TRANSFER || s == ERC6909_TRANSFER_FROM
+            || s == ERC6909_APPROVE || s == AUTHORIZE_OPERATOR || s == X402_AUTHORIZE || s == X402_RECLAIM
+            || s == ORDER_REGISTER;
     }
 
     /// @dev The id limits of the eleven-word form: one per `(token, id)`, on
@@ -421,25 +452,37 @@ contract PolicyInstall {
     /// @param paused True to pause, false to lift the pause.
     function pause(address account, bytes32 id, address module, bool paused) external {
         bytes32 m = PolicyRules.mandate(id, PolicyStorage.store().configs[id][account].epoch);
-        if (msg.sender != account && msg.sender != PolicyStorage.store().guardians[keccak256(abi.encode(m))][account]) {
-            revert NotTheGuardian();
+        // the owner's bit, or the guardian's
+        uint8 bit = PAUSED_BY_OWNER;
+        if (msg.sender != account) {
+            if (msg.sender != PolicyStorage.store().guardians[keccak256(abi.encode(m))][account]) revert NotTheGuardian();
+            bit = PAUSED_BY_GUARDIAN;
         }
-        // a venue decoder of the mandate
-        bool found = PolicyRules.venue(account, m, module).codeHash != bytes32(0);
-        // a shape judge of the mandate: each selector pinned to it
-        if (module.code.length != 0) {
-            try IShapeJudge(module).shapes() returns (bytes4[] memory selectors, uint8[] memory) {
-                for (uint256 i; i < selectors.length; i++) {
-                    ShapePin storage pin = PolicyStorage.store().shapes[keccak256(abi.encode(m, selectors[i]))][account];
-                    if (pin.judge == module) {
-                        pin.paused = paused;
-                        found = true;
-                    }
-                }
-            } catch {}
+        // A venue decoder of the mandate, or a shape judge it pinned: the
+        // selectors recorded at install. The judge itself is not called, so a
+        // judge cannot keep itself from being paused
+        bytes32 reads = PolicyStorage.store().judgeSelectors[keccak256(abi.encode(m, module))][account];
+        if (reads == 0 && PolicyRules.venue(account, m, module).codeHash == bytes32(0)) revert NotAModule();
+        for (uint256 k; k < 8; k++) {
+            bytes4 selector = bytes4(reads << (32 * k));
+            if (selector == bytes4(0)) break;
+            ShapePin storage pin = PolicyStorage.store().shapes[keccak256(abi.encode(m, selector))][account];
+            if (pin.judge == module) pin.paused = _flags(pin.paused, bit, paused);
         }
-        if (!found) revert NotAModule();
-        PolicyStorage.store().modulePaused[keccak256(abi.encode(m, module))][account] = paused;
+        uint8 flags = PolicyStorage.store().modulePaused[keccak256(abi.encode(m, module))][account];
+        PolicyStorage.store().modulePaused[keccak256(abi.encode(m, module))][account] = _flags(flags, bit, paused);
         emit ModulePaused(account, id, module, paused);
+    }
+
+    /// @dev Who paused a module, after a pause or a lift: the owner's lift
+    /// clears both bits, the guardian's its own only, so that the guardian
+    /// never lifts what the owner paused.
+    /// @param flags The bits before.
+    /// @param bit The caller's bit.
+    /// @param paused True for a pause, false for a lift.
+    /// @return The bits after.
+    function _flags(uint8 flags, uint8 bit, bool paused) internal pure returns (uint8) {
+        if (paused) return flags | bit;
+        return bit == PAUSED_BY_OWNER ? 0 : flags & ~bit;
     }
 }

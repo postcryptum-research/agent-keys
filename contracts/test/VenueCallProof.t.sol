@@ -2,7 +2,6 @@
 pragma solidity ^0.8.38;
 
 import {AgentPolicy} from "../src/AgentPolicy.sol";
-import {SafeShapes} from "../src/judges/SafeShapes.sol";
 import {VenueCalls} from "../src/venues/VenueCalls.sol";
 import {Kernel} from "kernel/src/Kernel.sol";
 import {PackedUserOperation} from "kernel/src/interfaces/PackedUserOperation.sol";

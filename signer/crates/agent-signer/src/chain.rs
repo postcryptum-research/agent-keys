@@ -219,6 +219,10 @@ pub struct Session {
     pub token_domains: std::collections::HashMap<Address, B256>,
     /// What the chain says of the config's venue decoders.
     pub venues: std::collections::HashMap<Address, VenueOnChain>,
+    /// Why the config's Safe transaction or batch has no shape judge to pin,
+    /// on a policy that takes judges (#251): the operations that install the
+    /// mandate are refused for it, the others run.
+    judge_missing: Option<String>,
 }
 
 /// A venue decoder as read from the chain when the session opens.
@@ -287,6 +291,22 @@ pub fn key_text(key: &hw_signer::PublicKey, indent: &str) -> String {
         hex::encode(key.x),
         hex::encode(key.y)
     )
+}
+
+/// A view's answer: `Some` when the contract answers, `None` when it does not
+/// have the view (the call reverts, or no data comes back). A failure to ask
+/// (the connection, the node) is an error, never `None`.
+fn answer<T>(result: std::result::Result<T, alloy::contract::Error>) -> Result<Option<T>> {
+    match result {
+        Ok(v) => Ok(Some(v)),
+        Err(alloy::contract::Error::ZeroData(..)) => Ok(None),
+        Err(alloy::contract::Error::TransportError(e))
+            if e.as_error_resp().is_some_and(|r| r.code == 3 || r.message.contains("revert")) =>
+        {
+            Ok(None)
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 impl Session {
@@ -417,21 +437,28 @@ impl Session {
             }
         }
         // A Safe transaction or a batch on the allow-list needs the shape judge
-        // that reads it (#251): the one the deployments file names, at the code
-        // the chain holds now, which can no longer change (EIP-6780)
-        let shapes = if cfg.allows_safe() {
-            let judge = dep.safe_shapes.context(
-                "the config allows a Safe transaction or a batch, and the deployments file names no safeShapes: \
-                 the policy installs such a mandate only with the shape judge that reads it",
-            )?;
-            let code = provider.get_code_at(judge).await?;
-            if code.is_empty() {
-                bail!("the shape judge {judge} (deployments.safeShapes) has no code on this chain");
+        // that reads it, on a policy that takes judges (#251): the one the
+        // deployments file names, at the code the chain holds now, which can no
+        // longer change (EIP-6780). A policy from before the division has no
+        // guardian, and installs such a mandate without a judge.
+        let mut judge_missing = None;
+        let mut shapes = vec![];
+        if cfg.allows_safe() {
+            let guard = crate::abi::IAgentPolicyGuardian::new(dep.agent_policy, provider.clone());
+            if answer(guard.guardian(Address::ZERO, B256::ZERO).call().await)?.is_some() {
+                match dep.safe_shapes {
+                    None => judge_missing = Some("the deployments file names no safeShapes".to_string()),
+                    Some(judge) => {
+                        let code = provider.get_code_at(judge).await?;
+                        if code.is_empty() {
+                            judge_missing = Some(format!("the shape judge {judge} (deployments.safeShapes) has no code on this chain"));
+                        } else {
+                            shapes.push((judge, alloy::primitives::keccak256(&code)));
+                        }
+                    }
+                }
             }
-            vec![(judge, alloy::primitives::keccak256(&code))]
-        } else {
-            vec![]
-        };
+        }
         let (permission_data, init_data) = account_material(&cfg, &dep, &token_domains, &trading, &shapes)?;
 
         let (account, pinned) = match cfg.account {
@@ -445,6 +472,10 @@ impl Session {
                 let Some(init_data) = &init_data else {
                     bail!("the config neither pins `account` nor gives `ownerPublicKey`: cannot derive the account");
                 };
+                // the account's address follows from its first mandate
+                if let Some(why) = &judge_missing {
+                    bail!("the config allows a Safe transaction or a batch, and {why}: the policy installs such a mandate only with the shape judge that reads it");
+                }
                 let factory = IKernelFactory::new(dep.kernel_factory, provider.clone());
                 (factory.getAddress(init_data.clone(), cfg.salt()?).call().await?, false)
             }
@@ -464,7 +495,19 @@ impl Session {
             pinned,
             token_domains,
             venues,
+            judge_missing,
         })
+    }
+
+    /// Refuses an operation that installs the config's mandate when its Safe
+    /// transaction or batch has no judge to pin.
+    fn judge_for_install(&self) -> Result<()> {
+        match &self.judge_missing {
+            Some(why) => bail!(
+                "the config allows a Safe transaction or a batch, and {why}: the policy installs such a mandate only with the shape judge that reads it"
+            ),
+            None => Ok(()),
+        }
     }
 
     /// Kernel `initialize` data for this account (needs `ownerPublicKey`).
@@ -1353,9 +1396,6 @@ impl Session {
             .timestamp)
     }
 
-    /// Root operation signed by the owner key: replace permission `old` with
-    /// the one the config describes (new agent key and/or mandate) in a
-    /// single batch — uninstall, install, grant `execute`.
     /// Root operation signed by the owner key: name the guardian of the
     /// permission's current mandate, or none with zero (#251, decision 2).
     /// The guardian may pause a module of that mandate and lift the pause.
@@ -1382,22 +1422,28 @@ impl Session {
         self.send_raw(kernel::execute_calldata(policy, U256::ZERO, &data), true, sponsored).await
     }
 
-    /// The guardian of a permission's current mandate, when its policy has
-    /// guardians and one is named.
-    pub async fn guardian_of(&self, perm: PermissionId) -> Option<Address> {
-        let policy = self.policy_of(perm).await.ok()?;
+    /// The guardian of a permission's current mandate: none where the
+    /// permission is not installed, its policy has no guardians, or none is
+    /// named. A failure to ask is an error, never "none".
+    pub async fn guardian_of(&self, perm: PermissionId) -> Result<Option<Address>> {
+        let Some(policy) = self.policy_if_installed(perm).await? else { return Ok(None) };
         let id32 = B256::right_padding_from(perm.as_slice());
-        let g = crate::abi::IAgentPolicyGuardian::new(policy, self.provider.clone()).guardian(self.account, id32).call().await.ok()?;
-        (!g.is_zero()).then_some(g)
+        let g = answer(crate::abi::IAgentPolicyGuardian::new(policy, self.provider.clone()).guardian(self.account, id32).call().await)?;
+        Ok(g.filter(|g| !g.is_zero()))
     }
 
     /// The policy a permission of this account is installed with.
     async fn policy_of(&self, perm: PermissionId) -> Result<Address> {
-        let pc = IKernel::new(self.account, self.provider.clone()).permissionConfig(perm).call().await?;
-        match pc.policyData.first().filter(|d| d.len() >= 22) {
-            Some(d) => Ok(Address::from_slice(&d[2..22])),
+        match self.policy_if_installed(perm).await? {
+            Some(policy) => Ok(policy),
             None => bail!("permission {perm} is not installed on {}", self.account),
         }
+    }
+
+    /// The policy a permission of this account is installed with, if it is.
+    async fn policy_if_installed(&self, perm: PermissionId) -> Result<Option<Address>> {
+        let pc = IKernel::new(self.account, self.provider.clone()).permissionConfig(perm).call().await?;
+        Ok(pc.policyData.first().filter(|d| d.len() >= 22).map(|d| Address::from_slice(&d[2..22])))
     }
 
     /// The call tried from the account before the owner signs: what the
@@ -1415,6 +1461,10 @@ impl Session {
         }
     }
 
+    /// Root operation signed by the owner key: replace permission `old` with
+    /// the one the config describes (new agent key and/or mandate) in a
+    /// single batch — uninstall, install, grant `execute` — with the old
+    /// permission's guardian and pauses carried over.
     pub async fn rotate_permission(&self, old: PermissionId, old_cfg: Option<&AgentConfig>, sponsored: bool) -> Result<Included> {
         let call_data = self.rotate_calldata(old, old_cfg).await?;
         self.send_raw(call_data, true, sponsored).await
@@ -1584,6 +1634,7 @@ impl Session {
 
     pub async fn add_calldata(&self) -> Result<Bytes> {
         self.check_mandate_targets()?;
+        self.judge_for_install()?;
         let new = self.cfg.permission_id()?;
         let kernel_account = IKernel::new(self.account, self.provider.clone());
         if kernel_account.validationConfig(kernel::permission_vid(new)).call().await?.hook != Address::ZERO {
@@ -1600,6 +1651,7 @@ impl Session {
 
     pub async fn rotate_calldata(&self, old: PermissionId, old_cfg: Option<&AgentConfig>) -> Result<Bytes> {
         self.check_mandate_targets()?;
+        self.judge_for_install()?;
         // what the permission being replaced leaves behind and the new one does not take over
         let stale = self.stale_allowances(old, old_cfg, &self.venue_legs()?, true).await?;
         let new = self.cfg.permission_id()?;
@@ -1609,20 +1661,42 @@ impl Session {
             (self.account, U256::ZERO, kernel::install_permission_calldata(new, self.permission_data.clone(), nonce)),
             (self.account, U256::ZERO, kernel::grant_execute_calldata(new)),
         ];
-        // The old permission's guardian goes on with the new one (#251): read
-        // before the old one is removed, named once the new one is installed
-        if let Some(g) = self.guardian_of(old).await {
+        // The old permission's guardian, and its pauses of the modules the new
+        // mandate pins too, go on with the new one (#251): read before the old
+        // one is removed, set once the new one is installed. A pause carried
+        // over is the owner's: the account sets it
+        let guardian = self.guardian_of(old).await?;
+        let mut modules: Vec<Address> = self.cfg.policy.venues.iter().map(|v| v.decoder).collect();
+        modules.extend(self.dep.safe_shapes.filter(|_| self.cfg.allows_safe()));
+        let mut paused = Vec::new();
+        if let Some(old_policy) = self.policy_if_installed(old).await? {
+            let before = crate::abi::IAgentPolicyGuardian::new(old_policy, self.provider.clone());
+            let old32 = B256::right_padding_from(old.as_slice());
+            for module in modules {
+                if answer(before.paused(self.account, old32, module).call().await)? == Some(true) {
+                    paused.push(module);
+                }
+            }
+        }
+        if guardian.is_some() || !paused.is_empty() {
             let policy = self.dep.agent_policy;
             let guard = crate::abi::IAgentPolicyGuardian::new(policy, self.provider.clone());
             let id32 = B256::right_padding_from(new.as_slice());
-            if guard.guardian(self.account, id32).call().await.is_err() {
+            if answer(guard.guardian(self.account, id32).call().await)?.is_none() {
                 bail!(
-                    "permission {old} has the guardian {g}, and the policy {policy} the new permission is installed \
-                     with has none: remove it first (`permission guardian --id {old} --guardian none`) to rotate without it"
+                    "permission {old} has a guardian or a paused module, and the policy {policy} the new permission is \
+                     installed with has neither: remove the guardian and lift the pauses first \
+                     (`permission guardian --id {old} --guardian none`, `permission pause --id {old} --lift`) to rotate without them"
                 );
             }
-            eprintln!("guardian:       {g}, carried over from {old} to {new}");
-            calls.push((policy, U256::ZERO, guard.setGuardian(id32, g).calldata().clone()));
+            if let Some(g) = guardian {
+                eprintln!("guardian:       {g}, carried over from {old} to {new}");
+                calls.push((policy, U256::ZERO, guard.setGuardian(id32, g).calldata().clone()));
+            }
+            for module in paused {
+                eprintln!("paused:         {module}, carried over from {old} to {new} as the owner's pause");
+                calls.push((policy, U256::ZERO, guard.pause(self.account, id32, module, true).calldata().clone()));
+            }
         }
         calls.extend(stale);
         calls.extend(self.venue_allowances(false)?);

@@ -99,6 +99,30 @@ contract CrookedDecoder {
 /// The core's side of trading (issue #80): a budget per period, and orders
 /// registered through a venue's decoder, vouched for and settled. An order's
 /// charge is not given back; the period returns it.
+/// A venue decoder that dispatches in its fallback, as a third party's may:
+/// every call it does not name, `shapes()` included, gets five words.
+contract FallbackDecoder {
+    address public venue;
+    address public spender;
+
+    constructor(address venue_) {
+        venue = venue_;
+        spender = venue_;
+    }
+
+    fallback() external {
+        address v = venue;
+        assembly {
+            mstore(0, v)
+            mstore(32, 1)
+            mstore(64, 0)
+            mstore(96, 1)
+            mstore(128, 0)
+            return(0, 160)
+        }
+    }
+}
+
 contract TradingTest is AgentPermissionTest {
     PermissionId internal constant TRD_ID = PermissionId.wrap(0x74726164); // "trad"
     bytes32 internal constant TRD = bytes32(PermissionId.unwrap(TRD_ID));
@@ -565,6 +589,45 @@ contract TradingTest is AgentPermissionTest {
         assertFalse(policy.paused(acct, TRD, address(decoder)), "read as lifted");
         _register(o);
         assertEq(_usdSpent(), 150e6, "registered once the pause is lifted");
+    }
+
+    /// The guardian never lifts the owner's pause of a venue.
+    function test_order_theGuardianNeverLiftsTheOwnersPause() public {
+        _with(DAY);
+        address keeper = makeAddr("guardian");
+        vm.prank(acct);
+        policy.setGuardian(TRD, keeper);
+        vm.prank(acct);
+        policy.pause(acct, TRD, address(decoder), true);
+        vm.prank(keeper);
+        policy.pause(acct, TRD, address(decoder), false);
+        assertTrue(policy.paused(acct, TRD, address(decoder)), "the owner's pause stands");
+        _expectRefused(_tradeOp(_today(), address(policy), 0, _registerCall(_order(150e6, _soon()))));
+    }
+
+    /// A decoder that answers unknown calls in its fallback is paused like
+    /// any other: `pause` does not ask a module anything.
+    function test_order_aDecoderWithAFallbackIsPaused() public {
+        _world();
+        FallbackDecoder d = new FallbackDecoder(address(settlement));
+        _install(TRD_ID, _params(DAY, _venues(address(d), address(d).codehash, keccak256("config"))));
+        vm.prank(acct);
+        policy.pause(acct, TRD, address(d), true);
+        assertTrue(policy.paused(acct, TRD, address(d)));
+    }
+
+    /// What a pause does not do: an order registered before it stays vouched
+    /// for until it expires, as the venue settles it; the owner's revocation
+    /// ends every vouch at once (`test_order_revokingEndsEveryVouch`).
+    function test_order_aPauseStopsNewOrdersNotRegisteredOnes() public {
+        _with(DAY);
+        CowSwapDecoder.Order memory o = _order(150e6, _soon());
+        bytes32 digest = settlement.digestOf(o);
+        _register(o);
+        vm.prank(acct);
+        policy.pause(acct, TRD, address(decoder), true);
+        _expectRefused(_tradeOp(_today(), address(policy), 0, _registerCall(_order(10e6, _soon()))));
+        assertTrue(_vouched(digest), "registered before the pause: still vouched for");
     }
 
     /// A decoder's answer is taken only in its exact form.

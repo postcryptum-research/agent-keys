@@ -4178,7 +4178,8 @@ fn safe_guarded() {
     let shown = chain.ok(&["permission", "show", "--agent", &cfg]);
     assert!(shown.contains("PAUSE module") && shown.to_lowercase().contains(&judge.to_lowercase()), "{shown}");
 
-    // the owner names a guardian; the guardian lifts the pause from its own address
+    // the owner names a guardian; the guardian's lift, from its own address,
+    // leaves the owner's pause standing; the owner lifts it
     chain.ok(&["permission", "guardian", "--agent", &cfg, "--guardian", FACILITATOR]);
     let shown = chain.ok(&["permission", "show", "--agent", &cfg]);
     assert!(shown.contains(&format!("guardian        {FACILITATOR}")), "{shown}");
@@ -4189,28 +4190,94 @@ fn safe_guarded() {
         paused: false,
     };
     chain.send_from(FACILITATOR, Some(&chain.addr("agentPolicy")), lift.abi_encode());
+    assert!(chain.ok(&["permission", "show", "--agent", &cfg]).contains("PAUSE module"), "the guardian does not lift the owner's pause");
+    chain.ok(&["permission", "pause", "--agent", &cfg, "--module", &judge, "--lift"]);
     chain.ok(&["op", "send", "--agent", &cfg, "--target", &safe, "--data", &once, "--safe-nonce", "2"]);
     assert_eq!(chain.counter(), before + U256::from(5));
     assert!(!chain.ok(&["permission", "show", "--agent", &cfg]).contains("PAUSE module"));
 
-    // a rotation carries the guardian over to the new permission, in the same
-    // operation: the guardian pauses the new mandate's judge
+    // A rotation carries the guardian over to the new permission, in the same
+    // operation, and a pause of a module the new mandate pins: the guardian
+    // pauses the judge, the owner rotates. The pause carried over is the
+    // owner's: the guardian cannot lift it, the owner can. The new config
+    // writes the Safe's selector without `0x`, and its judge is pinned all the same
+    chain.send_from(FACILITATOR, Some(&chain.addr("agentPolicy")), pauseCall { paused: true, ..lift }.abi_encode());
     let rotated = chain.config(
         "safe2.json",
         &Cfg {
             permission: "0x73616632", account: Some(account.clone()),
-            allow: vec![(safe.clone(), SAFE_EXEC), (counter.clone(), INCREMENT), (multisend.clone(), MULTISEND)],
+            allow: vec![(safe.clone(), "6a761202"), (counter.clone(), INCREMENT), (multisend.clone(), MULTISEND)],
             ..base_cfg(&owner, &agent, &counter, until)
         },
     );
     let said = chain.ok(&["permission", "rotate", "--agent", &rotated, "--old-id", "0x73616631"]);
     assert!(said.contains(&format!("guardian:       {FACILITATOR}, carried over")), "{said}");
+    assert!(said.to_lowercase().contains(&format!("paused:         {}, carried over", judge.to_lowercase())), "{said}");
     let shown = chain.ok(&["permission", "show", "--agent", &rotated]);
-    assert!(shown.contains(&format!("guardian        {FACILITATOR}")), "{shown}");
-    let pause = pauseCall { paused: true, id: B256::right_padding_from(b"saf2"), ..lift };
-    chain.send_from(FACILITATOR, Some(&chain.addr("agentPolicy")), pause.abi_encode());
-    chain.fails(&["op", "send", "--agent", &rotated, "--target", &safe, "--data", &exec(&account, &counter, increment.clone(), 0), "--safe-nonce", "3"]);
-    assert!(chain.ok(&["permission", "show", "--agent", &rotated]).contains("PAUSE module"));
+    assert!(shown.contains(&format!("guardian        {FACILITATOR}")) && shown.contains("PAUSE module"), "{shown}");
+    let third = exec(&account, &counter, increment.clone(), 0);
+    chain.fails(&["op", "send", "--agent", &rotated, "--target", &safe, "--data", &third, "--safe-nonce", "3"]);
+    let on_new = pauseCall { paused: false, id: B256::right_padding_from(b"saf2"), ..lift };
+    chain.send_from(FACILITATOR, Some(&chain.addr("agentPolicy")), on_new.abi_encode());
+    assert!(chain.ok(&["permission", "show", "--agent", &rotated]).contains("PAUSE module"), "the guardian does not lift the owner's pause");
+    chain.ok(&["permission", "pause", "--agent", &rotated, "--module", &judge, "--lift"]);
+    chain.ok(&["op", "send", "--agent", &rotated, "--target", &safe, "--data", &third, "--safe-nonce", "3"]);
+    assert_eq!(chain.counter(), before + U256::from(6));
+}
+
+/// #251: the shape judge is pinned only where the policy takes judges, and a
+/// judge the deployments file does not name refuses only what would install
+/// the mandate. A pinned account's other commands run: an account set up on a
+/// policy from before the division keeps working.
+#[test]
+fn the_judge_is_pinned_only_where_the_policy_takes_it() {
+    let chain = chain_or_skip!("judge-pin");
+    let (owner, agent) = (key(1), key(2));
+    let counter = chain.addr("demoCounter");
+    let until = far_future(&chain);
+    let account = chain.deploy(&chain.config("agent.json", &base_cfg(&owner, &agent, &counter, until)));
+    let safe = Address::repeat_byte(0x5a).to_string();
+    let with_safe = |name: &str, pinned: bool, edit: &dyn Fn(&mut Value)| -> String {
+        let cfg = chain.config(
+            name,
+            &Cfg {
+                permission: "0x6a756431", account: pinned.then(|| account.clone()),
+                allow: vec![(safe.clone(), SAFE_EXEC), (counter.clone(), INCREMENT)],
+                ..base_cfg(&owner, &agent, &counter, until)
+            },
+        );
+        let mut deployments: Value = serde_json::from_str(&std::fs::read_to_string(chain.dir.join("deployments.json")).unwrap()).unwrap();
+        edit(&mut deployments);
+        let file = chain.dir.join(format!("deployments-{name}"));
+        std::fs::write(&file, deployments.to_string()).unwrap();
+        let mut c: Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        c["deployments"] = json!(file);
+        std::fs::write(&cfg, c.to_string()).unwrap();
+        cfg
+    };
+    // a policy that takes judges, a deployments file that names none: the
+    // pinned account's status and mandate read, its install is refused
+    let no_judge = with_safe("no-judge.json", true, &|d| {
+        d.as_object_mut().unwrap().remove("safeShapes");
+    });
+    chain.ok(&["account", "status", "--agent", &no_judge]);
+    chain.ok(&["permission", "show", "--agent", &no_judge]);
+    let refused = chain.fails(&["permission", "add", "--agent", &no_judge, "--dry-run"]);
+    assert!(refused.contains("names no safeShapes"), "{refused}");
+    // an account not yet created: its address follows from the mandate, refused at once
+    let unpinned = with_safe("no-judge-new.json", false, &|d| {
+        d.as_object_mut().unwrap().remove("safeShapes");
+    });
+    let refused = chain.fails(&["account", "status", "--agent", &unpinned]);
+    assert!(refused.contains("names no safeShapes"), "{refused}");
+    // a policy without guardians (the counter's code stands in for one from
+    // before the division): no judge is wanted, and the session opens
+    let older = with_safe("older.json", false, &|d| {
+        let stand_in = d["demoCounter"].clone();
+        d["agentPolicy"] = stand_in;
+        d.as_object_mut().unwrap().remove("safeShapes");
+    });
+    chain.ok(&["account", "status", "--agent", &older]);
 }
 
 // ---------------------------------------------------------------- the phone's review against the policy's install
@@ -4328,9 +4395,16 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
     let cases: u64 = std::env::var("MANDATE_DIFFERENTIAL_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(400);
     let mut rng = Seeded(0x6d61_6e64_6174_65); // "mandate"
     let mut ids_rng = Seeded(0x6964_6361_7073); // "idcaps"
+    // the twelve-word form (#251), from a seed of its own: a Safe transaction
+    // and perhaps a batch, with the shape judge, mostly well pinned
+    let mut shapes_rng = Seeded(0x7368_6170_6573); // "shapes"
+    let judge: Address = chain.addr("safeShapes").parse().unwrap();
+    let judge_code = hex::decode(chain.rpc("eth_getCode", json!([judge.to_string(), "latest"])).as_str().unwrap().trim_start_matches("0x")).unwrap();
+    let judge_hash = alloy::primitives::keccak256(&judge_code);
+    let (safe_exec, multi_send) = (alloy::primitives::FixedBytes::<4>::from([0x6a, 0x76, 0x12, 0x02]), alloy::primitives::FixedBytes::<4>::from([0x8d, 0x80, 0xff, 0x0a]));
     let (mut both, mut chain_only, mut neither) = (0u64, 0u64, 0u64);
-    // of those shown and installed: in the ten-word form, and in the eleven-word one
-    let (mut with_period, mut with_ids) = (0u64, 0u64);
+    // of those shown and installed: in the ten-, eleven- and twelve-word forms
+    let (mut with_period, mut with_ids, mut with_shapes) = (0u64, 0u64, 0u64);
 
     for case in 0..cases {
         // ---- a mandate from the seed
@@ -4452,6 +4526,25 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
             _ => U256::ZERO,
         };
         let (max_value, budget) = (amount(&mut rng), amount(&mut rng));
+        // One mandate in six: a Safe's transaction, perhaps its batch, and the
+        // twelve-word form with a judge; now and then the form without one, a
+        // judge nobody knows, other code, the judge twice, or a shorter form
+        let mut shapes: Option<Vec<(Address, B256)>> = None;
+        if shapes_rng.one_in(6) {
+            let rng = &mut shapes_rng;
+            allow.push((Address::repeat_byte(0x5a), safe_exec));
+            if rng.one_in(2) {
+                allow.push((Address::repeat_byte(0x5b), multi_send));
+            }
+            shapes = match rng.below(10) {
+                0 => Some(vec![]),
+                1 => Some(vec![(Address::repeat_byte(0xe1), judge_hash)]),
+                2 => Some(vec![(judge, B256::repeat_byte(0xe2))]),
+                3 => Some(vec![(judge, judge_hash), (judge, judge_hash)]),
+                4 => None,
+                _ => Some(vec![(judge, judge_hash)]),
+            };
+        }
         let (ts, mut ss): (Vec<Address>, Vec<alloy::primitives::FixedBytes<4>>) = allow.iter().cloned().unzip();
         if rng.one_in(25) {
             ss.pop(); // a function short of the targets
@@ -4459,7 +4552,10 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
         let seven = (ts, ss, max_value, budget, until, caps.clone(), after);
         // The eleven-word form when there are limits per id (seldom without any, or
         // the limits dropped into a shorter form); the ten-word form one time in five
-        let mut init = if !ids.is_empty() && !rng.one_in(12) || rng.one_in(80) {
+        let mut init = if let Some(sh) = &shapes {
+            let (a, b, c, d, e, f, g) = seven;
+            (a, b, c, d, e, f, g, lists.clone(), period, venues.clone(), ids.clone(), sh.clone()).abi_encode_params()
+        } else if !ids.is_empty() && !rng.one_in(12) || rng.one_in(80) {
             let (a, b, c, d, e, f, g) = seven;
             (a, b, c, d, e, f, g, lists.clone(), period, venues.clone(), ids.clone()).abi_encode_params()
         } else if rng.one_in(5) {
@@ -4586,6 +4682,7 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
                 match init[31] {
                     0x40 => with_period += 1,
                     0x60 => with_ids += 1,
+                    0x80 => with_shapes += 1,
                     _ => {}
                 }
                 let c = configsCall::abi_decode_returns(&chain.call(&chain.addr("agentPolicy"), configsCall { account: acct, id }.abi_encode())).unwrap();
@@ -4662,8 +4759,10 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
         }
     }
     eprintln!(
-        "mandates: {cases}; shown and installed {both} ({with_period} with a period, {with_ids} with limits per id), installed and not shown {chain_only}, neither {neither}"
+        "mandates: {cases}; shown and installed {both} ({with_period} with a period, {with_ids} with limits per id, {with_shapes} with a shape judge), installed and not shown {chain_only}, neither {neither}"
     );
+    // the twelve-word form is shown and installed too, once there are cases enough
+    assert!(cases < 200 || with_shapes > 0, "no mandate with a shape judge was shown and installed");
     // the generator reaches each side's yes and no, and the one-way difference between them
     assert!(both * 7 >= cases && neither * 5 >= cases && chain_only * 100 >= cases, "the generator has drifted: {both} / {chain_only} / {neither}");
 }

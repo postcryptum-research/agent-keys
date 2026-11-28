@@ -3,6 +3,8 @@ pragma solidity ^0.8.38;
 
 import {Test} from "forge-std/Test.sol";
 import {Deploy} from "../script/Deploy.s.sol";
+import {AgentPolicy} from "../src/AgentPolicy.sol";
+import {SafeNonceAssert} from "../src/SafeNonceAssert.sol";
 
 /// @dev How the deploy script names a superseded instance when a redeploy
 /// replaces it (`REDEPLOY=true`, house rule 9): `<name>V<n>`, one above the
@@ -30,6 +32,18 @@ contract DeployScriptTest is Test {
             (v,,) = script.versionOf(not_[i]);
             assertFalse(v, not_[i]);
         }
+    }
+
+    /// The install code is recorded for a policy that has one, and not for a
+    /// recorded policy from before the division (#251), whose `INSTALL` reverts.
+    function test_theInstallCodeIsReadOnlyFromAPolicyThatHasIt() public {
+        address nonceAssert = address(new SafeNonceAssert());
+        AgentPolicy policy = new AgentPolicy(nonceAssert);
+        assertEq(script.installOf(address(policy)), policy.INSTALL());
+        assertTrue(policy.INSTALL() != address(0));
+        // code without `INSTALL`, as an earlier, whole policy is
+        assertEq(script.installOf(nonceAssert), address(0));
+        assertEq(script.installOf(makeAddr("nothing here")), address(0));
     }
 
     /// The bid decoder is deployed where Seaport is, with the conduit its orders name.

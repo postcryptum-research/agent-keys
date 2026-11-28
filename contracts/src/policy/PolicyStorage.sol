@@ -101,9 +101,10 @@ struct ShapePin {
     address judge;
     // Its role for the selector: `SHAPE_WALLET` or `SHAPE_BATCH`
     uint8 role;
-    // Paused by the mandate's guardian (#251, decision 2): validation refuses
-    // the selector's calls. In the pin's slot, so reading it costs nothing more
-    bool paused;
+    // Who paused the judge (#251, decision 2): bit 1 the account (the owner),
+    // bit 2 the mandate's guardian; validation refuses the selector's calls
+    // while any is set. In the pin's slot, so reading it costs nothing more
+    uint8 paused;
 }
 
 library PolicyStorage {
@@ -169,11 +170,15 @@ library PolicyStorage {
     // it may pause the mandate's modules, never widen anything (#251,
     // decision 2). key: `keccak256(mandate)`
     mapping(bytes32 key => mapping(address account => address)) guardians;
-    // Map of key => account => whether the mandate's guardian paused the
-    // module: validation reads it for a venue decoder; a shape judge's pins
-    // carry their own flag, read in validation, and this one is what
-    // `paused` answers. key: `keccak256(mandate, module)`
-    mapping(bytes32 key => mapping(address account => bool)) modulePaused;
+    // Map of key => account => who paused the module, as in `ShapePin.paused`:
+    // validation reads it for a venue decoder; a shape judge's pins carry
+    // their own, read in validation, and this one is what `paused` answers.
+    // key: `keccak256(mandate, module)`
+    mapping(bytes32 key => mapping(address account => uint8)) modulePaused;
+    // Map of key => account => the selectors a shape judge was pinned for at
+    // install, packed from the high bytes, eight at most, so that `pause`
+    // finds its pins without calling the judge. key: `keccak256(mandate, judge)`
+    mapping(bytes32 key => mapping(address account => bytes32)) judgeSelectors;
     }
 
     /// @dev The layout, at its slot.

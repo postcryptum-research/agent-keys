@@ -164,10 +164,18 @@ sequenceDiagram
     AP-->>K: the window, or a failure
 ```
 
-A judge answers positions, never bytes: the policy slices its own calldata
-at them, only within it, and judges what it slices, so what it judges is
-what the wallet will run. A judge reads no storage and does not revert;
-the policy reads one slot for it, the pin, keyed by the account.
+A judge answers positions, and the policy slices its own calldata at
+them, only within it, and judges what it slices. The judge also names each
+call's target, value and kind (a call or a DELEGATECALL), and those the
+policy takes from it as they are: what the policy judges is what the wallet
+runs as far as the judge reads the wallet honestly. That trust is part of
+the mandate, which is why the owner pins the judge by address and code
+hash, and why `SafeShapes` is held to the Safe's own decoding by tests. A
+judge reads no storage. One that reverts makes the operation's validation
+revert, a refusal for the mandate that pinned it and no other. A wallet
+transaction is paired with the Safe's nonce guard (`SafeNonceAssert`); a
+judge for another kind of wallet would need a guard of its own, which is
+not built.
 
 ### Install of a mandate
 
@@ -183,7 +191,7 @@ sequenceDiagram
     AP->>PI: DELEGATECALL onInstall
     PI->>J: shapes(), its code hash checked against the pin
     J-->>PI: the selectors it reads, each with its role
-    PI->>PI: each selector pinned to one judge
+    PI->>PI: each selector pinned to one judge, never one the policy owns (no data, the token functions it meters, its own entry points), eight at most; the judge's selectors recorded for pause
     PI->>PI: the allow-list with each entry's kind; a Safe transaction or a batch without its judge refused
     PI->>PI: token limits, payee lists, period and venues, id limits
     PI-->>AP: all of it written in AgentPolicy's storage
@@ -206,31 +214,44 @@ sequenceDiagram
     AP->>PI: DELEGATECALL: the guardian kept for this mandate
     G->>AP: pause(account, id, module, true)
     AP->>PI: DELEGATECALL: the guardian or the account only
-    PI->>PI: the module's flag set for this mandate: a shape judge's in each of its pins, a venue decoder's beside its pin
+    PI->>PI: the caller's bit set for this mandate (the owner's or the guardian's): a shape judge's in each pin recorded at install, a venue decoder's beside its pin; the module itself is not called
     Note over AP: validation: a paused module's calls are refused, the rest of the mandate runs
-    G->>AP: pause(account, id, module, false), or the owner through the account
+    G->>AP: pause(account, id, module, false): clears the guardian's bit only
+    O->>AP: pause(account, id, module, false): clears both
 ```
 
-The guardian can stop a module of one mandate of one account, and nothing
-more: it widens nothing, and the owner removes it with `setGuardian(id,
-0)` or a rotation. The flag is in the account's slots, so validation may
+The guardian can stop a module of one mandate of one account and lift its
+own stops, and nothing more: it never lifts what the owner paused, it widens
+nothing, and the owner removes it with `setGuardian(id, 0)`. A pause holds
+two bits, the owner's and the guardian's, and validation refuses while
+either is set. `pause` finds a judge's pins from the selectors recorded at
+install and does not call the judge, so a judge cannot keep itself from
+being paused. A pause stops the agent's new calls through the module; an
+order registered at a venue before the pause stays vouched for until it
+expires, and the owner's revocation of the permission ends every vouch at
+once. The flag is in the account's slots, so validation may
 read it (a shape judge's flag shares its pin's slot and costs nothing; a
 venue decoder's costs one slot on venue operations). There is no flag for
 everyone at once: validation may not read one, and so a module is stopped
 for each account that pinned it ([#251](https://github.com/postcryptum-research/agent-keys/issues/251),
 decision 2). A new installation of the id starts with no guardian and
 nothing paused. Two other levers stay: the owner rotates the module out of
-the mandate, and the tools refuse a module their build marks as withdrawn.
+the mandate, and a phone build that no longer lists a module refuses every
+mandate that pins it.
 
 The owner's side: `permission guardian` and `permission pause` in the CLI
 send both calls from the account, each tried from the account before the
 owner signs; `permission rotate` names the old permission's guardian for
-the new one in the same operation, so a rotation keeps it; `permission
-show` names the guardian and what is paused
+the new one in the same operation, and pauses there each module the old
+mandate had paused and the new one pins, as the owner's pause, so a
+rotation keeps both; `permission show` names the guardian and what is paused
 ([`AGENT_CONFIG.md`](AGENT_CONFIG.md)). The owner's phone reads both calls
-on a policy its build knows to have them, and shows a guardian named, and
-a pause for another account's mandate, as rows that stand out; on any
-other policy they stay calls it cannot read
+on a policy its build knows to have them, and shows a guardian named or
+removed, a pause lifted, and a pause for another account's mandate as rows
+that stand out; it refuses a guardian call placed before a change of the
+account's validators in the same operation, which would apply to the
+mandate the operation replaces; on any other policy both stay calls it
+cannot read
 ([`MOBILE_OWNER_DESIGN.md`](MOBILE_OWNER_DESIGN.md)).
 
 ### Storage, and what validation may read
@@ -239,8 +260,8 @@ other policy they stay calls it cannot read
 flowchart TB
     L["PolicyStorage.Layout at slot 0"] --> C["configs[id][account]"]
     L --> A["allowed[keccak(m, target, selector)][account] = kind"]
-    L --> S["shapes[keccak(m, selector)][account] = judge, role, paused"]
-    L --> GD["guardians[keccak(m)][account], modulePaused[keccak(m, module)][account]"]
+    L --> S["shapes[keccak(m, selector)][account] = judge, role, who paused"]
+    L --> GD["guardians[keccak(m)][account], modulePaused[keccak(m, module)][account], judgeSelectors[keccak(m, judge)][account]"]
     L --> T["tokens, payees, venues, x402 records ... [key][account]"]
     A --> R["slot = keccak(account ‖ keccak(key ‖ place))<br/>the account innermost:<br/>storage ERC-7562 lets validation use"]
 ```
@@ -261,12 +282,12 @@ Measured on the source, against the whole policy before the division [V
 
 | | Before | Now |
 |---|---|---|
-| `AgentPolicy` size | 24,437 bytes | 18,611 (`PolicyInstall` 10,972, `SafeShapes` 2,844) |
+| `AgentPolicy` size | 24,437 bytes | 18,616 (`PolicyInstall` 11,693, `SafeShapes` 2,844) |
 | validation: a plain call | 34,313 gas | 34,324 |
 | a token transfer | 41,946 | 41,957 |
-| a Safe transaction | 42,703 | 47,833 |
-| a Safe `multiSend` of two legs | 60,213 | 73,096 |
-| an install of two entries and a token limit | 178,346 | 187,981 |
+| a Safe transaction | 42,703 | 47,839 |
+| a Safe `multiSend` of two legs | 60,213 | 73,108 |
+| an install of two entries and a token limit | 178,346 | 187,984 |
 
 What moved out of validation costs nothing there; what a judge reads costs
 a slot, a cold call and the copy of the calldata, paid only by the

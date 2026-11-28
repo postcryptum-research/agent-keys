@@ -403,11 +403,15 @@ without stopping every agent:
   (`agent-signer permission guardian`). The guardian, or the owner, pauses
   one part of that mandate (`permission pause`): the policy refuses the
   agent's calls through it, and the rest of the mandate runs. The guardian
-  can do nothing else: it widens no mandate and moves no funds.
+  can lift its own pause and do nothing else: it never lifts the owner's,
+  widens no mandate and moves no funds. An order the agent registered at a
+  venue before the pause stays good until it expires; the owner's
+  revocation of the permission (`permission revoke`) ends every one at once.
 - **The owner rotates it out.** A new mandate without the part, or with a
-  fixed one, replaces the old in one operation (`permission rotate`).
-- **The tools refuse it.** A new build of the CLI and the phone stops
-  offering a part withdrawn from it.
+  fixed one, replaces the old in one operation (`permission rotate`), which
+  keeps the guardian and the pauses of the parts it keeps.
+- **The phone refuses it.** A phone build that no longer lists a part
+  refuses every mandate that pins it.
 
 There is no switch for every account at once: the rules of ERC-4337
 (ERC-7562) let the policy read only the account's own storage while it

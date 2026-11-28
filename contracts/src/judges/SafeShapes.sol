@@ -168,14 +168,14 @@ contract SafeShapes is IShapeJudge {
     }
 
     /// @dev The 32 bytes of `d` at `at`, as a number. Every caller has checked
-    /// that they lie within `d` (`at + 32 <= d.length`): one calldata load in
+    /// that they lie within `d` (`position + 32 <= d.length`): one calldata load in
     /// place of a slice and its conversion, at about half the gas per word.
     /// @param d The calldata read.
-    /// @param at Where the word starts in `d`.
+    /// @param position Where the word starts in `d`.
     /// @return w The word.
-    function _word(bytes calldata d, uint256 at) internal pure returns (uint256 w) {
+    function _word(bytes calldata d, uint256 position) internal pure returns (uint256 w) {
         assembly ("memory-safe") {
-            w := calldataload(add(d.offset, at))
+            w := calldataload(add(d.offset, position))
         }
     }
 }
