@@ -1103,6 +1103,8 @@ contract AgentPermissionTest is Test {
 
         vm.prank(keeper);
         policy.pause(acct, bytes32(PermissionId.unwrap(SAFE_ID)), address(shapesJudge), true);
+        assertTrue(policy.paused(acct, bytes32(PermissionId.unwrap(SAFE_ID)), address(shapesJudge)), "read as paused");
+        assertFalse(policy.paused(acct, bytes32(PermissionId.unwrap(SHAPED_ID)), address(shapesJudge)), "not in the other mandate");
         assertEq(_verdictOf(SAFE_ID, viaSafe), 1, "the paused judge's calls are refused");
         assertTrue(_verdictOf(SAFE_ID, plain) != 1, "the rest of the mandate runs");
         assertTrue(_verdictOf(SHAPED_ID, viaSafe) != 1, "the account's other mandate is untouched");
@@ -1111,6 +1113,7 @@ contract AgentPermissionTest is Test {
         vm.prank(acct);
         policy.pause(acct, bytes32(PermissionId.unwrap(SAFE_ID)), address(shapesJudge), false);
         assertTrue(_verdictOf(SAFE_ID, viaSafe) != 1, "lifted by the owner");
+        assertFalse(policy.paused(acct, bytes32(PermissionId.unwrap(SAFE_ID)), address(shapesJudge)), "read as lifted");
         vm.prank(keeper);
         policy.pause(acct, bytes32(PermissionId.unwrap(SAFE_ID)), address(shapesJudge), true);
         vm.prank(keeper);

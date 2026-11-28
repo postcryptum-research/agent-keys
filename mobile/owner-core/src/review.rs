@@ -116,6 +116,9 @@ pub struct Facts {
     pub shape_policy_modules: Vec<Address>,
     /// The shape judges this build knows, by address.
     pub shape_judges: BTreeMap<Address, ShapeJudge>,
+    /// The policy modules with a guardian per mandate (#251, decision 2):
+    /// their `setGuardian` and `pause`, sent by the account, are read.
+    pub guardian_policy_modules: Vec<Address>,
 }
 
 /// A shape judge the build knows (#251): its code, and the selectors it
@@ -134,6 +137,11 @@ pub struct ShapeJudge {
 /// policy that takes shape judges, never a plain call.
 const SELECTOR_SAFE_EXEC: [u8; 4] = [0x6a, 0x76, 0x12, 0x02];
 const SELECTOR_MULTI_SEND: [u8; 4] = [0x8d, 0x80, 0xff, 0x0a];
+
+/// `AgentPolicy.setGuardian(bytes32,address)` and
+/// `pause(address,bytes32,address,bool)` (#251, decision 2).
+const SELECTOR_SET_GUARDIAN: [u8; 4] = [0xd3, 0x67, 0x4b, 0x18];
+const SELECTOR_PAUSE: [u8; 4] = [0x55, 0xd1, 0xf0, 0x5f];
 
 /// A gas token that is not ether: the symbol of the native balance (18
 /// decimals: value sent and gas are counted in it), and the ERC-20 that
@@ -1794,6 +1802,10 @@ fn external_call(
         }
         return Ok(());
     }
+    // The guardian of a mandate, on a policy that has one (#251)
+    if b.facts.guardian_policy_modules.contains(&target) && (selector == SELECTOR_SET_GUARDIAN || selector == SELECTOR_PAUSE) {
+        return guardian_call(b, s, selector, value, data, acct);
+    }
     // Wrapped ether, on the token the build knows as such and nowhere else
     // (#213): `deposit()` wraps the value sent with it, `withdraw(uint256)`
     // gives it back. Both move value between the account's own two forms of
@@ -1830,6 +1842,65 @@ fn external_call(
         format!("function 0x{}, {} bytes — this calls an unknown contract that can move everything this account holds", hex(&selector), data.len()),
     );
     b.warnings.push("an unknown external call, allowed by expert mode".into());
+    Ok(())
+}
+
+/// `setGuardian(id, guardian)` and `pause(account, id, module, paused)` of a
+/// policy with a guardian per mandate (#251, decision 2), sent by the
+/// account: the owner names a mandate's guardian, or pauses one of its
+/// modules, or lifts the pause. The canonical encoding only.
+fn guardian_call(
+    b: &mut Builder<'_>,
+    s: usize,
+    selector: [u8; 4],
+    value: U256,
+    data: &[u8],
+    acct: &EnrolledAccount,
+) -> Result<(), String> {
+    if !value.is_zero() {
+        return Err("a call to the policy's guardian functions that also sends value; refused".into());
+    }
+    let words: Vec<&[u8]> = data[4..].chunks(32).collect();
+    let address = |w: &[u8]| (w[..12] == [0u8; 12]).then(|| Address::from_slice(&w[12..]));
+    // a permission id is four bytes at the head of its word
+    let permission = |w: &[u8]| (w[4..] == [0u8; 28]).then(|| hex(&w[..4]));
+    let refused = || Err::<(), String>("a call to the policy's guardian functions not in its canonical encoding; refused".into());
+    if selector == SELECTOR_SET_GUARDIAN {
+        if data.len() != 4 + 64 {
+            return refused();
+        }
+        let (Some(id), Some(guardian)) = (permission(words[0]), address(words[1])) else { return refused() };
+        if guardian.is_zero() {
+            b.row(s, "Guardian", format!("none for permission 0x{id}: a guardian named before can no longer pause its modules"));
+        } else {
+            b.bold(
+                s,
+                "Guardian",
+                format!(
+                    "{} for permission 0x{id}: it may pause a shape judge or a venue of this mandate, which stops the agent's use of it, and lift the pause; it cannot widen the mandate or move funds",
+                    b.name(guardian)
+                ),
+            );
+        }
+        return Ok(());
+    }
+    if data.len() != 4 + 128 {
+        return refused();
+    }
+    let (Some(account), Some(id), Some(module)) = (address(words[0]), permission(words[1]), address(words[2])) else { return refused() };
+    let pause = match (words[3][..31] == [0u8; 31], words[3][31]) {
+        (true, 1) => true,
+        (true, 0) => false,
+        _ => return refused(),
+    };
+    let what = if pause { "the policy refuses its calls until the pause is lifted; the rest of the mandate runs" } else { "its calls are allowed again" };
+    let label = if pause { "Pause" } else { "Lift pause" };
+    if account == acct.account {
+        b.row(s, label, format!("{} in permission 0x{id}: {what}", b.name(module)));
+    } else {
+        // the account as the guardian another account's owner named
+        b.bold(s, format!("{label}, as guardian"), format!("{} in permission 0x{id} of the account {}: {what}", b.name(module), account.to_checksum(None)));
+    }
     Ok(())
 }
 
@@ -2040,6 +2111,7 @@ mod tests {
             native: None,
             shape_policy_modules: vec![],
             shape_judges: BTreeMap::new(),
+            guardian_policy_modules: vec![],
         }
     }
 
@@ -3503,6 +3575,71 @@ mod tests {
         // another shape: bytes after deposit(), a short or long withdraw
         for data in [[&deposit[..], &[0u8; 32][..]].concat(), withdraw(two_finney)[..35].to_vec(), [&withdraw(two_finney)[..], &[0u8][..]].concat()] {
             assert!(matches!(ask(&wraps, WETH, 0, &data).verdict, Verdict::Refuse(ref m) if m.contains("cannot decode")), "{data:02x?}");
+        }
+    }
+
+    /// #251, decision 2: on a policy the build knows to have a guardian per
+    /// mandate, the account's `setGuardian` and `pause` are read, each in its
+    /// canonical encoding only; a guardian named and a pause for another
+    /// account stand out. On any other policy they stay calls the phone
+    /// cannot decode.
+    #[test]
+    fn the_guardian_and_its_pause_are_read_on_a_policy_that_has_them() {
+        let mut f = facts();
+        f.guardian_policy_modules = vec![POLICY];
+        let ask = |facts: &Facts, value: u64, data: &[u8]| {
+            let mut o = op(kernel::execute_calldata(POLICY, U256::from(value), data));
+            o.gas_fees = kernel::pack_gas(1, 1);
+            let (bytes, c) = request(&o);
+            open_request(&bytes, &c, NOW, &enrolled(), facts)
+        };
+        let id = |p: [u8; 4]| B256::right_padding_from(&p);
+        let word = |a: Address| B256::left_padding_from(a.as_slice());
+        let guardian = Address::repeat_byte(0x9a);
+        let set = |id: B256, g: B256| [&SELECTOR_SET_GUARDIAN[..], &id[..], &g[..]].concat();
+        let pause = |acct: Address, id: B256, module: Address, flag: u8| {
+            let mut f = [0u8; 32];
+            f[31] = flag;
+            [&SELECTOR_PAUSE[..], &word(acct)[..], &id[..], &word(module)[..], &f[..]].concat()
+        };
+        let perm = id(*b"trad");
+
+        let r = ask(&f, 0, &set(perm, word(guardian)));
+        assert_eq!(r.verdict, Verdict::Sign, "{}", r.text());
+        assert!(r.text().contains(&format!("! Guardian: {} for permission 0x74726164: it may pause", guardian.to_checksum(None))), "{}", r.text());
+        let r = ask(&f, 0, &set(perm, B256::ZERO));
+        assert_eq!(r.verdict, Verdict::Sign, "{}", r.text());
+        assert!(r.text().contains("Guardian: none for permission 0x74726164"), "{}", r.text());
+
+        let r = ask(&f, 0, &pause(ACCOUNT, perm, COUNTER, 1));
+        assert_eq!(r.verdict, Verdict::Sign, "{}", r.text());
+        assert!(r.text().contains("Pause: 0x") && r.text().contains("in permission 0x74726164: the policy refuses its calls"), "{}", r.text());
+        let r = ask(&f, 0, &pause(ACCOUNT, perm, COUNTER, 0));
+        assert!(r.text().contains("Lift pause: 0x") && r.text().contains("its calls are allowed again"), "{}", r.text());
+        let other = Address::repeat_byte(0x77);
+        let r = ask(&f, 0, &pause(other, perm, COUNTER, 1));
+        assert!(r.text().contains(&format!("! Pause, as guardian: ")) && r.text().contains(&other.to_checksum(None)), "{}", r.text());
+
+        // value sent with it, or another encoding: refused
+        assert!(matches!(ask(&f, 1, &set(perm, word(guardian))).verdict, Verdict::Refuse(ref m) if m.contains("also sends value")));
+        let mut dirty_id = perm;
+        dirty_id.0[31] = 1;
+        let mut dirty_address = word(guardian);
+        dirty_address.0[0] = 1;
+        for data in [
+            set(dirty_id, word(guardian)),
+            set(perm, dirty_address),
+            set(perm, word(guardian))[..67].to_vec(),
+            [&set(perm, word(guardian))[..], &[0u8][..]].concat(),
+            pause(ACCOUNT, perm, COUNTER, 2),
+            pause(ACCOUNT, dirty_id, COUNTER, 1),
+            pause(ACCOUNT, perm, COUNTER, 1)[..131].to_vec(),
+        ] {
+            assert!(matches!(ask(&f, 0, &data).verdict, Verdict::Refuse(ref m) if m.contains("canonical")), "{data:02x?}");
+        }
+        // a policy the build does not know to have a guardian: not decoded
+        for data in [set(perm, word(guardian)), pause(ACCOUNT, perm, COUNTER, 1)] {
+            assert!(matches!(ask(&facts(), 0, &data).verdict, Verdict::Refuse(ref m) if m.contains("cannot decode")), "{data:02x?}");
         }
     }
 

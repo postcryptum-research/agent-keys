@@ -242,8 +242,9 @@ source].
   wallet transaction and 3 a batch, read by the mandate's shape judge for
   the selector, #251); the shape judges `shapes[keccak256(m, selector)]`
   (`ShapePin`: the judge, its role and whether it is paused, one slot);
-  the guardian `guardians[keccak256(m)]` and a venue decoder's pause
-  `venuePaused[keccak256(m, decoder)]` (#251, decision 2);
+  the guardian `guardians[keccak256(m)]` and a module's pause
+  `modulePaused[keccak256(m, module)]`, read in validation for a venue
+  decoder (#251, decision 2);
   the token limits `tokens[keccak256(m, token)]` (`TokenLimit`, three
   slots); the payee lists `payees[keccak256(m, token, payee)]`; the
   registered x402 authorizations and orders `x402[keccak256(m, digest)]`
@@ -316,7 +317,10 @@ canonical encodings only [V source].
   none of the mandate's modules. Emits `ModulePaused(account, id, module,
   paused)` (#251, decision 2; `test_guardian_*`,
   `test_order_aPausedVenueIsRefusedUntilThePauseIsLifted`). Both run in
-  `PolicyInstall`, by DELEGATECALL.
+  `PolicyInstall`, by DELEGATECALL. `paused(account, id, module)` reads
+  whether a module of the mandate is paused. The CLI's `permission
+  guardian` and `permission pause` send them from the account; the owner's
+  phone reads both ([`AGENT_CONFIG.md`](AGENT_CONFIG.md)).
 - `onUninstall(bytes32(id) ‖ …)`: sets `validUntil` and `validAfter` to 0,
   moves the epoch on, decrements `usedIds`; reverts `NotInitialized` if
   the id has no mandate. The venue places stay.
@@ -440,11 +444,11 @@ which refuses the operation all the same [I].
   payee list and no x402: the agent picks the receiver and the spender.
   An id's limit is kept as a token's, under a key made of the contract
   and the id (the low 160 bits of a tagged hash; `idAsset`). The
-  contract's runtime size is 18,462 bytes of the 24,576 a
+  contract's runtime size is 18,611 bytes of the 24,576 a
   contract may have, with the calls through a decoder (below) in it, the
   reading of Safe transactions in the `SafeShapes` judge and the install in
   `PolicyInstall` [V `forge build --sizes`, 2026-11-28]: the next change
-  has 6,114 bytes
+  has 5,965 bytes
   ([#224](https://github.com/postcryptum-research/agent-keys/issues/224)).
   An approval is charged like a transfer; what the spender later pulls is
   not seen.

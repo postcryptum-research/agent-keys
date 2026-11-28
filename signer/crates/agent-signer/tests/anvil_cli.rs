@@ -69,6 +69,7 @@ sol! {
     function getOwners() external view returns (address[]);
     function nonce() external view returns (uint256);
     function multiSend(bytes transactions) external payable;
+    function pause(address account, bytes32 id, address module, bool paused) external;
     function mint(address to, uint256 amount) external;
     function balanceOf(address account) external view returns (uint256);
     function transferWithAuthorization(
@@ -4162,6 +4163,35 @@ fn safe_guarded() {
     chain.ok(&["op", "send", "--agent", &cfg, "--target", &safe, "--data", &batch, "--safe-nonce", "1"]);
     assert_eq!(chain.counter(), before + U256::from(3));
     assert_eq!(U256::from_be_slice(&chain.call(&safe, nonceCall {}.abi_encode())), U256::from(2));
+
+    // #251, decision 2: the owner pauses the mandate's Safe judge. The agent's
+    // Safe transactions are refused, its plain calls run, `permission show`
+    // says what is paused
+    let judge = chain.addr("safeShapes");
+    let not_a_module = chain.fails(&["permission", "pause", "--agent", &cfg, "--module", &counter]);
+    assert!(not_a_module.contains("none of the mandate's"), "{not_a_module}");
+    chain.ok(&["permission", "pause", "--agent", &cfg, "--module", &judge]);
+    chain.fails(&["op", "send", "--agent", &cfg, "--target", &safe, "--data", &once, "--safe-nonce", "2"]);
+    assert_eq!(chain.counter(), before + U256::from(3));
+    chain.ok(&["op", "send", "--agent", &cfg, "--target", &counter, "--data", INCREMENT]);
+    assert_eq!(chain.counter(), before + U256::from(4));
+    let shown = chain.ok(&["permission", "show", "--agent", &cfg]);
+    assert!(shown.contains("PAUSE module") && shown.to_lowercase().contains(&judge.to_lowercase()), "{shown}");
+
+    // the owner names a guardian; the guardian lifts the pause from its own address
+    chain.ok(&["permission", "guardian", "--agent", &cfg, "--guardian", FACILITATOR]);
+    let shown = chain.ok(&["permission", "show", "--agent", &cfg]);
+    assert!(shown.contains(&format!("guardian        {FACILITATOR}")), "{shown}");
+    let lift = pauseCall {
+        account: account.parse().unwrap(),
+        id: B256::right_padding_from(b"saf1"),
+        module: judge.parse().unwrap(),
+        paused: false,
+    };
+    chain.send_from(FACILITATOR, Some(&chain.addr("agentPolicy")), lift.abi_encode());
+    chain.ok(&["op", "send", "--agent", &cfg, "--target", &safe, "--data", &once, "--safe-nonce", "2"]);
+    assert_eq!(chain.counter(), before + U256::from(5));
+    assert!(!chain.ok(&["permission", "show", "--agent", &cfg]).contains("PAUSE module"));
 }
 
 // ---------------------------------------------------------------- the phone's review against the policy's install

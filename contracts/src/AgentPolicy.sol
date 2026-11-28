@@ -867,6 +867,18 @@ contract AgentPolicy is IPolicy {
         return _store().guardians[keccak256(abi.encode(PolicyRules.mandate(id, _store().configs[id][account].epoch)))][account];
     }
 
+    /// @notice Whether a module of the permission's current mandate, a shape
+    /// judge or a venue decoder, is paused.
+    /// @param account The account.
+    /// @param id The permission id.
+    /// @param module The shape judge or venue decoder.
+    /// @return True when paused.
+    function paused(address account, bytes32 id, address module) external view returns (bool) {
+        return _store().modulePaused[keccak256(abi.encode(PolicyRules.mandate(id, _store().configs[id][account].epoch), module))][
+            account
+        ];
+    }
+
     /// @notice Executed after validation registered the order: only leaves
     /// a record for wallets. An order's charge is not given back: whether a
     /// venue filled an order cannot be read from the venue for good (CoW's
@@ -909,7 +921,7 @@ contract AgentPolicy is IPolicy {
             return j;
         }
         // Paused by the mandate's guardian: refused, the rest of the mandate runs
-        if (_store().venuePaused[keccak256(abi.encode(m, decoder))][msg.sender]) return j;
+        if (_store().modulePaused[keccak256(abi.encode(m, decoder))][msg.sender]) return j;
         // A static call cannot change state; a revert is the decoder's no
         (bool ok, bytes memory answer) =
             decoder.staticcall{gas: JUDGE_GAS}(abi.encodeCall(IVenueDecoder.judge, (msg.sender, config, order)));

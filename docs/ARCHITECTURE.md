@@ -222,6 +222,15 @@ decision 2). A new installation of the id starts with no guardian and
 nothing paused. Two other levers stay: the owner rotates the module out of
 the mandate, and the tools refuse a module their build marks as withdrawn.
 
+The owner's side: `permission guardian` and `permission pause` in the CLI
+send both calls from the account, each tried from the account before the
+owner signs; `permission show` names the guardian and what is paused
+([`AGENT_CONFIG.md`](AGENT_CONFIG.md)). The owner's phone reads both calls
+on a policy its build knows to have them, and shows a guardian named, and
+a pause for another account's mandate, as rows that stand out; on any
+other policy they stay calls it cannot read
+([`MOBILE_OWNER_DESIGN.md`](MOBILE_OWNER_DESIGN.md)).
+
 ### Storage, and what validation may read
 
 ```mermaid
@@ -229,7 +238,7 @@ flowchart TB
     L["PolicyStorage.Layout at slot 0"] --> C["configs[id][account]"]
     L --> A["allowed[keccak(m, target, selector)][account] = kind"]
     L --> S["shapes[keccak(m, selector)][account] = judge, role, paused"]
-    L --> GD["guardians[keccak(m)][account], venuePaused[keccak(m, decoder)][account]"]
+    L --> GD["guardians[keccak(m)][account], modulePaused[keccak(m, module)][account]"]
     L --> T["tokens, payees, venues, x402 records ... [key][account]"]
     A --> R["slot = keccak(account ‖ keccak(key ‖ place))<br/>the account innermost:<br/>storage ERC-7562 lets validation use"]
 ```
@@ -250,12 +259,12 @@ Measured on the source, against the whole policy before the division [V
 
 | | Before | Now |
 |---|---|---|
-| `AgentPolicy` size | 24,437 bytes | 18,462 (`PolicyInstall` 10,958, `SafeShapes` 3,848) |
+| `AgentPolicy` size | 24,437 bytes | 18,611 (`PolicyInstall` 10,972, `SafeShapes` 3,848) |
 | validation: a plain call | 34,313 gas | 34,324 |
 | a token transfer | 41,946 | 41,957 |
 | a Safe transaction | 42,703 | 49,906 |
 | a Safe `multiSend` of two legs | 60,213 | 80,119 |
-| an install of two entries and a token limit | 178,346 | 187,959 |
+| an install of two entries and a token limit | 178,346 | 187,981 |
 
 What moved out of validation costs nothing there; what a judge reads costs
 a slot, a cold call and the copy of the calldata, paid only by the

@@ -807,6 +807,17 @@ are not decoded and fall under the rule below. An external call the core cannot 
   `shape_judges_are_verified_and_a_safe_needs_one`). The judges a build
   knows are a table in `facts.rs`, as the venue decoders are, enabled where
   the deployments file names them; none is deployed yet.
+- **The guardian (#251, decision 2).** On a policy the build knows to have
+  a guardian per mandate, a root operation's `setGuardian(id, guardian)`
+  and `pause(account, id, module, paused)` to it are read, in their
+  canonical encoding only, and never with value. A guardian named is a row
+  that stands out: "Guardian: `<address>` for permission `<id>`: it may
+  pause a shape judge or a venue of this mandate, which stops the agent's
+  use of it, and lift the pause; it cannot widen the mandate or move
+  funds". A pause or its lift of the account's own mandate is a plain row;
+  one for another account's mandate, where this account is its guardian,
+  stands out. On any other policy both stay calls the phone cannot decode
+  (owner-core `the_guardian_and_its_pause_are_read_on_a_policy_that_has_them`).
 
 ### 6.5 What is never signed
 

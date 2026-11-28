@@ -170,8 +170,10 @@ library PolicyStorage {
     // decision 2). key: `keccak256(mandate)`
     mapping(bytes32 key => mapping(address account => address)) guardians;
     // Map of key => account => whether the mandate's guardian paused the
-    // venue decoder. key: `keccak256(mandate, decoder)`
-    mapping(bytes32 key => mapping(address account => bool)) venuePaused;
+    // module: validation reads it for a venue decoder; a shape judge's pins
+    // carry their own flag, read in validation, and this one is what
+    // `paused` answers. key: `keccak256(mandate, module)`
+    mapping(bytes32 key => mapping(address account => bool)) modulePaused;
     }
 
     /// @dev The layout, at its slot.

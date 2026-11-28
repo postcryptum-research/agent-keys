@@ -557,10 +557,12 @@ contract TradingTest is AgentPermissionTest {
         policy.setGuardian(TRD, keeper);
         vm.prank(keeper);
         policy.pause(acct, TRD, address(decoder), true);
+        assertTrue(policy.paused(acct, TRD, address(decoder)), "read as paused");
         _expectRefused(_tradeOp(_today(), address(policy), 0, _registerCall(o)));
         assertEq(_usdSpent(), 0, "nothing charged");
         vm.prank(keeper);
         policy.pause(acct, TRD, address(decoder), false);
+        assertFalse(policy.paused(acct, TRD, address(decoder)), "read as lifted");
         _register(o);
         assertEq(_usdSpent(), 150e6, "registered once the pause is lifted");
     }

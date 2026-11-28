@@ -320,6 +320,43 @@ enum PermissionCmd {
         #[arg(long)]
         sponsored: bool,
     },
+    /// Name the guardian of a permission's mandate, or remove it with
+    /// `--guardian none` (root operation signed by the owner key). The
+    /// guardian may pause a shape judge or a venue of that mandate and lift
+    /// the pause; it cannot widen the mandate (#251). A rotation or a new
+    /// install starts with no guardian.
+    Guardian {
+        #[command(flatten)]
+        agent: AgentArgs,
+        /// 4-byte hex permission id; the config's when left out.
+        #[arg(long)]
+        id: Option<String>,
+        /// The guardian's address, or `none`.
+        #[arg(long)]
+        guardian: String,
+        #[arg(long)]
+        sponsored: bool,
+    },
+    /// Pause one module of a permission's mandate, a shape judge or a venue
+    /// decoder, or lift the pause with `--lift` (root operation signed by the
+    /// owner key). While paused the policy refuses its calls and the rest of
+    /// the mandate runs. The guardian sends the same call from its own
+    /// address (`docs/AGENT_CONFIG.md`).
+    Pause {
+        #[command(flatten)]
+        agent: AgentArgs,
+        /// 4-byte hex permission id; the config's when left out.
+        #[arg(long)]
+        id: Option<String>,
+        /// The shape judge or venue decoder.
+        #[arg(long)]
+        module: Address,
+        /// Lift the pause instead.
+        #[arg(long)]
+        lift: bool,
+        #[arg(long)]
+        sponsored: bool,
+    },
     /// Replace permission `old_id` with the one the config describes — new
     /// agent key and/or mandate — in one root operation. Pin `account` in
     /// the config first.
@@ -1732,6 +1769,21 @@ async fn run() -> Result<()> {
                 let inc = s.renew_venue_allowances(sponsored).await?;
                 println!("venue allowances set to one budget: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
             }
+            PermissionCmd::Guardian { agent, id, guardian, sponsored } => {
+                let s = session(&agent).await?;
+                let perm = match id { Some(id) => parse_permission_id(&id)?, None => s.cfg.permission_id()? };
+                let who = if guardian == "none" { Address::ZERO } else { guardian.parse().context("--guardian: an address or `none`")? };
+                let inc = s.set_guardian(perm, who, sponsored).await?;
+                let named = if who.is_zero() { "none".to_string() } else { who.to_string() };
+                println!("guardian of {perm}: {named}: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
+            }
+            PermissionCmd::Pause { agent, id, module, lift, sponsored } => {
+                let s = session(&agent).await?;
+                let perm = match id { Some(id) => parse_permission_id(&id)?, None => s.cfg.permission_id()? };
+                let inc = s.pause_module(perm, module, !lift, sponsored).await?;
+                let done = if lift { "pause lifted" } else { "paused" };
+                println!("{module} in {perm}: {done}: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
+            }
             PermissionCmd::Rotate { agent, old_id, old_config, sponsored, dry_run } => {
                 let old = old_config.as_deref().map(AgentConfig::load).transpose()?.map(|c| c.0);
                 let s = session(&agent).await?;
@@ -1743,11 +1795,18 @@ async fn run() -> Result<()> {
                     println!("callData: {}", s.rotate_calldata(parse_permission_id(&old_id)?, old.as_ref()).await?);
                     return Ok(());
                 }
+                let guardian = s.guardian_of(parse_permission_id(&old_id)?).await;
                 let inc = s.rotate_permission(parse_permission_id(&old_id)?, old.as_ref(), sponsored).await?;
                 println!(
                     "rotated {old_id} -> {}: tx {} (block {}, {} gas)",
                     s.cfg.permission_id, inc.tx, inc.block, inc.gas_used
                 );
+                if let Some(g) = guardian {
+                    eprintln!(
+                        "note:           the guardian {g} of {old_id} does not carry over; name it again with \
+                         `permission guardian --guardian {g}`"
+                    );
+                }
             }
         },
         Cmd::Paymaster { cmd } => match cmd {

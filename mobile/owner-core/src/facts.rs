@@ -381,6 +381,7 @@ fn from_deployments(json: &str, chain_id: u64, canonical: bool) -> Facts {
                         &mut f.trading_policy_modules,
                         &mut f.id_policy_modules,
                         &mut f.shape_policy_modules,
+                        &mut f.guardian_policy_modules,
                     ] {
                         if !list.contains(&addr) {
                             list.push(addr);

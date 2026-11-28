@@ -424,12 +424,8 @@ contract PolicyInstall {
         if (msg.sender != account && msg.sender != PolicyStorage.store().guardians[keccak256(abi.encode(m))][account]) {
             revert NotTheGuardian();
         }
-        bool found;
         // a venue decoder of the mandate
-        if (PolicyRules.venue(account, m, module).codeHash != bytes32(0)) {
-            PolicyStorage.store().venuePaused[keccak256(abi.encode(m, module))][account] = paused;
-            found = true;
-        }
+        bool found = PolicyRules.venue(account, m, module).codeHash != bytes32(0);
         // a shape judge of the mandate: each selector pinned to it
         if (module.code.length != 0) {
             try IShapeJudge(module).shapes() returns (bytes4[] memory selectors, uint8[] memory) {
@@ -443,6 +439,7 @@ contract PolicyInstall {
             } catch {}
         }
         if (!found) revert NotAModule();
+        PolicyStorage.store().modulePaused[keccak256(abi.encode(m, module))][account] = paused;
         emit ModulePaused(account, id, module, paused);
     }
 }

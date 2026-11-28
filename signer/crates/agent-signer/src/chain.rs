@@ -1138,6 +1138,18 @@ impl Session {
                     );
                 }
             }
+            // the guardian and what is paused (#251); a policy from before them answers nothing
+            let guard = crate::abi::IAgentPolicyGuardian::new(policy, self.provider.clone());
+            if let Ok(g) = guard.guardian(self.account, id32).call().await {
+                println!("      guardian        {}", if g.is_zero() { "none".to_string() } else { g.to_string() });
+                let mut modules: Vec<Address> = self.cfg.policy.venues.iter().map(|v| v.decoder).collect();
+                modules.extend(self.dep.safe_shapes.filter(|_| self.cfg.allows_safe()));
+                for module in modules {
+                    if guard.paused(self.account, id32, module).call().await? {
+                        println!("PAUSE module          {module}: the policy refuses its calls until the pause is lifted");
+                    }
+                }
+            }
         }
         println!("(entries allowed on chain but absent from the config are not listed: the chain keeps no list of them)");
         Ok(())
@@ -1344,6 +1356,65 @@ impl Session {
     /// Root operation signed by the owner key: replace permission `old` with
     /// the one the config describes (new agent key and/or mandate) in a
     /// single batch — uninstall, install, grant `execute`.
+    /// Root operation signed by the owner key: name the guardian of the
+    /// permission's current mandate, or none with zero (#251, decision 2).
+    /// The guardian may pause a module of that mandate and lift the pause.
+    pub async fn set_guardian(&self, perm: PermissionId, guardian: Address, sponsored: bool) -> Result<Included> {
+        let policy = self.policy_of(perm).await?;
+        let id32 = B256::right_padding_from(perm.as_slice());
+        let guard = crate::abi::IAgentPolicyGuardian::new(policy, self.provider.clone());
+        let call = guard.setGuardian(id32, guardian);
+        let data = call.calldata().clone();
+        self.try_from_account(policy, call.from(self.account).call().await.map(|_| ()))?;
+        self.send_raw(kernel::execute_calldata(policy, U256::ZERO, &data), true, sponsored).await
+    }
+
+    /// Root operation signed by the owner key: pause one module of the
+    /// permission's current mandate, a shape judge or a venue decoder, or
+    /// lift the pause. The guardian sends the same call from its own address.
+    pub async fn pause_module(&self, perm: PermissionId, module: Address, paused: bool, sponsored: bool) -> Result<Included> {
+        let policy = self.policy_of(perm).await?;
+        let id32 = B256::right_padding_from(perm.as_slice());
+        let guard = crate::abi::IAgentPolicyGuardian::new(policy, self.provider.clone());
+        let call = guard.pause(self.account, id32, module, paused);
+        let data = call.calldata().clone();
+        self.try_from_account(policy, call.from(self.account).call().await.map(|_| ()))?;
+        self.send_raw(kernel::execute_calldata(policy, U256::ZERO, &data), true, sponsored).await
+    }
+
+    /// The guardian of a permission's current mandate, when its policy has
+    /// guardians and one is named.
+    pub async fn guardian_of(&self, perm: PermissionId) -> Option<Address> {
+        let policy = self.policy_of(perm).await.ok()?;
+        let id32 = B256::right_padding_from(perm.as_slice());
+        let g = crate::abi::IAgentPolicyGuardian::new(policy, self.provider.clone()).guardian(self.account, id32).call().await.ok()?;
+        (!g.is_zero()).then_some(g)
+    }
+
+    /// The policy a permission of this account is installed with.
+    async fn policy_of(&self, perm: PermissionId) -> Result<Address> {
+        let pc = IKernel::new(self.account, self.provider.clone()).permissionConfig(perm).call().await?;
+        match pc.policyData.first().filter(|d| d.len() >= 22) {
+            Some(d) => Ok(Address::from_slice(&d[2..22])),
+            None => bail!("permission {perm} is not installed on {}", self.account),
+        }
+    }
+
+    /// The call tried from the account before the owner signs: what the
+    /// policy refuses is said here, not after an operation that fails.
+    fn try_from_account(&self, policy: Address, tried: Result<(), alloy::contract::Error>) -> Result<()> {
+        use crate::abi::IAgentPolicyGuardian::IAgentPolicyGuardianErrors as E;
+        let Err(e) = tried else { return Ok(()) };
+        match e.as_decoded_interface_error::<E>() {
+            Some(E::NotTheGuardian(_)) => bail!("the policy refuses it: only the mandate's guardian or the account may pause"),
+            Some(E::NotAModule(_)) => bail!("the policy refuses it: the module is none of the mandate's shape judges or venue decoders"),
+            Some(E::NotInitialized(_)) => bail!("the policy refuses it: the permission has no mandate installed"),
+            None => Err(e).with_context(|| {
+                format!("the policy {policy} refuses the call as sent from the account: a policy from before the guardian (#251) has none")
+            }),
+        }
+    }
+
     pub async fn rotate_permission(&self, old: PermissionId, old_cfg: Option<&AgentConfig>, sponsored: bool) -> Result<Included> {
         let call_data = self.rotate_calldata(old, old_cfg).await?;
         self.send_raw(call_data, true, sponsored).await
