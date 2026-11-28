@@ -795,6 +795,18 @@ are not decoded and fall under the rule below. An external call the core cannot 
   by `<paymaster>` (verified in this build)". Any other paymaster is
   refused. Token-charging paymasters can come later, each with a decoder
   for its charge and a per-enrollment token cap.
+- **Shape judges (#251).** On a policy that takes shape judges, a Safe
+  transaction or a batch on a mandate's allow-list needs the judge that
+  reads it, pinned in the twelve-word form by address and code hash. The
+  review refuses such an entry without a judge, as the policy refuses it at
+  install; accepts a judge only where the build knows it, with the code it
+  knows and the selectors it reads; and shows "Shape judge: `<name>` (judge
+  `<address>` verified in this build): reads … as a wallet transaction, …
+  as a batch". An unknown judge, other code, two judges for one selector,
+  and a listed batch no pinned judge reads are refused (owner-core
+  `shape_judges_are_verified_and_a_safe_needs_one`). The judges a build
+  knows are a table in `facts.rs`, as the venue decoders are, enabled where
+  the deployments file names them; none is deployed yet.
 
 ### 6.5 What is never signed
 

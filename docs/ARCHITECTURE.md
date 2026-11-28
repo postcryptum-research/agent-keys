@@ -93,6 +93,145 @@ operations, following the reference design. An account may also pay its own
 gas (`account fund`); the policy then counts each operation's maximum gas
 cost against the budget.
 
+## The policy on chain, in parts
+
+`AgentPolicy` grew past what one contract may hold (24,576 bytes; #224),
+so it is being divided (#251), step by step, each step measured. The goal:
+one policy at one address for good, and every part that may change, or be
+switched off, outside it. This section describes the division as it
+stands in the source; nothing of it is deployed yet, and the test networks
+keep the earlier, whole policy until it is
+([`DEPLOYMENTS.md`](DEPLOYMENTS.md)). Contract by contract:
+[`CONTRACTS.md`](CONTRACTS.md).
+
+### The parts and who calls them
+
+```mermaid
+flowchart LR
+    EP["EntryPoint v0.7"] -->|"validateUserOp"| K["Kernel v3.3 account"]
+    K -->|"checkUserOpPolicy<br/>checkSignaturePolicy<br/>(validation)"| AP["AgentPolicy<br/>the fixed address"]
+    K -->|"onInstall / onUninstall<br/>(the owner's operation)"| AP
+    AP -->|"DELEGATECALL<br/>install only"| PI["PolicyInstall<br/>created by AgentPolicy"]
+    AP -. "STATICCALL read()<br/>the pin of the mandate" .-> SJ["shape judges<br/>SafeShapes"]
+    AP -. "STATICCALL judge()<br/>the pin of the mandate" .-> VD["venue decoders<br/>CoW, 1inch, SwapRouter02,<br/>Seaport, call rules"]
+    PI -. "shapes(), at install" .-> SJ
+    AP --- ST[("PolicyStorage<br/>one layout")]
+    PI --- ST
+```
+
+| Part | What it is | Called | Changes how |
+|---|---|---|---|
+| `AgentPolicy` | the policy Kernel knows: validation, the ERC-1271 answer, x402 and orders, the ERC-20 and ERC-6909 rules, the native budget, periods, the per-operation sums | by the account | a new policy at a new address, which every owner rotates to; the part kept small and stable for that reason |
+| `PolicyInstall` | the install of a mandate: its five forms, the judges' pins, the allow-list and its kinds, the limits | by `AgentPolicy`, by DELEGATECALL, in the owner's operation | with the policy, which creates it in its constructor |
+| `PolicyStorage`, `PolicyRules` | one storage layout, and the keys and rules both of the above apply; libraries, compiled into both | — | with them |
+| shape judges (`IShapeJudge`; `SafeShapes`) | where the calls inside a wallet transaction or a batch lie | by `AgentPolicy`, static call, in validation | a new judge is a new contract; a mandate pins it; the policy does not change |
+| venue decoders (`IVenueDecoder`) | what an order or a call at a venue costs and its digest | by `AgentPolicy`, static call, in validation | the same |
+
+No part is reached through an address in storage that someone could
+change: the policy's own parts are fixed in its code, and every judge is
+pinned by the owner in the mandate, by address and code hash.
+
+### Validation of one operation
+
+```mermaid
+sequenceDiagram
+    participant EP as EntryPoint
+    participant K as Kernel
+    participant AP as AgentPolicy
+    participant J as the mandate's shape judge
+    EP->>K: validateUserOp(op)
+    K->>AP: checkUserOpPolicy(id, op)
+    AP->>AP: installed, the window, the period, who pays gas
+    loop each call of the account's batch
+        AP->>AP: the call's allow-list entry: its kind
+        alt kind 1: a plain call
+            AP->>AP: the target's rules: ERC-20 or ERC-6909 limits, payees
+        else kind 2: a wallet transaction, only right after its guard
+            AP->>J: read(execTransaction, data)
+            J-->>AP: the inner call, as positions in the calldata
+            AP->>AP: the inner call judged as the wallet makes it
+            opt a DELEGATECALL into a batch of kind 3
+                AP->>J: read(multiSend, inner data)
+                J-->>AP: the legs
+                AP->>AP: each leg judged, as the wallet makes it
+            end
+        else kind 3 alone, or not on the list
+            AP->>AP: refused
+        end
+    end
+    AP->>AP: the native budget, no allowance left open
+    AP-->>K: the window, or a failure
+```
+
+A judge answers positions, never bytes: the policy slices its own calldata
+at them, only within it, and judges what it slices, so what it judges is
+what the wallet will run. A judge reads no storage and does not revert;
+the policy reads one slot for it, the pin, keyed by the account.
+
+### Install of a mandate
+
+```mermaid
+sequenceDiagram
+    participant O as the owner: phone or owner key
+    participant K as Kernel
+    participant AP as AgentPolicy
+    participant PI as PolicyInstall
+    participant J as each pinned shape judge
+    O->>K: a root operation: installValidations
+    K->>AP: onInstall(id ‖ mandate)
+    AP->>PI: DELEGATECALL onInstall
+    PI->>J: shapes(), its code hash checked against the pin
+    J-->>PI: the selectors it reads, each with its role
+    PI->>PI: each selector pinned to one judge
+    PI->>PI: the allow-list with each entry's kind; a Safe transaction or a batch without its judge refused
+    PI->>PI: token limits, payee lists, period and venues, id limits
+    PI-->>AP: all of it written in AgentPolicy's storage
+```
+
+The owner's phone reads the same mandate before signing and refuses what
+the policy would refuse: it names each judge as verified in its build, by
+address and code hash, and refuses one it does not know
+([`MOBILE_OWNER_DESIGN.md`](MOBILE_OWNER_DESIGN.md)).
+
+### Storage, and what validation may read
+
+```mermaid
+flowchart TB
+    L["PolicyStorage.Layout at slot 0"] --> C["configs[id][account]"]
+    L --> A["allowed[keccak(m, target, selector)][account] = kind"]
+    L --> S["shapes[keccak(m, selector)][account] = judge and role"]
+    L --> T["tokens, payees, venues, x402 records ... [key][account]"]
+    A --> R["slot = keccak(account ‖ keccak(key ‖ place))<br/>the account innermost:<br/>storage ERC-7562 lets validation use"]
+```
+
+In validation a contract the account calls may touch only storage
+associated with the account (ERC-7562: `keccak(account ‖ x) + n`). So
+every value sits under a key with the account innermost, and nothing the
+policy reads in validation is global: no implementation slot, no module
+registry, no pause flag. That is why the division pins judges in each
+mandate rather than in a registry, and why a module is switched off per
+account (#251, decision 2).
+
+### What it costs
+
+Measured on the source, against the whole policy before the division [V
+`test_measure_validationGas_*`, `test_measure_installGas` in
+`contracts/test/AgentPermission.t.sol`, 2026-11-28]:
+
+| | Before | Now |
+|---|---|---|
+| `AgentPolicy` size | 24,437 bytes | 17,725 (`PolicyInstall` 9,753, `SafeShapes` 3,848) |
+| validation: a plain call | 34,313 gas | 34,324 |
+| a token transfer | 41,946 | 41,957 |
+| a Safe transaction | 42,703 | 49,716 |
+| a Safe `multiSend` of two legs | 60,213 | 79,746 |
+| an install of two entries and a token limit | 178,346 | 187,931 |
+
+What moved out of validation costs nothing there; what a judge reads costs
+a slot, a cold call and the copy of the calldata, paid only by the
+mandates that use it. The steps, and what was measured at each, are on
+#251.
+
 ## The signer trait
 
 `signer/crates/hw-signer` defines the only platform-specific seam:

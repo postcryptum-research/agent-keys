@@ -316,6 +316,7 @@ impl Chain {
             "p256Validator": self.addr("p256Validator"), "p256RecoveryValidator": self.addr("p256RecoveryValidator"),
             "p256Signer": self.addr("p256Signer"), "agentPolicy": self.addr("agentPolicy"),
             "safeNonceAssert": self.addr("safeNonceAssert"), "demoCounter": self.addr("demoCounter"),
+            "safeShapes": self.addr("safeShapes"),
         });
         std::fs::write(self.dir.join("deployments.json"), deployments.to_string()).unwrap();
         self.stake_the_factory_staker();
@@ -4485,7 +4486,15 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
         let bytes = request::SignRequest::new(&op, entry, 31337, NOW + 120, None, Default::default(), None).to_bytes();
         let review = open_request_with_build_facts(&bytes, &request::commitment(&bytes), NOW, &[EnrolledAccount::new(31337, entry, acct)]);
         let shown = !matches!(review.verdict, Verdict::Refuse(_));
-        let place = MandatePlace { account: acct, entry_point: entry, policy, payees_enforced: true, trading_enforced: true, ids_enforced: true };
+        let place = MandatePlace {
+            account: acct,
+            entry_point: entry,
+            policy,
+            payees_enforced: true,
+            trading_enforced: true,
+            ids_enforced: true,
+            shapes_enforced: true,
+        };
         let terms = mandate_terms(&init, &place, &|a| a.to_string());
         // the review signs nothing whose mandate it could not read
         assert!(!shown || terms.is_ok(), "case {case}: signed without terms: {:?}", review.verdict);

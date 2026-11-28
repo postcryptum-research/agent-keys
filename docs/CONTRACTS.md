@@ -24,7 +24,8 @@ commit `e48b93e001f34f460bd4845d231b8e0ee5d26ad6` builds them, every contract at
 | `AgentPolicy` | the agent's mandate, as that permission's policy | Kernel, from the account; the account, for x402 and orders | `0xdA16ba0d5C8aC6D5599A444c1e1e3bCD6c97c0C6` |
 | `P256Point` | the on-curve check (library) | the key modules, at install | none: compiled into them |
 | `SafeNonceAssert` | the replay guard of an agent's Safe transaction | the account, in a batch | `0x29f600cBcdC5221a63bD5c88F4a75E20c5CBe219` |
-| `SafeShapes` | where the calls inside a Safe transaction and a `multiSend` batch lie (a judge, #251) | the policy, in validation | none yet: the instances above do not use it |
+| `IShapeJudge` | what a shape judge is to the policy (interface, #251) | the policy; `PolicyInstall` | none: an interface |
+| `SafeShapes` | the shape judge for Safes: where the calls inside a Safe transaction and a `multiSend` batch lie (#251) | the policy, in validation; `PolicyInstall`, at install | none yet: the instances above do not use it |
 | `PolicyStorage` | the policy's storage, one layout (library) | the policy and its fixed parts | none: compiled into them |
 | `PolicyRules` | the keys and rules the policy's validation and its install share (library) | the policy and `PolicyInstall` | none: compiled into them |
 | `PolicyInstall` | the install of a mandate, as fixed code of the policy (#251) | the policy, by DELEGATECALL, in the owner's operation | none yet: created by the policy's constructor, at its CREATE address |
@@ -236,7 +237,11 @@ source].
 - `usedIds[account]`: how many of the account's permissions have a mandate
   here.
 - Keyed by the mandate, `m = keccak256(id, epoch)`, one installation of a
-  permission: the allow-list `allowed[keccak256(m, target, selector)]`;
+  permission: the allow-list `allowed[keccak256(m, target, selector)]`,
+  whose value is the call's kind (0 not allowed, 1 a plain call, 2 a
+  wallet transaction and 3 a batch, read by the mandate's shape judge for
+  the selector, #251); the shape judges `shapes[keccak256(m, selector)]`
+  (`ShapePin`: the judge and its role, one slot);
   the token limits `tokens[keccak256(m, token)]` (`TokenLimit`, three
   slots); the payee lists `payees[keccak256(m, token, payee)]`; the
   registered x402 authorizations and orders `x402[keccak256(m, digest)]`
@@ -266,7 +271,7 @@ window, the call a decoder judged in the leg before), are kept in
 transient storage, in the account's slots too [V source;
 `test_senderStorage_transientTotalsAreInTheAccountsSlots`].
 
-**Install data.** `bytes32(id) ‖ abi.encode(...)` in one of four forms,
+**Install data.** `bytes32(id) ‖ abi.encode(...)` in one of five forms,
 told apart by the first word, the offset of `targets`; a mandate is
 encoded in the shortest form that holds it [V source]:
 
@@ -276,12 +281,13 @@ encoded in the shortest form that holds it [V source]:
 | eight | the seven, then `TokenPayees[] payees`, not empty | payee lists |
 | ten | the eight (`payees` may be empty), then `uint32 period, Venue[] venues` | a budget per period, with venues or without |
 | eleven | the ten (`period` may be 0 when there are no venues), then `IdCap[] ids`, not empty | limits per id of an ERC-6909 contract (#186) |
+| twelve | the eleven (`ids` may be empty), then `ShapeJudge[] shapes`, not empty | a Safe transaction or a batch on the allow-list: each needs the shape judge that reads it (#251) |
 
 `TokenCap` is `(token, maxPerOp, budget, domainSeparator)`, the token's
 EIP-712 domain separator non-zero to allow x402 payments in it;
 `TokenPayees` is `(token, payees)`; `Venue` is `(decoder, codeHash,
-configHash)`; `IdCap` is `(token, id, maxPerOp, budget)`. A first word
-that is none of the four is refused. The
+configHash)`; `IdCap` is `(token, id, maxPerOp, budget)`; `ShapeJudge`
+is `(judge, codeHash)`. A first word that is none of the five is refused. The
 contract decodes as loosely as `abi.decode` does; that the owner sees
 exactly what is installed rests on the reviewing app, which accepts
 canonical encodings only [V source].
@@ -419,11 +425,11 @@ which refuses the operation all the same [I].
   payee list and no x402: the agent picks the receiver and the spender.
   An id's limit is kept as a token's, under a key made of the contract
   and the id (the low 160 bits of a tagged hash; `idAsset`). The
-  contract's runtime size is 17,715 bytes of the 24,576 a
+  contract's runtime size is 17,725 bytes of the 24,576 a
   contract may have, with the calls through a decoder (below) in it, the
   reading of Safe transactions in the `SafeShapes` judge and the install in
-  `PolicyInstall` [V `forge build --sizes`, 2026-11-27]: the next change
-  has 6,861 bytes
+  `PolicyInstall` [V `forge build --sizes`, 2026-11-28]: the next change
+  has 6,851 bytes
   ([#224](https://github.com/postcryptum-research/agent-keys/issues/224)).
   An approval is charged like a transfer; what the spender later pulls is
   not seen.
@@ -685,8 +691,10 @@ of about 2^-255 [I].
 
 ## SafeShapes
 
-`contracts/src/judges/SafeShapes.sol`. The first judge of the division of
-`AgentPolicy` (#251): a contract without state that reads a
+`contracts/src/judges/SafeShapes.sol`. The shape judge for Safes, the first
+of the division of `AgentPolicy` (#251), and the interface it implements,
+`IShapeJudge` (`contracts/src/judges/IShapeJudge.sol`): a contract without
+state that reads a
 `Safe.execTransaction` call and a `multiSend` batch and says where the
 calls inside them lie, as positions in the bytes it was given. It reads
 the words the Safe and `MultiSendCallOnly` read, the way they read them:
@@ -694,12 +702,26 @@ the head words of `execTransaction`, which must ask for no refund
 (`safeTxGas`, `baseGas` and `gasPrice` 0) and carry whole address words;
 and the packed legs of a batch, CALL legs only, at least one.
 
-**Who calls it, and when.** `AgentPolicy`, with a static call, in the
-validation phase. It reads no storage and no clock (ERC-7562), and it does
-not revert on what it is given: what it cannot read is answered
-`ok == false` (`testFuzz_theJudgeDoesNotRevert`). The policy holds its
-address as `SAFE_SHAPES`, an immutable, for now; the division pins judges
-per mandate (#251).
+**Pinned per mandate.** A mandate with a Safe transaction or a batch on
+its allow-list pins the judge in the twelve-word form, by address and code
+hash. Its `shapes()` answers the selectors it reads and their roles:
+`execTransaction` as a wallet transaction, `multiSend` as a batch. Install
+pins each selector to it, once per mandate, and writes each such
+allow-list entry with its kind. A Safe transaction or a batch without its
+judge is refused at install
+(`test_shapes_aSafeTransactionOrABatchWithoutItsJudgeIsRefused`); one
+written into storage as a plain entry is refused at validation
+(`test_shapes_aSafeTransactionAsAPlainEntryIsRefusedAtValidation`). The
+policy knows no judge of its own: each mandate reads its Safe transactions
+with the judge it pinned (`test_shapes_eachMandateUsesTheJudgeItPinned`).
+Code at an address with code cannot change after (EIP-6780), so the code
+hash is checked at install and not at every operation.
+
+**Who calls it, and when.** `AgentPolicy`, with a static call to
+`read(selector, data)`, in the validation phase; `PolicyInstall`, with
+`shapes()`, at install. It reads no storage and no clock (ERC-7562), and it
+does not revert on what it is given: what it cannot read is answered
+`ok == false` (`testFuzz_theJudgeDoesNotRevert`).
 
 **What it holds.** That its positions slice out exactly the inner call and
 the legs Solidity's decoder reads from any well-formed encoding
@@ -710,19 +732,22 @@ DELEGATECALL leg, a cut leg and an empty batch are refused
 (`contracts/test/SafeShapes.t.sol`).
 
 **What it costs** [V `test_measure_validationGas_*` in
-`contracts/test/AgentPermission.t.sol`, 2026-11-27]: `AgentPolicy` is 517
-bytes smaller (23,920 of 24,576); validation of a Safe transaction costs
-4,087 gas more (46,790), and of a Safe `multiSend` of two legs 11,214 more
-(71,427): a cold static call, the copy of the calldata into it, and the
-judge's own reading. A plain call and a token transfer do not call it.
+`contracts/test/AgentPermission.t.sol`, 2026-11-28], against the policy
+before the division: validation of a Safe transaction costs 7,013 gas more
+(49,716), and of a Safe `multiSend` of two legs 19,533 more (79,746): for
+each judge read, the read of its pin, a cold static call, the copy of the
+calldata into it and the judge's own reading. A plain call and a token
+transfer cost 11 more. A judge that read a wallet transaction and its
+batch in one call would halve the batch's part [I].
 
 ## PolicyInstall
 
 `contracts/src/policy/PolicyInstall.sol`. The install of a mandate, moved
-out of `AgentPolicy` (#251): the decoding of the four forms of install
-data, the allow-list and its forbidden targets, the token limits, the
-payee lists, the period and venues, the id limits, and the rules that tie
-them together. Its code is what `AgentPolicy`'s was, reading the mandate's
+out of `AgentPolicy` (#251): the decoding of the five forms of install
+data, the shape judges and their selectors, the allow-list with each
+entry's kind and its forbidden targets, the token limits, the payee lists,
+the period and venues, the id limits, and the rules that tie them
+together. Its code is what `AgentPolicy`'s was, reading the mandate's
 keys through `PolicyRules` and its storage through `PolicyStorage`.
 
 **Who calls it, and when.** `AgentPolicy`, from `onInstall`, by

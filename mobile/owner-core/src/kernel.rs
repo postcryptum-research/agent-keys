@@ -258,6 +258,22 @@ pub fn permission_data_with_trading(
     signer: Address,
     agent_key: &PublicKey,
 ) -> Bytes {
+    permission_data_shaped(policy, params, trading, &[], signer, agent_key)
+}
+
+/// The same with shape judges pinned (#251): `(judge, code hash)` each,
+/// which a mandate with a Safe transaction or a batch on its allow-list
+/// needs. With any, the twelve-word form: the eleven, the limits per id
+/// possibly empty, then the judges. Without, the bytes of
+/// `permission_data_with_trading`.
+pub fn permission_data_shaped(
+    policy: Address,
+    params: &PolicyParams,
+    trading: &Trading,
+    shapes: &[(Address, B256)],
+    signer: Address,
+    agent_key: &PublicKey,
+) -> Bytes {
     // `abi.encode(targets, selectors, max, budget, until, tokens, after)`: a parameter
     // sequence, not one tuple value — `abi_encode()` on a dynamic tuple would
     // prepend an offset word and the policy's `abi.decode` would reject it.
@@ -278,7 +294,13 @@ pub fn permission_data_with_trading(
     // without them the bytes, and so a counterfactual account's address, are
     // what they were before lists existed. The policy tells the two forms
     // apart by the first head word.
-    let policy_init = if !trading.ids.is_empty() {
+    let policy_init = if !shapes.is_empty() {
+        let (a, b, c, d, e, f, g) = seven;
+        let ids: Vec<_> =
+            trading.ids.iter().map(|&(token, id, max, budget)| (token, id, U256::from(max), U256::from(budget))).collect();
+        (a, b, c, d, e, f, g, params.payees.clone(), trading.period, trading.venues.clone(), ids, shapes.to_vec())
+            .abi_encode_params()
+    } else if !trading.ids.is_empty() {
         let (a, b, c, d, e, f, g) = seven;
         let ids: Vec<_> =
             trading.ids.iter().map(|&(token, id, max, budget)| (token, id, U256::from(max), U256::from(budget))).collect();

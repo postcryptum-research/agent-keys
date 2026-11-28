@@ -111,7 +111,29 @@ pub struct Facts {
     pub venues: BTreeMap<Address, Venue>,
     /// The chain's gas token where it is not ether. `None`: ether.
     pub native: Option<Native>,
+    /// The policy modules that take shape judges (#251): on their allow-lists
+    /// a Safe transaction or a batch needs the judge for its selector.
+    pub shape_policy_modules: Vec<Address>,
+    /// The shape judges this build knows, by address.
+    pub shape_judges: BTreeMap<Address, ShapeJudge>,
 }
+
+/// A shape judge the build knows (#251): its code, and the selectors it
+/// reads with their roles, facts of the build like its address.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShapeJudge {
+    pub name: String,
+    /// `extcodehash` of the judge as deployed.
+    pub code_hash: B256,
+    /// What its code reads: `(selector, role)`, the role 2 for a wallet
+    /// transaction and 3 for a batch, as `IShapeJudge.shapes()` answers.
+    pub reads: Vec<([u8; 4], u8)>,
+}
+
+/// `Safe.execTransaction(...)` and `MultiSendCallOnly.multiSend(bytes)`: on a
+/// policy that takes shape judges, never a plain call.
+const SELECTOR_SAFE_EXEC: [u8; 4] = [0x6a, 0x76, 0x12, 0x02];
+const SELECTOR_MULTI_SEND: [u8; 4] = [0x8d, 0x80, 0xff, 0x0a];
 
 /// A gas token that is not ether: the symbol of the native balance (18
 /// decimals: value sent and gas are counted in it), and the ERC-20 that
@@ -802,8 +824,12 @@ pub struct MandateTerms {
     /// the venues as `(decoder, code hash, hash of the venue's terms)`.
     pub trading: Option<(u32, Vec<(Address, B256, B256)>)>,
     /// In the eleven-word form: `(ERC-6909 contract, token id, maxPerOp,
-    /// budget)`, at least one. Empty in the other forms.
+    /// budget)`, at least one; in the twelve-word form, possibly none. Empty
+    /// in the other forms.
     pub ids: Vec<(Address, U256, U256, U256)>,
+    /// In the twelve-word form (#251): the shape judges, `(judge, code
+    /// hash)`, at least one. Empty in the other forms.
+    pub shapes: Vec<(Address, B256)>,
 }
 
 /// Where a mandate is being installed: what `mandate_terms` needs to refuse
@@ -820,6 +846,9 @@ pub struct MandatePlace {
     pub trading_enforced: bool,
     /// That module is known to hold limits per id of an ERC-6909 contract.
     pub ids_enforced: bool,
+    /// That module is known to take shape judges (#251): a Safe transaction
+    /// or a batch on its allow-list needs one.
+    pub shapes_enforced: bool,
 }
 
 /// Reads `init`, a policy entry's bytes behind `flag ‖ module`, or says why
@@ -861,12 +890,59 @@ pub fn mandate_terms(init: &[u8], place: &MandatePlace, name: &dyn Fn(Address) -
         Venues,
         Ids,
     );
-    // Four forms, told apart as the policy tells them: by the first head
-    // word, the offset of `targets` behind seven, eight, ten or eleven head words.
+    type Shapes = Vec<(Address, B256)>;
+    type PolicyInitShapes = (
+        Vec<Address>,
+        Vec<FixedBytes<4>>,
+        U256,
+        U256,
+        U256,
+        Vec<(Address, U256, U256, B256)>,
+        U256,
+        Vec<(Address, Vec<Address>)>,
+        u32,
+        Venues,
+        Ids,
+        Shapes,
+    );
+    // Five forms, told apart as the policy tells them: by the first head
+    // word, the offset of `targets` behind seven, eight, ten, eleven or twelve head words.
     let head = init.get(..32).map(U256::from_be_slice).ok_or("policy parameters shorter than a word; refused")?;
     let mut trading: Option<(u32, Venues)> = None;
     let mut ids: Ids = Vec::new();
-    let (targets, selectors, max_value, budget, until, tokens, after, payees) = if head == U256::from(11 * 32) {
+    let mut shapes: Shapes = Vec::new();
+    let (targets, selectors, max_value, budget, until, tokens, after, payees) = if head == U256::from(12 * 32) {
+        let d = PolicyInitShapes::abi_decode_params_validate(init).map_err(|e| format!("policy parameters: {e}"))?;
+        if d.abi_encode_params() != init {
+            return Err("policy parameters are not canonical; refused".into());
+        }
+        // an earlier policy refuses these parameters at install
+        if !place.shapes_enforced {
+            return Err("this mandate pins shape judges, and the policy module it goes to is not known to take them; refused".into());
+        }
+        // the form exists to carry a judge
+        if d.11.is_empty() {
+            return Err("policy parameters in the form for shape judges without one; refused".into());
+        }
+        if !d.10.is_empty() && !place.ids_enforced {
+            return Err("this mandate carries limits per token id, and the policy module it goes to is not known to enforce them; refused".into());
+        }
+        if (d.8 != 0 || !d.9.is_empty()) && !place.trading_enforced {
+            return Err("this mandate carries a budget period or trading venues, and the policy module it goes to is not known to enforce them; refused".into());
+        }
+        if d.8 == 0 && !d.9.is_empty() {
+            return Err("this mandate names trading venues and no budget period: an order's charge would never come back, and the policy does not install it; refused".into());
+        }
+        if !d.7.is_empty() && !payees_enforced {
+            return Err("this mandate carries payee lists, and the policy module it goes to is not known to enforce them; refused".into());
+        }
+        if d.8 != 0 {
+            trading = Some((d.8, d.9));
+        }
+        ids = d.10;
+        shapes = d.11;
+        (d.0, d.1, d.2, d.3, d.4, d.5, d.6, d.7)
+    } else if head == U256::from(11 * 32) {
         let d = PolicyInitIds::abi_decode_params_validate(init).map_err(|e| format!("policy parameters: {e}"))?;
         if d.abi_encode_params() != init {
             return Err("policy parameters are not canonical; refused".into());
@@ -1057,7 +1133,23 @@ pub fn mandate_terms(init: &[u8], place: &MandatePlace, name: &dyn Fn(Address) -
             return Err("this mandate lets the agent call the policy outside its x402 and order entries; refused".into());
         }
     }
-    Ok(MandateTerms { allow: targets.into_iter().zip(selectors).collect(), max_value, budget, valid_until: until, valid_after: after, tokens, payees, trading, ids })
+    // On a policy that takes shape judges, a Safe transaction or a batch is
+    // never a plain call: without a judge the policy refuses the mandate
+    if place.shapes_enforced && shapes.is_empty() && selectors.iter().any(|s| s.0 == SELECTOR_SAFE_EXEC || s.0 == SELECTOR_MULTI_SEND) {
+        return Err("this mandate lists a Safe transaction or a batch without the shape judge that reads it, and the policy does not install it; refused".into());
+    }
+    Ok(MandateTerms {
+        allow: targets.into_iter().zip(selectors).collect(),
+        max_value,
+        budget,
+        valid_until: until,
+        valid_after: after,
+        tokens,
+        payees,
+        trading,
+        ids,
+        shapes,
+    })
 }
 
 /// Kernel's `PermissionEnableDataFormat` as `permission_data` builds it:
@@ -1115,11 +1207,13 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
                 payees_enforced: b.facts.payee_policy_modules.contains(&module),
                 trading_enforced: b.facts.trading_policy_modules.contains(&module),
                 ids_enforced: b.facts.id_policy_modules.contains(&module),
+                shapes_enforced: b.facts.shape_policy_modules.contains(&module),
             };
             let b = &*b;
             mandate_terms(&p[22..], &place, &|a| b.name(a))?
         };
-        let MandateTerms { allow, max_value, budget, valid_until: until, valid_after: after, tokens, payees, trading, ids } = terms;
+        let MandateTerms { allow, max_value, budget, valid_until: until, valid_after: after, tokens, payees, trading, ids, shapes } =
+            terms;
         let (targets, selectors): (Vec<Address>, Vec<FixedBytes<4>>) = allow.into_iter().unzip();
         for (t, sel) in targets.iter().zip(&selectors) {
             b.row(s, "Allow", format!("{} · {}", b.name(*t), selector_name(sel.0)));
@@ -1127,6 +1221,7 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
                 b.bold(s, "Operator grant", format!("{} · {what}", b.name(*t)));
             }
         }
+        shape_rows(b, s, &shapes, &selectors)?;
         let native = b.facts.native_symbol().to_string();
         b.row(s, "Max value per operation", format!("{} {native}", format_ether(max_value)));
         b.row(s, "Budget", format!("{} {native}", format_ether(budget)));
@@ -1488,6 +1583,33 @@ fn check_pairs(max_life: Option<u32>, pairs: &[(Address, Address, U256, U256)]) 
         }
         if pairs[..j].iter().any(|p| p.0 == *sell && p.1 == *buy) {
             return Err("lists a pair twice".into());
+        }
+    }
+    Ok(())
+}
+
+/// The shape judges a mandate pins (#251): each one this build knows, with
+/// the code it knows, once; and every Safe transaction or batch on the
+/// allow-list read by one of them in the role the policy will give it.
+fn shape_rows(b: &mut Builder<'_>, s: usize, shapes: &[(Address, B256)], selectors: &[FixedBytes<4>]) -> Result<(), String> {
+    let mut reads: Vec<([u8; 4], u8)> = Vec::new();
+    for (i, (judge, code_hash)) in shapes.iter().enumerate() {
+        let Some(known) = b.facts.shape_judges.get(judge).cloned() else {
+            return Err(format!("the shape judge {} is not one this build knows; refused", judge.to_checksum(None)));
+        };
+        if known.code_hash != *code_hash {
+            return Err(format!("the mandate pins other code for {} than this build knows; refused", known.name));
+        }
+        if shapes[..i].iter().any(|v| v.0 == *judge) || known.reads.iter().any(|r| reads.iter().any(|seen| seen.0 == r.0)) {
+            return Err("a shape judge twice, or two judges for one selector, in one mandate; refused".into());
+        }
+        reads.extend(known.reads.iter().copied());
+        let what = known.reads.iter().map(|(sel, role)| format!("{} as a {}", selector_name(*sel), if *role == 2 { "wallet transaction" } else { "batch" })).collect::<Vec<_>>().join(", ");
+        b.row(s, "Shape judge", format!("{} (judge {} verified in this build): reads {what}", known.name, judge.to_checksum(None)));
+    }
+    for sel in selectors {
+        if (sel.0 == SELECTOR_SAFE_EXEC || sel.0 == SELECTOR_MULTI_SEND) && !shapes.is_empty() && !reads.iter().any(|r| r.0 == sel.0) {
+            return Err(format!("this mandate lists {} without a shape judge that reads it, and the policy does not install it; refused", selector_name(sel.0)));
         }
     }
     Ok(())
@@ -1916,6 +2038,8 @@ mod tests {
             wrapped_native: vec![],
             venues: BTreeMap::new(),
             native: None,
+            shape_policy_modules: vec![],
+            shape_judges: BTreeMap::new(),
         }
     }
 
@@ -2006,6 +2130,67 @@ mod tests {
         open_request(&bytes, &commitment(&bytes), NOW, &enrolled(), f)
     }
 
+    /// #251: a mandate with shape judges pinned, opened as `open_trading` opens one.
+    fn open_shaped(params: &kernel::PolicyParams, shapes: &[(Address, B256)], f: &Facts) -> Review {
+        let perm = FixedBytes::from([0x73, 0x68, 0x70, 0x31]);
+        let pdata = kernel::permission_data_shaped(POLICY, params, &kernel::Trading::default(), shapes, SIGNER, &key(2));
+        let mut o = op(kernel::execute_batch_calldata(vec![
+            (ACCOUNT, U256::ZERO, kernel::install_permission_calldata(perm, pdata, 1)),
+            (ACCOUNT, U256::ZERO, kernel::grant_execute_calldata(perm)),
+        ]));
+        o.gas_fees = kernel::pack_gas(1, 1);
+        let bytes = SignRequest::new(&o, ENTRY, 31337, NOW + 120, None, BTreeMap::new(), None).to_bytes();
+        open_request(&bytes, &commitment(&bytes), NOW, &enrolled(), f)
+    }
+
+    /// #251: on a policy that takes shape judges, a Safe transaction or a
+    /// batch on the allow-list needs the judge that reads it. The screen
+    /// names each judge as verified in this build; an unknown judge, other
+    /// code, a policy that does not take judges and a batch no pinned judge
+    /// reads are each refused, as the policy refuses them at install.
+    #[test]
+    fn shape_judges_are_verified_and_a_safe_needs_one() {
+        const SAFE: Address = Address::new([0x5a; 20]);
+        const BATCH: Address = Address::new([0x5b; 20]);
+        const JUDGE: Address = Address::new([0x5c; 20]);
+        const JUDGE_CODE: B256 = B256::new([0x5d; 32]);
+        let judge = |reads: Vec<([u8; 4], u8)>| ShapeJudge { name: "SafeShapes".into(), code_hash: JUDGE_CODE, reads };
+        let mut f = facts();
+        f.shape_policy_modules.push(POLICY);
+        f.shape_judges.insert(JUDGE, judge(vec![(SELECTOR_SAFE_EXEC, 2), (SELECTOR_MULTI_SEND, 3)]));
+        let params = kernel::PolicyParams {
+            targets: vec![SAFE, BATCH],
+            selectors: vec![FixedBytes::from(SELECTOR_SAFE_EXEC), FixedBytes::from(SELECTOR_MULTI_SEND)],
+            max_value_per_op: 0,
+            budget: 10u128.pow(16),
+            valid_until: NOW + 30 * 86_400,
+            tokens: vec![],
+            valid_after: 0,
+            payees: vec![],
+        };
+        let refused = |r: &Review, why: &str| assert!(matches!(&r.verdict, Verdict::Refuse(m) if m.contains(why)), "{:?}", r.verdict);
+
+        // without a judge: refused, as install refuses it
+        refused(&open_shaped(&params, &[], &f), "without the shape judge");
+        // the judge as this build knows it: shown, and named
+        let r = open_shaped(&params, &[(JUDGE, JUDGE_CODE)], &f);
+        assert!(!matches!(r.verdict, Verdict::Refuse(_)), "{:?}", r.verdict);
+        let t = r.text();
+        assert!(t.contains(&format!("Shape judge: SafeShapes (judge {} verified in this build)", JUDGE.to_checksum(None))), "{t}");
+        assert!(t.contains("as a wallet transaction") && t.contains("as a batch"), "{t}");
+        // a judge this build does not know, or other code at it
+        refused(&open_shaped(&params, &[(Address::with_last_byte(0x77), JUDGE_CODE)], &f), "not one this build knows");
+        refused(&open_shaped(&params, &[(JUDGE, B256::new([0x5e; 32]))], &f), "other code");
+        // a policy module not known to take judges
+        let mut older = f.clone();
+        older.shape_policy_modules.clear();
+        refused(&open_shaped(&params, &[(JUDGE, JUDGE_CODE)], &older), "not known to take them");
+        // a judge that reads the Safe's transaction only, while the batch is listed too
+        let mut half = f.clone();
+        half.shape_judges.insert(JUDGE, judge(vec![(SELECTOR_SAFE_EXEC, 2)]));
+        refused(&open_shaped(&params, &[(JUDGE, JUDGE_CODE)], &half), "without a shape judge that reads it");
+    }
+
     fn one_venue(config: &Bytes) -> kernel::Trading {
         kernel::Trading { period: 86_400, venues: vec![(DECODER, DECODER_CODE, alloy_primitives::keccak256(config))], ids: vec![] }
     }
@@ -2075,7 +2260,7 @@ mod tests {
         no(open_trading(&capped, &seven, vec![], &f), "a token limit and limits per token id");
 
         // What only raw bytes can say: the form without a limit, and a limit wider than 128 bits
-        let place = MandatePlace { account: ACCOUNT, entry_point: ENTRY, policy: POLICY, payees_enforced: true, trading_enforced: true, ids_enforced: true };
+        let place = MandatePlace { account: ACCOUNT, entry_point: ENTRY, policy: POLICY, payees_enforced: true, trading_enforced: true, ids_enforced: true, shapes_enforced: false };
         type Init = (
             Vec<Address>,
             Vec<FixedBytes<4>>,
@@ -3866,7 +4051,7 @@ mod tests {
     /// two sides together over mandates from a seed.
     #[test]
     fn a_mandate_the_policy_would_not_install_is_not_shown() {
-        let place = MandatePlace { account: ACCOUNT, entry_point: ENTRY, policy: POLICY, payees_enforced: true, trading_enforced: false, ids_enforced: false };
+        let place = MandatePlace { account: ACCOUNT, entry_point: ENTRY, policy: POLICY, payees_enforced: true, trading_enforced: false, ids_enforced: false, shapes_enforced: false };
         let token = address!("a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1");
         let transfer = FixedBytes::from([0xa9, 0x05, 0x9c, 0xbb]);
         type Init = (Vec<Address>, Vec<FixedBytes<4>>, U256, U256, U256, Vec<(Address, U256, U256, B256)>, U256);

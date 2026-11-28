@@ -149,16 +149,18 @@ pub fn account_material(
     dep: &Deployments,
     domains: &std::collections::HashMap<Address, B256>,
     trading: &kernel::Trading,
+    shapes: &[(Address, B256)],
 ) -> Result<(Bytes, Option<Bytes>)> {
     let agent_key = match &cfg.agent_public_key {
         Some(pk) => pk.parse()?,
         None => open_signer(&cfg.agent, Role::Agent)?.public_key()?,
     };
     let perm = cfg.permission_id()?;
-    let permission_data = kernel::permission_data_with_trading(
+    let permission_data = kernel::permission_data_shaped(
         dep.agent_policy,
         &cfg.policy_params(domains)?,
         trading,
+        shapes,
         dep.p256_signer,
         &agent_key,
     );
@@ -414,7 +416,23 @@ impl Session {
                 );
             }
         }
-        let (permission_data, init_data) = account_material(&cfg, &dep, &token_domains, &trading)?;
+        // A Safe transaction or a batch on the allow-list needs the shape judge
+        // that reads it (#251): the one the deployments file names, at the code
+        // the chain holds now, which can no longer change (EIP-6780)
+        let shapes = if cfg.allows_safe() {
+            let judge = dep.safe_shapes.context(
+                "the config allows a Safe transaction or a batch, and the deployments file names no safeShapes: \
+                 the policy installs such a mandate only with the shape judge that reads it",
+            )?;
+            let code = provider.get_code_at(judge).await?;
+            if code.is_empty() {
+                bail!("the shape judge {judge} (deployments.safeShapes) has no code on this chain");
+            }
+            vec![(judge, alloy::primitives::keccak256(&code))]
+        } else {
+            vec![]
+        };
+        let (permission_data, init_data) = account_material(&cfg, &dep, &token_domains, &trading, &shapes)?;
 
         let (account, pinned) = match cfg.account {
             Some(pinned) => {
@@ -2154,14 +2172,14 @@ mod tests {
         let owner = r#"{"software": "0x0000000000000000000000000000000000000000000000000000000000000001"}"#;
         let cfg = config(owner, &format!(r#""ownerPublicKey": {{"x": "{X}", "y": "{Y}"}},"#));
         let none = std::collections::HashMap::new();
-        let (_, init_data) = account_material(&cfg, &dep, &none, &kernel::Trading::default()).unwrap();
+        let (_, init_data) = account_material(&cfg, &dep, &none, &kernel::Trading::default(), &[]).unwrap();
         assert!(init_data.is_some(), "the owner's public key from the config derives initData");
         assert_eq!(open_signer(&cfg.owner, Role::Owner).is_err(), !cfg!(feature = "insecure-software-keys"));
 
         // without the owner's public key there is simply no initData — not a
         // fallback to opening the owner's key
         let cfg = config(owner, "");
-        let (_, init_data) = account_material(&cfg, &dep, &none, &kernel::Trading::default()).unwrap();
+        let (_, init_data) = account_material(&cfg, &dep, &none, &kernel::Trading::default(), &[]).unwrap();
         assert!(init_data.is_none());
     }
 

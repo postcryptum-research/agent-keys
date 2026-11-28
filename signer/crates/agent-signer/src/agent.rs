@@ -46,6 +46,10 @@ pub struct Deployments {
     /// The SafeNonceAssert AgentPolicy pairs every Safe transaction with.
     #[serde(default)]
     pub safe_nonce_assert: Option<Address>,
+    /// The shape judge that reads a Safe's transactions and batches (#251):
+    /// a mandate with either on its allow-list pins it.
+    #[serde(default)]
+    pub safe_shapes: Option<Address>,
     /// The P256Validator instance that holds a cold recovery key.
     #[serde(default)]
     pub p256_recovery_validator: Option<Address>,
@@ -623,6 +627,15 @@ impl AgentConfig {
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(owner_core::kernel::Trading { period: self.policy.period, venues, ids: self.token_ids()? })
+    }
+
+    /// Whether the mandate lists a Safe transaction or a batch, which the
+    /// policy admits only with the shape judge that reads it pinned (#251).
+    pub fn allows_safe(&self) -> bool {
+        self.policy.allow.iter().any(|e| {
+            let s = e.selector.to_ascii_lowercase();
+            s == "0x6a761202" || s == "0x8d80ff0a"
+        })
     }
 
     /// The limits per token id as the policy takes them: `(contract, id,

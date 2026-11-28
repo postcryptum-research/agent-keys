@@ -105,7 +105,7 @@ the CLI says so before anything is sent.
 
 | Field | Required | Type and syntax | Meaning |
 |---|---|---|---|
-| `deployments` | yes | path, relative to this file's directory (or absolute) | the module addresses for the chain: `contracts/deployments/<chainId>.json` |
+| `deployments` | yes | path, relative to this file's directory (or absolute) | the module addresses for the chain: `contracts/deployments/<chainId>.json`. Where the mandate allows a Safe transaction or a batch (`execTransaction`, `multiSend`), the CLI pins the shape judge the file names as `safeShapes`, at the code the chain holds, and refuses the config where the file names none: the policy installs such a mandate only with its judge ([#251](https://github.com/postcryptum-research/agent-keys/issues/251)) |
 | `owner` | yes | key spec (below) | where the owner (root) key lives; opened **only** to sign an owner operation |
 | `agent` | yes | key spec | where the agent key lives; opened to sign the agent's operations |
 | `permissionId` | yes | `0x` + exactly 8 hex digits (4 bytes) | which permission of the account this file describes; unique per account — a schedule uses one id per window |

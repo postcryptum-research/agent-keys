@@ -376,7 +376,12 @@ fn from_deployments(json: &str, chain_id: u64, canonical: bool) -> Facts {
                 // (the CLI's fixtures, held to the build by scripts/test-fixtures.py):
                 // the policy there holds everything the current source does.
                 if chain_id == 31337 {
-                    for list in [&mut f.payee_policy_modules, &mut f.trading_policy_modules, &mut f.id_policy_modules] {
+                    for list in [
+                        &mut f.payee_policy_modules,
+                        &mut f.trading_policy_modules,
+                        &mut f.id_policy_modules,
+                        &mut f.shape_policy_modules,
+                    ] {
                         if !list.contains(&addr) {
                             list.push(addr);
                         }
