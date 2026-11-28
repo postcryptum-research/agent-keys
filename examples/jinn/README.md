@@ -73,7 +73,7 @@ refused under both.
 ## Integrating into Jinn: the patch series (first version)
 
 [`patches/`](patches/) is a first version of `ADAPTATION.md` §5 Phase 1, as
-thirteen commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
+fourteen commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
 
 | Patch | What |
 |---|---|
@@ -90,6 +90,7 @@ thirteen commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
 | `0011-fix-operator-the-Safe-s-standing-grant-is-the-owner-…` | the Safe's standing approval on the IdentityRegistry is the owner's root operation: the migration reads it (`owner-approved-safe`) and never sends it with the agent's permission; the Kernel's agent key signs, under its mandate, before the Safe changes hands; the loop's bytecode fixture carries the current contracts (the internal audit of 2026-11-28, finding AK-2026-11-28-03, #246) |
 | `0012-fix-operator-the-boot-check-reads-every-Safe-signer-…` | the daemon's boot check reads every Safe `jinn signer-migrate` hands over: the fleet identity Safe as well as the service Safe (the EOA as an owner, as a module, as the owner of the agent NFT), from one list that the migration and the boot share (`migrationTargets`) (#250) |
 | `0013-fix-operator-a-Safe-s-guard-and-fallback-handler-are…` | each such Safe's guard and fallback handler are read from Safe 1.3.0's storage slots, at boot and in the migration's first step: a guard that is not also one of the Safe's modules, or a fallback handler other than Safe's `CompatibilityFallbackHandler` 1.3.0, refuses the boot and the handover; stOLAS's guard, a module of the service Safe, is reviewed as one (#250) |
+| `0014-docs-operator-the-skill-page-lists-jinn-signer-migra…` | the operator's skill page, which `yarn skill:generate` makes from the CLI's verbs and `yarn skill:check` holds to them, lists `jinn signer-migrate`: the verb came with patch 0009 and the page did not have it (#250) |
 
 Apply and enable:
 
@@ -362,6 +363,10 @@ Verified:
   Not run: the daemon's boot itself (`main.ts`: the tests call the check it
   runs on each Safe of the list, and the typecheck covers the wiring), the
   loop with a hardware key, and the CLI verb as a command.
+- patch 0014 (2026-11-28): `yarn skill:generate` adds exactly one row,
+  `jinn signer-migrate`, and `yarn skill:check` then passes; `git am` of
+  0001 to 0014 onto a fresh `151a464aa` applies cleanly and gives the tree
+  that was checked.
 
 **The loop's bytecode fixture.**
 `operator/test/_support/fixtures/tpm-sign-aa-code.json` holds the
