@@ -791,10 +791,17 @@ same bytes; Kernel's `installValidations` is not run here.
   payee list (`tokenLimit`); every probed payee reachable exactly when
   the review says so (`payeeAllowed`); the budget period (`period`); for
   each probed id whether it is limited and its two limits (`tokenLimit`
-  under `idAsset`). The generator reaches all four forms of the install
-  data: a normal run of 400 has 17 mandates shown and installed in the
-  ten-word form and 12 in the eleven-word one [V the run of 2026-11-25];
-  a venue it does not reach, since the local chain has none. The policy
+  under `idAsset`). The generator reaches all five forms of the install
+  data: a normal run of 400 has 62 mandates shown and installed, 8 of them
+  in the ten-word form, 10 in the eleven-word one and 5 in the
+  twelve-word one, and a run of 2,000 has 32 in the twelve-word form [V
+  the runs of 2026-11-28]; a venue it does not reach, since the local
+  chain has none. The twelve-word form comes from a seed of its own, one
+  mandate in six: a Safe's transaction, perhaps its batch, and the shape
+  judge mostly as pinned, now and then the form without a judge, a judge
+  the build does not know, other code, the judge twice, or a shorter form
+  that lists the Safe all the same. The phone's check of a judge against
+  its build, broken once (any judge read as the known one), is caught. The policy
   reads the eleven-word form's last word and its array by hand, so one
   such mandate in six is damaged there: the word replaced by another
   array's offset, or the count of limits one more or one less.

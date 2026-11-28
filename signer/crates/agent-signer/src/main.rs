@@ -320,9 +320,48 @@ enum PermissionCmd {
         #[arg(long)]
         sponsored: bool,
     },
+    /// Name the guardian of a permission's mandate, or remove it with
+    /// `--guardian none` (root operation signed by the owner key). The
+    /// guardian may pause a shape judge or a venue of that mandate and lift
+    /// the pause; it cannot widen the mandate (#251). `permission rotate`
+    /// carries it over to the new permission; `permission add` starts with
+    /// none.
+    Guardian {
+        #[command(flatten)]
+        agent: AgentArgs,
+        /// 4-byte hex permission id; the config's when left out.
+        #[arg(long)]
+        id: Option<String>,
+        /// The guardian's address, or `none`.
+        #[arg(long)]
+        guardian: String,
+        #[arg(long)]
+        sponsored: bool,
+    },
+    /// Pause one module of a permission's mandate, a shape judge or a venue
+    /// decoder, or lift the pause with `--lift` (root operation signed by the
+    /// owner key). While paused the policy refuses its calls and the rest of
+    /// the mandate runs. The guardian sends the same call from its own
+    /// address (`docs/AGENT_CONFIG.md`).
+    Pause {
+        #[command(flatten)]
+        agent: AgentArgs,
+        /// 4-byte hex permission id; the config's when left out.
+        #[arg(long)]
+        id: Option<String>,
+        /// The shape judge or venue decoder.
+        #[arg(long)]
+        module: Address,
+        /// Lift the pause instead.
+        #[arg(long)]
+        lift: bool,
+        #[arg(long)]
+        sponsored: bool,
+    },
     /// Replace permission `old_id` with the one the config describes — new
     /// agent key and/or mandate — in one root operation. Pin `account` in
-    /// the config first.
+    /// the config first. A guardian of the old permission is named for the
+    /// new one in the same operation (#251).
     Rotate {
         #[command(flatten)]
         agent: AgentArgs,
@@ -1731,6 +1770,21 @@ async fn run() -> Result<()> {
                 let s = session(&agent).await?;
                 let inc = s.renew_venue_allowances(sponsored).await?;
                 println!("venue allowances set to one budget: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
+            }
+            PermissionCmd::Guardian { agent, id, guardian, sponsored } => {
+                let s = session(&agent).await?;
+                let perm = match id { Some(id) => parse_permission_id(&id)?, None => s.cfg.permission_id()? };
+                let who = if guardian == "none" { Address::ZERO } else { guardian.parse().context("--guardian: an address or `none`")? };
+                let inc = s.set_guardian(perm, who, sponsored).await?;
+                let named = if who.is_zero() { "none".to_string() } else { who.to_string() };
+                println!("guardian of {perm}: {named}: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
+            }
+            PermissionCmd::Pause { agent, id, module, lift, sponsored } => {
+                let s = session(&agent).await?;
+                let perm = match id { Some(id) => parse_permission_id(&id)?, None => s.cfg.permission_id()? };
+                let inc = s.pause_module(perm, module, !lift, sponsored).await?;
+                let done = if lift { "pause lifted" } else { "paused" };
+                println!("{module} in {perm}: {done}: tx {} (block {}, {} gas)", inc.tx, inc.block, inc.gas_used);
             }
             PermissionCmd::Rotate { agent, old_id, old_config, sponsored, dry_run } => {
                 let old = old_config.as_deref().map(AgentConfig::load).transpose()?.map(|c| c.0);

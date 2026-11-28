@@ -795,6 +795,36 @@ are not decoded and fall under the rule below. An external call the core cannot 
   by `<paymaster>` (verified in this build)". Any other paymaster is
   refused. Token-charging paymasters can come later, each with a decoder
   for its charge and a per-enrollment token cap.
+- **Shape judges (#251).** On a policy that takes shape judges, a Safe
+  transaction or a batch on a mandate's allow-list needs the judge that
+  reads it, pinned in the twelve-word form by address and code hash. The
+  review refuses such an entry without a judge, as the policy refuses it at
+  install; accepts a judge only where the build knows it, with the code it
+  knows and the selectors it reads; and shows "Shape judge: `<name>` (judge
+  `<address>` verified in this build): reads … as a wallet transaction, …
+  as a batch". An unknown judge, other code, two judges for one selector,
+  and a listed batch no pinned judge reads are refused (owner-core
+  `shape_judges_are_verified_and_a_safe_needs_one`). The judges a build
+  knows are a table in `facts.rs`, as the venue decoders are, enabled where
+  the deployments file names them: empty for the public test networks until
+  the divided policy is deployed there. A development build knows the local
+  test chain's judge from the CLI's fixtures, which
+  `scripts/test-fixtures.py` holds to the build (`the_local_chain_knows_its_safe_judge`).
+- **The guardian (#251, decision 2).** On a policy the build knows to have
+  a guardian per mandate, a root operation's `setGuardian(id, guardian)`
+  and `pause(account, id, module, paused)` to it are read, in their
+  canonical encoding only, and never with value. A guardian named is a row
+  that stands out: "Guardian: `<address>` for permission `<id>`: it may
+  pause a shape judge or a venue of this mandate, which stops the agent's
+  use of it, and lift its own pauses, never the owner's; it cannot widen
+  the mandate or move funds". A guardian removed and a pause lifted stand
+  out as well: each takes a brake off. A pause of the account's own mandate
+  is a plain row; one for another account's mandate, where this account is
+  its guardian, stands out. A guardian call placed before a change of the
+  account's validators in the same operation is refused: it would apply to
+  the mandate the operation replaces. On any other policy both stay calls
+  the phone cannot decode
+  (owner-core `the_guardian_and_its_pause_are_read_on_a_policy_that_has_them`).
 
 ### 6.5 What is never signed
 

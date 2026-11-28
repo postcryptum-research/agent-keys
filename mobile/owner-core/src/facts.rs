@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use alloy_primitives::{address, b256, Address, B256};
 
-use crate::review::{Facts, Native, Token, Venue, VenueKind};
+use crate::review::{Facts, Native, ShapeJudge, Token, Venue, VenueKind};
 
 /// `contracts/deployments/84532.json`, the canonical file. Variants such as
 /// `84532.enclave.json` (a developer's test paymaster) are never embedded.
@@ -323,6 +323,35 @@ pub fn chains() -> Vec<u64> {
     chains
 }
 
+/// What `SafeShapes` reads, as its `shapes()` answers: `execTransaction` as
+/// a wallet transaction (2) and `multiSend` as a batch (3).
+const SAFE_SHAPES_READS: [([u8; 4], u8); 2] = [([0x6a, 0x76, 0x12, 0x02], 2), ([0x8d, 0x80, 0xff, 0x0a], 3)];
+
+/// The shape judges a build knows (#251), as the venue decoders: the chain,
+/// the judge, its code hash as read from that chain, and the deployments
+/// key that names it. None is deployed on a public test network yet: the
+/// redeploy of the divided policy adds them here.
+const SHAPE_JUDGES: &[(u64, Address, B256, &str)] = &[];
+
+/// Development builds: the local test chain's Safe judge, at the address and
+/// with the code of the CLI's fixtures, which `scripts/test-fixtures.py`
+/// holds to the build, so that its code hash follows every change of it.
+#[cfg(feature = "test-chains")]
+fn local_safe_shapes(f: &mut Facts) {
+    const CHAIN_CODE: &str = include_str!("../../../signer/crates/agent-signer/tests/fixtures/chain-code.json");
+    let Ok(fixture) = serde_json::from_str::<serde_json::Value>(CHAIN_CODE) else { return };
+    let judge = &fixture["contracts"]["safeShapes"];
+    let address = judge["address"].as_str().and_then(|a| a.parse::<Address>().ok());
+    let code = judge["code"].as_str().and_then(|c| alloy_primitives::hex::decode(c).ok());
+    if let (Some(address), Some(code)) = (address, code) {
+        f.names.insert(address, "SafeShapes".to_string());
+        f.shape_judges.insert(
+            address,
+            ShapeJudge { name: "SafeShapes".to_string(), code_hash: alloy_primitives::keccak256(&code), reads: SAFE_SHAPES_READS.to_vec() },
+        );
+    }
+}
+
 /// The facts for `chain_id`; empty for a chain the build does not know, where
 /// the review then names nothing and refuses what it cannot classify.
 pub fn for_chain(chain_id: u64) -> Facts {
@@ -336,7 +365,11 @@ pub fn for_chain(chain_id: u64) -> Facts {
         // contracts are the same facts there; its paymaster and its tokens
         // are deployed afresh by each test and are not.
         #[cfg(feature = "test-chains")]
-        31337 => from_deployments(BASE_SEPOLIA, chain_id, false),
+        31337 => {
+            let mut f = from_deployments(BASE_SEPOLIA, chain_id, false);
+            local_safe_shapes(&mut f);
+            f
+        }
         _ => Facts::default(),
     }
 }
@@ -376,7 +409,13 @@ fn from_deployments(json: &str, chain_id: u64, canonical: bool) -> Facts {
                 // (the CLI's fixtures, held to the build by scripts/test-fixtures.py):
                 // the policy there holds everything the current source does.
                 if chain_id == 31337 {
-                    for list in [&mut f.payee_policy_modules, &mut f.trading_policy_modules, &mut f.id_policy_modules] {
+                    for list in [
+                        &mut f.payee_policy_modules,
+                        &mut f.trading_policy_modules,
+                        &mut f.id_policy_modules,
+                        &mut f.shape_policy_modules,
+                        &mut f.guardian_policy_modules,
+                    ] {
                         if !list.contains(&addr) {
                             list.push(addr);
                         }
@@ -404,6 +443,17 @@ fn from_deployments(json: &str, chain_id: u64, canonical: bool) -> Facts {
             f.venues.insert(
                 *decoder,
                 Venue { name: name.to_string(), kind: *kind, code_hash: *code_hash, place: *place, spender: *spender },
+            );
+        }
+        // a shape judge likewise, where the deployments file names it
+        for (_, judge, code_hash, key) in SHAPE_JUDGES.iter().filter(|j| j.0 == chain_id) {
+            if map.get(*key).and_then(|v| v.as_str()).and_then(|s| s.parse::<Address>().ok()) != Some(*judge) {
+                continue;
+            }
+            f.names.insert(*judge, "SafeShapes".to_string());
+            f.shape_judges.insert(
+                *judge,
+                ShapeJudge { name: "SafeShapes".to_string(), code_hash: *code_hash, reads: SAFE_SHAPES_READS.to_vec() },
             );
         }
         for (_, token, symbol, decimals, domain) in TOKENS.iter().filter(|t| t.0 == chain_id) {
@@ -492,6 +542,26 @@ mod tests {
     /// The table cannot lag the file silently: every key is either named or
     /// listed as not a fact, so a new kind of contract fails here until it
     /// is reviewed.
+    /// #251: the local test chain knows its Safe judge at the fixture's
+    /// address, with the code hash of the fixture's code, so that a Safe
+    /// mandate pinning it is read there; no public test network knows one
+    /// yet.
+    #[cfg(feature = "test-chains")]
+    #[test]
+    fn the_local_chain_knows_its_safe_judge() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../../signer/crates/agent-signer/tests/fixtures/chain-code.json")).unwrap();
+        let address: Address = fixture["contracts"]["safeShapes"]["address"].as_str().unwrap().parse().unwrap();
+        let code = alloy_primitives::hex::decode(fixture["contracts"]["safeShapes"]["code"].as_str().unwrap()).unwrap();
+        let local = for_chain(31337);
+        let judge = &local.shape_judges[&address];
+        assert_eq!(judge.code_hash, alloy_primitives::keccak256(&code));
+        assert_eq!(judge.reads, SAFE_SHAPES_READS.to_vec());
+        for chain in [84532, 11155111, 5042002] {
+            assert!(for_chain(chain).shape_judges.is_empty(), "{chain}");
+        }
+    }
+
     #[test]
     fn every_key_of_the_embedded_file_is_accounted_for() {
         for (file, chain) in [(BASE_SEPOLIA, 84532), (SEPOLIA, 11155111), (ARC_TESTNET, 5042002)] {

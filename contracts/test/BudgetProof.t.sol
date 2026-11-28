@@ -2,6 +2,8 @@
 pragma solidity ^0.8.38;
 
 import {AgentPolicy} from "../src/AgentPolicy.sol";
+import {ShapedMandate} from "./ShapedMandate.sol";
+import {SafeShapes} from "../src/judges/SafeShapes.sol";
 import {Kernel} from "kernel/src/Kernel.sol";
 import {PackedUserOperation} from "kernel/src/interfaces/PackedUserOperation.sol";
 import {ExecLib} from "kernel/src/utils/ExecLib.sol";
@@ -139,7 +141,10 @@ contract BudgetProof {
         AgentPolicy.TokenCap[] memory tokens = new AgentPolicy.TokenCap[](1);
         tokens[0] = AgentPolicy.TokenCap(token, A_MAX, A_BUDGET, bytes32(0));
         bytes memory data = abi.encodePacked(
-            ID, abi.encode(targets, selectors, MAX_VALUE, BUDGET, UNTIL, tokens, uint48(0))
+            ID,
+            ShapedMandate.shaped(
+                abi.encode(targets, selectors, MAX_VALUE, BUDGET, UNTIL, tokens, uint48(0)), address(new SafeShapes())
+            )
         );
         acct.install(policy, data);
     }

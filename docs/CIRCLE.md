@@ -64,6 +64,16 @@ read afterwards: every one succeeded.
 | **StableFX** | USDC against EURC on Arc: a venue with a decoder of its own, like an order book's | admission: it is a permissioned platform for vetted institutions. Nothing can be run before that |
 | **App Kits** | Circle's SDKs over CCTP and Gateway drive a signer | an adapter that lets them drive an agent-keys account |
 
+**Each product is a module of a mandate.** CCTP's rules and a venue's
+decoder are contracts of their own, which a mandate pins by address and
+code hash. In the source, the policy is divided so that it stays as it is
+when one is added ([#251](https://github.com/postcryptum-research/agent-keys/issues/251),
+not yet deployed, [`ARCHITECTURE.md`](ARCHITECTURE.md#the-policy-on-chain-in-parts)):
+a product added later, Gateway or StableFX, is a new module that owners
+pin; only the mandates that use a module pay the gas of reading it; and a
+guardian the owner names can pause one module of a mandate, the bridge
+say, while its payments go on.
+
 Not in scope: Circle's wallets (this project is another way to hold an
 agent's key: in the device's own chip, with the limits on the chain),
 Circle Contracts and Circle Mint.

@@ -180,6 +180,20 @@ sol! {
         function balanceOf(address account) external view returns (uint256);
     }
 
+    /// AgentPolicy's guardian (#251, decision 2): named by the owner for a
+    /// mandate, it may pause one of the mandate's modules. An AgentPolicy
+    /// from before the division reverts.
+    #[sol(rpc)]
+    interface IAgentPolicyGuardian {
+        function setGuardian(bytes32 id, address guardian) external;
+        function pause(address account, bytes32 id, address module, bool paused) external;
+        function guardian(address account, bytes32 id) external view returns (address);
+        function paused(address account, bytes32 id, address module) external view returns (bool);
+        error NotTheGuardian();
+        error NotAModule();
+        error NotInitialized(address smartAccount);
+    }
+
     /// AgentPolicy's x402 entry points.
     interface IAgentPolicyX402 {
         function x402Authorize(

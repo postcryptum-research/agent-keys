@@ -6,6 +6,7 @@ import {Test, console} from "forge-std/Test.sol";
 import {P256Validator} from "../src/P256Validator.sol";
 import {P256Signer} from "../src/P256Signer.sol";
 import {AgentPolicy} from "../src/AgentPolicy.sol";
+import {SafeShapes} from "../src/judges/SafeShapes.sol";
 import {SafeNonceAssert} from "../src/SafeNonceAssert.sol";
 import {WhitelistPaymaster} from "../src/WhitelistPaymaster.sol";
 import {Logger} from "../src/demo/Logger.sol";

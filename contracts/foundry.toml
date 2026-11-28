@@ -20,6 +20,10 @@ cbor_metadata = false
 # Dependency warnings (e.g. Solady's legacy `memory-safe-assembly` natspec on
 # newer solc) are not ours to fix.
 ignored_warnings_from = ["lib"]
+# The syntax tree in every artifact: scripts/test-fixtures.py names a
+# contract's immutables from it. An output of the build; no bytecode depends
+# on it.
+ast = true
 
 # One transaction per test, which the tests assume: an operation and the
 # reads that follow it share transient storage and warm slots. A newer forge

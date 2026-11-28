@@ -390,17 +390,48 @@ canonical CREATE2 deployer — plus this project's modules, deployed once per
 network. Today: Base Sepolia. Base mainnet has all the prerequisites; the
 modules are not deployed there yet.
 
+### What if one part of the policy has a bug, a venue's decoder or the Safe judge?
+
+In the source (not yet on the test networks, [`DEPLOYMENTS.md`](DEPLOYMENTS.md)),
+the policy is divided into a fixed part and parts each mandate pins: the
+decoder of each venue, and the judge that reads a Safe transaction
+([#251](https://github.com/postcryptum-research/agent-keys/issues/251)). A
+faulty part can be switched off without switching off the policy, and so
+without stopping every agent:
+
+- **The guardian pauses it.** The owner may name a guardian for a mandate
+  (`agent-signer permission guardian`). The guardian, or the owner, pauses
+  one part of that mandate (`permission pause`): the policy refuses the
+  agent's calls through it, and the rest of the mandate runs. The guardian
+  can lift its own pause and do nothing else: it never lifts the owner's,
+  widens no mandate and moves no funds. An order the agent registered at a
+  venue before the pause stays good until it expires; the owner's
+  revocation of the permission (`permission revoke`) ends every one at once.
+- **The owner rotates it out.** A new mandate without the part, or with a
+  fixed one, replaces the old in one operation (`permission rotate`), which
+  keeps the guardian and the pauses of the parts it keeps.
+- **The phone refuses it.** A phone build that no longer lists a part
+  refuses every mandate that pins it.
+
+There is no switch for every account at once: the rules of ERC-4337
+(ERC-7562) let the policy read only the account's own storage while it
+checks an operation, so a pause is set per mandate
+([`ARCHITECTURE.md`](ARCHITECTURE.md#switching-a-module-off)).
+
 ### Who deploys the contracts — every user, or the project once?
 
 The project, once per chain, for everyone. The modules — `P256Validator`,
-`P256Signer`, `AgentPolicy`, `SafeNonceAssert`, `P256RecoveryValidator` —
+`P256Signer`, `AgentPolicy`, `SafeNonceAssert`, `P256RecoveryValidator`,
+and the venue decoders and the Safe judge (`SafeShapes`) a mandate pins —
 are shared singletons: no owner, no admin functions, all state keyed by the
 calling account, so one deployment serves every user and no user can touch
 another's. They go through the canonical CREATE2 deployer
 (`0x4e59b44847b379578588920cA78FbF26c0B4956C`) with salt 0, so their
 addresses depend only on their bytecode — the same on every chain, whoever
 deploys them; anyone may run `contracts/script/Deploy.s.sol`, and the first
-run makes them available to all.
+run makes them available to all. In the source, `AgentPolicy` creates its
+install code, `PolicyInstall`, in its constructor, at the policy's own
+CREATE address: same policy, same `PolicyInstall`, on every chain (#251).
 
 What each user gets is their **account**: a Kernel proxy created by ZeroDev's
 factory, automatically, by the user's first operation (it carries the

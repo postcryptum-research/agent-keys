@@ -38,6 +38,13 @@ tx [`0x785332105fd8085d50e542ff9f677eba964399bbc0d71333ddd71fed03e669bb`](https:
   and a root operation
   (tx [`0x547e4fa8caf1b5725f9043ece7df13f3e713c98107f1b1726ac24139674da40c`](https://sepolia.basescan.org/tx/0x547e4fa8caf1b5725f9043ece7df13f3e713c98107f1b1726ac24139674da40c)),
   and its signature is one of the test vectors.
+- The policy in parts — in the source, not yet deployed: `AgentPolicy`
+  divided into a fixed policy, its install code, and judges each mandate
+  pins (the Safe judge, the venue decoders), with a guardian per mandate
+  who may pause one of them; 18,611 of the 24,576 bytes a contract may
+  hold, from 24,437
+  ([`docs/ARCHITECTURE.md`](ARCHITECTURE.md#the-policy-on-chain-in-parts),
+  [#251](https://github.com/postcryptum-research/agent-keys/issues/251)).
 - Safes — `AgentPolicy` v3 lets the agent drive a Safe its account owns
   (Olas / Jinn service Safes) and still judges the Safe transaction's
   *inner* call, or every leg of a MultiSend batch, against the mandate

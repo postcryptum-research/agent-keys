@@ -21,6 +21,17 @@ zero address, and the account pays it past its native budget
 AK-2026-11-28-01). The source refuses such a field; the test networks
 carry that after their next redeploy.
 
+**They are also the whole policy, from before its division (#251).** The
+source divides `AgentPolicy` into a fixed policy and parts: the install in
+`PolicyInstall`, a Safe transaction read by a shape judge the mandate pins
+(`SafeShapes`), and a guardian per mandate who may pause one of its modules
+([`ARCHITECTURE.md`](ARCHITECTURE.md#the-policy-on-chain-in-parts)). The
+instances here read a Safe transaction themselves and have no guardian;
+the test networks get the divided policy with their next redeploy, which
+deploys `AgentPolicy` and `SafeShapes`, and nothing else
+[V `scripts/source-record.sh b11adb7cf2dcb2660b4c93c81c62f8945e246706` on
+2026-11-28: every other contract builds the same].
+
 The record itself is `contracts/deployments/<chainId>.json`: the CLI reads
 it, the phone's build embeds them, and
 `contracts/test/DeploymentsRecord.t.sol` fails when an address in it is
