@@ -274,6 +274,23 @@ pub fn permission_data_shaped(
     signer: Address,
     agent_key: &PublicKey,
 ) -> Bytes {
+    permission_data_faced(policy, params, trading, shapes, None, signer, agent_key)
+}
+
+/// The same with the native token's ERC-20 face named (#251): `(token,
+/// decimals)`, Arc's USDC, whose movements under its token limit count
+/// against the native limits too. With it, the fourteen-word form: the
+/// twelve, the judges possibly none, then the face. Without, the bytes of
+/// `permission_data_shaped`.
+pub fn permission_data_faced(
+    policy: Address,
+    params: &PolicyParams,
+    trading: &Trading,
+    shapes: &[(Address, B256)],
+    face: Option<(Address, u8)>,
+    signer: Address,
+    agent_key: &PublicKey,
+) -> Bytes {
     // `abi.encode(targets, selectors, max, budget, until, tokens, after)`: a parameter
     // sequence, not one tuple value — `abi_encode()` on a dynamic tuple would
     // prepend an offset word and the policy's `abi.decode` would reject it.
@@ -294,7 +311,15 @@ pub fn permission_data_shaped(
     // without them the bytes, and so a counterfactual account's address, are
     // what they were before lists existed. The policy tells the two forms
     // apart by the first head word.
-    let policy_init = if !shapes.is_empty() {
+    let policy_init = if let Some(face) = face {
+        let (a, b, c, d, e, f, g) = seven;
+        let ids: Vec<_> =
+            trading.ids.iter().map(|&(token, id, max, budget)| (token, id, U256::from(max), U256::from(budget))).collect();
+        let twelve =
+            (a, b, c, d, e, f, g, params.payees.clone(), trading.period, trading.venues.clone(), ids, shapes.to_vec())
+                .abi_encode_params();
+        with_face(&twelve, face)
+    } else if !shapes.is_empty() {
         let (a, b, c, d, e, f, g) = seven;
         let ids: Vec<_> =
             trading.ids.iter().map(|&(token, id, max, budget)| (token, id, U256::from(max), U256::from(budget))).collect();
@@ -320,6 +345,27 @@ pub fn permission_data_shaped(
         (flag, signer, encode_pubkey(agent_key)).abi_encode_packed().into(),
     ];
     entries.abi_encode().into()
+}
+
+/// The head words of the twelve-word form that are offsets of dynamic
+/// parameters: targets, selectors, tokens, payees, venues, ids, shapes.
+pub(crate) const TWELVE_OFFSETS: [usize; 7] = [0, 1, 5, 7, 9, 10, 11];
+
+/// The fourteen-word form from the twelve-word encoding: the face's two
+/// words after the twelfth head word, and each offset of a dynamic parameter
+/// 64 bytes further on. (The ABI encoders this crate uses take twelve
+/// parameters at most.)
+fn with_face(twelve: &[u8], face: (Address, u8)) -> Vec<u8> {
+    let mut out = Vec::with_capacity(twelve.len().saturating_add(64));
+    for (i, word) in twelve[..384].chunks(32).enumerate() {
+        let w = U256::from_be_slice(word);
+        let w = if TWELVE_OFFSETS.contains(&i) { w.checked_add(U256::from(64)).expect("an offset within the encoding") } else { w };
+        out.extend_from_slice(&w.to_be_bytes::<32>());
+    }
+    out.extend_from_slice(&B256::left_padding_from(face.0.as_slice()).0);
+    out.extend_from_slice(&U256::from(face.1).to_be_bytes::<32>());
+    out.extend_from_slice(&twelve[384..]);
+    out
 }
 
 /// `installValidations([perm], [{nonce, hook = address(1)}], [data], [""])`.

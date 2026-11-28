@@ -119,6 +119,9 @@ pub struct Facts {
     /// The policy modules with a guardian per mandate (#251, decision 2):
     /// their `setGuardian` and `pause`, sent by the account, are read.
     pub guardian_policy_modules: Vec<Address>,
+    /// The policy modules that take the native token's ERC-20 face (#251):
+    /// on them a mandate may count that token's movements as native value.
+    pub face_policy_modules: Vec<Address>,
 }
 
 /// A shape judge the build knows (#251): its code, and the selectors it
@@ -827,6 +830,9 @@ fn self_call(
     }
 }
 
+/// A mandate's venues: `(decoder, code hash, hash of the venue's terms)`.
+pub type VenueTerms = Vec<(Address, B256, B256)>;
+
 /// A mandate as the review reads it from a policy's install parameters:
 /// what the owner is shown, and so what `AgentPolicy` has to enforce from
 /// the same bytes (held together by the differential test
@@ -844,14 +850,18 @@ pub struct MandateTerms {
     pub payees: Vec<(Address, Vec<Address>)>,
     /// In the ten-word form: the budget period in seconds, never zero, and
     /// the venues as `(decoder, code hash, hash of the venue's terms)`.
-    pub trading: Option<(u32, Vec<(Address, B256, B256)>)>,
+    pub trading: Option<(u32, VenueTerms)>,
     /// In the eleven-word form: `(ERC-6909 contract, token id, maxPerOp,
     /// budget)`, at least one; in the twelve-word form, possibly none. Empty
     /// in the other forms.
     pub ids: Vec<(Address, U256, U256, U256)>,
     /// In the twelve-word form (#251): the shape judges, `(judge, code
-    /// hash)`, at least one. Empty in the other forms.
+    /// hash)`, at least one; in the fourteen-word form, possibly none. Empty
+    /// in the other forms.
     pub shapes: Vec<(Address, B256)>,
+    /// In the fourteen-word form (#251): the native token's ERC-20 face,
+    /// `(token, decimals)`, one of the mandate's limited tokens.
+    pub native_face: Option<(Address, u8)>,
 }
 
 /// Where a mandate is being installed: what `mandate_terms` needs to refuse
@@ -871,6 +881,8 @@ pub struct MandatePlace {
     /// That module is known to take shape judges (#251): a Safe transaction
     /// or a batch on its allow-list needs one.
     pub shapes_enforced: bool,
+    /// That module is known to take the native token's ERC-20 face (#251).
+    pub face_enforced: bool,
 }
 
 /// Reads `init`, a policy entry's bytes behind `flag ‖ module`, or says why
@@ -928,13 +940,54 @@ pub fn mandate_terms(init: &[u8], place: &MandatePlace, name: &dyn Fn(Address) -
         Ids,
         Shapes,
     );
-    // Five forms, told apart as the policy tells them: by the first head
-    // word, the offset of `targets` behind seven, eight, ten, eleven or twelve head words.
+    // Six forms, told apart as the policy tells them: by the first head word,
+    // the offset of `targets` behind seven, eight, ten, eleven, twelve or fourteen head words.
     let head = init.get(..32).map(U256::from_be_slice).ok_or("policy parameters shorter than a word; refused")?;
     let mut trading: Option<(u32, Venues)> = None;
     let mut ids: Ids = Vec::new();
     let mut shapes: Shapes = Vec::new();
-    let (targets, selectors, max_value, budget, until, tokens, after, payees) = if head == U256::from(12 * 32) {
+    let mut native_face: Option<(Address, u8)> = None;
+    let (targets, selectors, max_value, budget, until, tokens, after, payees) = if head == U256::from(14 * 32) {
+        // the twelve-word form with the face's two words after its head: read
+        // as that form (the ABI decoders take twelve parameters at most)
+        let (twelve, face) = without_face(init).ok_or("policy parameters in the form for the native face, malformed; refused")?;
+        let d = PolicyInitShapes::abi_decode_params_validate(&twelve).map_err(|e| format!("policy parameters: {e}"))?;
+        if d.abi_encode_params() != twelve {
+            return Err("policy parameters are not canonical; refused".into());
+        }
+        let d = (d.0, d.1, d.2, d.3, d.4, d.5, d.6, d.7, d.8, d.9, d.10, d.11, face);
+        // an earlier policy refuses these parameters at install
+        if !place.face_enforced {
+            return Err("this mandate names the native token's ERC-20 face, and the policy module it goes to is not known to take one; refused".into());
+        }
+        // the face: a token with a limit in this mandate, of at most 18 decimals
+        let (face, decimals) = d.12;
+        if face.is_zero() || decimals > 18 || !d.5.iter().any(|t| t.0 == face) {
+            return Err("the native token's ERC-20 face this mandate names is not one of its limited tokens of at most 18 decimals, and the policy does not install it; refused".into());
+        }
+        if !d.11.is_empty() && !place.shapes_enforced {
+            return Err("this mandate pins shape judges, and the policy module it goes to is not known to take them; refused".into());
+        }
+        if !d.10.is_empty() && !place.ids_enforced {
+            return Err("this mandate carries limits per token id, and the policy module it goes to is not known to enforce them; refused".into());
+        }
+        if (d.8 != 0 || !d.9.is_empty()) && !place.trading_enforced {
+            return Err("this mandate carries a budget period or trading venues, and the policy module it goes to is not known to enforce them; refused".into());
+        }
+        if d.8 == 0 && !d.9.is_empty() {
+            return Err("this mandate names trading venues and no budget period: an order's charge would never come back, and the policy does not install it; refused".into());
+        }
+        if !d.7.is_empty() && !payees_enforced {
+            return Err("this mandate carries payee lists, and the policy module it goes to is not known to enforce them; refused".into());
+        }
+        if d.8 != 0 {
+            trading = Some((d.8, d.9));
+        }
+        ids = d.10;
+        shapes = d.11;
+        native_face = Some(d.12);
+        (d.0, d.1, d.2, d.3, d.4, d.5, d.6, d.7)
+    } else if head == U256::from(12 * 32) {
         let d = PolicyInitShapes::abi_decode_params_validate(init).map_err(|e| format!("policy parameters: {e}"))?;
         if d.abi_encode_params() != init {
             return Err("policy parameters are not canonical; refused".into());
@@ -1172,7 +1225,33 @@ pub fn mandate_terms(init: &[u8], place: &MandatePlace, name: &dyn Fn(Address) -
         trading,
         ids,
         shapes,
+        native_face,
     })
+}
+
+/// The fourteen-word form split into the twelve-word encoding and the face:
+/// the face's two words taken out after the twelfth head word, and each offset
+/// of a dynamic parameter 64 bytes back. `None` where the words are not in
+/// that shape: the address word with high bits, the decimals past a byte, an
+/// offset that does not point past the head.
+fn without_face(init: &[u8]) -> Option<(Vec<u8>, (Address, u8))> {
+    if init.len() < 448 {
+        return None;
+    }
+    // the address word's twelve high bytes empty, the decimals within a byte
+    let decimals = U256::from_be_slice(&init[416..448]);
+    if init[384..396] != [0u8; 12] || decimals > U256::from(u8::MAX) {
+        return None;
+    }
+    let face = (Address::from_slice(&init[396..416]), u8::try_from(decimals).ok()?);
+    let mut twelve = Vec::with_capacity(init.len().checked_sub(64)?);
+    for (i, word) in init[..384].chunks(32).enumerate() {
+        let w = U256::from_be_slice(word);
+        let w = if crate::kernel::TWELVE_OFFSETS.contains(&i) { w.checked_sub(U256::from(64))? } else { w };
+        twelve.extend_from_slice(&w.to_be_bytes::<32>());
+    }
+    twelve.extend_from_slice(&init[448..]);
+    Some((twelve, face))
 }
 
 /// Kernel's `PermissionEnableDataFormat` as `permission_data` builds it:
@@ -1231,15 +1310,34 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
                 trading_enforced: b.facts.trading_policy_modules.contains(&module),
                 ids_enforced: b.facts.id_policy_modules.contains(&module),
                 shapes_enforced: b.facts.shape_policy_modules.contains(&module),
+                face_enforced: b.facts.face_policy_modules.contains(&module),
             };
             let b = &*b;
             mandate_terms(&p[22..], &place, &|a| b.name(a))?
         };
-        let MandateTerms { allow, max_value, budget, valid_until: until, valid_after: after, tokens, payees, trading, ids, shapes } =
-            terms;
+        let MandateTerms {
+            allow,
+            max_value,
+            budget,
+            valid_until: until,
+            valid_after: after,
+            tokens,
+            payees,
+            trading,
+            ids,
+            shapes,
+            native_face,
+        } = terms;
         let (targets, selectors): (Vec<Address>, Vec<FixedBytes<4>>) = allow.into_iter().unzip();
         for (t, sel) in targets.iter().zip(&selectors) {
-            b.row(s, "Allow", format!("{} · {}", b.name(*t), selector_name(sel.0)));
+            // with a judge, a batch is never the agent's own call, and a Safe
+            // transaction is judged by the calls inside it: the row says so
+            let how = match (shapes.is_empty(), sel.0) {
+                (false, SELECTOR_MULTI_SEND) => " (only inside a Safe transaction, each leg read by its judge and held to this mandate)",
+                (false, SELECTOR_SAFE_EXEC) => " (each call inside read by its judge and held to this mandate)",
+                _ => "",
+            };
+            b.row(s, "Allow", format!("{} · {}{how}", b.name(*t), selector_name(sel.0)));
             if let Some(what) = operator_grant(sel.0) {
                 b.bold(s, "Operator grant", format!("{} · {what}", b.name(*t)));
             }
@@ -1248,7 +1346,28 @@ fn permission_rows(b: &mut Builder<'_>, s: usize, vdata: &[u8], acct: &EnrolledA
         let native = b.facts.native_symbol().to_string();
         b.row(s, "Max value per operation", format!("{} {native}", format_ether(max_value)));
         b.row(s, "Budget", format!("{} {native}", format_ether(budget)));
-        if let Some(n) = b.facts.native.clone() {
+        if let Some((face, decimals)) = native_face {
+            // One budget: the face's movements count against the native limits.
+            // Only the token this build knows as the chain's native face, at its
+            // decimals: any other would add a limit the owner does not mean
+            let Some(n) = b.facts.native.clone().filter(|n| n.token == face) else {
+                return Err(format!(
+                    "this mandate counts {} as the native token's ERC-20 face, and this build knows no such face on this chain or another one; refused",
+                    face.to_checksum(None)
+                ));
+            };
+            if b.facts.tokens.get(&face).is_some_and(|t| t.decimals != decimals) {
+                return Err(format!("this mandate scales the native token's ERC-20 face from {decimals} decimals, which is not what this build knows; refused"));
+            }
+            b.bold(
+                s,
+                "One budget",
+                format!(
+                    "{native} is this chain's gas token and also the token {}: what that token's limit charges (transfers, approvals, x402 payments, orders) counts against the two limits above as well, with the value sent and the gas, so the budget above bounds all of it together",
+                    n.token.to_checksum(None)
+                ),
+            );
+        } else if let Some(n) = b.facts.native.clone() {
             // one balance behind two doors: the owner sees that each limit holds its own door only
             b.bold(
                 s,
@@ -2012,6 +2131,8 @@ fn selector_name(sel: [u8; 4]) -> String {
         [0x95, 0x9b, 0x8c, 0x3f] => Some("authorizeOperator"),
         [0x55, 0x8a, 0x72, 0x97] => Some("setOperator"),
         [0x27, 0xdd, 0xae, 0x76] => Some("orderRegister"),
+        SELECTOR_SAFE_EXEC => Some("execTransaction"),
+        SELECTOR_MULTI_SEND => Some("multiSend"),
         // the policy's two calls for x402: a payment registered, an unused one given back
         [0x49, 0x93, 0xd6, 0x16] => Some("x402Authorize"),
         [0xf3, 0xea, 0x18, 0x3e] => Some("x402Reclaim"),
@@ -2134,6 +2255,7 @@ mod tests {
             shape_policy_modules: vec![],
             shape_judges: BTreeMap::new(),
             guardian_policy_modules: vec![],
+            face_policy_modules: vec![],
         }
     }
 
@@ -2237,6 +2359,79 @@ mod tests {
         open_request(&bytes, &commitment(&bytes), NOW, &enrolled(), f)
     }
 
+    fn open_faced(params: &kernel::PolicyParams, face: Option<(Address, u8)>, f: &Facts) -> Review {
+        let perm = FixedBytes::from([0x66, 0x61, 0x63, 0x65]);
+        let pdata = kernel::permission_data_faced(POLICY, params, &kernel::Trading::default(), &[], face, SIGNER, &key(2));
+        open_install(perm, pdata, f)
+    }
+
+    fn open_install(perm: FixedBytes<4>, pdata: Bytes, f: &Facts) -> Review {
+        let mut o = op(kernel::execute_batch_calldata(vec![
+            (ACCOUNT, U256::ZERO, kernel::install_permission_calldata(perm, pdata, 1)),
+            (ACCOUNT, U256::ZERO, kernel::grant_execute_calldata(perm)),
+        ]));
+        o.gas_fees = kernel::pack_gas(1, 1);
+        let bytes = SignRequest::new(&o, ENTRY, 31337, NOW + 120, None, BTreeMap::new(), None).to_bytes();
+        open_request(&bytes, &commitment(&bytes), NOW, &enrolled(), f)
+    }
+
+    /// #251, Arc: where USDC is the native token and an ERC-20 over one
+    /// balance, a mandate may name that ERC-20 as the native face, and its
+    /// limit's charges count against the native limits too: one budget, shown
+    /// as such in place of the note on two doors. The face must be the one
+    /// this build knows for the chain, at its decimals, one of the mandate's
+    /// limited tokens, on a policy that takes a face; anything else is
+    /// refused, as is a face whose two words are malformed.
+    #[test]
+    fn the_native_face_is_one_budget_where_the_build_knows_it() {
+        let mut arc = trading_facts();
+        arc.native = Some(Native { symbol: "USDC".into(), token: USD });
+        arc.face_policy_modules.push(POLICY);
+        let mk = |targets: Vec<Address>, selector: [u8; 4], tokens: Vec<(Address, u128, u128, B256)>| kernel::PolicyParams {
+            selectors: vec![FixedBytes::from(selector); targets.len()],
+            targets,
+            max_value_per_op: 10u128.pow(17),
+            budget: 10u128.pow(18),
+            valid_until: NOW + 30 * 86_400,
+            tokens,
+            valid_after: 0,
+            payees: vec![],
+        };
+        let params = mk(vec![USD], SELECTOR_ERC20_TRANSFER, vec![(USD, 1_000_000, 10_000_000, B256::ZERO)]);
+        let refused = |r: &Review, why: &str| assert!(matches!(&r.verdict, Verdict::Refuse(m) if m.contains(why)), "{why}: {:?}", r.verdict);
+
+        let r = open_faced(&params, Some((USD, 6)), &arc);
+        assert!(!matches!(r.verdict, Verdict::Refuse(_)), "{:?}", r.verdict);
+        let t = r.text();
+        assert!(t.contains("! One budget: USDC is this chain's gas token and also the token"), "{t}");
+        assert!(!t.contains("One balance"), "{t}");
+        // without the face: the note on two doors, as before
+        assert!(open_faced(&params, None, &arc).text().contains("! One balance:"));
+
+        // other decimals than the build knows; another token; a chain without a face
+        refused(&open_faced(&params, Some((USD, 18)), &arc), "from 18 decimals");
+        let weth_params = mk(vec![USD, WETH], SELECTOR_ERC20_TRANSFER, vec![(USD, 1_000_000, 10_000_000, B256::ZERO), (WETH, 1, 1, B256::ZERO)]);
+        refused(&open_faced(&weth_params, Some((WETH, 18)), &arc), "knows no such face");
+        let mut ether_chain = arc.clone();
+        ether_chain.native = None;
+        refused(&open_faced(&params, Some((USD, 6)), &ether_chain), "knows no such face");
+        // a policy not known to take a face; a face that is not a limited token
+        let mut older = arc.clone();
+        older.face_policy_modules.clear();
+        refused(&open_faced(&params, Some((USD, 6)), &older), "not known to take one");
+        let unlimited = mk(vec![COUNTER], SELECTOR_INCREMENT, vec![]);
+        refused(&open_faced(&unlimited, Some((USD, 6)), &arc), "not one of its limited tokens");
+        // the face's words malformed: high bits on the address, decimals past a byte
+        let pdata = kernel::permission_data_faced(POLICY, &params, &kernel::Trading::default(), &[], Some((USD, 6)), SIGNER, &key(2));
+        let entries = Vec::<Bytes>::abi_decode(&pdata).unwrap();
+        for (at, byte) in [(22 + 384, 1u8), (22 + 416 + 30, 1u8)] {
+            let mut policy_entry = entries[0].to_vec();
+            policy_entry[at] = byte;
+            let damaged: Bytes = vec![Bytes::from(policy_entry), entries[1].clone()].abi_encode().into();
+            refused(&open_install(FixedBytes::from([0x66, 0x61, 0x63, 0x65]), damaged, &arc), "malformed");
+        }
+    }
+
     /// #251: on a policy that takes shape judges, a Safe transaction or a
     /// batch on the allow-list needs the judge that reads it. The screen
     /// names each judge as verified in this build; an unknown judge, other
@@ -2272,6 +2467,8 @@ mod tests {
         let t = r.text();
         assert!(t.contains(&format!("Shape judge: SafeShapes (judge {} verified in this build)", JUDGE.to_checksum(None))), "{t}");
         assert!(t.contains("as a wallet transaction") && t.contains("as a batch"), "{t}");
+        assert!(t.contains("multiSend (0x8d80ff0a) (only inside a Safe transaction, each leg read by its judge"), "{t}");
+        assert!(t.contains("(each call inside read by its judge and held to this mandate)"), "{t}");
         // the same judge twice, or two judges for one selector
         refused(&open_shaped(&params, &[(JUDGE, JUDGE_CODE), (JUDGE, JUDGE_CODE)], &f), "a shape judge twice");
         const OTHER: Address = Address::new([0x5f; 20]);
@@ -2360,7 +2557,7 @@ mod tests {
         no(open_trading(&capped, &seven, vec![], &f), "a token limit and limits per token id");
 
         // What only raw bytes can say: the form without a limit, and a limit wider than 128 bits
-        let place = MandatePlace { account: ACCOUNT, entry_point: ENTRY, policy: POLICY, payees_enforced: true, trading_enforced: true, ids_enforced: true, shapes_enforced: false };
+        let place = MandatePlace { account: ACCOUNT, entry_point: ENTRY, policy: POLICY, payees_enforced: true, trading_enforced: true, ids_enforced: true, shapes_enforced: false, face_enforced: false };
         type Init = (
             Vec<Address>,
             Vec<FixedBytes<4>>,
@@ -4234,7 +4431,7 @@ mod tests {
     /// two sides together over mandates from a seed.
     #[test]
     fn a_mandate_the_policy_would_not_install_is_not_shown() {
-        let place = MandatePlace { account: ACCOUNT, entry_point: ENTRY, policy: POLICY, payees_enforced: true, trading_enforced: false, ids_enforced: false, shapes_enforced: false };
+        let place = MandatePlace { account: ACCOUNT, entry_point: ENTRY, policy: POLICY, payees_enforced: true, trading_enforced: false, ids_enforced: false, shapes_enforced: false, face_enforced: false };
         let token = address!("a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1");
         let transfer = FixedBytes::from([0xa9, 0x05, 0x9c, 0xbb]);
         type Init = (Vec<Address>, Vec<FixedBytes<4>>, U256, U256, U256, Vec<(Address, U256, U256, B256)>, U256);

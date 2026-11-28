@@ -26,7 +26,12 @@ are counted in it. As the token
 approvals and signed authorizations move the same balance. A mandate has a
 limit for each door and an owner sets both. The owner's phone names native
 amounts in USDC there and says on a mandate's review that the limits spend
-one balance.
+one balance. In the source, not yet deployed (#251), a mandate can make it
+one budget: it names that token as the native token's face
+(`policy.nativeFace`), and what the token's limit charges counts against
+the native limits too, so the native budget bounds the value sent, the gas
+and the token's transfers, payments and orders together
+([`ARCHITECTURE.md`](ARCHITECTURE.md#one-budget-where-the-native-token-is-an-erc-20-too)).
 
 **A transfer by CCTP goes to the same address on the other chain.** That
 address is the account's there only if the account exists, or can be

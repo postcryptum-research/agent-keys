@@ -235,6 +235,20 @@ pub struct PolicyConfig {
     /// else. Needs an `AgentPolicy` that knows them.
     #[serde(default)]
     pub token_ids: Vec<TokenIdEntry>,
+    /// The ERC-20 that moves the native balance, where there is one (Arc's
+    /// USDC, #251): what its token limit charges counts against the native
+    /// limits too, one budget for both. Must be one of `tokens`. Needs an
+    /// `AgentPolicy` that takes it.
+    #[serde(default)]
+    pub native_face: Option<NativeFaceEntry>,
+}
+
+/// The native token's ERC-20 face: the token and its decimals.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeFaceEntry {
+    pub token: Address,
+    pub decimals: u8,
 }
 
 /// A limit for one id of an ERC-6909 contract. An id has no payee list and

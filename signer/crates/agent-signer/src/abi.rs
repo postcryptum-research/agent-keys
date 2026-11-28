@@ -189,6 +189,7 @@ sol! {
         function pause(address account, bytes32 id, address module, bool paused) external;
         function guardian(address account, bytes32 id) external view returns (address);
         function paused(address account, bytes32 id, address module) external view returns (bool);
+        function nativeFace(address account, bytes32 id) external view returns (address token, uint8 decimals);
         error NotTheGuardian();
         error NotAModule();
         error NotInitialized(address smartAccount);

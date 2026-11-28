@@ -227,8 +227,9 @@ two bits, the owner's and the guardian's, and validation refuses while
 either is set. `pause` finds a judge's pins from the selectors recorded at
 install and does not call the judge, so a judge cannot keep itself from
 being paused. A pause of a venue reaches its orders registered before it,
-too: an order's record names its venue by a tag (80 bits of the venue's
-pause key, in the record's first slot), and the account vouches for no
+too: an order's record names its venue by a tag (the low 80 bits of the venue's
+pause key with the lowest bit set, 79 bits of entropy, in the record's
+first slot), and the account vouches for no
 order whose venue is paused, so the venue cannot settle it until the pause
 is lifted. The flag is in the account's slots, so validation may
 read it (a shape judge's flag shares its pin's slot and costs nothing; a
@@ -283,16 +284,35 @@ Measured on the source, against the whole policy before the division [V
 
 | | Before | Now |
 |---|---|---|
-| `AgentPolicy` size | 24,437 bytes | 18,875 (`PolicyInstall` 11,886, `SafeShapes` 2,844) |
-| validation: a plain call | 34,313 gas | 34,324 |
-| a token transfer | 41,946 | 41,957 |
-| a Safe transaction | 42,703 | 47,839 |
-| a Safe `multiSend` of two legs | 60,213 | 73,108 |
-| an install of two entries and a token limit | 178,346 | 187,984 |
+| `AgentPolicy` size | 24,437 bytes | 19,554 (`PolicyInstall` 12,409, `SafeShapes` 2,844) |
+| validation: a plain call | 34,313 gas | 34,474 |
+| a token transfer | 41,946 | 42,107 |
+| a Safe transaction | 42,703 | 47,989 |
+| a Safe `multiSend` of two legs | 60,213 | 73,258 |
+| an install of two entries and a token limit | 178,346 | 188,979 |
 
 What moved out of validation costs nothing there; what a judge reads costs
 a slot, a cold call and the copy of the calldata, paid only by the
-mandates that use it. The steps, and what was measured at each, are on
+mandates that use it. Every operation pays about 150 gas for the check of
+whether its mandate names the native token's ERC-20 face (the next
+section); one that names it pays a slot more.
+
+### One budget where the native token is an ERC-20 too
+
+On Arc, USDC is the gas token (18 decimals) and the ERC-20 at
+`0x3600000000000000000000000000000000000000` (6 decimals): two doors to one
+balance. A mandate may name that ERC-20 as the native token's face, in the
+fourteen-word install form, by token and decimals. What the mandate's limit
+of that token charges in an operation (transfers, approvals, x402 payments,
+orders) then counts against the native cap per operation and the native
+budget too, scaled to 18 decimals, with the value sent and the gas: one
+budget bounds all of it. Validation adds the token's total for the
+operation once, at its end, from the sum the token limit already keeps, so
+no path that charges the token is missed. Naming a face only adds a limit:
+the policy takes any of the mandate's limited tokens, and the owner's
+phone takes only the face its build knows for the chain, at its decimals.
+An x402 payment that is reclaimed gives its charge back to the token's
+budget, not to the native one. The steps, and what was measured at each, are on
 #251.
 
 ## The signer trait

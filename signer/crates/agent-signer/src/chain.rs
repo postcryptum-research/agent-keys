@@ -156,11 +156,13 @@ pub fn account_material(
         None => open_signer(&cfg.agent, Role::Agent)?.public_key()?,
     };
     let perm = cfg.permission_id()?;
-    let permission_data = kernel::permission_data_shaped(
+    let face = cfg.policy.native_face.map(|f| (f.token, f.decimals));
+    let permission_data = kernel::permission_data_faced(
         dep.agent_policy,
         &cfg.policy_params(domains)?,
         trading,
         shapes,
+        face,
         dep.p256_signer,
         &agent_key,
     );
@@ -222,7 +224,7 @@ pub struct Session {
     /// Why the config's Safe transaction or batch has no shape judge to pin,
     /// on a policy that takes judges (#251): the operations that install the
     /// mandate are refused for it, the others run.
-    judge_missing: Option<String>,
+    install_refusal: Option<String>,
 }
 
 /// A venue decoder as read from the chain when the session opens.
@@ -291,6 +293,29 @@ pub fn key_text(key: &hw_signer::PublicKey, indent: &str) -> String {
         hex::encode(key.x),
         hex::encode(key.y)
     )
+}
+
+/// The ERC-20 face of the native token where a chain has one (#251): Arc
+/// testnet's USDC, the native balance's ERC-20 at 6 decimals. The local test
+/// chain (31337) takes any of a mandate's tokens, for tests.
+pub fn known_native_face(chain_id: u64) -> Option<(Address, u8)> {
+    match chain_id {
+        5042002 => Some((alloy::primitives::address!("3600000000000000000000000000000000000000"), 6)),
+        _ => None,
+    }
+}
+
+/// A configured native face checked against the chain's own, as the owner's
+/// phone checks it: another token or other decimals would add a limit the
+/// owner does not mean.
+pub fn native_face_for_chain(chain_id: u64, face: (Address, u8)) -> Result<()> {
+    match (known_native_face(chain_id), chain_id) {
+        (Some(known), _) if known != face => {
+            bail!("policy.nativeFace on chain {chain_id} is {} with {} decimals, the native token's ERC-20 there", known.0, known.1)
+        }
+        (Some(_), _) | (None, 31337) => Ok(()),
+        (None, chain) => bail!("chain {chain}'s native token has no ERC-20 face this CLI knows: leave policy.nativeFace out"),
+    }
 }
 
 /// A view's answer: `Some` when the contract answers, `None` when it does not
@@ -442,6 +467,7 @@ impl Session {
         // longer change (EIP-6780). A policy from before the division has no
         // guardian, and installs such a mandate without a judge.
         let mut judge_missing = None;
+        let mut install_refusal = None;
         let mut shapes = vec![];
         if cfg.allows_safe() {
             let guard = crate::abi::IAgentPolicyGuardian::new(dep.agent_policy, provider.clone());
@@ -459,6 +485,26 @@ impl Session {
                 }
             }
         }
+        if let Some(why) = judge_missing {
+            install_refusal = Some(format!(
+                "the config allows a Safe transaction or a batch, and {why}: the policy installs such a mandate only with the shape judge that reads it"
+            ));
+        }
+        // The native token's ERC-20 face (#251): one of the mandate's limited
+        // tokens, on a policy that takes one; otherwise what would install it is refused
+        if let Some(face) = cfg.policy.native_face {
+            if !cfg.policy.tokens.iter().any(|t| t.token == face.token) || face.decimals > 18 {
+                bail!("policy.nativeFace {} must be one of policy.tokens, of at most 18 decimals", face.token);
+            }
+            native_face_for_chain(dep.chain_id, (face.token, face.decimals))?;
+            let view = crate::abi::IAgentPolicyGuardian::new(dep.agent_policy, provider.clone());
+            if answer(view.nativeFace(Address::ZERO, B256::ZERO).call().await)?.is_none() {
+                install_refusal = Some(format!(
+                    "the config names the native token's ERC-20 face (policy.nativeFace), and the AgentPolicy at {} (deployments.agentPolicy) does not take one",
+                    dep.agent_policy
+                ));
+            }
+        }
         let (permission_data, init_data) = account_material(&cfg, &dep, &token_domains, &trading, &shapes)?;
 
         let (account, pinned) = match cfg.account {
@@ -473,8 +519,8 @@ impl Session {
                     bail!("the config neither pins `account` nor gives `ownerPublicKey`: cannot derive the account");
                 };
                 // the account's address follows from its first mandate
-                if let Some(why) = &judge_missing {
-                    bail!("the config allows a Safe transaction or a batch, and {why}: the policy installs such a mandate only with the shape judge that reads it");
+                if let Some(why) = &install_refusal {
+                    bail!("{why}");
                 }
                 let factory = IKernelFactory::new(dep.kernel_factory, provider.clone());
                 (factory.getAddress(init_data.clone(), cfg.salt()?).call().await?, false)
@@ -495,17 +541,15 @@ impl Session {
             pinned,
             token_domains,
             venues,
-            judge_missing,
+            install_refusal,
         })
     }
 
     /// Refuses an operation that installs the config's mandate when its Safe
     /// transaction or batch has no judge to pin.
     fn judge_for_install(&self) -> Result<()> {
-        match &self.judge_missing {
-            Some(why) => bail!(
-                "the config allows a Safe transaction or a batch, and {why}: the policy installs such a mandate only with the shape judge that reads it"
-            ),
+        match &self.install_refusal {
+            Some(why) => bail!("{why}"),
             None => Ok(()),
         }
     }
@@ -1183,6 +1227,12 @@ impl Session {
             }
             // the guardian and what is paused (#251); a policy from before them answers nothing
             let guard = crate::abi::IAgentPolicyGuardian::new(policy, self.provider.clone());
+            if let Some(face) = answer(guard.nativeFace(self.account, id32).call().await)? {
+                let chain = (!face.token.is_zero()).then_some((face.token, face.decimals));
+                let config = self.cfg.policy.native_face.map(|f| (f.token, f.decimals));
+                let text = |f: Option<(Address, u8)>| f.map_or("none".to_string(), |(t, d)| format!("{t} ({d} decimals)"));
+                println!("{}nativeFace      chain {} / config {}", mark(chain == config), text(chain), text(config));
+            }
             if let Ok(g) = guard.guardian(self.account, id32).call().await {
                 println!("      guardian        {}", if g.is_zero() { "none".to_string() } else { g.to_string() });
                 let mut modules: Vec<Address> = self.cfg.policy.venues.iter().map(|v| v.decoder).collect();
@@ -2153,6 +2203,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #251: a native face only as the chain's own (Arc testnet's USDC at 6
+    /// decimals); none on a chain without one; any on the local test chain.
+    #[test]
+    fn a_native_face_is_the_chains_own() {
+        let usdc = alloy::primitives::address!("3600000000000000000000000000000000000000");
+        assert!(native_face_for_chain(5042002, (usdc, 6)).is_ok());
+        let other = native_face_for_chain(5042002, (Address::repeat_byte(1), 6)).unwrap_err().to_string();
+        assert!(other.contains("is 0x3600000000000000000000000000000000000000 with 6 decimals"), "{other}");
+        assert!(native_face_for_chain(5042002, (usdc, 18)).is_err());
+        let base = native_face_for_chain(84532, (usdc, 6)).unwrap_err().to_string();
+        assert!(base.contains("has no ERC-20 face"), "{base}");
+        assert!(native_face_for_chain(31337, (Address::repeat_byte(1), 6)).is_ok());
+    }
 
     /// `op batch`: each allowance opens the batch and is taken back at its
     /// end, in the reverse order; the calls run between, as given.

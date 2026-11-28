@@ -791,8 +791,11 @@ same bytes; Kernel's `installValidations` is not run here.
   payee list (`tokenLimit`); every probed payee reachable exactly when
   the review says so (`payeeAllowed`); the budget period (`period`); for
   each probed id whether it is limited and its two limits (`tokenLimit`
-  under `idAsset`). The generator reaches all five forms of the install
-  data: a normal run of 400 has 62 mandates shown and installed, 8 of them
+  under `idAsset`). The generator reaches five of the six forms of the install
+  data (the fourteen-word form, with the native token's ERC-20 face, the
+  review refuses on the local chain, whose gas token is ether and has no
+  face; its install is held by `test_face_*` and the CLI's
+  `the_native_face_counts_as_native_value`): a normal run of 400 has 62 mandates shown and installed, 8 of them
   in the ten-word form, 10 in the eleven-word one and 5 in the
   twelve-word one, and a run of 2,000 has 32 in the twelve-word form [V
   the runs of 2026-11-28]; a venue it does not reach, since the local
