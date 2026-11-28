@@ -4192,6 +4192,25 @@ fn safe_guarded() {
     chain.ok(&["op", "send", "--agent", &cfg, "--target", &safe, "--data", &once, "--safe-nonce", "2"]);
     assert_eq!(chain.counter(), before + U256::from(5));
     assert!(!chain.ok(&["permission", "show", "--agent", &cfg]).contains("PAUSE module"));
+
+    // a rotation carries the guardian over to the new permission, in the same
+    // operation: the guardian pauses the new mandate's judge
+    let rotated = chain.config(
+        "safe2.json",
+        &Cfg {
+            permission: "0x73616632", account: Some(account.clone()),
+            allow: vec![(safe.clone(), SAFE_EXEC), (counter.clone(), INCREMENT), (multisend.clone(), MULTISEND)],
+            ..base_cfg(&owner, &agent, &counter, until)
+        },
+    );
+    let said = chain.ok(&["permission", "rotate", "--agent", &rotated, "--old-id", "0x73616631"]);
+    assert!(said.contains(&format!("guardian:       {FACILITATOR}, carried over")), "{said}");
+    let shown = chain.ok(&["permission", "show", "--agent", &rotated]);
+    assert!(shown.contains(&format!("guardian        {FACILITATOR}")), "{shown}");
+    let pause = pauseCall { paused: true, id: B256::right_padding_from(b"saf2"), ..lift };
+    chain.send_from(FACILITATOR, Some(&chain.addr("agentPolicy")), pause.abi_encode());
+    chain.fails(&["op", "send", "--agent", &rotated, "--target", &safe, "--data", &exec(&account, &counter, increment.clone(), 0), "--safe-nonce", "3"]);
+    assert!(chain.ok(&["permission", "show", "--agent", &rotated]).contains("PAUSE module"));
 }
 
 // ---------------------------------------------------------------- the phone's review against the policy's install

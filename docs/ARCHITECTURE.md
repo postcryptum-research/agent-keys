@@ -224,7 +224,9 @@ the mandate, and the tools refuse a module their build marks as withdrawn.
 
 The owner's side: `permission guardian` and `permission pause` in the CLI
 send both calls from the account, each tried from the account before the
-owner signs; `permission show` names the guardian and what is paused
+owner signs; `permission rotate` names the old permission's guardian for
+the new one in the same operation, so a rotation keeps it; `permission
+show` names the guardian and what is paused
 ([`AGENT_CONFIG.md`](AGENT_CONFIG.md)). The owner's phone reads both calls
 on a policy its build knows to have them, and shows a guardian named, and
 a pause for another account's mandate, as rows that stand out; on any

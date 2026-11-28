@@ -323,8 +323,9 @@ enum PermissionCmd {
     /// Name the guardian of a permission's mandate, or remove it with
     /// `--guardian none` (root operation signed by the owner key). The
     /// guardian may pause a shape judge or a venue of that mandate and lift
-    /// the pause; it cannot widen the mandate (#251). A rotation or a new
-    /// install starts with no guardian.
+    /// the pause; it cannot widen the mandate (#251). `permission rotate`
+    /// carries it over to the new permission; `permission add` starts with
+    /// none.
     Guardian {
         #[command(flatten)]
         agent: AgentArgs,
@@ -359,7 +360,8 @@ enum PermissionCmd {
     },
     /// Replace permission `old_id` with the one the config describes — new
     /// agent key and/or mandate — in one root operation. Pin `account` in
-    /// the config first.
+    /// the config first. A guardian of the old permission is named for the
+    /// new one in the same operation (#251).
     Rotate {
         #[command(flatten)]
         agent: AgentArgs,
@@ -1795,18 +1797,11 @@ async fn run() -> Result<()> {
                     println!("callData: {}", s.rotate_calldata(parse_permission_id(&old_id)?, old.as_ref()).await?);
                     return Ok(());
                 }
-                let guardian = s.guardian_of(parse_permission_id(&old_id)?).await;
                 let inc = s.rotate_permission(parse_permission_id(&old_id)?, old.as_ref(), sponsored).await?;
                 println!(
                     "rotated {old_id} -> {}: tx {} (block {}, {} gas)",
                     s.cfg.permission_id, inc.tx, inc.block, inc.gas_used
                 );
-                if let Some(g) = guardian {
-                    eprintln!(
-                        "note:           the guardian {g} of {old_id} does not carry over; name it again with \
-                         `permission guardian --guardian {g}`"
-                    );
-                }
             }
         },
         Cmd::Paymaster { cmd } => match cmd {

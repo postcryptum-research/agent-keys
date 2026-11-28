@@ -1609,6 +1609,21 @@ impl Session {
             (self.account, U256::ZERO, kernel::install_permission_calldata(new, self.permission_data.clone(), nonce)),
             (self.account, U256::ZERO, kernel::grant_execute_calldata(new)),
         ];
+        // The old permission's guardian goes on with the new one (#251): read
+        // before the old one is removed, named once the new one is installed
+        if let Some(g) = self.guardian_of(old).await {
+            let policy = self.dep.agent_policy;
+            let guard = crate::abi::IAgentPolicyGuardian::new(policy, self.provider.clone());
+            let id32 = B256::right_padding_from(new.as_slice());
+            if guard.guardian(self.account, id32).call().await.is_err() {
+                bail!(
+                    "permission {old} has the guardian {g}, and the policy {policy} the new permission is installed \
+                     with has none: remove it first (`permission guardian --id {old} --guardian none`) to rotate without it"
+                );
+            }
+            eprintln!("guardian:       {g}, carried over from {old} to {new}");
+            calls.push((policy, U256::ZERO, guard.setGuardian(id32, g).calldata().clone()));
+        }
         calls.extend(stale);
         calls.extend(self.venue_allowances(false)?);
         Ok(kernel::execute_batch_calldata(calls))
