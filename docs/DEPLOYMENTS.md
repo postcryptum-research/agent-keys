@@ -18,7 +18,7 @@ them too. For an account set up between 2026-11-25 and 2026-11-27 that is
 #244.** They count no gas for an operation whose paymaster field names the
 zero address, and the account pays it past its native budget
 ([`audits/audit2`](../audits/audit2/README.md), finding
-AK-2026-11-28-01). The source refuses such a field; the test networks
+AK-2026-11-27-01). The source refuses such a field; the test networks
 carry that after their next redeploy.
 
 **They are also the whole policy, from before its division (#251).** The

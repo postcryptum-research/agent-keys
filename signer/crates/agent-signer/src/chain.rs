@@ -295,6 +295,29 @@ pub fn key_text(key: &hw_signer::PublicKey, indent: &str) -> String {
     )
 }
 
+/// The ERC-20 face of the native token where a chain has one (#251): Arc
+/// testnet's USDC, the native balance's ERC-20 at 6 decimals. The local test
+/// chain (31337) takes any of a mandate's tokens, for tests.
+pub fn known_native_face(chain_id: u64) -> Option<(Address, u8)> {
+    match chain_id {
+        5042002 => Some((alloy::primitives::address!("3600000000000000000000000000000000000000"), 6)),
+        _ => None,
+    }
+}
+
+/// A configured native face checked against the chain's own, as the owner's
+/// phone checks it: another token or other decimals would add a limit the
+/// owner does not mean.
+pub fn native_face_for_chain(chain_id: u64, face: (Address, u8)) -> Result<()> {
+    match (known_native_face(chain_id), chain_id) {
+        (Some(known), _) if known != face => {
+            bail!("policy.nativeFace on chain {chain_id} is {} with {} decimals, the native token's ERC-20 there", known.0, known.1)
+        }
+        (Some(_), _) | (None, 31337) => Ok(()),
+        (None, chain) => bail!("chain {chain}'s native token has no ERC-20 face this CLI knows: leave policy.nativeFace out"),
+    }
+}
+
 /// A view's answer: `Some` when the contract answers, `None` when it does not
 /// have the view (the call reverts, or no data comes back). A failure to ask
 /// (the connection, the node) is an error, never `None`.
@@ -473,6 +496,7 @@ impl Session {
             if !cfg.policy.tokens.iter().any(|t| t.token == face.token) || face.decimals > 18 {
                 bail!("policy.nativeFace {} must be one of policy.tokens, of at most 18 decimals", face.token);
             }
+            native_face_for_chain(dep.chain_id, (face.token, face.decimals))?;
             let view = crate::abi::IAgentPolicyGuardian::new(dep.agent_policy, provider.clone());
             if answer(view.nativeFace(Address::ZERO, B256::ZERO).call().await)?.is_none() {
                 install_refusal = Some(format!(
@@ -2179,6 +2203,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #251: a native face only as the chain's own (Arc testnet's USDC at 6
+    /// decimals); none on a chain without one; any on the local test chain.
+    #[test]
+    fn a_native_face_is_the_chains_own() {
+        let usdc = alloy::primitives::address!("3600000000000000000000000000000000000000");
+        assert!(native_face_for_chain(5042002, (usdc, 6)).is_ok());
+        let other = native_face_for_chain(5042002, (Address::repeat_byte(1), 6)).unwrap_err().to_string();
+        assert!(other.contains("is 0x3600000000000000000000000000000000000000 with 6 decimals"), "{other}");
+        assert!(native_face_for_chain(5042002, (usdc, 18)).is_err());
+        let base = native_face_for_chain(84532, (usdc, 6)).unwrap_err().to_string();
+        assert!(base.contains("has no ERC-20 face"), "{base}");
+        assert!(native_face_for_chain(31337, (Address::repeat_byte(1), 6)).is_ok());
+    }
 
     /// `op batch`: each allowance opens the batch and is taken back at its
     /// end, in the reverse order; the calls run between, as given.

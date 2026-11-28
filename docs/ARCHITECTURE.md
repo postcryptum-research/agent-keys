@@ -227,8 +227,9 @@ two bits, the owner's and the guardian's, and validation refuses while
 either is set. `pause` finds a judge's pins from the selectors recorded at
 install and does not call the judge, so a judge cannot keep itself from
 being paused. A pause of a venue reaches its orders registered before it,
-too: an order's record names its venue by a tag (80 bits of the venue's
-pause key, in the record's first slot), and the account vouches for no
+too: an order's record names its venue by a tag (the low 80 bits of the venue's
+pause key with the lowest bit set, 79 bits of entropy, in the record's
+first slot), and the account vouches for no
 order whose venue is paused, so the venue cannot settle it until the pause
 is lifted. The flag is in the account's slots, so validation may
 read it (a shape judge's flag shares its pin's slot and costs nothing; a

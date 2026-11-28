@@ -335,7 +335,10 @@ canonical encodings only [V source].
   record of an order (`Pending.venueTag`) names its venue by tag, the pause
   writes the tag's flags (`venueTagPaused`), and `checkSignaturePolicy`
   vouches for no order whose venue is paused, until the pause is lifted
-  (`test_order_aPauseReachesTheOrdersRegisteredBeforeIt`). Reverts
+  (`test_order_aPauseReachesTheOrdersRegisteredBeforeIt`). The tag is the
+  low 80 bits of the venue's pause key with the lowest bit set (79 bits of
+  entropy); two tags that met would refuse each other's orders, never admit
+  one. Reverts
   `NotTheGuardian` for anyone else, `NotAModule` for an address that is
   none of the mandate's modules. Emits `ModulePaused(account, id, module,
   paused)` (#251, decision 2; `test_guardian_*`,
@@ -370,7 +373,9 @@ canonical encodings only [V source].
   `tokenLimit(account, id, token)`, `idAsset(token, tokenId)` (the key an
   ERC-6909 id's limit is read under: `tokenLimit(account, id,
   idAsset(token, tokenId))`), `payeeAllowed(account, id, token,
-  payee)`, `x402Pending(account, id, digest)`, `venue(account, id,
+  payee)`, `x402Pending(account, id, digest)` (four words since #259:
+  `value`, `validBefore`, `venueTag`, `token`; a reader of the first word
+  only, as the CLI is, is unaffected), `venue(account, id,
   decoder)`, `venuePlace(account, place)`, `usedIds(account)`,
   `isModuleType(t)` (true only for `MODULE_TYPE_POLICY`) and
   `isInitialized(account)`; the constants `SAFE_EXEC_TRANSACTION`,

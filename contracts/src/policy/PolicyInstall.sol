@@ -382,7 +382,8 @@ contract PolicyInstall {
         }
     }
 
-    /// @dev The ten-word form's last two parameters. A venue's decoder must
+    /// @dev The period and venues of the ten-, eleven-, twelve- and
+    /// fourteen-word forms (words nine and ten). A venue's decoder must
     /// be the code the owner pinned, once per mandate; the venue's own
     /// contract (CoW's settlement, with `setPreSignature` on it) may not be
     /// among the mandate's targets: only orders the decoder judged reach it.

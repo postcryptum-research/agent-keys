@@ -90,7 +90,8 @@ library PolicyRules {
     }
 
     /// @dev A venue decoder of a mandate as an order's record names it: the
-    /// low 80 bits of its pause key, never 0 (#251). Two tags that met would
+    /// low 80 bits of its pause key with the lowest bit set, so never 0: 79
+    /// bits of entropy (#251). Two tags that met would
     /// make a pause of one venue refuse the other's orders too, never let one
     /// through.
     /// @param m The mandate key.

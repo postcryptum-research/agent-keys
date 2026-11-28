@@ -48,7 +48,8 @@ struct Config {
     uint48 periodSeen;
     // The mandate names an ERC-20 that moves the native balance (Arc's USDC):
     // what its token limit charges counts as native value too (#251). In the
-    // slot validation reads already, so a mandate without one pays nothing
+    // third slot, with `validAfter`, `period` and `periodSeen`, which
+    // validation reads already: every validation pays a warm read of it
     bool nativeFace;
 }
 
