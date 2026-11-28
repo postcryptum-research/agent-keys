@@ -45,7 +45,7 @@ jobs:
           dir="$RUNNER_TEMP/proof"
           mkdir -p "$dir/test"
           cp -R contracts/src contracts/lib contracts/foundry.toml "$dir/"
-          cp contracts/test/BudgetProof.t.sol contracts/test/VenueCallProof.t.sol "$dir/test/"
+          cp contracts/test/BudgetProof.t.sol contracts/test/VenueCallProof.t.sol contracts/test/ShapedMandate.sol "$dir/test/"
           # the image runs as its own user, which must write out/ and kout/
           chmod -R a+rwX "$dir"
       - name: kontrol build and kontrol prove
@@ -99,7 +99,7 @@ jobs:
           dir="$RUNNER_TEMP/proof"
           mkdir -p "$dir/test"
           cp -R contracts/src contracts/lib contracts/foundry.toml "$dir/"
-          cp contracts/test/BudgetProof.t.sol contracts/test/VenueCallProof.t.sol "$dir/test/"
+          cp contracts/test/BudgetProof.t.sol contracts/test/VenueCallProof.t.sol contracts/test/ShapedMandate.sol "$dir/test/"
           proof="$(python3 scripts/kontrol-break.py "$BREAK" "$dir/src/AgentPolicy.sol")"
           [[ "$proof" =~ ^[A-Za-z]+Proof\.check_[A-Za-z0-9_]+$ ]] || { echo "not a proof name: $proof"; exit 1; }
           git diff --no-index contracts/src/AgentPolicy.sol "$dir/src/AgentPolicy.sol" || true
