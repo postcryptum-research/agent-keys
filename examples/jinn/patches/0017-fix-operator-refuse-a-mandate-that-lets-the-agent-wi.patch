@@ -1,0 +1,447 @@
+From 5cde814d2bf0dac1f97a14c1f40ea68674646a34 Mon Sep 17 00:00:00 2001
+From: agent-keys <noreply@agent-keys.invalid>
+Date: Sat, 28 Nov 2026 12:04:34 +0000
+Subject: [PATCH 17/20] fix(operator): refuse a mandate that lets the agent
+ withdraw the owner's grant to the Safe
+
+The Safe's standing approval on the IdentityRegistry is the owner's root operation, and the
+migration never sends it with the agent's permission. But an agent config whose mandate lists
+(IdentityRegistry, setApprovalForAll) lets the agent call setApprovalForAll(Safe, false) alone:
+AgentPolicy refuses an operation that leaves an operator grant open, not one that withdraws it,
+and it cannot hold the call to its arguments. A point of #250 in the agent-keys repository (B2).
+
+- signer/migrate.ts: assertMandateKeepsOwnersGrant refuses while the entry is in the agent
+  config's policy.allow (what the owner's next rotation installs; the target compared as an
+  address, the selector without regard to case) or admitted by the AgentPolicy installed for the
+  permission on the Kernel (AgentPolicy.isAllowed(Kernel, permission, IdentityRegistry,
+  setApprovalForAll), what binds the agent now). The error says where it found the entry, why
+  it is refused, and that the owner rotates the permission to a mandate without it. The
+  migration runs it in step 2 for a Safe with an ERC-8004 identity, in a dry run too, before
+  anything changes hands; a Safe without an identity has no grant to keep. readAgentConfig reads
+  the permission id and policy.allow of the agent config; installedPolicy is the policy lookup
+  step 2 and the check share.
+- main.ts: the boot runs the same check for each Safe of migrationTargets that has an identity.
+- cli/commands/signer-migrate.ts: reads the agent config with readAgentConfig and passes it to
+  the migration; the help says what is refused.
+- tests: unit: the migration refuses the entry in the agent config (also written in lower and
+  upper case), in a run and in a dry run, sending nothing, and a mandate on the Kernel that admits
+  it whatever the config says; setApprovalForAll on another contract and other calls on the
+  registry pass, and a Safe without an identity is not held to it; the boot's check with no Kernel
+  code reads the config alone. In the full loop: the AgentPolicy on the chain does not admit the
+  entry for the loop's mandate, so the check passes there, and the same config with the entry
+  added is refused. Each rule was broken once on purpose and a test caught it (the config's
+  entry, the installed mandate's, the step not calling the check, the selector's case).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ operator/src/cli/commands/signer-migrate.ts   |  14 ++-
+ operator/src/main.ts                          |  12 ++-
+ operator/src/signer/migrate.ts                | 101 ++++++++++++++++--
+ .../hermetic/full-loop-kernel-owner.test.ts   |  18 +++-
+ .../hermetic/signer-migrate-refusals.test.ts  |   1 +
+ operator/test/signer/migrate.test.ts          |  62 ++++++++++-
+ 6 files changed, 190 insertions(+), 18 deletions(-)
+
+diff --git a/operator/src/cli/commands/signer-migrate.ts b/operator/src/cli/commands/signer-migrate.ts
+index 7ec7bd3e4..6f4643644 100644
+--- a/operator/src/cli/commands/signer-migrate.ts
++++ b/operator/src/cli/commands/signer-migrate.ts
+@@ -6,7 +6,6 @@
+  * service Safe (and the fleet identity Safe, if separate) moves. See src/signer/migrate.ts for
+  * the step order.
+  */
+-import { readFileSync } from 'node:fs';
+ import { parseArgs } from 'node:util';
+ import { getAddress, type Hex } from 'viem';
+ import { privateKeyToAccount } from 'viem/accounts';
+@@ -19,7 +18,7 @@ import { createCliSignerContext, pickPrimaryMechService } from '../execution-con
+ import { walletPrivateKeyAtIndex } from '../../earning/wallet.js';
+ import { createJinnWalletClient } from '../../earning/viem-clients.js';
+ import { agentSignerConfigOf, createAgentSignerWalletClient } from '../../signer/index.js';
+-import { migrateTargets, migrationTargets } from '../../signer/migrate.js';
++import { migrateTargets, migrationTargets, readAgentConfig } from '../../signer/migrate.js';
+ 
+ const EXAMPLE = 'jinn signer-migrate --dry-run';
+ 
+@@ -83,8 +82,7 @@ async function run(ctx: CommandContext): Promise<void> {
+   }
+ 
+   try {
+-    const agentConfig = JSON.parse(readFileSync(config.signer.config, 'utf8')) as { permissionId?: string };
+-    if (typeof agentConfig.permissionId !== 'string') throw new Error(`${config.signer.config} has no permissionId`);
++    const agentConfig = readAgentConfig(config.signer.config);
+     const agentEoaWallet = createJinnWalletClient(config.rpcUrl, networkChain,
+       privateKeyToAccount(walletPrivateKeyAtIndex(mnemonic, service.index) as Hex));
+     const kernelWallet = createAgentSignerWalletClient({
+@@ -110,7 +108,8 @@ async function run(ctx: CommandContext): Promise<void> {
+       agentEoaWallet: agentEoaWallet as never,
+       kernelWallet,
+       kernel,
+-      permissionId: agentConfig.permissionId as Hex,
++      permissionId: agentConfig.permissionId,
++      agentConfig,
+       dryRun,
+       agentSignerOpSend,
+       ...(agentProof === undefined ? {} : { agentProof: agentProof as Hex }),
+@@ -173,6 +172,11 @@ without an owner signing, and the handover does not remove it. While the
+ agent EOA is an enabled module the command refuses; every other enabled
+ module is listed (\`safe-modules  review\`) for you to review.
+ 
++The agent's mandate must not list (IdentityRegistry, setApprovalForAll):
++with it the agent could withdraw the owner's grant to the Safe by itself.
++While the agent config or the mandate installed on the Kernel has it, the
++command refuses; the owner rotates the permission without that entry.
++
+ The Safe's guard and fallback handler are read with them. A guard can veto
+ every transaction of the Safe, and the fallback handler decides its ERC-1271
+ answers: while the Safe has a guard that is not one of its modules, or a
+diff --git a/operator/src/main.ts b/operator/src/main.ts
+index 17621a08b..fd13d3711 100644
+--- a/operator/src/main.ts
++++ b/operator/src/main.ts
+@@ -1455,7 +1455,7 @@ export async function main(): Promise<DaemonStartupInfo | SetupHaltedInfo | void
+     // Kernel publishes which address that is (src/signer/attestation.ts).
+     const { ATTESTATION_KEY_METADATA, assertAgentEoaHasNoAuthority, ensureAttestationKeyBinding } =
+       await import('./signer/attestation.js');
+-    const { migrationTargets } = await import('./signer/migrate.js');
++    const { assertMandateKeepsOwnersGrant, migrationTargets, readAgentConfig } = await import('./signer/migrate.js');
+     const identity = agentId && identityRegistryAddress
+       ? { identityRegistry: identityRegistryAddress as `0x${string}`, agentId: BigInt(agentId) }
+       : undefined;
+@@ -1478,6 +1478,16 @@ export async function main(): Promise<DaemonStartupInfo | SetupHaltedInfo | void
+         console.warn(`[main] signer: the ${target.label} Safe ${target.safeAddress} has module ${module} enabled${isGuard}: it runs any call from the Safe without the Kernel and outside its mandate -- review it`);
+       }
+     }
++    // The owner's standing grant to each Safe on the IdentityRegistry stays the owner's: the
++    // agent's mandate must not let it withdraw that grant by itself.
++    const agentConfig = readAgentConfig(config.signer.config);
++    for (const target of agentSafes) {
++      if (target.identityRegistry === undefined) continue;
++      await assertMandateKeepsOwnersGrant({
++        publicClient: agentClients.publicClient, kernel: config.signer.account as `0x${string}`, agentConfig,
++        identityRegistry: target.identityRegistry,
++      });
++    }
+     if (identity !== undefined) {
+       try {
+         const binding = await ensureAttestationKeyBinding({
+diff --git a/operator/src/signer/migrate.ts b/operator/src/signer/migrate.ts
+index f077538da..945d3d133 100644
+--- a/operator/src/signer/migrate.ts
++++ b/operator/src/signer/migrate.ts
+@@ -20,7 +20,10 @@
+ //                             the command stops here and prints the owner's command;
+ //   2. mandate-admits-safe    the Kernel is deployed and its AgentPolicy admits
+ //                             (Safe, execTransaction): without it the agent could not drive the
+-//                             Safe after the swap;
++//                             Safe after the swap. With an identity, neither the agent config nor
++//                             the installed mandate may list (IdentityRegistry, setApprovalForAll):
++//                             with it the agent could withdraw the owner's grant of step 1 alone
++//                             (`assertMandateKeepsOwnersGrant`, which the daemon's boot runs too);
+ //   3. agent-proof            a Safe without an ERC-8004 identity: this migration sends no call
+ //                             of the agent's, so the operator proves that the Kernel's agent key
+ //                             signs (`--agent-proof <userOpHash>`): the EntryPoint's
+@@ -46,9 +49,12 @@
+ // and refuse (`preflight`). With two Safes, `migrateTargets` runs them for both before the first
+ // changes hands, so a refusal on the second comes while the first is still the EOA's; each Safe's
+ // migration runs them again right before its own handover.
++import { readFileSync } from 'node:fs';
++
+ import {
+   encodeFunctionData,
+   getAddress,
++  isAddress,
+   parseAbi,
+   toHex,
+   zeroAddress,
+@@ -66,6 +72,7 @@ import { ENTRY_POINT_V07, USER_OPERATION_EVENT } from './kernel-safe-broadcaster
+ 
+ const SENTINEL_OWNERS = '0x0000000000000000000000000000000000000001' as Address;
+ const EXEC_TRANSACTION_SELECTOR = '0x6a761202' as Hex;
++const SET_APPROVAL_FOR_ALL_SELECTOR = '0xa22cb465' as Hex;
+ 
+ const SAFE_ABI = parseAbi([
+   'function getOwners() view returns (address[])',
+@@ -134,6 +141,86 @@ export interface MigrationInput {
+    * permission (`--agent-proof`): step 3's proof, for a Safe without an ERC-8004 identity.
+    */
+   readonly agentProof?: Hex;
++  /** The agent config (`readAgentConfig`): step 2 reads its mandate's allow-list. */
++  readonly agentConfig: AgentConfigMandate;
++}
++
++/** An entry of the agent config's `policy.allow`: a call the mandate admits. */
++export interface MandateEntry {
++  readonly target: string;
++  readonly selector: string;
++}
++
++/** What the operator reads of the agent config agent-signer signs with. */
++export interface AgentConfigMandate {
++  readonly path: string;
++  readonly permissionId: Hex;
++  /** `policy.allow`: what the owner's next rotation installs, and what the mandate holds once installed. */
++  readonly allow: readonly MandateEntry[];
++}
++
++/** The agent config at `path`: its permission and its mandate's allow-list. */
++export function readAgentConfig(path: string): AgentConfigMandate {
++  const raw = JSON.parse(readFileSync(path, 'utf8')) as { permissionId?: unknown; policy?: { allow?: unknown } };
++  if (typeof raw.permissionId !== 'string') throw new Error(`${path} has no permissionId`);
++  const allow = raw.policy?.allow;
++  if (!Array.isArray(allow) || !allow.every((e: { target?: unknown; selector?: unknown } | null) =>
++    typeof e?.target === 'string' && typeof e.selector === 'string')) {
++    throw new Error(`${path} has no policy.allow list of { target, selector }`);
++  }
++  return { path, permissionId: raw.permissionId as Hex, allow: allow as MandateEntry[] };
++}
++
++/** The AgentPolicy of `permissionId` on the Kernel, or undefined when the Kernel has no code or no such permission. */
++async function installedPolicy(
++  pc: Pick<PublicClient, 'readContract' | 'getCode'>, kernel: Address, permissionId: Hex,
++): Promise<Address | undefined> {
++  const code = await pc.getCode({ address: kernel });
++  if (code === undefined || code === '0x') return undefined;
++  const config = await pc.readContract({ address: kernel, abi: KERNEL_ABI, functionName: 'permissionConfig', args: [permissionId] });
++  const policyData = config.policyData[0];
++  return config.signer === zeroAddress || policyData === undefined ? undefined : getAddress(`0x${policyData.slice(-40)}`);
++}
++
++/**
++ * Refuse a mandate under which the agent can withdraw the owner's standing grant to a Safe:
++ * `(IdentityRegistry, setApprovalForAll)` admits `setApprovalForAll(Safe, false)` from the agent
++ * alone. AgentPolicy refuses an operation that leaves an operator grant open, not one that
++ * withdraws it, and it cannot hold the call to its arguments. The entry is read in the agent
++ * config (what the owner's next rotation installs) and, when the Kernel has the permission
++ * installed, in its AgentPolicy (what binds the agent now). The migration (step 2) and the
++ * daemon's boot run it for each Safe with an ERC-8004 identity.
++ */
++export async function assertMandateKeepsOwnersGrant(input: {
++  readonly publicClient: Pick<PublicClient, 'readContract' | 'getCode'>;
++  readonly kernel: Address;
++  readonly agentConfig: AgentConfigMandate;
++  readonly identityRegistry: Address;
++}): Promise<void> {
++  const kernel = getAddress(input.kernel);
++  const registry = getAddress(input.identityRegistry);
++  const { path, permissionId, allow } = input.agentConfig;
++  const found: string[] = [];
++  if (allow.some((entry) => isAddress(entry.target) && getAddress(entry.target) === registry
++    && entry.selector.toLowerCase() === SET_APPROVAL_FOR_ALL_SELECTOR)) {
++    found.push(`the agent config ${path} lists it in policy.allow`);
++  }
++  const policy = await installedPolicy(input.publicClient, kernel, permissionId);
++  if (policy !== undefined && await input.publicClient.readContract({
++    address: policy, abi: POLICY_ABI, functionName: 'isAllowed',
++    args: [kernel, `${permissionId}${'0'.repeat(56)}` as Hex, registry, SET_APPROVAL_FOR_ALL_SELECTOR],
++  })) {
++    found.push(`the mandate installed on the Kernel ${kernel} (permission ${permissionId}, policy ${policy}) admits it`);
++  }
++  if (found.length > 0) {
++    throw new Error(
++      `the agent's mandate admits (IdentityRegistry ${registry}, setApprovalForAll): ${found.join('; ')}. With it the agent `
++      + 'can withdraw, alone, the owner\'s standing grant to the Safe (setApprovalForAll(Safe, false)): AgentPolicy refuses a '
++      + 'grant left open, not its withdrawal, and cannot hold the call to its arguments. The grant is the owner\'s and the '
++      + 'mandate needs no such entry. The owner rotates the permission to a mandate without it (the entry removed from '
++      + 'policy.allow, then agent-signer permission rotate, signed with the owner key), then run again',
++    );
++  }
+ }
+ 
+ /** How old step 3's proof may be, in seconds of chain time. */
+@@ -337,12 +424,8 @@ async function preflight(input: MigrationInput): Promise<Preflight> {
+     }
+     steps.push({ step: 'mandate-admits-safe', status: 'would', detail: 'the Kernel is not deployed yet' });
+   } else {
+-    const config = await pc.readContract({ address: kernel, abi: KERNEL_ABI, functionName: 'permissionConfig', args: [input.permissionId] });
+-    const policyData = config.policyData[0];
+-    if (config.signer === zeroAddress || policyData === undefined) {
+-      throw new Error(`permission ${input.permissionId} is not installed on the Kernel ${kernel}`);
+-    }
+-    const policy = getAddress(`0x${policyData.slice(-40)}`);
++    const policy = await installedPolicy(pc, kernel, input.permissionId);
++    if (policy === undefined) throw new Error(`permission ${input.permissionId} is not installed on the Kernel ${kernel}`);
+     const id32 = `${input.permissionId}${'0'.repeat(56)}` as Hex;
+     const admits = await pc.readContract({
+       address: policy, abi: POLICY_ABI, functionName: 'isAllowed', args: [kernel, id32, safe, EXEC_TRANSACTION_SELECTOR],
+@@ -352,6 +435,10 @@ async function preflight(input: MigrationInput): Promise<Preflight> {
+     }
+     steps.push({ step: 'mandate-admits-safe', status: 'checked' });
+   }
++  // The owner's grant of step 1 stays the owner's: no entry of the mandate lets the agent withdraw it.
++  if (identity !== undefined) {
++    await assertMandateKeepsOwnersGrant({ publicClient: pc, kernel, agentConfig: input.agentConfig, identityRegistry: identity.registry });
++  }
+ 
+   const safeHandedOver = owners.includes(kernel) && !owners.includes(eoa);
+ 
+diff --git a/operator/test/hermetic/full-loop-kernel-owner.test.ts b/operator/test/hermetic/full-loop-kernel-owner.test.ts
+index 7c6b86cd6..4ba1289eb 100644
+--- a/operator/test/hermetic/full-loop-kernel-owner.test.ts
++++ b/operator/test/hermetic/full-loop-kernel-owner.test.ts
+@@ -74,7 +74,9 @@ import {
+ import { AgentSignerError, agentSignerSend, type AgentSignerConfig } from '../../src/signer/agent-signer-cli.js';
+ import { createAgentSignerWalletClient } from '../../src/signer/agent-signer-transport.js';
+ import { assertAgentEoaHasNoAuthority, readAttestationKey, readSafeGuardAndHandler } from '../../src/signer/attestation.js';
+-import { checkAgentProof, migrateTargets, migrateToKernelOwner } from '../../src/signer/migrate.js';
++import {
++  assertMandateKeepsOwnersGrant, checkAgentProof, migrateTargets, migrateToKernelOwner, readAgentConfig,
++} from '../../src/signer/migrate.js';
+ import { createMetadataPublisherFromViem } from '../../src/solvernets/daemon-init.js';
+ import { PRODUCTION_DEPS } from '../../src/cli/commands/solver-plugins.js';
+ import { buildPluginMetadataKey } from '../../src/erc8004/plugin-registry.js';
+@@ -219,6 +221,7 @@ describeMaybe('hermetic daemon solution loop, Safe owned by a hardware-signed Ke
+           kernelWallet: direct,
+           kernel,
+           permissionId: '0x6a696e6e' as Hex,
++          agentConfig: readAgentConfig(configPath),
+           safeAddress: operator.safeAddress,
+           identityRegistry: IDENTITY_REGISTRY,
+           agentId,
+@@ -277,7 +280,7 @@ describeMaybe('hermetic daemon solution loop, Safe owned by a hardware-signed Ke
+         // is still the EOA's, its NFT too.
+         await expect(migrateTargets({
+           publicClient: migration.publicClient, agentEoaWallet: migration.agentEoaWallet, kernelWallet: direct, kernel,
+-          permissionId: migration.permissionId,
++          permissionId: migration.permissionId, agentConfig: migration.agentConfig,
+         }, [
+           { label: 'service', safeAddress: operator.safeAddress, identityRegistry: IDENTITY_REGISTRY, agentId },
+           { label: 'fleet identity', safeAddress: operator.fleetSafeAddress! },
+@@ -306,6 +309,17 @@ describeMaybe('hermetic daemon solution loop, Safe owned by a hardware-signed Ke
+           .toEqual([kernel]);
+         expect(await fixture.publicClient.readContract({ address: IDENTITY_REGISTRY, abi: IDENTITY_ABI, functionName: 'ownerOf', args: [agentId] }))
+           .toBe(kernel);
++        // The installed mandate does not let the agent withdraw the owner's grant: the AgentPolicy
++        // on the chain does not admit (IdentityRegistry, setApprovalForAll). An agent config that
++        // lists it is refused, by the migration and by the daemon's boot check.
++        await expect(assertMandateKeepsOwnersGrant({
++          publicClient: fixture.publicClient, kernel, agentConfig: migration.agentConfig, identityRegistry: IDENTITY_REGISTRY,
++        })).resolves.toBeUndefined();
++        const withGrantEntry = {
++          ...migration.agentConfig, allow: [...migration.agentConfig.allow, { target: IDENTITY_REGISTRY, selector: '0xa22cb465' }],
++        };
++        await expect(migrateToKernelOwner({ ...migration, agentConfig: withGrantEntry }))
++          .rejects.toThrow(`the agent config ${configPath} lists it in policy.allow`);
+         // Idempotent: a re-run changes nothing.
+         expect(statusOf(await migrateToKernelOwner(migration))).toEqual({
+           'safe-modules': 'review', 'owner-approved-safe': 'checked', 'mandate-admits-safe': 'checked', 'agent-proof': 'not-applicable',
+diff --git a/operator/test/hermetic/signer-migrate-refusals.test.ts b/operator/test/hermetic/signer-migrate-refusals.test.ts
+index 9c698d186..bbfa73881 100644
+--- a/operator/test/hermetic/signer-migrate-refusals.test.ts
++++ b/operator/test/hermetic/signer-migrate-refusals.test.ts
+@@ -166,6 +166,7 @@ describeMaybe('signer-migrate on a real Safe: what it refuses before anything ch
+     kernelWallet: { account: { address: kernel, type: 'json-rpc' }, sendTransaction: kernelSend } as never,
+     kernel,
+     permissionId: PERMISSION,
++    agentConfig: { path: '/path/to/agent.json', permissionId: PERMISSION, allow: [] },
+     safeAddress: safe,
+   });
+ 
+diff --git a/operator/test/signer/migrate.test.ts b/operator/test/signer/migrate.test.ts
+index bd5f46501..0a18784ed 100644
+--- a/operator/test/signer/migrate.test.ts
++++ b/operator/test/signer/migrate.test.ts
+@@ -2,7 +2,9 @@
+ import { describe, expect, it, vi } from 'vitest';
+ import { decodeFunctionData, encodeFunctionData, getAddress, parseAbi, type Address, type Hex } from 'viem';
+ 
+-import { migrateTargets, migrateToKernelOwner, migrationTargets, type MigrationTarget } from '../../src/signer/migrate.js';
++import {
++  assertMandateKeepsOwnersGrant, migrateTargets, migrateToKernelOwner, migrationTargets, type MandateEntry, type MigrationTarget,
++} from '../../src/signer/migrate.js';
+ import { markUserOperationWallet } from '../../src/tx-retry.js';
+ 
+ const EOA = '0x7471bE25Ec54354c8D70491Ae10bd86705fAD030' as Address;
+@@ -50,6 +52,8 @@ function setup(chain: {
+   kernelCode: Hex; admits: boolean; threshold?: bigint; owners?: Address[]; modules?: Address[];
+   identity?: Identity; kernelCannotSign?: boolean; guard?: Address; handler?: Address;
+   userOps?: UserOp[]; fleet?: SafeState;
++  /** The agent config's policy.allow; `grantEntryInstalled`: the installed mandate admits (REGISTRY, setApprovalForAll). */
++  allow?: MandateEntry[]; grantEntryInstalled?: boolean;
+ }) {
+   const state = { owners: chain.owners ?? [EOA], identity: chain.identity };
+   const fleetState = { owners: chain.fleet?.owners ?? [EOA] };
+@@ -67,7 +71,11 @@ function setup(chain: {
+         case 'isModuleEnabled': return (safeOf(args.address).modules ?? []).includes(args.args![0] as Address);
+         case 'VERSION': return '1.3.0';
+         case 'permissionConfig': return { permissionFlag: '0x0000', signer: KERNEL, policyData: [`0x0000${POLICY.slice(2)}`] };
+-        case 'isAllowed': return chain.admits;
++        case 'isAllowed': {
++          const [, , target, selector] = args.args as [Address, Hex, Address, Hex];
++          if (selector === '0x6a761202') return chain.admits;
++          return target === REGISTRY && selector === '0xa22cb465' && chain.grantEntryInstalled === true;
++        }
+         case 'isApprovedForAll': return state.identity!.approved && args.args![0] === KERNEL && args.args![1] === SAFE;
+         case 'ownerOf': return state.identity!.nftOwner;
+         case 'getMetadata': return state.identity!.metadata;
+@@ -118,6 +126,7 @@ function setup(chain: {
+     kernelWallet: markUserOperationWallet({ account: { address: KERNEL, type: 'json-rpc' }, sendTransaction: kernelSend }) as never,
+     kernel: KERNEL,
+     permissionId: PERMISSION,
++    agentConfig: { path: '/etc/agent.json', permissionId: PERMISSION, allow: chain.allow ?? [] },
+     safeAddress: SAFE,
+     ...(chain.identity === undefined ? {} : { identityRegistry: REGISTRY, agentId: AGENT_ID }),
+   };
+@@ -335,7 +344,7 @@ describe('migrateTargets: every Safe is checked before the first changes hands',
+   const both: readonly MigrationTarget[] = [{ label: 'service', safeAddress: SAFE }, { label: 'fleet identity', safeAddress: FLEET_SAFE }];
+   const common = (input: ReturnType<typeof setup>['input'], proof: { agentProof?: Hex } = { agentProof: PROOF }) => ({
+     publicClient: input.publicClient, agentEoaWallet: input.agentEoaWallet, kernelWallet: input.kernelWallet,
+-    kernel: input.kernel, permissionId: input.permissionId, ...proof,
++    kernel: input.kernel, permissionId: input.permissionId, agentConfig: input.agentConfig, ...proof,
+   });
+ 
+   it('a refusal on the second Safe comes while the first is still the EOA\'s', async () => {
+@@ -393,6 +402,53 @@ describe('migrateTargets: every Safe is checked before the first changes hands',
+   });
+ });
+ 
++// #250 B2: an agent config whose mandate lists (IdentityRegistry, setApprovalForAll) lets the agent
++// withdraw the owner's standing grant alone (setApprovalForAll(Safe, false)).
++describe('the mandate cannot withdraw the owner\'s grant', () => {
++  const GRANT_ENTRY = { target: REGISTRY, selector: '0xa22cb465' };
++  const identity = (): Identity => ({ approved: true, nftOwner: EOA, metadata: '0x' });
++
++  it('the migration refuses an agent config that lists (IdentityRegistry, setApprovalForAll), in a dry run too, and sends nothing', async () => {
++    for (const entry of [GRANT_ENTRY, { target: REGISTRY.toLowerCase(), selector: '0xA22CB465' }]) {
++      for (const dryRun of [false, true]) {
++        const { input, sent, state } = setup({ kernelCode: '0x6001', admits: true, identity: identity(), allow: [entry] });
++        const message = await migrateToKernelOwner({ ...input, dryRun }).then(() => undefined, (e: Error) => e.message);
++        expect(message).toContain(`the agent's mandate admits (IdentityRegistry ${REGISTRY}, setApprovalForAll): the agent config /etc/agent.json lists it in policy.allow.`);
++        expect(message).toContain('the agent can withdraw, alone, the owner\'s standing grant to the Safe (setApprovalForAll(Safe, false))');
++        expect(message).toContain('The owner rotates the permission to a mandate without it');
++        expect(sent).toEqual([]);
++        expect(state.owners).toEqual([EOA]);
++      }
++    }
++  });
++
++  it('and a mandate installed on the Kernel that admits it, whatever the agent config says', async () => {
++    const { input, sent } = setup({ kernelCode: '0x6001', admits: true, identity: identity(), grantEntryInstalled: true });
++    await expect(migrateToKernelOwner(input)).rejects.toThrow(
++      `the mandate installed on the Kernel ${KERNEL} (permission ${PERMISSION}, policy ${POLICY}) admits it`,
++    );
++    expect(sent).toEqual([]);
++  });
++
++  it('other entries pass, and a Safe without an identity has no grant to keep', async () => {
++    const others = [{ target: POLICY, selector: '0xa22cb465' }, { target: REGISTRY, selector: '0x466648da' }];
++    const { input } = setup({ kernelCode: '0x6001', admits: true, identity: identity(), allow: others });
++    expect((await migrateToKernelOwner({ ...input, dryRun: true }))[2]).toEqual({ step: 'mandate-admits-safe', status: 'checked' });
++    const noIdentity = setup({ kernelCode: '0x6001', admits: true, allow: [GRANT_ENTRY], grantEntryInstalled: true, userOps: [agentOp()] });
++    expect(statuses(await migrateToKernelOwner({ ...noIdentity.input, agentProof: PROOF }))).toContainEqual(['safe-owner', 'done']);
++  });
++
++  it('the boot\'s check: with no Kernel code it reads the agent config alone', async () => {
++    const { input } = setup({ kernelCode: '0x', admits: true, grantEntryInstalled: true });
++    const check = (allow: MandateEntry[]) => assertMandateKeepsOwnersGrant({
++      publicClient: input.publicClient, kernel: KERNEL, identityRegistry: REGISTRY,
++      agentConfig: { path: '/etc/agent.json', permissionId: PERMISSION, allow },
++    });
++    await expect(check([GRANT_ENTRY])).rejects.toThrow('the agent config /etc/agent.json lists it in policy.allow');
++    await expect(check([])).resolves.toBeUndefined();
++  });
++});
++
+ // The daemon's boot check reads the list the migration hands over, the fleet identity Safe included.
+ describe('migrationTargets', () => {
+   const service = { safeAddress: SAFE.toLowerCase(), agentId: '7', identityRegistry: REGISTRY };
