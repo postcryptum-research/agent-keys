@@ -463,7 +463,9 @@ Verified:
   that was checked.
 - patches 0015 to 0020 (2026-11-28), on the monorepo with the twenty
   patches applied (`git am` of 0001 to 0020 onto a fresh `151a464aa`
-  applies cleanly and gives the tree the tests ran on), an `agent-signer`
+  applies cleanly and gives the tree
+  `2e03c2d059a665aa3873fd60a373264adfe72bfe`, which differs from the one the
+  tests ran on in two code comments of patch 0015 only), an `agent-signer`
   built with software keys (throwaway keys made for the run) and the anvil
   of the Foundry named above:
   - **the full loop with the Kernel owner passes**, with these checks on
