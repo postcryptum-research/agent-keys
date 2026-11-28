@@ -43,7 +43,7 @@ or #261 lets the agent go past its mandate.
 
 | # | Severity | Where | Summary | Issue | Fix | State |
 |---|---|---|---|---|---|---|
-| AK-2026-11-28-01 | Medium | Jinn example | A Safe without an ERC-8004 identity is handed over without the Kernel ever proving it can sign | #262 | #260 | open; the fix in progress |
+| AK-2026-11-28-01 | Medium | Jinn example | A Safe without an ERC-8004 identity is handed over without the Kernel ever proving it can sign | #262 | #260 | fixed in the example (patch 0015, with B1 to B4 and the identity pair in 0016 to 0020), in review |
 
 ## The finding
 
@@ -119,7 +119,7 @@ No finding. The answers to the questions put with it:
 | A2, the policy takes a judge's answer on target, value and kind | keep: an owner-pinned, trusted module; the phone's table of known judges must not be weakened, and an unknown judge is never a default |
 | A3, a judge that reverts makes validation revert | keep for this redeploy; a bounded call later, if third-party judges are admitted, with a budget measured for judges (#263) |
 | A4, the guardian lifts its own pauses only | keep; a view of who paused is useful for tooling, not a security requirement (#264) |
-| B1 to B4, the rest of #250 | change, all four: both Safes checked before either is handed over (and each again just before its own); a mandate listing `(IdentityRegistry, setApprovalForAll)` refused at migration and boot; the printed owner command's `--sponsored` only where that operation's sponsorship is established; `schemaVersion: 2`. To land before #250 is closed (#260) |
+| B1 to B4, the rest of #250 | change, all four: both Safes checked before either is handed over (and each again just before its own); a mandate listing `(IdentityRegistry, setApprovalForAll)` refused at migration and boot; the printed owner command's `--sponsored` only where that operation's sponsorship is established; `schemaVersion: 2`. Done in #260, patches 0016 to 0019 |
 | C1, one budget on Arc: is the charge complete and only tightening? | keep: every path that moves the face reaches its per-operation total, read once after all calls are judged; naming a wrong token or decimals only adds a limit. The CLI then took the face from its config; it now takes only the chain's own, as the phone does |
 | C2, a reclaimed x402 payment returns to the token's budget only | keep: conservative, and it keeps the reclaim apart from the native budget |
 | C3, about 150 gas per validation for the face's flag | keep |
@@ -149,7 +149,7 @@ Before the phone and the new mandates are used on them:
 
 - The Jinn migration treats an inconsistent identity pair (an agent id
   without a registry, or the reverse) as "no identity"; refusing it is
-  better (with #262).
+  better. Done in #260, patch 0020.
 - Comments: the config's slot of the face flag, the forms that carry a
   period, the tag's entropy; `x402Pending` answers four words since #259.
   Done in #261, without a change of bytecode.

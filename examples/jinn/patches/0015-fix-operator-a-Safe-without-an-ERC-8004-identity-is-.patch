@@ -9,7 +9,7 @@ before the swap: an operation of the agent key under its mandate, and the proof 
 can act for the Safe it receives. Without an identity that step does not apply, and only the
 mandate (the Kernel's code and AgentPolicy.isAllowed(Safe, execTransaction)) was checked before
 the old EOA's swapOwner: the Kernel was never asked to sign. If the agent's key or backend could
-not sign, the Safe ended with an owner that cannot act for it. The independent review of
+not sign, the Safe ended with an owner that cannot act for it. The internal audit of
 2026-11-28, finding AK-2026-11-28-01 (Medium).
 
 - signer/migrate.ts: a new step, `agent-proof`, after `mandate-admits-safe`. For a Safe without
@@ -535,7 +535,7 @@ index 50a0d8df4..9c698d186 100644
      expect(kernelSend).not.toHaveBeenCalled();
    });
  
-+  // The independent review of 2026-11-28, finding AK-2026-11-28-01. The Kernel has no code here,
++  // The agent-keys internal audit of 2026-11-28, finding AK-2026-11-28-01. The Kernel has no code here,
 +  // so a run stops at its mandate; the dry run reads the proof as the run does, before the swap.
 +  it('a Safe without an identity: refused without a proof that the agent key signs for the Kernel, fresh and successful', async () => {
 +    const safe = await newSafe();
@@ -713,7 +713,7 @@ index c44e133e9..321491152 100644
    });
  });
  
-+// The independent review of 2026-11-28, finding AK-2026-11-28-01: without an ERC-8004 identity
++// The agent-keys internal audit of 2026-11-28, finding AK-2026-11-28-01: without an ERC-8004 identity
 +// the migration sent no operation of the Kernel's before the swap, so a Safe could go to a Kernel
 +// whose agent key does not sign. The operator's proof is now checked on chain before the swap.
 +describe('migrateToKernelOwner: a Safe without an ERC-8004 identity', () => {
