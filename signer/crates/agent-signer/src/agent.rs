@@ -633,8 +633,10 @@ impl AgentConfig {
     /// policy admits only with the shape judge that reads it pinned (#251).
     pub fn allows_safe(&self) -> bool {
         self.policy.allow.iter().any(|e| {
+            // with or without `0x`, as the allow-list itself is read
             let s = e.selector.to_ascii_lowercase();
-            s == "0x6a761202" || s == "0x8d80ff0a"
+            let s = s.trim_start_matches("0x");
+            s == "6a761202" || s == "8d80ff0a"
         })
     }
 

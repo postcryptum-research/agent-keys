@@ -241,8 +241,10 @@ source].
   whose value is the call's kind (0 not allowed, 1 a plain call, 2 a
   wallet transaction and 3 a batch, read by the mandate's shape judge for
   the selector, #251); the shape judges `shapes[keccak256(m, selector)]`
-  (`ShapePin`: the judge, its role and whether it is paused, one slot);
-  the guardian `guardians[keccak256(m)]` and a module's pause
+  (`ShapePin`: the judge, its role and who paused it, one slot); the
+  selectors each judge was pinned for, packed in one word
+  (`judgeSelectors[keccak256(m, judge)]`); the guardian
+  `guardians[keccak256(m)]` and who paused a module
   `modulePaused[keccak256(m, module)]`, read in validation for a venue
   decoder (#251, decision 2);
   the token limits `tokens[keccak256(m, token)]` (`TokenLimit`, three
@@ -311,8 +313,15 @@ canonical encodings only [V source].
   `GuardianSet(account, id, guardian)`. `guardian(account, id)` reads it.
 - `pause(account, id, module, paused)`: from the mandate's guardian or the
   account, pauses one module of the mandate, a shape judge (each of its
-  pins) or a venue decoder, or lifts the pause. While paused, validation
-  refuses its calls and the rest of the mandate runs. Reverts
+  pins, found from the selectors recorded at install, without calling the
+  judge) or a venue decoder, or lifts the pause. A pause holds the caller's
+  bit, the owner's or the guardian's: the owner's lift clears both, the
+  guardian's its own only, so the guardian never lifts what the owner
+  paused (`test_guardian_neverLiftsTheOwnersPause`). While either bit is
+  set, validation refuses the module's calls and the rest of the mandate
+  runs; an order registered at a venue before its pause stays vouched for
+  until it expires (`test_order_aPauseStopsNewOrdersNotRegisteredOnes`),
+  and the owner's revocation ends every vouch. Reverts
   `NotTheGuardian` for anyone else, `NotAModule` for an address that is
   none of the mandate's modules. Emits `ModulePaused(account, id, module,
   paused)` (#251, decision 2; `test_guardian_*`,
@@ -444,11 +453,11 @@ which refuses the operation all the same [I].
   payee list and no x402: the agent picks the receiver and the spender.
   An id's limit is kept as a token's, under a key made of the contract
   and the id (the low 160 bits of a tagged hash; `idAsset`). The
-  contract's runtime size is 18,611 bytes of the 24,576 a
+  contract's runtime size is 18,616 bytes of the 24,576 a
   contract may have, with the calls through a decoder (below) in it, the
   reading of Safe transactions in the `SafeShapes` judge and the install in
   `PolicyInstall` [V `forge build --sizes`, 2026-11-28]: the next change
-  has 5,965 bytes
+  has 5,960 bytes
   ([#224](https://github.com/postcryptum-research/agent-keys/issues/224)).
   An approval is charged like a transfer; what the spender later pulls is
   not seen.
@@ -724,7 +733,10 @@ and the packed legs of a batch, CALL legs only, at least one.
 **Pinned per mandate.** A mandate with a Safe transaction or a batch on
 its allow-list pins the judge in the twelve-word form, by address and code
 hash. Its `shapes()` answers the selectors it reads and their roles:
-`execTransaction` as a wallet transaction, `multiSend` as a batch. Install
+`execTransaction` as a wallet transaction, `multiSend` as a batch: eight at
+most, none of them a selector the policy owns (no data, the token
+functions it meters, its own entry points), and the judge's selectors are
+recorded so that `pause` never calls it. Install
 pins each selector to it, once per mandate, and writes each such
 allow-list entry with its kind. A Safe transaction or a batch without its
 judge is refused at install
@@ -734,7 +746,17 @@ written into storage as a plain entry is refused at validation
 policy knows no judge of its own: each mandate reads its Safe transactions
 with the judge it pinned (`test_shapes_eachMandateUsesTheJudgeItPinned`).
 Code at an address with code cannot change after (EIP-6780), so the code
-hash is checked at install and not at every operation.
+hash is checked at install and not at every operation; the one exception,
+a contract created, pinned and destroyed within one transaction, needs a
+SELFDESTRUCT in the code the owner reviewed.
+
+**What the policy trusts.** It bounds the positions a judge answers to its
+own calldata, and takes the judge's word on each call's target, value and
+kind: a judge is trusted as the owner pins it. A judge that reverts makes
+validation revert, a refusal for the mandate that pinned it. A wallet
+transaction is paired with the Safe's nonce guard (`SafeNonceAssert`); a
+judge for another kind of wallet would need a guard of its own, which is
+not built.
 
 **Who calls it, and when.** `AgentPolicy`, with a static call to
 `read(selector, data)`, in the validation phase; `PolicyInstall`, with
@@ -770,8 +792,10 @@ together. Its code is what `AgentPolicy`'s was, reading the mandate's
 keys through `PolicyRules` and its storage through `PolicyStorage`.
 
 **Who calls it, and when.** `AgentPolicy`, from `onInstall`, and from `setGuardian` and `pause` (#251, decision 2), by
-DELEGATECALL: in the execution phase of the owner's operation, not in
-validation, so ERC-7562 does not bind it. The account stays the caller and
+DELEGATECALL: in the execution phase of the owner's operation, or in the
+validation of an account's first operation, whose `initCode` installs its
+first mandate through a staked factory; there it touches only the account's
+slots of the policy and calls code by STATICCALL alone. The account stays the caller and
 the policy's storage is what it writes. The policy creates it in its
 constructor and holds its address as `INSTALL`, so the two are always a
 pair; its address is the policy's CREATE address with nonce 1. Called
@@ -780,9 +804,9 @@ directly it writes its own storage, which installs no mandate anyone reads
 
 **What it costs** [V `test_measure_installGas`, `forge build --sizes`,
 2026-11-28], against the policy before the division: `AgentPolicy` is
-5,826 bytes smaller (18,611 of 24,437); `PolicyInstall` is 10,972, with its
+5,821 bytes smaller (18,616 of 24,437); `PolicyInstall` is 11,693, with its
 own copy of the shared rules. An install of two entries and a token limit
-costs 9,635 gas more (187,981): one cold DELEGATECALL, the data encoded
+costs 9,638 gas more (187,984): one cold DELEGATECALL, the data encoded
 for it, and each entry's kind. What validation costs, by shape, is in the
 section on `SafeShapes` and in
 [`ARCHITECTURE.md`](ARCHITECTURE.md#what-it-costs).

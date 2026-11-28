@@ -319,6 +319,49 @@ contract RoleJudge is IShapeJudge {
     }
 }
 
+/// A judge that names the selectors it is given, the first as a wallet
+/// transaction and the others as batches: any number, any selector.
+contract ListJudge is IShapeJudge {
+    bytes4[] internal named;
+
+    constructor(bytes4[] memory selectors) {
+        named = selectors;
+    }
+
+    function shapes() external view returns (bytes4[] memory selectors, uint8[] memory roles) {
+        selectors = named;
+        roles = new uint8[](selectors.length);
+        for (uint256 i; i < roles.length; i++) {
+            roles[i] = i == 0 ? SHAPE_WALLET : SHAPE_BATCH;
+        }
+    }
+
+    function read(bytes4, bytes calldata) external pure returns (bool, Inner[] memory calls) {
+        return (false, calls);
+    }
+}
+
+/// SafeShapes, until it is told to stop answering `shapes()`: a judge that
+/// would keep itself from being paused if `pause` asked it which selectors
+/// it reads.
+contract SilencedJudge is IShapeJudge {
+    SafeShapes internal immutable honest = new SafeShapes();
+    bool public silent;
+
+    function silence() external {
+        silent = true;
+    }
+
+    function shapes() external view returns (bytes4[] memory, uint8[] memory) {
+        require(!silent, "silent");
+        return honest.shapes();
+    }
+
+    function read(bytes4 selector, bytes calldata data) external view returns (bool, Inner[] memory) {
+        return honest.read(selector, data);
+    }
+}
+
 contract FarJudge is IShapeJudge {
     bool internal immutable batchOnly;
 
@@ -1041,8 +1084,42 @@ contract AgentPermissionTest is Test {
         // the twelve-word form with no judge at all
         vm.expectRevert(AgentPolicy.InvalidConfig.selector);
         this.installShapedFor(safe, new AgentPolicy.ShapeJudge[](0));
+        // A judge that would take over a selector the policy owns: a token's
+        // transfer, no data, the policy's x402 entry. It reads the two the
+        // mandate lists as well, so that this is the only fault
+        bytes4[] memory three = new bytes4[](3);
+        (three[0], three[1]) = (Safe.execTransaction.selector, MultiSendCallOnly.multiSend.selector);
+        bytes4[3] memory owned = [bytes4(0xa9059cbb), bytes4(0), bytes4(0x4993d616)];
+        for (uint256 i; i < 3; i++) {
+            three[2] = owned[i];
+            address greedy = address(new ListJudge(three));
+            vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+            this.installShapedFor(safe, _pin(greedy));
+        }
+        // nine selectors: eight at most are recorded for `pause`
+        bytes4[] memory nine = new bytes4[](9);
+        (nine[0], nine[1]) = (Safe.execTransaction.selector, MultiSendCallOnly.multiSend.selector);
+        for (uint256 i = 2; i < 9; i++) {
+            nine[i] = bytes4(uint32(0x51000000 + i));
+        }
+        address wide = address(new ListJudge(nine));
+        vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+        this.installShapedFor(safe, _pin(wide));
         // as pinned: installed
         this.installShapedFor(safe, _pin(address(shapesJudge)));
+        assertTrue(policy.isAllowed(acct, bytes32(PermissionId.unwrap(SHAPED_ID)), address(safe), Safe.execTransaction.selector));
+    }
+
+    /// The control of the refusals above: a judge of eight selectors, none
+    /// of them the policy's, installs.
+    function test_shapes_aJudgeOfEightSelectorsInstalls() public {
+        Safe safe = _withSafe();
+        bytes4[] memory eight = new bytes4[](8);
+        (eight[0], eight[1]) = (Safe.execTransaction.selector, MultiSendCallOnly.multiSend.selector);
+        for (uint256 i = 2; i < 8; i++) {
+            eight[i] = bytes4(uint32(0x51000000 + i));
+        }
+        this.installShapedFor(safe, _pin(address(new ListJudge(eight))));
         assertTrue(policy.isAllowed(acct, bytes32(PermissionId.unwrap(SHAPED_ID)), address(safe), Safe.execTransaction.selector));
     }
 
@@ -1119,6 +1196,57 @@ contract AgentPermissionTest is Test {
         vm.prank(keeper);
         policy.pause(acct, bytes32(PermissionId.unwrap(SAFE_ID)), address(shapesJudge), false);
         assertTrue(_verdictOf(SAFE_ID, viaSafe) != 1, "lifted by the guardian");
+    }
+
+    /// The guardian never lifts what the owner paused: the owner's pause
+    /// stands through the guardian's lift; the owner's lift clears the
+    /// guardian's pause as well; the guardian lifts its own.
+    function test_guardian_neverLiftsTheOwnersPause() public {
+        Safe safe = _withSafe();
+        bytes32 id = bytes32(PermissionId.unwrap(SAFE_ID));
+        address keeper = makeAddr("guardian");
+        vm.prank(acct);
+        policy.setGuardian(id, keeper);
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+        bytes memory viaSafe = _agentViaSafe(safe, _safeExec(safe, address(counter), 0, inc, Enum.Operation.Call, 0)).callData;
+        address judge = address(shapesJudge);
+
+        vm.prank(acct);
+        policy.pause(acct, id, judge, true);
+        vm.prank(keeper);
+        policy.pause(acct, id, judge, false);
+        assertTrue(policy.paused(acct, id, judge), "the owner's pause stands");
+        assertEq(_verdictOf(SAFE_ID, viaSafe), 1, "and refuses");
+        // the guardian pauses as well; the owner's lift clears both
+        vm.prank(keeper);
+        policy.pause(acct, id, judge, true);
+        vm.prank(acct);
+        policy.pause(acct, id, judge, false);
+        assertFalse(policy.paused(acct, id, judge), "lifted by the owner");
+        assertTrue(_verdictOf(SAFE_ID, viaSafe) != 1, "and admitted");
+        // the guardian lifts its own pause
+        vm.prank(keeper);
+        policy.pause(acct, id, judge, true);
+        vm.prank(keeper);
+        policy.pause(acct, id, judge, false);
+        assertFalse(policy.paused(acct, id, judge), "lifted by the guardian");
+    }
+
+    /// A judge that stops answering `shapes()` after install is paused all
+    /// the same: `pause` reads the selectors recorded at install and never
+    /// calls the judge.
+    function test_guardian_aJudgeThatStopsAnsweringIsPausedAllTheSame() public {
+        Safe safe = _withSafe();
+        SilencedJudge judge = new SilencedJudge();
+        _installShaped(safe, _pin(address(judge)));
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+        bytes memory viaSafe = _agentViaSafe(safe, _safeExec(safe, address(counter), 0, inc, Enum.Operation.Call, 0)).callData;
+        assertTrue(_verdictOf(SHAPED_ID, viaSafe) != 1, "before the pause");
+        judge.silence();
+        vm.prank(acct);
+        policy.pause(acct, bytes32(PermissionId.unwrap(SHAPED_ID)), address(judge), true);
+        assertTrue(policy.paused(acct, bytes32(PermissionId.unwrap(SHAPED_ID)), address(judge)), "read as paused");
+        assertEq(_verdictOf(SHAPED_ID, viaSafe), 1, "its calls are refused");
     }
 
     /// Only the mandate's guardian or the account pauses; the agent cannot

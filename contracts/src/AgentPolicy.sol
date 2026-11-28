@@ -876,7 +876,7 @@ contract AgentPolicy is IPolicy {
     function paused(address account, bytes32 id, address module) external view returns (bool) {
         return _store().modulePaused[keccak256(abi.encode(PolicyRules.mandate(id, _store().configs[id][account].epoch), module))][
             account
-        ];
+        ] != 0;
     }
 
     /// @notice Executed after validation registered the order: only leaves
@@ -921,7 +921,7 @@ contract AgentPolicy is IPolicy {
             return j;
         }
         // Paused by the mandate's guardian: refused, the rest of the mandate runs
-        if (_store().modulePaused[keccak256(abi.encode(m, decoder))][msg.sender]) return j;
+        if (_store().modulePaused[keccak256(abi.encode(m, decoder))][msg.sender] != 0) return j;
         // A static call cannot change state; a revert is the decoder's no
         (bool ok, bytes memory answer) =
             decoder.staticcall{gas: JUDGE_GAS}(abi.encodeCall(IVenueDecoder.judge, (msg.sender, config, order)));
@@ -1721,7 +1721,7 @@ contract AgentPolicy is IPolicy {
         bytes4 selector = _selector(data);
         ShapePin memory pin = _store().shapes[keccak256(abi.encode(m, selector))][msg.sender];
         // no judge, or one the mandate's guardian paused: refused
-        if (pin.judge == address(0) || pin.paused) return (false, calls);
+        if (pin.judge == address(0) || pin.paused != 0) return (false, calls);
         return IShapeJudge(pin.judge).read(selector, data);
     }
 

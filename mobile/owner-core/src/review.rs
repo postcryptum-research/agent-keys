@@ -457,7 +457,21 @@ fn open_with(
         Err(why) => return Review::refused(c, b.sections, why),
     };
     let installed_keys = keys_installed_in(&calls, op.sender);
+    // A guardian call applies to the mandate installed when it runs: one
+    // before a change of the account's validators could name a guardian for,
+    // or pause, a mandate the same operation then replaces (#251)
+    let mut guardian_called = false;
     for (i, (target, value, data)) in calls.iter().enumerate() {
+        if *target == op.sender && guardian_called {
+            return Review::refused(
+                c,
+                b.sections,
+                "a call to the policy's guardian functions before a change of the account's validators in the same operation; refused: it would apply to the mandate the operation replaces",
+            );
+        }
+        guardian_called |= b.facts.guardian_policy_modules.contains(target)
+            && data.len() >= 4
+            && (data[..4] == SELECTOR_SET_GUARDIAN || data[..4] == SELECTOR_PAUSE);
         let title = if calls.len() == 1 { "Call".to_string() } else { format!("Call {} of {}", i.saturating_add(1), calls.len()) };
         let s = b.section(title);
         let outcome = if *target == op.sender {
@@ -862,10 +876,11 @@ pub struct MandatePlace {
 /// Reads `init`, a policy entry's bytes behind `flag ‖ module`, or says why
 /// the mandate is refused. `name` names an address in a refusal.
 ///
-/// It refuses everything `AgentPolicy.onInstall` refuses, so that a mandate
-/// the owner is shown is one that installs: an install that fails on chain
-/// grants nothing, but the owner would have signed for a screen that did
-/// not come true.
+/// With `shape_rows`, which checks the shape judges against the build's
+/// facts (known, at the code pinned, once each), it refuses everything
+/// `AgentPolicy.onInstall` refuses, so that a mandate the owner is shown is
+/// one that installs: an install that fails on chain grants nothing, but the
+/// owner would have signed for a screen that did not come true.
 pub fn mandate_terms(init: &[u8], place: &MandatePlace, name: &dyn Fn(Address) -> String) -> Result<MandateTerms, String> {
     let payees_enforced = place.payees_enforced;
     type PolicyInit = (Vec<Address>, Vec<FixedBytes<4>>, U256, U256, U256, Vec<(Address, U256, U256, B256)>, U256);
@@ -1870,14 +1885,15 @@ fn guardian_call(
             return refused();
         }
         let (Some(id), Some(guardian)) = (permission(words[0]), address(words[1])) else { return refused() };
+        // removing the brake stands out as much as naming who holds it
         if guardian.is_zero() {
-            b.row(s, "Guardian", format!("none for permission 0x{id}: a guardian named before can no longer pause its modules"));
+            b.bold(s, "Guardian", format!("none for permission 0x{id}: a guardian named before can no longer pause its modules"));
         } else {
             b.bold(
                 s,
                 "Guardian",
                 format!(
-                    "{} for permission 0x{id}: it may pause a shape judge or a venue of this mandate, which stops the agent's use of it, and lift the pause; it cannot widen the mandate or move funds",
+                    "{} for permission 0x{id}: it may pause a shape judge or a venue of this mandate, which stops the agent's use of it, and lift its own pauses, never the owner's; it cannot widen the mandate or move funds",
                     b.name(guardian)
                 ),
             );
@@ -1896,7 +1912,13 @@ fn guardian_call(
     let what = if pause { "the policy refuses its calls until the pause is lifted; the rest of the mandate runs" } else { "its calls are allowed again" };
     let label = if pause { "Pause" } else { "Lift pause" };
     if account == acct.account {
-        b.row(s, label, format!("{} in permission 0x{id}: {what}", b.name(module)));
+        // a lift lets the agent use the module again: it stands out
+        let text = format!("{} in permission 0x{id}: {what}", b.name(module));
+        if pause {
+            b.row(s, label, text);
+        } else {
+            b.bold(s, label, text);
+        }
     } else {
         // the account as the guardian another account's owner named
         b.bold(s, format!("{label}, as guardian"), format!("{} in permission 0x{id} of the account {}: {what}", b.name(module), account.to_checksum(None)));
@@ -2250,6 +2272,12 @@ mod tests {
         let t = r.text();
         assert!(t.contains(&format!("Shape judge: SafeShapes (judge {} verified in this build)", JUDGE.to_checksum(None))), "{t}");
         assert!(t.contains("as a wallet transaction") && t.contains("as a batch"), "{t}");
+        // the same judge twice, or two judges for one selector
+        refused(&open_shaped(&params, &[(JUDGE, JUDGE_CODE), (JUDGE, JUDGE_CODE)], &f), "a shape judge twice");
+        const OTHER: Address = Address::new([0x5f; 20]);
+        let mut two = f.clone();
+        two.shape_judges.insert(OTHER, judge(vec![(SELECTOR_SAFE_EXEC, 2)]));
+        refused(&open_shaped(&params, &[(JUDGE, JUDGE_CODE), (OTHER, JUDGE_CODE)], &two), "two judges for one selector");
         // a judge this build does not know, or other code at it
         refused(&open_shaped(&params, &[(Address::with_last_byte(0x77), JUDGE_CODE)], &f), "not one this build knows");
         refused(&open_shaped(&params, &[(JUDGE, B256::new([0x5e; 32]))], &f), "other code");
@@ -3609,13 +3637,14 @@ mod tests {
         assert!(r.text().contains(&format!("! Guardian: {} for permission 0x74726164: it may pause", guardian.to_checksum(None))), "{}", r.text());
         let r = ask(&f, 0, &set(perm, B256::ZERO));
         assert_eq!(r.verdict, Verdict::Sign, "{}", r.text());
-        assert!(r.text().contains("Guardian: none for permission 0x74726164"), "{}", r.text());
+        assert!(r.text().contains("! Guardian: none for permission 0x74726164"), "{}", r.text());
 
         let r = ask(&f, 0, &pause(ACCOUNT, perm, COUNTER, 1));
         assert_eq!(r.verdict, Verdict::Sign, "{}", r.text());
         assert!(r.text().contains("Pause: 0x") && r.text().contains("in permission 0x74726164: the policy refuses its calls"), "{}", r.text());
         let r = ask(&f, 0, &pause(ACCOUNT, perm, COUNTER, 0));
-        assert!(r.text().contains("Lift pause: 0x") && r.text().contains("its calls are allowed again"), "{}", r.text());
+        assert!(r.text().contains("! Lift pause: 0x") && r.text().contains("its calls are allowed again"), "{}", r.text());
+        assert!(!ask(&f, 0, &pause(ACCOUNT, perm, COUNTER, 1)).text().contains("! Pause:"), "a pause is a plain row");
         let other = Address::repeat_byte(0x77);
         let r = ask(&f, 0, &pause(other, perm, COUNTER, 1));
         assert!(r.text().contains(&format!("! Pause, as guardian: ")) && r.text().contains(&other.to_checksum(None)), "{}", r.text());
@@ -3641,6 +3670,23 @@ mod tests {
         for data in [set(perm, word(guardian)), pause(ACCOUNT, perm, COUNTER, 1)] {
             assert!(matches!(ask(&facts(), 0, &data).verdict, Verdict::Refuse(ref m) if m.contains("cannot decode")), "{data:02x?}");
         }
+
+        // In one operation, a guardian call before a change of the account's
+        // validators would apply to the mandate the operation replaces:
+        // refused. After it, as the CLI's rotation sends it: read
+        let batch = |calls: Vec<(Address, U256, Bytes)>| {
+            let mut o = op(kernel::execute_batch_calldata(calls));
+            o.gas_fees = kernel::pack_gas(1, 1);
+            let (bytes, c) = request(&o);
+            open_request(&bytes, &c, NOW, &enrolled(), &f)
+        };
+        let id4 = kernel::PermissionId::from(*b"trad");
+        let uninstall = (ACCOUNT, U256::ZERO, kernel::uninstall_permission_calldata(id4));
+        let name = (POLICY, U256::ZERO, Bytes::from(set(perm, word(guardian))));
+        let r = batch(vec![name.clone(), uninstall.clone()]);
+        assert!(matches!(&r.verdict, Verdict::Refuse(m) if m.contains("before a change of the account's validators")), "{:?}", r.verdict);
+        let r = batch(vec![uninstall, name]);
+        assert!(!matches!(&r.verdict, Verdict::Refuse(m) if m.contains("before a change")), "{:?}", r.verdict);
     }
 
     #[test]
