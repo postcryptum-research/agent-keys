@@ -1,16 +1,18 @@
-# Audit 2: the whole repository at `4295e00`, 2026-11-28
+# Audit 2: the whole repository at `4295e00`, 2026-11-27
 
 An internal audit of a named commit, the second of its kind. It is not an
 external audit.
 
-**Preliminary.** The four findings are filed as issues; this page is
-updated with the pull request of each fix as it lands.
+**State.** The four findings are filed as issues, each answered in a pull
+request; the re-audit of 2026-11-28 ([`audit3`](../audit3/README.md))
+confirmed the fixes in the source of those pull requests, which are in
+review. The test networks carry the policy's fix after their redeploy.
 
 - **Commit:** `4295e00bcf7ef19a2cde92b191d6ad40604a543b` (2026-11-27). The
   sources were taken with `git archive` of that commit, not from a working
   tree.
-- **The report carries the date 2026-11-28; in UTC it was finished on
-  2026-11-27.** Its findings are numbered `AK-2026-11-28-01` to `-04`.
+- **Date:** 2026-11-27 (UTC). The findings are numbered `AK-2026-11-27-01`
+  to `-04`.
 - **State of the project:** test networks only; no transaction was sent to
   a network by the audit.
 - **The deployed policy.** `contracts/src` does not differ between
@@ -43,14 +45,14 @@ Findings 01 to 03 were made in the first step.
 
 | # | Severity | Where | Summary | Issue | Fix | State |
 |---|---|---|---|---|---|---|
-| AK-2026-11-28-01 | High | `AgentPolicy` | A paymaster field that names the zero address is not charged to the native budget, and the account pays | #244 | #249 | fixed in the source, in review; the test networks carry the fix after a redeploy |
-| AK-2026-11-28-02 | High | Jinn example | After the handover the former EOA keeps full power over the Safe where it is an enabled module | #245 | #252 | fixed in the example, in review |
-| AK-2026-11-28-03 | Medium | Jinn example | The migration's first step, a lone operator grant by the agent, is refused by the current policy | #246 | #252 | fixed in the example, in review |
-| AK-2026-11-28-04 | Low | `AgentPolicy` | `transferFrom` is not held to a source: tokens a third party approved to the account can be moved | #247 | #249 | accepted as the function's meaning: stated for owners and held by tests, in review |
+| AK-2026-11-27-01 | High | `AgentPolicy` | A paymaster field that names the zero address is not charged to the native budget, and the account pays | #244 | #249 | fixed in the source, in review; the test networks carry the fix after a redeploy |
+| AK-2026-11-27-02 | High | Jinn example | After the handover the former EOA keeps full power over the Safe where it is an enabled module | #245 | #252 | fixed in the example, in review |
+| AK-2026-11-27-03 | Medium | Jinn example | The migration's first step, a lone operator grant by the agent, is refused by the current policy | #246 | #252 | fixed in the example, in review |
+| AK-2026-11-27-04 | Low | `AgentPolicy` | `transferFrom` is not held to a source: tokens a third party approved to the account can be moved | #247 | #249 | accepted as the function's meaning: stated for owners and held by tests, in review |
 
 ## The findings
 
-### AK-2026-11-28-01 (High): a zero-address paymaster passes the native budget by
+### AK-2026-11-27-01 (High): a zero-address paymaster passes the native budget by
 
 **Where:** `AgentPolicy.checkUserOpPolicy`; EntryPoint v0.7's
 `_copyUserOpToMemory`, `_validateAccountPrepayment` and `_compensate`.
@@ -102,7 +104,7 @@ instances on the test networks were built before the fix and carry the
 finding until they are redeployed
 ([`docs/DEPLOYMENTS.md`](../../docs/DEPLOYMENTS.md)).
 
-### AK-2026-11-28-02 (High): the former EOA as a Safe module
+### AK-2026-11-27-02 (High): the former EOA as a Safe module
 
 **Where:** the Jinn example, `examples/jinn/patches/0008-…` (the check
 that the keystore EOA has no authority) and `0009-…` (the migration);
@@ -149,7 +151,7 @@ showed why the review matters: a service Safe that stOLAS creates has
 three modules from the start (its distributor, its guard and the recovery
 module), and the loop now asserts that the step names them.
 
-### AK-2026-11-28-03 (Medium): the migration against the current policy
+### AK-2026-11-27-03 (Medium): the migration against the current policy
 
 **Where:** the Jinn example, `examples/jinn/patches/0009-…`, the step
 `kernel-approves-safe`; `AgentPolicy`'s rule for operator grants.
@@ -181,7 +183,7 @@ Jinn's full solution loop with a Kernel owner passes on it with an
 `agent-signer` built with software keys
 ([`examples/jinn/README.md`](../../examples/jinn/README.md)).
 
-### AK-2026-11-28-04 (Low): `transferFrom` and its source
+### AK-2026-11-27-04 (Low): `transferFrom` and its source
 
 **Where:** `AgentPolicy._chargeToken`.
 
@@ -272,11 +274,11 @@ named above.
 
 ## Order of the fixes
 
-1. AK-2026-11-28-01: the policy's notion of sponsorship made the
+1. AK-2026-11-27-01: the policy's notion of sponsorship made the
    EntryPoint's, with a regression on the zero-address paymaster.
-2. AK-2026-11-28-02: the former EOA as a Safe module checked before the
+2. AK-2026-11-27-02: the former EOA as a Safe module checked before the
    migration ends.
-3. AK-2026-11-28-03: the standing operator grant moved to the owner's
+3. AK-2026-11-27-03: the standing operator grant moved to the owner's
    root path, and the migration run against the current policy.
-4. AK-2026-11-28-04: `from` held to the holder, or third-party allowances
+4. AK-2026-11-27-04: `from` held to the holder, or third-party allowances
    stated as part of what the mandate hands over.

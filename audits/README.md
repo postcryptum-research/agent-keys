@@ -13,7 +13,8 @@ on test networks and holds no real funds
 | Audit | Covers | Findings | State |
 |---|---|---|---|
 | [`audit1`](audit1/README.md), 2026-11-24 | `73a707ca2cc573b85f117bab929f4528f61c2be2`: the contracts, the Rust signer, the phone's core, the ERC-7562 checker | 1 High, 1 Medium, 5 Low, 8 notes | every finding resolved and its issue closed (#147 to #154) |
-| [`audit2`](audit2/README.md), 2026-11-28 | `4295e00bcf7ef19a2cde92b191d6ad40604a543b`: the same, with the native phone apps and the integrations of `examples/` | 2 High, 1 Medium, 1 Low | preliminary: the findings are filed (#244 to #247); #244 and #247 are answered in #249, #245 and #246 in #252, all in review |
+| [`audit2`](audit2/README.md), 2026-11-27 | `4295e00bcf7ef19a2cde92b191d6ad40604a543b`: the same, with the native phone apps and the integrations of `examples/` | 2 High, 1 Medium, 1 Low | the findings filed (#244 to #247); #244 and #247 answered in #249, #245 and #246 in #252; the fixes confirmed in the source by audit3, in review |
+| [`audit3`](audit3/README.md), 2026-11-28 | a re-audit of #252, #255, #257 and #258 at their heads, then of #259, #260 and #261: the division of `AgentPolicy`, the Jinn fixes, a venue's pause over registered orders, one budget on Arc | 1 Medium | filed as #262, the fix in #260; the delta of #259 and #261 has no finding, and its head is cleared for the test networks |
 
 Earlier internal reviews, kept where they were written:
 [`docs/AUDIT-2026-10-20.md`](../docs/AUDIT-2026-10-20.md) (the first
