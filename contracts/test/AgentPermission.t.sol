@@ -1160,6 +1160,140 @@ contract AgentPermissionTest is Test {
         assertEq(_verdictOf(SAFE_ID, _singleCall(address(safe), 0, exec)), 1, "a plain execTransaction alone");
     }
 
+    // --- one budget: an ERC-20 that moves the native balance (#251, Arc's USDC) ---
+
+    PermissionId internal constant FACE_ID = PermissionId.wrap(0x66616365); // "face"
+    /// What `_op` lets the account pay for gas: (1e6 + 1e6 + 1e5) gas at 1 gwei
+    uint256 internal constant OP_GAS = 2_100_000 gwei;
+
+    /// The fourteen-word form's parameters, as one struct: `abi.encode` of it
+    /// is an offset word and then the parameters' own encoding.
+    struct FaceMandate {
+        address[] targets;
+        bytes4[] selectors;
+        uint128 maxValuePerOp;
+        uint128 budget;
+        uint48 validUntil;
+        AgentPolicy.TokenCap[] tokens;
+        uint48 validAfter;
+        AgentPolicy.TokenPayees[] payees;
+        uint32 period;
+        AgentPolicy.Venue[] venues;
+        AgentPolicy.IdCap[] ids;
+        AgentPolicy.ShapeJudge[] shapes;
+        AgentPolicy.NativeFace face;
+    }
+
+    /// The fourteen-word form: `face` with a token limit, its transfer
+    /// allowed, and named as the native token's ERC-20 face of `decimals`.
+    function _faceData(address face, uint8 decimals, uint128 maxValue, uint128 budget) internal view returns (bytes memory) {
+        FaceMandate memory f;
+        f.targets = new address[](1);
+        f.selectors = new bytes4[](1);
+        (f.targets[0], f.selectors[0]) = (address(token), MockToken.transfer.selector);
+        f.tokens = new AgentPolicy.TokenCap[](1);
+        f.tokens[0] = AgentPolicy.TokenCap(address(token), 1e30, 1e30, bytes32(0));
+        (f.maxValuePerOp, f.budget, f.validUntil) = (maxValue, budget, expiry);
+        f.face = AgentPolicy.NativeFace(face, decimals);
+        bytes memory params = abi.encode(f);
+        // drop the struct's own offset word
+        assembly ("memory-safe") {
+            let len := sub(mload(params), 32)
+            params := add(params, 32)
+            mstore(params, len)
+        }
+        return abi.encodePacked(bytes32(PermissionId.unwrap(FACE_ID)), params);
+    }
+
+    function installFor(bytes memory data) external {
+        vm.prank(acct);
+        policy.onInstall(data);
+    }
+
+    function _faceTransfer(uint256 amount) internal returns (bytes memory) {
+        return _singleCall(address(token), 0, abi.encodeCall(MockToken.transfer, (makeAddr("payee"), amount)));
+    }
+
+    /// With the face named (6 decimals, as Arc's USDC), a transfer of it is
+    /// native value too, scaled to 18 decimals: it counts against the cap per
+    /// operation and the native budget, with the gas the account pays.
+    function test_face_itsTransfersCountAgainstTheNativeLimits() public {
+        this.installFor(_faceData(address(token), 6, 0.1 ether, 0.15 ether));
+        bytes32 id = bytes32(PermissionId.unwrap(FACE_ID));
+        (address face, uint8 decimals) = policy.nativeFace(acct, id);
+        assertEq(face, address(token));
+        assertEq(decimals, 6);
+        // 1e5 units: 0.1 in native units, the cap exactly; one unit more is over it
+        assertEq(_verdictOf(FACE_ID, _faceTransfer(1e5 + 1)), 1, "over the cap per operation");
+        assertTrue(_verdictOf(FACE_ID, _faceTransfer(1e5)) != 1, "the cap");
+        (,,,, uint128 spent,) = policy.configs(acct, id);
+        assertEq(spent, 0.1 ether + OP_GAS, "charged to the native budget with the gas");
+        // 0.05 more and its gas would pass 0.15: refused, though the token's own limit is far
+        assertEq(_verdictOf(FACE_ID, _faceTransfer(0.05e6)), 1, "over the native budget");
+        assertTrue(_verdictOf(FACE_ID, _faceTransfer(0.04e6)) != 1, "within it");
+    }
+
+    /// The same mandate without a face: the transfer charges the token's limit
+    /// only, and the native budget the gas only.
+    function test_face_withoutOneTheTokenIsNotNative() public {
+        // the seven-word form: the same limits, no face
+        bytes memory data;
+        address[] memory targets = new address[](1);
+        bytes4[] memory selectors = new bytes4[](1);
+        (targets[0], selectors[0]) = (address(token), MockToken.transfer.selector);
+        AgentPolicy.TokenCap[] memory caps = new AgentPolicy.TokenCap[](1);
+        caps[0] = AgentPolicy.TokenCap(address(token), 1e30, 1e30, bytes32(0));
+        data = abi.encodePacked(
+            bytes32(PermissionId.unwrap(FACE_ID)),
+            abi.encode(targets, selectors, uint128(0.1 ether), uint128(0.15 ether), expiry, caps, uint48(0))
+        );
+        this.installFor(data);
+        assertTrue(_verdictOf(FACE_ID, _faceTransfer(1e5 + 1)) != 1, "no cap on it but the token's");
+        (,,,, uint128 spent,) = policy.configs(acct, bytes32(PermissionId.unwrap(FACE_ID)));
+        assertEq(spent, OP_GAS, "the gas only");
+        (address face,) = policy.nativeFace(acct, bytes32(PermissionId.unwrap(FACE_ID)));
+        assertEq(face, address(0));
+    }
+
+    /// A reinstall of the id without a face leaves none: the config's slot
+    /// outlives an installation, and the flag is written at each.
+    function test_face_aReinstallWithoutOneHasNone() public {
+        this.installFor(_faceData(address(token), 6, 0.1 ether, 0.15 ether));
+        vm.prank(acct);
+        policy.onUninstall(abi.encodePacked(bytes32(PermissionId.unwrap(FACE_ID))));
+        address[] memory targets = new address[](1);
+        bytes4[] memory selectors = new bytes4[](1);
+        (targets[0], selectors[0]) = (address(token), MockToken.transfer.selector);
+        AgentPolicy.TokenCap[] memory caps = new AgentPolicy.TokenCap[](1);
+        caps[0] = AgentPolicy.TokenCap(address(token), 1e30, 1e30, bytes32(0));
+        this.installFor(
+            abi.encodePacked(
+                bytes32(PermissionId.unwrap(FACE_ID)),
+                abi.encode(targets, selectors, uint128(0.1 ether), uint128(0.15 ether), expiry, caps, uint48(0))
+            )
+        );
+        (address face, uint8 decimals) = policy.nativeFace(acct, bytes32(PermissionId.unwrap(FACE_ID)));
+        assertEq(abi.encode(face, decimals), abi.encode(address(0), uint8(0)), "none, the flag included");
+        assertTrue(_verdictOf(FACE_ID, _faceTransfer(1e5 + 1)) != 1, "not native any more");
+    }
+
+    /// A face of more than 18 decimals, one without a token limit in the
+    /// mandate, the zero address, or a token word with high bits: refused.
+    function test_face_installRefusals() public {
+        vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+        this.installFor(_faceData(address(token), 19, 0.1 ether, 1 ether));
+        vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+        this.installFor(_faceData(address(counter), 6, 0.1 ether, 1 ether));
+        vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+        this.installFor(_faceData(address(0), 6, 0.1 ether, 1 ether));
+        bytes memory dirty = _faceData(address(token), 6, 0.1 ether, 1 ether);
+        // the face's token word is the thirteenth after the id: a byte above its address
+        dirty[32 + 12 * 32] = 0x01;
+        vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+        this.installFor(dirty);
+        this.installFor(_faceData(address(token), 18, 0.1 ether, 1 ether));
+    }
+
     // --- the guardian's pause (#251, decision 2) ---
 
     /// The guardian the owner names pauses one module of the mandate: its

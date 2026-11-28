@@ -71,6 +71,7 @@ sol! {
     function multiSend(bytes transactions) external payable;
     function pause(address account, bytes32 id, address module, bool paused) external;
     function mint(address to, uint256 amount) external;
+    function transfer(address to, uint256 amount) external returns (bool);
     function balanceOf(address account) external view returns (uint256);
     function transferWithAuthorization(
         address from, address to, uint256 value, uint256 validAfter, uint256 validBefore, bytes32 nonce, bytes signature
@@ -4225,6 +4226,58 @@ fn safe_guarded() {
     assert_eq!(chain.counter(), before + U256::from(6));
 }
 
+/// #251, Arc: a mandate that names the native token's ERC-20 face counts
+/// what that token's limit charges against the native limits too. On the
+/// local chain a mock USDC stands in for the face (the policy takes any of
+/// the mandate's limited tokens: naming one only adds a limit). Installed with
+/// `permission add`; `permission show` names it; a transfer at the cap per
+/// operation passes and one unit more is refused, which the account's first
+/// permission, without a face, lets through.
+#[test]
+fn the_native_face_counts_as_native_value() {
+    let chain = chain_or_skip!("native-face");
+    let (owner, agent) = (key(1), key(2));
+    let counter = chain.addr("demoCounter");
+    let until = far_future(&chain);
+    let deployed = chain.send_from(FACILITATOR, None, hex::decode(chain.code["mockUsdcInitCode"].as_str().unwrap().trim_start_matches("0x")).unwrap());
+    let usdc = deployed["contractAddress"].as_str().unwrap().to_string();
+    let with_usdc = |name: &str, permission: &'static str, account: Option<String>| {
+        chain.config(
+            name,
+            &Cfg {
+                permission, account,
+                allow: vec![(counter.clone(), INCREMENT), (usdc.clone(), "0xa9059cbb")],
+                tokens: json!([{"token": usdc, "maxPerOp": "100000000", "budget": "1000000000", "payees": "anyone"}]),
+                ..base_cfg(&owner, &agent, &counter, until)
+            },
+        )
+    };
+    let account = chain.deploy(&with_usdc("agent.json", "0x66616331", None));
+    let plain = with_usdc("plain.json", "0x66616331", Some(account.clone()));
+    chain.send_from(FACILITATOR, Some(&usdc), mintCall { to: account.parse().unwrap(), amount: U256::from(10_000_000u64) }.abi_encode());
+    // the same mandate with the face named, and a cap per operation of 0.1 in native units
+    let faced = with_usdc("faced.json", "0x66616332", Some(account.clone()));
+    let mut c: Value = serde_json::from_str(&std::fs::read_to_string(&faced).unwrap()).unwrap();
+    c["policy"]["nativeFace"] = json!({"token": usdc, "decimals": 6});
+    c["policy"]["maxValuePerOp"] = json!("100000000000000000");
+    std::fs::write(&faced, c.to_string()).unwrap();
+    chain.ok(&["permission", "add", "--agent", &faced]);
+    let shown = chain.ok(&["permission", "show", "--agent", &faced]);
+    assert!(shown.to_lowercase().contains(&format!("nativeface      chain {} (6 decimals)", usdc.to_lowercase())), "{shown}");
+    let transfer = |amount: u64| Bytes::from(transferCall { to: PAYEE.parse().unwrap(), amount: U256::from(amount) }.abi_encode()).to_string();
+    // 100000 units of 6 decimals: 0.1 in native units, the cap exactly
+    chain.ok(&["op", "send", "--agent", &faced, "--target", &usdc, "--data", &transfer(100_000)]);
+    chain.fails(&["op", "send", "--agent", &faced, "--target", &usdc, "--data", &transfer(100_001)]);
+    // the first permission, without a face: the token's own limit only
+    chain.ok(&["op", "send", "--agent", &plain, "--target", &usdc, "--data", &transfer(100_001)]);
+    // a face that is none of the mandate's tokens: refused before anything
+    let mut odd: Value = serde_json::from_str(&std::fs::read_to_string(&faced).unwrap()).unwrap();
+    odd["policy"]["nativeFace"] = json!({"token": counter, "decimals": 6});
+    std::fs::write(&faced, odd.to_string()).unwrap();
+    let refused = chain.fails(&["permission", "show", "--agent", &faced]);
+    assert!(refused.contains("must be one of policy.tokens"), "{refused}");
+}
+
 /// #251: the shape judge is pinned only where the policy takes judges, and a
 /// judge the deployments file does not name refuses only what would install
 /// the mandate. A pinned account's other commands run: an account set up on a
@@ -4639,6 +4692,7 @@ fn the_phone_reads_a_mandate_as_the_policy_installs_it() {
             trading_enforced: true,
             ids_enforced: true,
             shapes_enforced: true,
+            face_enforced: true,
         };
         let terms = mandate_terms(&init, &place, &|a| a.to_string());
         // the review signs nothing whose mandate it could not read

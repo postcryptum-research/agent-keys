@@ -46,6 +46,19 @@ struct Config {
     // The window `spent` counts for, plus one; 0 before the first.
     // The operation names the window (`_enterPeriod`)
     uint48 periodSeen;
+    // The mandate names an ERC-20 that moves the native balance (Arc's USDC):
+    // what its token limit charges counts as native value too (#251). In the
+    // slot validation reads already, so a mandate without one pays nothing
+    bool nativeFace;
+}
+
+/// The ERC-20 face of the native token a mandate names, per (mandate,
+/// account): one slot.
+struct NativeFacePin {
+    // The token; one of the mandate's limited tokens
+    address token;
+    // 18 minus its decimals: what scales its amounts to native units
+    uint8 shift;
 }
 
 /// What a mandate keeps of one of its venues, per (mandate, decoder,
@@ -187,6 +200,9 @@ library PolicyStorage {
     // `modulePaused`, for `checkSignaturePolicy`: an order's record names its
     // venue by tag. tag: `PolicyRules.venueTag(mandate, decoder)`
     mapping(uint80 tag => mapping(address account => uint8)) venueTagPaused;
+    // Map of key => account => the ERC-20 face of the native token the
+    // mandate names (#251). key: the mandate
+    mapping(bytes32 key => mapping(address account => NativeFacePin)) nativeFaces;
     }
 
     /// @dev The layout, at its slot.

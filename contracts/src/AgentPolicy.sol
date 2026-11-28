@@ -19,7 +19,7 @@ import {LibERC7579} from "kernel/lib/solady/src/accounts/LibERC7579.sol";
 
 import {SafeNonceAssert} from "./SafeNonceAssert.sol";
 import {IShapeJudge, SHAPE_BATCH, SHAPE_WALLET} from "./judges/IShapeJudge.sol";
-import {Config, Pending, PolicyStorage, ShapePin, TokenLimit, VenuePin} from "./policy/PolicyStorage.sol";
+import {Config, NativeFacePin, Pending, PolicyStorage, ShapePin, TokenLimit, VenuePin} from "./policy/PolicyStorage.sol";
 import {PolicyInstall} from "./policy/PolicyInstall.sol";
 import {
     AUTHORIZE_OPERATOR,
@@ -148,6 +148,15 @@ contract AgentPolicy is IPolicy {
         // keccak256 of the owner's `config` for the venue, in the decoder's
         // encoding; never zero
         bytes32 configHash;
+    }
+
+    /// The fourteen-word form's last two words: an ERC-20 that moves the
+    /// native balance (Arc's USDC) and its decimals (#251).
+    struct NativeFace {
+        // The token; one of the mandate's limited tokens
+        address token;
+        // Its decimals, at most 18
+        uint8 decimals;
     }
 
     /// Install-time pin of one shape judge (`IShapeJudge`, issue #251), in the
@@ -582,7 +591,11 @@ contract AgentPolicy is IPolicy {
         (bool inWindow, uint48 from, uint48 until) = _enterPeriod(c, userOp.signature);
         if (!inWindow) return SIG_VALIDATION_FAILED_UINT;
         // Judge every call; token amounts are charged on the way
-        (bool ok, uint256 value) = _judgeExecute(PolicyRules.mandate(id, c.epoch), userOp.callData);
+        bytes32 m = PolicyRules.mandate(id, c.epoch);
+        (bool ok, uint256 value) = _judgeExecute(m, userOp.callData);
+        // An ERC-20 that moves the native balance (Arc's USDC): what its limit
+        // charged in this operation is native value too, in native units (#251)
+        if (ok && c.nativeFace) value += _faceMoved(m);
         if (!ok || value > c.maxValuePerOp) return SIG_VALIDATION_FAILED_UINT;
         // No allowance the agent granted outlives the operation
         if (_tload(_thisOperation(OPEN_ALLOWANCES)) != 0) return SIG_VALIDATION_FAILED_UINT;
@@ -867,6 +880,20 @@ contract AgentPolicy is IPolicy {
     /// @return The guardian.
     function guardian(address account, bytes32 id) external view returns (address) {
         return _store().guardians[keccak256(abi.encode(PolicyRules.mandate(id, _store().configs[id][account].epoch)))][account];
+    }
+
+    /// @notice The ERC-20 face of the native token the permission's current
+    /// mandate names, whose movements count against the native limits too
+    /// (#251); zero for none.
+    /// @param account The account.
+    /// @param id The permission id.
+    /// @return token The token.
+    /// @return decimals Its decimals.
+    function nativeFace(address account, bytes32 id) external view returns (address token, uint8 decimals) {
+        Config storage c = _store().configs[id][account];
+        if (!c.nativeFace) return (address(0), 0);
+        NativeFacePin memory face = _store().nativeFaces[PolicyRules.mandate(id, c.epoch)][account];
+        return (face.token, 18 - face.shift);
     }
 
     /// @notice Whether a module of the permission's current mandate, a shape
@@ -1320,6 +1347,15 @@ contract AgentPolicy is IPolicy {
         assembly ("memory-safe") {
             tstore(slot, total)
         }
+    }
+
+    /// @dev What the mandate's limit of the native token's ERC-20 face charged
+    /// in this operation, scaled to native units; an overflow reverts.
+    /// @param m The mandate key.
+    /// @return The amount, in native units.
+    function _faceMoved(bytes32 m) internal returns (uint256) {
+        NativeFacePin memory face = _store().nativeFaces[m][msg.sender];
+        return _movedThisOperation(face.token, 0) * 10 ** face.shift;
     }
 
     /// @dev `(verificationGasLimit + callGasLimit + preVerificationGas) *

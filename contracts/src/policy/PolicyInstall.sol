@@ -3,7 +3,7 @@ pragma solidity ^0.8.38;
 
 import {AgentPolicy} from "../AgentPolicy.sol";
 import {IVenueDecoder} from "../venues/IVenueDecoder.sol";
-import {Config, PolicyStorage, ShapePin, TokenLimit, VenuePin} from "./PolicyStorage.sol";
+import {Config, NativeFacePin, PolicyStorage, ShapePin, TokenLimit, VenuePin} from "./PolicyStorage.sol";
 import {IShapeJudge, SHAPE_BATCH, SHAPE_WALLET} from "../judges/IShapeJudge.sol";
 import {
     AUTHORIZE_OPERATOR,
@@ -120,6 +120,11 @@ contract PolicyInstall {
     /// be empty then; `ids` may be. For a mandate with a Safe transaction or a
     /// batch on its allow-list: each needs the shape judge for its selector.
     uint256 internal constant HEAD_WITH_SHAPES = 12 * 32;
+    /// Fourteen words: the twelve (`shapes` may then be empty), then
+    /// `NativeFace face`, two words inline: an ERC-20 that moves the native
+    /// balance (Arc's USDC) and its decimals. What the mandate's limit of that
+    /// token charges counts against the native limits too.
+    uint256 internal constant HEAD_WITH_FACE = 14 * 32;
 
     /// @dev Installs a mandate under a permission of the account. Kernel calls
     /// it when the account installs a permission with this policy (an
@@ -182,6 +187,8 @@ contract PolicyInstall {
         c.period = _installTrading(m, data[32:], targets);
         // The id limits of the eleven-word form
         _installIds(m, data[32:]);
+        // The native token's ERC-20 face of the fourteen-word form, one of the tokens above
+        c.nativeFace = _installFace(m, data[32:]);
         // A token with a limit is callable through the four metered
         // functions only (`_chargeToken`). Any other entry on it would pass
         // neither its caps nor its payee list, so the limit the owner wrote
@@ -231,14 +238,17 @@ contract PolicyInstall {
     /// @param m The mandate key.
     /// @param params The mandate's parameters, after the permission id.
     function _installShapes(bytes32 m, bytes calldata params) internal {
-        if (uint256(bytes32(params[0:32])) != HEAD_WITH_SHAPES) return;
+        if (uint256(bytes32(params[0:32])) != HEAD_WITH_SHAPES && uint256(bytes32(params[0:32])) != HEAD_WITH_FACE) return;
         // The twelfth word: the offset of `ShapeJudge[]`, a dynamic array of
         // static tuples. Decoded on its own, as the eleventh is
         uint256 offset = uint256(bytes32(params[352:384]));
         if (offset > params.length || params.length - offset < 32) revert InvalidConfig();
         uint256 count = uint256(bytes32(params[offset:offset + 32]));
-        // the form exists to carry a judge: without one, use another
-        if (count == 0 || count > (params.length - offset - 32) / 64) revert InvalidConfig();
+        // the twelve-word form exists to carry a judge: without one, use
+        // another; in the fourteen-word form the list may be empty
+        if ((count == 0 && uint256(bytes32(params[0:32])) == HEAD_WITH_SHAPES) || count > (params.length - offset - 32) / 64) {
+            revert InvalidConfig();
+        }
         for (uint256 i; i < count; i++) {
             // One `ShapeJudge`: two words, the address a whole word
             uint256 judgeWord = uint256(bytes32(params[offset + 32 + 64 * i:offset + 64 + 64 * i]));
@@ -277,13 +287,30 @@ contract PolicyInstall {
             || s == ORDER_REGISTER;
     }
 
+    /// @dev The native token's ERC-20 face of the fourteen-word form: a
+    /// token with a limit in this mandate, of at most 18 decimals. Naming one
+    /// only adds a limit: its movements count against the native limits too.
+    /// @param m The mandate key.
+    /// @param params The mandate's parameters, after the permission id.
+    /// @return True if the mandate names one.
+    function _installFace(bytes32 m, bytes calldata params) internal returns (bool) {
+        if (uint256(bytes32(params[0:32])) != HEAD_WITH_FACE) return false;
+        uint256 tokenWord = uint256(bytes32(params[384:416]));
+        uint256 decimals = uint256(bytes32(params[416:448]));
+        address token = address(uint160(tokenWord));
+        if (tokenWord >> 160 != 0 || token == address(0) || decimals > 18) revert InvalidConfig();
+        if (!PolicyRules.token(msg.sender, m, token).set) revert InvalidConfig();
+        PolicyStorage.store().nativeFaces[m][msg.sender] = NativeFacePin(token, uint8(18 - decimals));
+        return true;
+    }
+
     /// @dev The id limits of the eleven-word form: one per `(token, id)`, on
     /// a contract that is not itself a token with a limit.
     /// @param m The mandate key.
     /// @param params The mandate's parameters, after the permission id.
     function _installIds(bytes32 m, bytes calldata params) internal {
         uint256 head = uint256(bytes32(params[0:32]));
-        if (head != HEAD_WITH_IDS && head != HEAD_WITH_SHAPES) return;
+        if (head != HEAD_WITH_IDS && head != HEAD_WITH_SHAPES && head != HEAD_WITH_FACE) return;
         // The eleventh word: the offset of `IdCap[]`, a dynamic array of static
         // tuples. Decoded on its own: eleven types at once do not fit the stack.
         uint256 offset = uint256(bytes32(params[320:352]));
@@ -332,7 +359,7 @@ contract PolicyInstall {
                 abi.decode(params, (address[], bytes4[], uint128, uint128, uint48, AgentPolicy.TokenCap[], uint48, AgentPolicy.TokenPayees[]));
             // the eight-word form exists to carry a list: without one, use the other
             if (lists.length == 0) revert InvalidConfig();
-        } else if (head == HEAD_WITH_TRADING || head == HEAD_WITH_IDS || head == HEAD_WITH_SHAPES) {
+        } else if (head == HEAD_WITH_TRADING || head == HEAD_WITH_IDS || head == HEAD_WITH_SHAPES || head == HEAD_WITH_FACE) {
             // the eleven- and twelve-word forms' first ten words are the ten-word form's
             (,,,,,,, lists,,) = abi.decode(
                 params,
@@ -372,7 +399,7 @@ contract PolicyInstall {
     {
         // Only the ten- and eleven-word forms carry a period and venues
         uint256 head = uint256(bytes32(params[0:32]));
-        if (head != HEAD_WITH_TRADING && head != HEAD_WITH_IDS && head != HEAD_WITH_SHAPES) return 0;
+        if (head != HEAD_WITH_TRADING && head != HEAD_WITH_IDS && head != HEAD_WITH_SHAPES && head != HEAD_WITH_FACE) return 0;
         AgentPolicy.Venue[] memory venues;
         (,,,,,,,, period_, venues) = abi.decode(
             params, (address[], bytes4[], uint128, uint128, uint48, AgentPolicy.TokenCap[], uint48, AgentPolicy.TokenPayees[], uint32, AgentPolicy.Venue[])

@@ -243,7 +243,10 @@ source].
   the selector, #251); the shape judges `shapes[keccak256(m, selector)]`
   (`ShapePin`: the judge, its role and who paused it, one slot); the
   selectors each judge was pinned for, packed in one word
-  (`judgeSelectors[keccak256(m, judge)]`); the guardian
+  (`judgeSelectors[keccak256(m, judge)]`); the native token's ERC-20
+  face `nativeFaces[m]` (`NativeFacePin`: the token and 18 minus its
+  decimals, one slot), with the flag `Config.nativeFace`, which validation
+  reads in a slot it reads already; the guardian
   `guardians[keccak256(m)]` and who paused a module
   `modulePaused[keccak256(m, module)]`, read in validation for a venue
   decoder, and the same per venue tag `venueTagPaused[venueTag(m,
@@ -277,7 +280,7 @@ window, the call a decoder judged in the leg before), are kept in
 transient storage, in the account's slots too [V source;
 `test_senderStorage_transientTotalsAreInTheAccountsSlots`].
 
-**Install data.** `bytes32(id) ‖ abi.encode(...)` in one of five forms,
+**Install data.** `bytes32(id) ‖ abi.encode(...)` in one of six forms,
 told apart by the first word, the offset of `targets`; a mandate is
 encoded in the shortest form that holds it [V source]:
 
@@ -288,12 +291,13 @@ encoded in the shortest form that holds it [V source]:
 | ten | the eight (`payees` may be empty), then `uint32 period, Venue[] venues` | a budget per period, with venues or without |
 | eleven | the ten (`period` may be 0 when there are no venues), then `IdCap[] ids`, not empty | limits per id of an ERC-6909 contract (#186) |
 | twelve | the eleven (`ids` may be empty), then `ShapeJudge[] shapes`, not empty | a Safe transaction or a batch on the allow-list: each needs the shape judge that reads it (#251) |
+| fourteen | the twelve (`shapes` may be empty), then `NativeFace face` inline: an ERC-20 that moves the native balance, one of the mandate's limited tokens, and its decimals (at most 18) | on a chain whose gas token is also an ERC-20 (Arc's USDC): what that token's limit charges counts against the native limits too, one budget (#251) |
 
 `TokenCap` is `(token, maxPerOp, budget, domainSeparator)`, the token's
 EIP-712 domain separator non-zero to allow x402 payments in it;
 `TokenPayees` is `(token, payees)`; `Venue` is `(decoder, codeHash,
 configHash)`; `IdCap` is `(token, id, maxPerOp, budget)`; `ShapeJudge`
-is `(judge, codeHash)`. A first word that is none of the five is refused. The
+is `(judge, codeHash)`; `NativeFace` is `(token, decimals)`, two words inline. A first word that is none of the six is refused. The
 contract decodes as loosely as `abi.decode` does; that the owner sees
 exactly what is installed rests on the reviewing app, which accepts
 canonical encodings only [V source].
@@ -308,6 +312,13 @@ canonical encodings only [V source].
   code that does it is `PolicyInstall` (below), which the policy runs by
   DELEGATECALL on its own storage; the errors and the event are the
   policy's, with the same signatures.
+- `nativeFace(account, id)`: the native token's ERC-20 face the current
+  mandate names, `(token, decimals)`, or zero. Where one is named,
+  `checkUserOpPolicy` adds what the mandate's limit of that token charged
+  in the operation, scaled to 18 decimals, to the native value: it counts
+  against `maxValuePerOp` and the native budget with the value sent and the
+  gas (`test_face_*`). A reclaimed x402 payment returns its charge to the
+  token's budget only.
 - `setGuardian(id, guardian)`: from the account (the owner's step), names
   the guardian of the permission's current mandate, or zero for none;
   reverts `NotInitialized` if the id has no mandate. Emits
@@ -456,11 +467,11 @@ which refuses the operation all the same [I].
   payee list and no x402: the agent picks the receiver and the spender.
   An id's limit is kept as a token's, under a key made of the contract
   and the id (the low 160 bits of a tagged hash; `idAsset`). The
-  contract's runtime size is 18,875 bytes of the 24,576 a
+  contract's runtime size is 19,554 bytes of the 24,576 a
   contract may have, with the calls through a decoder (below) in it, the
   reading of Safe transactions in the `SafeShapes` judge and the install in
   `PolicyInstall` [V `forge build --sizes`, 2026-11-28]: the next change
-  has 5,701 bytes
+  has 5,022 bytes
   ([#224](https://github.com/postcryptum-research/agent-keys/issues/224)).
   An approval is charged like a transfer; what the spender later pulls is
   not seen.
@@ -777,11 +788,11 @@ DELEGATECALL leg, a cut leg and an empty batch are refused
 
 **What it costs** [V `test_measure_validationGas_*` in
 `contracts/test/AgentPermission.t.sol`, 2026-11-28], against the policy
-before the division: validation of a Safe transaction costs 5,136 gas more
-(47,839), and of a Safe `multiSend` of two legs 12,895 more (73,108): for
+before the division: validation of a Safe transaction costs 5,286 gas more
+(47,989), and of a Safe `multiSend` of two legs 13,045 more (73,258): for
 each judge read, the read of its pin, a cold static call, the copy of the
 calldata into it and the judge's own reading. A plain call and a token
-transfer cost 11 more. The judge reads each word
+transfer cost 161 more, 150 of it the check for a native face. The judge reads each word
 with one calldata load, which costs about half of reading it through a
 calldata slice: the batch's legs cost about 2,300 gas each to read, from
 4,350 [V `testFuzz_theWordReadsAnswerAsTheSlicesDid` holds the answers to
@@ -812,9 +823,9 @@ directly it writes its own storage, which installs no mandate anyone reads
 
 **What it costs** [V `test_measure_installGas`, `forge build --sizes`,
 2026-11-28], against the policy before the division: `AgentPolicy` is
-5,562 bytes smaller (18,875 of 24,437); `PolicyInstall` is 11,886, with its
+4,883 bytes smaller (19,554 of 24,437); `PolicyInstall` is 12,409, with its
 own copy of the shared rules. An install of two entries and a token limit
-costs 9,638 gas more (187,984): one cold DELEGATECALL, the data encoded
+costs 10,633 gas more (188,979): one cold DELEGATECALL, the data encoded
 for it, and each entry's kind. What validation costs, by shape, is in the
 section on `SafeShapes` and in
 [`ARCHITECTURE.md`](ARCHITECTURE.md#what-it-costs).

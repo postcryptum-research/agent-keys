@@ -41,7 +41,7 @@ tx [`0x785332105fd8085d50e542ff9f677eba964399bbc0d71333ddd71fed03e669bb`](https:
 - The policy in parts — in the source, not yet deployed: `AgentPolicy`
   divided into a fixed policy, its install code, and judges each mandate
   pins (the Safe judge, the venue decoders), with a guardian per mandate
-  who may pause one of them; 18,875 of the 24,576 bytes a contract may
+  who may pause one of them; 19,554 of the 24,576 bytes a contract may
   hold, from 24,437
   ([`docs/ARCHITECTURE.md`](ARCHITECTURE.md#the-policy-on-chain-in-parts),
   [#251](https://github.com/postcryptum-research/agent-keys/issues/251)).

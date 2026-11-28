@@ -810,6 +810,20 @@ are not decoded and fall under the rule below. An external call the core cannot 
   the divided policy is deployed there. A development build knows the local
   test chain's judge from the CLI's fixtures, which
   `scripts/test-fixtures.py` holds to the build (`the_local_chain_knows_its_safe_judge`).
+- **One budget (#251).** On a chain whose gas token is also an ERC-20
+  (Arc's USDC), a mandate in the fourteen-word form names that ERC-20 as
+  the native token's face, and its limit's charges count against the
+  native limits too. The review accepts the face only on a policy known to
+  take one, as the token its build knows for the chain's native token, at
+  the decimals it knows, and one of the mandate's limited tokens; it shows
+  "One budget: USDC is this chain's gas token and also the token `<address>`:
+  what that token's limit charges … counts against the two limits above as
+  well" in place of the note on two doors. Anything else is refused, and so
+  is a face whose words are malformed (owner-core
+  `the_native_face_is_one_budget_where_the_build_knows_it`). With a judge
+  pinned, the allow rows of a Safe transaction and of a batch say that the
+  calls inside are read by the judge, and that a batch runs only inside a
+  Safe transaction.
 - **The guardian (#251, decision 2).** On a policy the build knows to have
   a guardian per mandate, a root operation's `setGuardian(id, guardian)`
   and `pause(account, id, module, paused)` to it are read, in their
