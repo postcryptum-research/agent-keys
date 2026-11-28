@@ -40,6 +40,10 @@ bytes4 constant X402_AUTHORIZE = 0x4993d616;
 bytes4 constant X402_RECLAIM = 0xf3ea183e;
 // `orderRegister(address,bytes,bytes)` of `AgentPolicy`
 bytes4 constant ORDER_REGISTER = 0x27ddae76;
+// `Safe.execTransaction(...)` and `MultiSendCallOnly.multiSend(bytes)`: never
+// a plain call (`AgentPolicy.SAFE_EXEC_TRANSACTION` and `MULTI_SEND`)
+bytes4 constant SAFE_EXEC_TRANSACTION = 0x6a761202;
+bytes4 constant MULTI_SEND = 0x8d80ff0a;
 
 /// @title PolicyRules - the keys and rules the policy's validation and its install share
 /// @notice Internal functions only, compiled into `AgentPolicy` and

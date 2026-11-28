@@ -45,7 +45,7 @@ contract VersionsTest is Test {
         assertEq(new DemoCounter().VERSION(), FIRST, "DemoCounter");
         assertEq(new Logger(address(this), address(this), bytes32(0), bytes32(0)).VERSION(), FIRST, "Logger");
         // Contracts with constructor arguments, given stand-ins
-        assertEq(new AgentPolicy(address(new SafeNonceAssert()), address(new SafeShapes())).VERSION(), FIRST, "AgentPolicy");
+        assertEq(new AgentPolicy(address(new SafeNonceAssert())).VERSION(), FIRST, "AgentPolicy");
         assertEq(new SafeShapes().VERSION(), FIRST, "SafeShapes");
         assertEq(new PolicyInstall().VERSION(), FIRST, "PolicyInstall");
         assertEq(new CowSwapDecoder(address(new SettlementForVersion())).VERSION(), FIRST, "CowSwapDecoder");

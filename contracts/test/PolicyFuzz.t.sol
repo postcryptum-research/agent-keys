@@ -4,6 +4,7 @@ pragma solidity ^0.8.38;
 import {Test} from "forge-std/Test.sol";
 
 import {AgentPolicy} from "../src/AgentPolicy.sol";
+import {ShapedMandate} from "./ShapedMandate.sol";
 import {TokenLimit} from "../src/policy/PolicyStorage.sol";
 import {SafeShapes} from "../src/judges/SafeShapes.sol";
 import {SafeNonceAssert} from "../src/SafeNonceAssert.sol";
@@ -136,7 +137,9 @@ abstract contract PolicyFuzzBase is Test {
 
     /// The mandate every test installs; the policy's own address is in it
     /// for the two x402 entry points, so it is built per policy.
-    function _installData(AgentPolicy policy) internal pure returns (bytes memory) {
+    /// `shaped`: the twelve-word form, a SafeShapes pinned (#251); the
+    /// deployed instance of the differential test knows the eight-word form only.
+    function _installData(AgentPolicy policy, bool shaped) internal returns (bytes memory) {
         address[] memory targets = new address[](12);
         bytes4[] memory selectors = new bytes4[](12);
         (targets[0], selectors[0]) = (COUNTER, INCREMENT);
@@ -158,9 +161,8 @@ abstract contract PolicyFuzzBase is Test {
         lists[0].token = TOKEN_A;
         lists[0].payees = new address[](2);
         (lists[0].payees[0], lists[0].payees[1]) = (P1, P2);
-        return abi.encodePacked(
-            ID, abi.encode(targets, selectors, MAX_VALUE, BUDGET, uint48(2_000_000_000), caps, uint48(0), lists)
-        );
+        bytes memory params = abi.encode(targets, selectors, MAX_VALUE, BUDGET, uint48(2_000_000_000), caps, uint48(0), lists);
+        return abi.encodePacked(ID, shaped ? ShapedMandate.shaped(params, address(new SafeShapes())) : params);
     }
 
     // --- operations from the seed ---
@@ -298,8 +300,8 @@ contract PolicyFuzzModel is PolicyFuzzBase {
 
     function setUp() public {
         account = new FuzzAccount();
-        policy = new AgentPolicy(NONCE_ASSERT, address(new SafeShapes()));
-        account.install(policy, _installData(policy));
+        policy = new AgentPolicy(NONCE_ASSERT);
+        account.install(policy, _installData(policy, true));
     }
 
     function _allowed(address target, bytes4 selector) internal pure returns (bool) {
@@ -483,12 +485,12 @@ contract PolicyFuzzDifferential is PolicyFuzzBase {
         bytes memory nonces = address(new SettledNonces()).code;
         vm.etch(TOKEN_A, nonces);
         vm.etch(TOKEN_B, nonces);
-        fresh = new AgentPolicy(NONCE_ASSERT, address(new SafeShapes()));
+        fresh = new AgentPolicy(NONCE_ASSERT);
         deployed = AgentPolicy(address(0xDE9107ED));
         vm.etch(address(deployed), vm.parseBytes(vm.readFile("test/vectors/agent-policy-84532-0xdA16ba0d.hex")));
         assertEq(deployed.NONCE_ASSERT(), NONCE_ASSERT, "the vector is not the instance it is taken for");
-        account.install(fresh, _installData(fresh));
-        account.install(deployed, _installData(deployed));
+        account.install(fresh, _installData(fresh, true));
+        account.install(deployed, _installData(deployed, false));
     }
 
     // --- legs the model does not cover ---
@@ -715,8 +717,8 @@ contract PolicyFuzzDifferential is PolicyFuzzBase {
                 account.uninstall(deployed, ID);
                 _sameViews();
                 _sameAuthorizations();
-                account.install(fresh, _installData(fresh));
-                account.install(deployed, _installData(deployed));
+                account.install(fresh, _installData(fresh, true));
+                account.install(deployed, _installData(deployed, false));
             }
             if (opSeed % 5 == 1) _reclaimStep(opSeed);
             _whatIsLeft();

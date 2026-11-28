@@ -83,7 +83,7 @@ contract VenueCallProof {
     uint48 internal constant INDEX = 20_000;
 
     function setUp() public {
-        policy = new AgentPolicy(NONCE_ASSERT, address(new SafeShapes()));
+        policy = new AgentPolicy(NONCE_ASSERT);
         acct = new Acct();
         token = address(new Recorder());
         place = address(new Recorder());

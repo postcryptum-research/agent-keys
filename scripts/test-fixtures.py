@@ -36,7 +36,7 @@ RUNTIME = {
 }
 # runtime code has no constructor run: an immutable is written in by hand.
 # AgentPolicy's one immutable is the SafeNonceAssert address it is deployed with.
-IMMUTABLES = {"agentPolicy": {"NONCE_ASSERT": "safeNonceAssert", "SAFE_SHAPES": "safeShapes", "INSTALL": "policyInstall"}}
+IMMUTABLES = {"agentPolicy": {"NONCE_ASSERT": "safeNonceAssert", "INSTALL": "policyInstall"}}
 # creation code, by file and key
 CREATION = {
     "chain-code.json": {

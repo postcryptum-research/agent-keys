@@ -7,6 +7,8 @@ import {P256Validator} from "../src/P256Validator.sol";
 import {P256RecoveryValidator} from "../src/P256RecoveryValidator.sol";
 import {P256Signer} from "../src/P256Signer.sol";
 import {AgentPolicy} from "../src/AgentPolicy.sol";
+import {IShapeJudge, SHAPE_BATCH, SHAPE_WALLET} from "../src/judges/IShapeJudge.sol";
+import {ShapedMandate} from "./ShapedMandate.sol";
 import {PolicyInstall} from "../src/policy/PolicyInstall.sol";
 import {ORDER_REGISTER, X402_AUTHORIZE, X402_RECLAIM} from "../src/policy/PolicyRules.sol";
 import {TokenLimit} from "../src/policy/PolicyStorage.sol";
@@ -296,36 +298,62 @@ contract MockOperators {
 /// A judge of Safe shapes that answers with positions past the end of what
 /// it was given. With `batchOnly`, the Safe transaction is read truly and
 /// only the batch's leg points outside.
-contract FarJudge {
+/// A shape judge that names the Safe's transaction with a role of the test's
+/// choosing and its batch as a batch, and admits nothing it reads.
+contract RoleJudge is IShapeJudge {
+    uint8 internal immutable role;
+
+    constructor(uint8 role_) {
+        role = role_;
+    }
+
+    function shapes() external view returns (bytes4[] memory selectors, uint8[] memory roles) {
+        selectors = new bytes4[](2);
+        roles = new uint8[](2);
+        (selectors[0], roles[0]) = (Safe.execTransaction.selector, role);
+        (selectors[1], roles[1]) = (MultiSendCallOnly.multiSend.selector, SHAPE_BATCH);
+    }
+
+    function read(bytes4, bytes calldata) external pure returns (bool, Inner[] memory calls) {
+        return (false, calls);
+    }
+}
+
+contract FarJudge is IShapeJudge {
     bool internal immutable batchOnly;
 
     constructor(bool onlyTheBatch) {
         batchOnly = onlyTheBatch;
     }
 
-    function readSafeTransaction(bytes calldata d)
-        external
-        view
-        returns (bool, address, uint256, uint256, uint256, uint256)
-    {
-        if (!batchOnly) return (true, address(uint160(uint256(bytes32(d[4:36])))), 0, 0, 0, d.length + 1);
+    function shapes() external pure returns (bytes4[] memory selectors, uint8[] memory roles) {
+        selectors = new bytes4[](2);
+        roles = new uint8[](2);
+        (selectors[0], roles[0]) = (Safe.execTransaction.selector, SHAPE_WALLET);
+        (selectors[1], roles[1]) = (MultiSendCallOnly.multiSend.selector, SHAPE_BATCH);
+    }
+
+    function read(bytes4 selector, bytes calldata d) external view returns (bool, Inner[] memory calls) {
+        calls = new Inner[](1);
+        if (selector == MultiSendCallOnly.multiSend.selector) {
+            calls[0] = Inner(address(0xC0FFEE), 0, 0, d.length + 1, false);
+            return (true, calls);
+        }
+        if (!batchOnly) {
+            calls[0] = Inner(address(uint160(uint256(bytes32(d[4:36])))), 0, 0, d.length + 1, false);
+            return (true, calls);
+        }
         // the truth, read as the Safe reads it: to, value, operation, the data
         uint256 head = 4 + uint256(bytes32(d[68:100]));
         uint256 length = uint256(bytes32(d[head:head + 32]));
-        return (
-            true,
+        calls[0] = Inner(
             address(uint160(uint256(bytes32(d[4:36])))),
             uint256(bytes32(d[36:68])),
-            uint256(bytes32(d[100:132])),
             head + 32,
-            head + 32 + length
+            head + 32 + length,
+            uint256(bytes32(d[100:132])) == 1
         );
-    }
-
-    function readMultiSend(bytes calldata d) external pure returns (bool, SafeShapes.Leg[] memory legs) {
-        legs = new SafeShapes.Leg[](1);
-        legs[0] = SafeShapes.Leg(address(0xC0FFEE), 0, 0, d.length + 1);
-        return (true, legs);
+        return (true, calls);
     }
 }
 
@@ -351,6 +379,8 @@ contract AgentPermissionTest is Test {
     P256Validator internal rootValidator;
     P256Signer internal signer;
     AgentPolicy internal policy;
+    /// The Safe shape judge every test mandate with a Safe on it pins (#251)
+    SafeShapes internal shapesJudge;
     SafeNonceAssert internal nonceAssert;
     MockToken internal token;
     Counter internal counter;
@@ -371,7 +401,8 @@ contract AgentPermissionTest is Test {
         rootValidator = new P256Validator();
         signer = new P256Signer();
         nonceAssert = new SafeNonceAssert();
-        policy = new AgentPolicy(address(nonceAssert), address(new SafeShapes()));
+        policy = new AgentPolicy(address(nonceAssert));
+        shapesJudge = new SafeShapes();
         token = new MockToken();
         counter = new Counter();
         forbidden = new Counter();
@@ -415,6 +446,20 @@ contract AgentPermissionTest is Test {
     function _tokenCaps() internal view returns (AgentPolicy.TokenCap[] memory caps) {
         caps = new AgentPolicy.TokenCap[](1);
         caps[0] = AgentPolicy.TokenCap(address(token), TOKEN_MAX, TOKEN_BUDGET, bytes32(0));
+    }
+
+    /// The policy entry of a mandate with a Safe transaction or a batch on
+    /// its allow-list: the twelve-word form, the test's `SafeShapes` pinned.
+    function _shapedEntry(address[] memory targets, bytes4[] memory selectors, AgentPolicy.TokenCap[] memory caps)
+        internal
+        view
+        returns (bytes memory)
+    {
+        return abi.encodePacked(
+            bytes2(0),
+            address(policy),
+            ShapedMandate.shaped(abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0)), address(shapesJudge))
+        );
     }
 
     function _policyEntry(address[] memory targets, bytes4[] memory selectors, AgentPolicy.TokenCap[] memory caps)
@@ -754,7 +799,7 @@ contract AgentPermissionTest is Test {
         (targets[1], selectors[1]) = (address(counter), Counter.increment.selector);
         (targets[2], selectors[2]) = (address(counter), bytes4(0));
         bytes[] memory entries = new bytes[](2);
-        entries[0] = _policyEntry(targets, selectors, new AgentPolicy.TokenCap[](0));
+        entries[0] = _shapedEntry(targets, selectors, new AgentPolicy.TokenCap[](0));
         entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(agentX, agentY));
 
         ValidationId vId = ValidatorLib.permissionToIdentifier(SAFE_ID);
@@ -912,6 +957,132 @@ contract AgentPermissionTest is Test {
         _logValidation("a Safe multiSend of two legs", SAFE_ID, _agentViaSafe(safe, exec).callData);
     }
 
+    // --- shape judges pinned per mandate (#251, step 5) ---
+
+    PermissionId internal constant SHAPED_ID = PermissionId.wrap(0x73687031); // "shp1"
+
+    /// Installs, under SHAPED_ID, a mandate of a Safe transaction and its
+    /// batch with the given judges, through the policy as Kernel calls it.
+    function _installShaped(Safe safe, AgentPolicy.ShapeJudge[] memory shapes) internal {
+        address[] memory targets = new address[](3);
+        bytes4[] memory selectors = new bytes4[](3);
+        (targets[0], selectors[0]) = (address(safe), Safe.execTransaction.selector);
+        (targets[1], selectors[1]) = (address(multiSend), MultiSendCallOnly.multiSend.selector);
+        (targets[2], selectors[2]) = (address(counter), Counter.increment.selector);
+        bytes memory data = abi.encodePacked(
+            bytes32(PermissionId.unwrap(SHAPED_ID)),
+            abi.encode(
+                targets,
+                selectors,
+                MAX_VALUE,
+                BUDGET,
+                expiry,
+                new AgentPolicy.TokenCap[](0),
+                uint48(0),
+                new AgentPolicy.TokenPayees[](0),
+                uint32(0),
+                new AgentPolicy.Venue[](0),
+                new AgentPolicy.IdCap[](0),
+                shapes
+            )
+        );
+        vm.prank(acct);
+        policy.onInstall(data);
+    }
+
+    function _pin(address judge) internal view returns (AgentPolicy.ShapeJudge[] memory shapes) {
+        shapes = new AgentPolicy.ShapeJudge[](1);
+        shapes[0] = AgentPolicy.ShapeJudge(judge, judge.codehash);
+    }
+
+    /// A Safe transaction or a batch on an allow-list needs the shape judge
+    /// for its selector: without one, install refuses the mandate. Allowed as
+    /// a plain call, a Safe transaction would run whatever the agent puts in it.
+    function test_shapes_aSafeTransactionOrABatchWithoutItsJudgeIsRefused() public {
+        Safe safe = _withSafe();
+        bytes4[2] memory wallets = [Safe.execTransaction.selector, MultiSendCallOnly.multiSend.selector];
+        address[2] memory targetsOf = [address(safe), address(multiSend)];
+        for (uint256 k; k < 2; k++) {
+            address[] memory targets = new address[](1);
+            bytes4[] memory selectors = new bytes4[](1);
+            (targets[0], selectors[0]) = (targetsOf[k], wallets[k]);
+            bytes memory data = abi.encodePacked(
+                bytes32(bytes4(0x6e6f6a31)),
+                abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, new AgentPolicy.TokenCap[](0), uint48(0))
+            );
+            vm.prank(acct);
+            vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+            policy.onInstall(data);
+        }
+    }
+
+    /// Install takes a judge only as the owner pinned it, and each selector once.
+    function test_shapes_aJudgeIsPinnedAsReviewedAndOncePerSelector() public {
+        Safe safe = _withSafe();
+        AgentPolicy.ShapeJudge[] memory shapes = _pin(address(shapesJudge));
+        // its code differs from the pin
+        shapes[0].codeHash = keccak256("another judge");
+        vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+        this.installShapedFor(safe, shapes);
+        // no code there
+        shapes[0] = AgentPolicy.ShapeJudge(makeAddr("nobody"), bytes32(0));
+        vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+        this.installShapedFor(safe, shapes);
+        // the same judge twice: each of its selectors would have two
+        shapes = new AgentPolicy.ShapeJudge[](2);
+        shapes[0] = AgentPolicy.ShapeJudge(address(shapesJudge), address(shapesJudge).codehash);
+        shapes[1] = shapes[0];
+        vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+        this.installShapedFor(safe, shapes);
+        // a judge that names a role that is neither a wallet nor a batch
+        RoleJudge odd = new RoleJudge(7);
+        vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+        this.installShapedFor(safe, _pin(address(odd)));
+        // the twelve-word form with no judge at all
+        vm.expectRevert(AgentPolicy.InvalidConfig.selector);
+        this.installShapedFor(safe, new AgentPolicy.ShapeJudge[](0));
+        // as pinned: installed
+        this.installShapedFor(safe, _pin(address(shapesJudge)));
+        assertTrue(policy.isAllowed(acct, bytes32(PermissionId.unwrap(SHAPED_ID)), address(safe), Safe.execTransaction.selector));
+    }
+
+    /// An external entry, so that a revert of the install can be expected.
+    function installShapedFor(Safe safe, AgentPolicy.ShapeJudge[] memory shapes) external {
+        _installShaped(safe, shapes);
+    }
+
+    /// Each mandate reads its Safe transactions with the judge it pinned: a
+    /// judge that admits nothing refuses them under its mandate, while the
+    /// account's other mandate, with SafeShapes, admits the same transaction.
+    function test_shapes_eachMandateUsesTheJudgeItPinned() public {
+        Safe safe = _withSafe();
+        RoleJudge refusing = new RoleJudge(SHAPE_WALLET);
+        _installShaped(safe, _pin(address(refusing)));
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+        bytes memory callData = _agentViaSafe(safe, _safeExec(safe, address(counter), 0, inc, Enum.Operation.Call, 0)).callData;
+        assertTrue(_verdictOf(SAFE_ID, callData) != 1, "SafeShapes, under the mandate that pinned it");
+        assertEq(_verdictOf(SHAPED_ID, callData), 1, "the refusing judge, under its own mandate");
+    }
+
+    /// A Safe transaction is never a plain call. Install refuses such an
+    /// entry; one written straight into storage, as an entry of kind 1, is
+    /// refused at validation too.
+    function test_shapes_aSafeTransactionAsAPlainEntryIsRefusedAtValidation() public {
+        Safe safe = _withSafe();
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+        bytes memory callData = _agentViaSafe(safe, _safeExec(safe, address(counter), 0, inc, Enum.Operation.Call, 0)).callData;
+        assertTrue(_verdictOf(SAFE_ID, callData) != 1, "as installed, through the judge");
+        // the entry's slot, found as the policy reads it, then made a plain call
+        vm.record();
+        policy.isAllowed(acct, bytes32(PermissionId.unwrap(SAFE_ID)), address(safe), Safe.execTransaction.selector);
+        (bytes32[] memory reads,) = vm.accesses(address(policy));
+        vm.store(address(policy), reads[reads.length - 1], bytes32(uint256(1)));
+        // after its guard the guard refuses it, and sent alone the policy does
+        assertEq(_verdictOf(SAFE_ID, callData), 1, "a plain execTransaction after its guard");
+        bytes memory exec = _safeExec(safe, address(counter), 0, inc, Enum.Operation.Call, 0);
+        assertEq(_verdictOf(SAFE_ID, _singleCall(address(safe), 0, exec)), 1, "a plain execTransaction alone");
+    }
+
     /// The judge answers with positions, and the policy slices its own
     /// calldata at them only within it. Positions past the end would make
     /// the slice revert; the policy refuses instead, for a Safe transaction
@@ -926,9 +1097,9 @@ contract AgentPermissionTest is Test {
         assertTrue(_verdictOf(SAFE_ID, single) != 1, "a Safe transaction");
         assertTrue(_verdictOf(SAFE_ID, batch) != 1, "a batch");
         // a judge that points past the end of what it was given
-        vm.etch(address(policy.SAFE_SHAPES()), address(new FarJudge(false)).code);
+        vm.etch(address(shapesJudge), address(new FarJudge(false)).code);
         assertEq(_verdictOf(SAFE_ID, single), 1, "a Safe transaction, positions outside");
-        vm.etch(address(policy.SAFE_SHAPES()), address(new FarJudge(true)).code);
+        vm.etch(address(shapesJudge), address(new FarJudge(true)).code);
         assertEq(_verdictOf(SAFE_ID, batch), 1, "a batch's leg, positions outside");
     }
 
@@ -1172,6 +1343,28 @@ contract AgentPermissionTest is Test {
         view
         returns (bytes memory)
     {
+        bool safeIn;
+        for (uint256 i; i < selectors.length; i++) {
+            if (selectors[i] == Safe.execTransaction.selector) safeIn = true;
+        }
+        if (!safeIn) {
+            return abi.encode(
+                targets,
+                selectors,
+                MAX_VALUE,
+                BUDGET,
+                expiry,
+                new AgentPolicy.TokenCap[](0),
+                uint48(0),
+                new AgentPolicy.TokenPayees[](0),
+                period,
+                new AgentPolicy.Venue[](0),
+                caps
+            );
+        }
+        // with a Safe on it, the twelve-word form: the ids, then the judge
+        AgentPolicy.ShapeJudge[] memory shapes = new AgentPolicy.ShapeJudge[](1);
+        shapes[0] = AgentPolicy.ShapeJudge(address(shapesJudge), address(shapesJudge).codehash);
         return abi.encode(
             targets,
             selectors,
@@ -1183,7 +1376,8 @@ contract AgentPermissionTest is Test {
             new AgentPolicy.TokenPayees[](0),
             period,
             new AgentPolicy.Venue[](0),
-            caps
+            caps,
+            shapes
         );
     }
 
@@ -1950,7 +2144,7 @@ contract AgentPermissionTest is Test {
         (targets[2], selectors[2]) = (address(token), MockToken.approve.selector);
         (targets[3], selectors[3]) = (address(token), bytes4(0x39509351)); // increaseAllowance(address,uint256)
         bytes[] memory entries = new bytes[](2);
-        entries[0] = _policyEntry(targets, selectors, _tokenCaps());
+        entries[0] = _shapedEntry(targets, selectors, _tokenCaps());
         entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(agentX, agentY));
         ValidationId vId = ValidatorLib.permissionToIdentifier(SAFE_ID);
         Execution[] memory batch = new Execution[](2);
@@ -2852,7 +3046,9 @@ contract AgentPermissionTest is Test {
         caps[0] = AgentPolicy.TokenCap(address(usdc), 1e6, 2_500_000, usdc.DOMAIN_SEPARATOR());
         bytes[] memory entries = new bytes[](2);
         entries[0] = abi.encodePacked(
-            bytes2(0), address(policy), abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0))
+            bytes2(0),
+            address(policy),
+            ShapedMandate.shaped(abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0)), address(shapesJudge))
         );
         entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(agentX, agentY));
         ValidationId vId = ValidatorLib.permissionToIdentifier(both);
@@ -3113,7 +3309,7 @@ contract AgentPermissionTest is Test {
             params = abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, _tokenCaps(), uint48(0));
         }
         bytes[] memory entries = new bytes[](2);
-        entries[0] = abi.encodePacked(bytes2(0), address(policy), params);
+        entries[0] = abi.encodePacked(bytes2(0), address(policy), ShapedMandate.shaped(params, address(shapesJudge)));
         entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(agentX, agentY));
         ValidationId vId = ValidatorLib.permissionToIdentifier(PULL_ID);
         Execution[] memory batch = new Execution[](2);

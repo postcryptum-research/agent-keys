@@ -101,7 +101,7 @@ contract GasBenchmarkTest is Test {
     /// The agent's mandate: `Logger.log` only, no value.
     function _permissionData() internal returns (bytes memory) {
         P256Signer signer = new P256Signer();
-        AgentPolicy policy = new AgentPolicy(address(new SafeNonceAssert()), address(new SafeShapes()));
+        AgentPolicy policy = new AgentPolicy(address(new SafeNonceAssert()));
         (uint256 ax, uint256 ay) = vm.publicKeyP256(AGENT);
         address[] memory targets = new address[](1);
         bytes4[] memory selectors = new bytes4[](1);

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.38;
 
+import {IShapeJudge, SHAPE_BATCH, SHAPE_WALLET} from "./IShapeJudge.sol";
+
 /// @title SafeShapes - where the calls lie inside a Safe transaction and a multiSend batch
 /// @notice A judge without state for `AgentPolicy` (issue #251). It reads a
 /// `Safe.execTransaction` call, and a `multiSend` batch, and says where the
@@ -10,10 +12,49 @@ pragma solidity ^0.8.38;
 /// @dev It reads the words the Safe and MultiSendCallOnly read, the way they
 /// read them. It reads no storage and no clock (ERC-7562), and it does not
 /// revert on what it is given: what it cannot read is answered `ok == false`.
-contract SafeShapes {
+contract SafeShapes is IShapeJudge {
     /// @dev The version of this contract's code (semantic versioning), raised with
     /// any change to its bytecode. A release tag names the versions it carries.
     string public constant VERSION = "0.1.0";
+
+    /// `Safe.execTransaction(address,uint256,bytes,uint8,uint256,uint256,uint256,address,address,bytes)`
+    bytes4 public constant EXEC_TRANSACTION = 0x6a761202;
+    /// `MultiSendCallOnly.multiSend(bytes)`
+    bytes4 public constant MULTI_SEND = 0x8d80ff0a;
+
+    /// @inheritdoc IShapeJudge
+    function shapes() external pure returns (bytes4[] memory selectors, uint8[] memory roles) {
+        selectors = new bytes4[](2);
+        roles = new uint8[](2);
+        (selectors[0], roles[0]) = (EXEC_TRANSACTION, SHAPE_WALLET);
+        (selectors[1], roles[1]) = (MULTI_SEND, SHAPE_BATCH);
+    }
+
+    /// @inheritdoc IShapeJudge
+    /// @dev A Safe transaction holds one call: a CALL, or a DELEGATECALL (operation
+    /// 1) that the policy admits into a batch only; any other operation is
+    /// refused. A batch holds its CALL legs.
+    function read(bytes4 selector, bytes calldata data) external pure returns (bool ok, Inner[] memory calls) {
+        if (selector == EXEC_TRANSACTION) {
+            (bool read_, address to, uint256 value, uint256 operation, uint256 start, uint256 end) =
+                readSafeTransaction(data);
+            if (!read_ || operation > 1) return (false, calls);
+            calls = new Inner[](1);
+            calls[0] = Inner(to, value, start, end, operation == 1);
+            return (true, calls);
+        }
+        if (selector == MULTI_SEND) {
+            Leg[] memory legs;
+            (ok, legs) = readMultiSend(data);
+            if (!ok) return (false, calls);
+            calls = new Inner[](legs.length);
+            for (uint256 i; i < legs.length; i++) {
+                calls[i] = Inner(legs[i].to, legs[i].value, legs[i].start, legs[i].end, false);
+            }
+            return (true, calls);
+        }
+        return (false, calls);
+    }
 
     /// One CALL leg of a batch: its target, its value, and where its data lies.
     struct Leg {
@@ -38,7 +79,7 @@ contract SafeShapes {
     /// @return start Where the inner call's data starts in `d`.
     /// @return end Where it ends in `d`, exclusive.
     function readSafeTransaction(bytes calldata d)
-        external
+        public
         pure
         returns (bool ok, address to, uint256 value, uint256 operation, uint256 start, uint256 end)
     {
@@ -80,7 +121,7 @@ contract SafeShapes {
     /// @param d The `multiSend` calldata, selector included.
     /// @return ok True if the batch holds at least one leg and every leg is a whole CALL leg.
     /// @return legs The legs, in order, with where each one's data lies in `d`.
-    function readMultiSend(bytes calldata d) external pure returns (bool ok, Leg[] memory legs) {
+    function readMultiSend(bytes calldata d) public pure returns (bool ok, Leg[] memory legs) {
         // The packed transactions, at least one byte of them
         (bool found, uint256 first, uint256 last) = _transactions(d);
         if (!found || first == last) return (false, legs);

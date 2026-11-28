@@ -4,6 +4,7 @@ pragma solidity ^0.8.38;
 // Two probes of the payee lists written by the reviewer of #71: a Safe that
 // holds a bound token, and the first head word of the install data.
 import "./AgentPermission.t.sol";
+import {ShapedMandate} from "./ShapedMandate.sol";
 
 contract PayeeProbes is AgentPermissionTest {
     PermissionId internal constant PRB_ID = PermissionId.wrap(0x70726231); // "prb1"
@@ -29,7 +30,9 @@ contract PayeeProbes is AgentPermissionTest {
         lists[0] = _list(address(token), PAYEE, address(0));
         bytes[] memory entries = new bytes[](2);
         entries[0] = abi.encodePacked(
-            bytes2(0), address(policy), abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0), lists)
+            bytes2(0),
+            address(policy),
+            ShapedMandate.shaped(abi.encode(targets, selectors, MAX_VALUE, BUDGET, expiry, caps, uint48(0), lists), address(shapesJudge))
         );
         entries[1] = abi.encodePacked(bytes2(0), address(signer), abi.encode(agentX, agentY));
         ValidationId vId = ValidatorLib.permissionToIdentifier(PRB_ID);

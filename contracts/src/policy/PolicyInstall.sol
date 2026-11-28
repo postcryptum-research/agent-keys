@@ -3,8 +3,18 @@ pragma solidity ^0.8.38;
 
 import {AgentPolicy} from "../AgentPolicy.sol";
 import {IVenueDecoder} from "../venues/IVenueDecoder.sol";
-import {Config, PolicyStorage, TokenLimit, VenuePin} from "./PolicyStorage.sol";
-import {AUTHORIZE_OPERATOR, ERC20_APPROVE, ERC20_INCREASE_ALLOWANCE, ERC20_TRANSFER, ERC20_TRANSFER_FROM, PolicyRules} from "./PolicyRules.sol";
+import {Config, PolicyStorage, ShapePin, TokenLimit, VenuePin} from "./PolicyStorage.sol";
+import {IShapeJudge, SHAPE_BATCH, SHAPE_WALLET} from "../judges/IShapeJudge.sol";
+import {
+    AUTHORIZE_OPERATOR,
+    ERC20_APPROVE,
+    ERC20_INCREASE_ALLOWANCE,
+    ERC20_TRANSFER,
+    ERC20_TRANSFER_FROM,
+    MULTI_SEND,
+    PolicyRules,
+    SAFE_EXEC_TRANSACTION
+} from "./PolicyRules.sol";
 
 /// The one Kernel view the policy reads at install time: which EntryPoint
 /// the account answers to, so that it can never become an agent's target.
@@ -72,6 +82,10 @@ contract PolicyInstall {
     /// then. `payees` and `venues` may be empty and `period` may be 0 here
     /// (with no venues): the form exists to carry the id limits.
     uint256 internal constant HEAD_WITH_IDS = 11 * 32;
+    /// Twelve words: the eleven, then `ShapeJudge[] shapes`, which must not
+    /// be empty then; `ids` may be. For a mandate with a Safe transaction or a
+    /// batch on its allow-list: each needs the shape judge for its selector.
+    uint256 internal constant HEAD_WITH_SHAPES = 12 * 32;
 
     /// @dev Installs a mandate under a permission of the account. Kernel calls
     /// it when the account installs a permission with this policy (an
@@ -112,12 +126,15 @@ contract PolicyInstall {
         // The EntryPoint holds the account's deposit: it must be known to be kept out
         address entryPoint = _entryPointOf(msg.sender);
         if (entryPoint == address(0)) revert UnknownEntryPoint();
+        // The shape judges of the twelve-word form, before the allow-list that names their calls
+        _installShapes(m, data[32:]);
         // Allow-list each (target, selector), refusing the targets no agent may have
         for (uint256 i; i < targets.length; i++) {
             if (!PolicyRules.targetAllowed(targets[i], selectors[i]) || targets[i] == entryPoint) {
                 revert ForbiddenTarget(targets[i], selectors[i]);
             }
-            PolicyStorage.store().allowed[PolicyRules.allowedKey(m, targets[i], selectors[i])][msg.sender] = true;
+            PolicyStorage.store().allowed[PolicyRules.allowedKey(m, targets[i], selectors[i])][msg.sender] =
+                _kindOf(m, selectors[i]);
         }
         // One limit per token, none for the zero address; nothing spent yet
         for (uint256 i; i < tokens.length; i++) {
@@ -160,19 +177,69 @@ contract PolicyInstall {
         emit AgentPolicySet(msg.sender, id, validUntil, maxValuePerOp, budget);
     }
 
+    /// @dev The kind an allow-list entry gets: the role of the shape judge the
+    /// mandate pinned for its selector, or a plain call. A Safe transaction
+    /// or a batch without its judge is refused: allowed as a plain call, a
+    /// Safe transaction would run whatever the agent puts in it.
+    /// @param m The mandate key.
+    /// @param selector The entry's selector.
+    /// @return The kind: 1, `SHAPE_WALLET` or `SHAPE_BATCH`.
+    function _kindOf(bytes32 m, bytes4 selector) internal view returns (uint8) {
+        ShapePin storage pin = PolicyStorage.store().shapes[keccak256(abi.encode(m, selector))][msg.sender];
+        if (pin.judge != address(0)) return pin.role;
+        if (selector == SAFE_EXEC_TRANSACTION || selector == MULTI_SEND) revert InvalidConfig();
+        return 1;
+    }
+
+    /// @dev The shape judges of the twelve-word form. Each judge once, with
+    /// code, and with the code the owner pinned; each selector it names gets
+    /// it, once per mandate, with its role.
+    /// @param m The mandate key.
+    /// @param params The mandate's parameters, after the permission id.
+    function _installShapes(bytes32 m, bytes calldata params) internal {
+        if (uint256(bytes32(params[0:32])) != HEAD_WITH_SHAPES) return;
+        // The twelfth word: the offset of `ShapeJudge[]`, a dynamic array of
+        // static tuples. Decoded on its own, as the eleventh is
+        uint256 offset = uint256(bytes32(params[352:384]));
+        if (offset > params.length || params.length - offset < 32) revert InvalidConfig();
+        uint256 count = uint256(bytes32(params[offset:offset + 32]));
+        // the form exists to carry a judge: without one, use another
+        if (count == 0 || count > (params.length - offset - 32) / 64) revert InvalidConfig();
+        for (uint256 i; i < count; i++) {
+            // One `ShapeJudge`: two words, the address a whole word
+            uint256 judgeWord = uint256(bytes32(params[offset + 32 + 64 * i:offset + 64 + 64 * i]));
+            bytes32 codeHash = bytes32(params[offset + 64 + 64 * i:offset + 96 + 64 * i]);
+            address judge = address(uint160(judgeWord));
+            if (judgeWord >> 160 != 0 || judge.code.length == 0 || judge.codehash != codeHash) revert InvalidConfig();
+            // a judge that is the account or this policy would close the account's own paths
+            if (judge == msg.sender || judge == address(this)) revert InvalidConfig();
+            (bytes4[] memory selectors, uint8[] memory roles) = IShapeJudge(judge).shapes();
+            if (selectors.length == 0 || selectors.length != roles.length) revert InvalidConfig();
+            for (uint256 j; j < selectors.length; j++) {
+                if (roles[j] != SHAPE_WALLET && roles[j] != SHAPE_BATCH) revert InvalidConfig();
+                ShapePin storage pin = PolicyStorage.store().shapes[keccak256(abi.encode(m, selectors[j]))][msg.sender];
+                // one judge per selector: a second judge, or the same twice, is refused
+                if (pin.judge != address(0)) revert InvalidConfig();
+                (pin.judge, pin.role) = (judge, roles[j]);
+            }
+        }
+    }
+
     /// @dev The id limits of the eleven-word form: one per `(token, id)`, on
     /// a contract that is not itself a token with a limit.
     /// @param m The mandate key.
     /// @param params The mandate's parameters, after the permission id.
     function _installIds(bytes32 m, bytes calldata params) internal {
-        if (uint256(bytes32(params[0:32])) != HEAD_WITH_IDS) return;
+        uint256 head = uint256(bytes32(params[0:32]));
+        if (head != HEAD_WITH_IDS && head != HEAD_WITH_SHAPES) return;
         // The eleventh word: the offset of `IdCap[]`, a dynamic array of static
         // tuples. Decoded on its own: eleven types at once do not fit the stack.
         uint256 offset = uint256(bytes32(params[320:352]));
         if (offset > params.length || params.length - offset < 32) revert InvalidConfig();
         uint256 count = uint256(bytes32(params[offset:offset + 32]));
-        // the form exists to carry a limit: without one, use another
-        if (count == 0 || count > (params.length - offset - 32) / 128) revert InvalidConfig();
+        // the eleven-word form exists to carry a limit: without one, use
+        // another; in the twelve-word form the list may be empty
+        if ((count == 0 && head == HEAD_WITH_IDS) || count > (params.length - offset - 32) / 128) revert InvalidConfig();
         for (uint256 i; i < count; i++) {
             // One `IdCap`: four words, each within its type's width
             bytes calldata cap = params[offset + 32 + 128 * i:offset + 160 + 128 * i];
@@ -213,8 +280,8 @@ contract PolicyInstall {
                 abi.decode(params, (address[], bytes4[], uint128, uint128, uint48, AgentPolicy.TokenCap[], uint48, AgentPolicy.TokenPayees[]));
             // the eight-word form exists to carry a list: without one, use the other
             if (lists.length == 0) revert InvalidConfig();
-        } else if (head == HEAD_WITH_TRADING || head == HEAD_WITH_IDS) {
-            // the eleven-word form's first ten words are the ten-word form's
+        } else if (head == HEAD_WITH_TRADING || head == HEAD_WITH_IDS || head == HEAD_WITH_SHAPES) {
+            // the eleven- and twelve-word forms' first ten words are the ten-word form's
             (,,,,,,, lists,,) = abi.decode(
                 params,
                 (address[], bytes4[], uint128, uint128, uint48, AgentPolicy.TokenCap[], uint48, AgentPolicy.TokenPayees[], uint32, AgentPolicy.Venue[])
@@ -253,7 +320,7 @@ contract PolicyInstall {
     {
         // Only the ten- and eleven-word forms carry a period and venues
         uint256 head = uint256(bytes32(params[0:32]));
-        if (head != HEAD_WITH_TRADING && head != HEAD_WITH_IDS) return 0;
+        if (head != HEAD_WITH_TRADING && head != HEAD_WITH_IDS && head != HEAD_WITH_SHAPES) return 0;
         AgentPolicy.Venue[] memory venues;
         (,,,,,,,, period_, venues) = abi.decode(
             params, (address[], bytes4[], uint128, uint128, uint48, AgentPolicy.TokenCap[], uint48, AgentPolicy.TokenPayees[], uint32, AgentPolicy.Venue[])
@@ -261,7 +328,8 @@ contract PolicyInstall {
         // The ten-word form carries a period, with venues or without. A mandate
         // with venues needs one: an order's charge is never given back, so the
         // period is what returns an unfilled order's part of the budget.
-        // The eleven-word form may have neither: it is there for the id limits.
+        // The eleven- and twelve-word forms may have neither: they are there for
+        // the id limits and the shape judges.
         if (period_ == 0 && (head == HEAD_WITH_TRADING || venues.length != 0)) revert InvalidConfig();
         for (uint256 i; i < venues.length; i++) {
             // Each decoder once, with a config, and with the code the owner pinned

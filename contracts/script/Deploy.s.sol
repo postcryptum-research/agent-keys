@@ -124,7 +124,7 @@ contract Deploy is Script {
             recorded,
             "agentPolicy",
             "AgentPolicy",
-            abi.encodePacked(type(AgentPolicy).creationCode, abi.encode(nonceAssert, safeShapes))
+            abi.encodePacked(type(AgentPolicy).creationCode, abi.encode(nonceAssert))
         );
         address counter = _reuseOrDeploy(recorded, "demoCounter", "DemoCounter", type(DemoCounter).creationCode);
         // The paymaster is owned by whoever runs this script (the sponsor);

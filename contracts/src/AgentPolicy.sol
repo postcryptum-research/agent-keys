@@ -18,7 +18,7 @@ import {ExecLib} from "kernel/src/utils/ExecLib.sol";
 import {LibERC7579} from "kernel/lib/solady/src/accounts/LibERC7579.sol";
 
 import {SafeNonceAssert} from "./SafeNonceAssert.sol";
-import {SafeShapes} from "./judges/SafeShapes.sol";
+import {IShapeJudge, SHAPE_BATCH, SHAPE_WALLET} from "./judges/IShapeJudge.sol";
 import {Config, Pending, PolicyStorage, TokenLimit, VenuePin} from "./policy/PolicyStorage.sol";
 import {PolicyInstall} from "./policy/PolicyInstall.sol";
 import {
@@ -148,6 +148,18 @@ contract AgentPolicy is IPolicy {
         // keccak256 of the owner's `config` for the venue, in the decoder's
         // encoding; never zero
         bytes32 configHash;
+    }
+
+    /// Install-time pin of one shape judge (`IShapeJudge`, issue #251), in the
+    /// twelve-word form. The judge's code names the selectors it reads and
+    /// their roles; each selector has one judge per mandate.
+    struct ShapeJudge {
+        // The judge; it must have code
+        address judge;
+        // Its code hash (`EXTCODEHASH`) as the owner reviewed it; install checks
+        // the code against it, and code at an address cannot change after
+        // (EIP-6780)
+        bytes32 codeHash;
     }
 
     /// A decoder's answer about an order; `ok` false when there is none.
@@ -327,12 +339,6 @@ contract AgentPolicy is IPolicy {
     /// argument it is part of the policy's CREATE2 address too.
     address public immutable NONCE_ASSERT;
 
-    /// The judge that reads a Safe transaction and a multiSend batch and
-    /// says where the calls inside them lie (issue #251). Part of the code,
-    /// as `NONCE_ASSERT` is: validation asks it with a static call and reads
-    /// no storage for it.
-    SafeShapes public immutable SAFE_SHAPES;
-
     /// The fixed code that installs a mandate (issue #251), created by this
     /// policy's constructor, so that it can never be paired with another
     /// policy. `onInstall` runs it by DELEGATECALL, on this storage.
@@ -354,10 +360,8 @@ contract AgentPolicy is IPolicy {
 
     /// @dev Policy constructor.
     /// @param nonceAssert The SafeNonceAssert on this chain, kept as `NONCE_ASSERT`.
-    /// @param safeShapes The SafeShapes judge on this chain, kept as `SAFE_SHAPES`.
-    constructor(address nonceAssert, address safeShapes) {
+    constructor(address nonceAssert) {
         NONCE_ASSERT = nonceAssert;
-        SAFE_SHAPES = SafeShapes(safeShapes);
         INSTALL = address(new PolicyInstall());
     }
 
@@ -505,7 +509,8 @@ contract AgentPolicy is IPolicy {
     /// @param selector The selector; zero for a plain value transfer.
     /// @return True if the entry is on the allow-list.
     function isAllowed(address account, bytes32 id, address target, bytes4 selector) external view returns (bool) {
-        return _store().allowed[PolicyRules.allowedKey(PolicyRules.mandate(id, _store().configs[id][account].epoch), target, selector)][account];
+        return _store().allowed[PolicyRules.allowedKey(PolicyRules.mandate(id, _store().configs[id][account].epoch), target, selector)][account]
+            != 0;
     }
 
     /// @notice The permission's current limit for `token`, and what it has spent.
@@ -1383,7 +1388,7 @@ contract AgentPolicy is IPolicy {
         address guarded = address(uint160(uint256(bytes32(data[4:36]))));
         // The next leg must be that Safe's `execTransaction`
         (address safe, uint256 safeValue, bytes calldata safeData) = LibERC7579.getExecution(pointers, i + 1);
-        if (safe != guarded || _selector(safeData) != SAFE_EXEC_TRANSACTION) return (false, 0);
+        if (safe != guarded || _kindOf(m, safe, safeData) != SHAPE_WALLET) return (false, 0);
         // Judged as guarded, the one form `_judgeSafe` admits
         return _judge(m, safe, safeValue, safeData, FROM_ACCOUNT_GUARDED);
     }
@@ -1407,8 +1412,9 @@ contract AgentPolicy is IPolicy {
         // calldata. 1–3 bytes would run the target's fallback, and so would
         // a longer body that happens to start with four zero bytes.
         if (selector == bytes4(0) && data.length != 0) return (false, 0);
-        // On the allow-list
-        if (!_store().allowed[PolicyRules.allowedKey(m, target, selector)][msg.sender]) return (false, 0);
+        // On the allow-list, with its kind
+        uint8 kind = _store().allowed[PolicyRules.allowedKey(m, target, selector)][msg.sender];
+        if (kind == 0) return (false, 0);
         // Install refuses these; refused again here so that no mandate, in
         // any version's storage, can reach the account or the policy itself.
         // The EntryPoint is refused at install only, on purpose: checking it
@@ -1417,11 +1423,15 @@ contract AgentPolicy is IPolicy {
         // also catches a venue's place pinned by a mandate installed after
         // this one.
         if (!PolicyRules.targetAllowed(target, selector)) return (false, 0);
-        // A batch is only meaningful delegatecalled by a Safe (below); called
+        // A batch is only meaningful delegatecalled by a wallet (below); called
         // any other way its legs would run as the batch contract.
-        if (selector == MULTI_SEND) return (false, 0);
-        // A Safe transaction: the call inside it is what is judged
-        if (selector == SAFE_EXEC_TRANSACTION) return _judgeSafeAs(m, target, value, data, from);
+        if (kind == SHAPE_BATCH) return (false, 0);
+        // A wallet transaction (a Safe's): the calls inside it are what is judged
+        if (kind == SHAPE_WALLET) return _judgeSafeAs(m, target, value, data, from);
+        // A Safe transaction or a batch is never a plain call: a plain
+        // `execTransaction` would run whatever the agent put in it. Install
+        // refuses such an entry; refused again here
+        if (selector == SAFE_EXEC_TRANSACTION || selector == MULTI_SEND) return (false, 0);
         // x402: registering an authorization is the account's own call only
         // (the records are kept for the account, not for a Safe)
         if (target == address(this) && selector == this.x402Authorize.selector) {
@@ -1493,38 +1503,6 @@ contract AgentPolicy is IPolicy {
     }
 
 
-    /// @dev An allow-listed Safe: the call that matters is the inner one.
-    /// @param m The mandate key.
-    /// @param value The native value the account sends the Safe.
-    /// @param data The `execTransaction` calldata.
-    /// @param from Where the call sits; only `FROM_ACCOUNT_GUARDED` passes.
-    /// @return ok True if the Safe transaction passes.
-    /// @return moved The value sent to the Safe plus what moves inside it; 0 when refused.
-    function _judgeSafe(bytes32 m, uint256 value, bytes calldata data, uint8 from)
-        internal
-        returns (bool ok, uint256 moved)
-    {
-        // Only the account's own nonce-guarded call; Safes do not nest.
-        if (from != FROM_ACCOUNT_GUARDED) return (false, 0);
-        // The parts of the call the policy rules on
-        (bool decoded, address to, uint256 innerValue, uint256 operation, bytes calldata inner) = _readSafe(data);
-        if (!decoded) return (false, 0);
-        // CALL (0): the inner call is judged like any other, from the Safe.
-        // DELEGATECALL (1): only into an allow-listed MultiSend batch that is
-        // still a target the agent may reach (not since made a venue place),
-        // with no value named, and every leg judged. Any other operation is
-        // refused.
-        if (operation == 0) {
-            (ok, moved) = _judge(m, to, innerValue, inner, FROM_SAFE);
-        } else if (
-            operation == 1 && innerValue == 0 && _selector(inner) == MULTI_SEND
-                && _store().allowed[PolicyRules.allowedKey(m, to, MULTI_SEND)][msg.sender] && PolicyRules.targetAllowed(to, MULTI_SEND)
-        ) {
-            (ok, moved) = _judgeBatch(m, inner);
-        }
-        return ok ? (true, value + moved) : (false, 0);
-    }
-
     /// @dev ERC-20 accounting: `transfer` / `approve` / `increaseAllowance`
     /// carry the amount in argument 1 and who gets it (the recipient, the
     /// spender) in argument 0; `transferFrom` carries them in arguments 2
@@ -1581,22 +1559,83 @@ contract AgentPolicy is IPolicy {
         return true;
     }
 
-    /// @dev `multiSend(bytes transactions)`, each transaction packed as
-    /// `operation (1) ‖ to (20) ‖ value (32) ‖ dataLength (32) ‖ data`.
-    /// Every leg must be a CALL the mandate accepts.
+    /// @dev An allow-listed wallet transaction (a Safe's): the calls that
+    /// matter are the ones inside it, as the shape judge the mandate pinned
+    /// for its selector reads them (issue #251).
     /// @param m The mandate key.
-    /// @param d The `multiSend` calldata, selector included.
+    /// @param value The native value the account sends the wallet.
+    /// @param data The wallet transaction's calldata (`execTransaction`).
+    /// @param from Where the call sits; only `FROM_ACCOUNT_GUARDED` passes.
+    /// @return ok True if the wallet transaction passes.
+    /// @return moved The value sent to the wallet plus what moves inside it; 0 when refused.
+    function _judgeSafe(bytes32 m, uint256 value, bytes calldata data, uint8 from)
+        internal
+        returns (bool ok, uint256 moved)
+    {
+        // Only the account's own guarded call; wallets do not nest.
+        if (from != FROM_ACCOUNT_GUARDED) return (false, 0);
+        // The calls inside, as the pinned judge reads them; at least one
+        IShapeJudge.Inner[] memory calls;
+        (ok, calls) = _read(m, data);
+        if (!ok || calls.length == 0) return (false, 0);
+        for (uint256 i; i < calls.length; i++) {
+            uint256 innerMoved;
+            (ok, innerMoved) = _judgeInner(m, data, calls[i]);
+            if (!ok) return (false, 0);
+            moved += innerMoved;
+        }
+        return ok ? (true, value + moved) : (false, 0);
+    }
+
+    /// @dev One call inside a wallet transaction, sliced from its calldata,
+    /// within it. A CALL is judged like any other, as the wallet makes it. A
+    /// DELEGATECALL only into a batch the mandate allows and its judge reads,
+    /// still a target the agent may reach (not since made a venue place),
+    /// with no value named, and every leg judged. Anything else is refused.
+    /// @param m The mandate key.
+    /// @param data The wallet transaction's calldata.
+    /// @param c The inner call, as the judge read it.
+    /// @return True if it passes.
+    /// @return The native value it moves.
+    function _judgeInner(bytes32 m, bytes calldata data, IShapeJudge.Inner memory c)
+        internal
+        returns (bool, uint256)
+    {
+        if (c.start > c.end || c.end > data.length) return (false, 0);
+        bytes calldata inner = data[c.start:c.end];
+        if (!c.delegate) return _judge(m, c.to, c.value, inner, FROM_SAFE);
+        if (c.value != 0 || _kindOf(m, c.to, inner) != SHAPE_BATCH || !PolicyRules.targetAllowed(c.to, _selector(inner))) {
+            return (false, 0);
+        }
+        return _judgeBatch(m, inner);
+    }
+
+    /// @dev The kind the mandate gives a call: 0 none, 1 plain, `SHAPE_WALLET`
+    /// or `SHAPE_BATCH`.
+    /// @param m The mandate key.
+    /// @param target The call's target.
+    /// @param data The call's calldata.
+    /// @return The kind of its allow-list entry.
+    function _kindOf(bytes32 m, address target, bytes calldata data) internal view returns (uint8) {
+        return _store().allowed[PolicyRules.allowedKey(m, target, _selector(data))][msg.sender];
+    }
+
+    /// @dev A batch a wallet DELEGATECALLs (`multiSend`): every leg must be a
+    /// CALL the mandate accepts, as the batch's pinned judge reads it.
+    /// @param m The mandate key.
+    /// @param d The batch's calldata, selector included.
     /// @return True if every leg passes; an empty batch is refused.
     /// @return moved The native value the legs move, together.
     function _judgeBatch(bytes32 m, bytes calldata d) internal returns (bool, uint256 moved) {
-        // The legs, read by the judge: at least one, each a whole CALL leg
-        (bool ok, SafeShapes.Leg[] memory legs) = SAFE_SHAPES.readMultiSend(d);
+        // The legs, read by the judge: at least one
+        (bool ok, IShapeJudge.Inner[] memory legs) = _read(m, d);
         if (!ok || legs.length == 0) return (false, 0);
-        // Leg by leg; one refused leg refuses the batch. Each is sliced from
-        // this calldata, within it, and judged as a batch leg: it runs as the Safe
+        // Leg by leg; one refused leg refuses the batch. Each is a CALL,
+        // sliced from this calldata, within it, and judged as a batch leg: it
+        // runs as the wallet
         for (uint256 i; i < legs.length; i++) {
-            SafeShapes.Leg memory leg = legs[i];
-            if (leg.start > leg.end || leg.end > d.length) return (false, 0);
+            IShapeJudge.Inner memory leg = legs[i];
+            if (leg.delegate || leg.start > leg.end || leg.end > d.length) return (false, 0);
             uint256 legMoved;
             (ok, legMoved) = _judge(m, leg.to, leg.value, d[leg.start:leg.end], FROM_BATCH);
             if (!ok) return (false, 0);
@@ -1605,26 +1644,18 @@ contract AgentPolicy is IPolicy {
         return (true, moved);
     }
 
-    /// @dev The parts of a `Safe.execTransaction` call the policy rules on,
-    /// as the judge reads them; the inner call is sliced from this calldata,
-    /// within it.
-    /// @param d The `execTransaction` calldata, selector included.
-    /// @return ok True if the call is well formed and asks for no refund.
-    /// @return to The inner call's target.
-    /// @return value The inner call's native value.
-    /// @return operation 0 for CALL, 1 for DELEGATECALL.
-    /// @return inner The inner call's calldata.
-    function _readSafe(bytes calldata d)
-        internal
-        view
-        returns (bool ok, address to, uint256 value, uint256 operation, bytes calldata inner)
-    {
-        inner = d[0:0];
-        uint256 start;
-        uint256 end;
-        (ok, to, value, operation, start, end) = SAFE_SHAPES.readSafeTransaction(d);
-        if (!ok || start > end || end > d.length) return (false, address(0), 0, 0, inner);
-        inner = d[start:end];
+    /// @dev Asks the shape judge the mandate pinned for the call's selector.
+    /// Its code is the code the owner pinned at install: code at an address
+    /// cannot change after (EIP-6780).
+    /// @param m The mandate key.
+    /// @param data The call's calldata, selector included.
+    /// @return ok True if a judge is pinned and reads the call.
+    /// @return calls The calls inside it.
+    function _read(bytes32 m, bytes calldata data) internal view returns (bool ok, IShapeJudge.Inner[] memory calls) {
+        bytes4 selector = _selector(data);
+        address judge = _store().shapes[keccak256(abi.encode(m, selector))][msg.sender].judge;
+        if (judge == address(0)) return (false, calls);
+        return IShapeJudge(judge).read(selector, data);
     }
 
     /// @dev `0x00000000` stands for "no calldata": a plain value transfer.

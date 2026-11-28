@@ -158,7 +158,7 @@ contract TradingFuzzModel is Test {
 
     function setUp() public {
         vm.warp(START);
-        policy = new AgentPolicy(NONCE_ASSERT, address(new SafeShapes()));
+        policy = new AgentPolicy(NONCE_ASSERT);
         settlement = new FuzzSettlement();
         decoder = new CowSwapDecoder(address(settlement));
         account = new TradeAccount();

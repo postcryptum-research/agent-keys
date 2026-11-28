@@ -94,6 +94,15 @@ struct Pending {
     address token;
 }
 
+/// What a mandate keeps of a shape judge, per (mandate, selector, account):
+/// one slot. A zero `judge` means no judge reads the selector.
+struct ShapePin {
+    // The judge, its code as the owner pinned it at install
+    address judge;
+    // Its role for the selector: `SHAPE_WALLET` or `SHAPE_BATCH`
+    uint8 role;
+}
+
 library PolicyStorage {
     /// @dev The layout's slot: 0. The policy keeps nothing else in storage,
     /// and the code it reaches by DELEGATECALL reads it through this library
@@ -111,9 +120,11 @@ library PolicyStorage {
     mapping(bytes32 id => mapping(address account => Config)) configs;
     // Map of account => the number of its permissions with a mandate here; `isInitialized` reads it
     mapping(address account => uint256) usedIds;
-    // Map of key => account => whether the mandate allows the call.
+    // Map of key => account => the kind of call the mandate allows: 0 none,
+    // 1 a plain call, `SHAPE_WALLET` or `SHAPE_BATCH` a call that the
+    // mandate's shape judge for its selector reads (issue #251).
     // key: `keccak256(mandate, target, selector)`
-    mapping(bytes32 key => mapping(address account => bool)) allowed;
+    mapping(bytes32 key => mapping(address account => uint8)) allowed;
     // Map of key => account => the token's limit and counter.
     // key: `keccak256(mandate, token)`
     mapping(bytes32 key => mapping(address account => TokenLimit)) tokens;
@@ -148,6 +159,9 @@ library PolicyStorage {
     // contract: a call its decoder judged, as the leg after that call's
     // registration (`_judgeVenueCall`).
     mapping(address place => mapping(address account => bool)) venuePlaces;
+    // Map of key => account => the shape judge the mandate pinned for a
+    // selector, and its role (issue #251). key: `keccak256(mandate, selector)`
+    mapping(bytes32 key => mapping(address account => ShapePin)) shapes;
     }
 
     /// @dev The layout, at its slot.
