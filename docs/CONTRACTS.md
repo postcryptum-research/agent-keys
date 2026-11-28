@@ -241,7 +241,9 @@ source].
   whose value is the call's kind (0 not allowed, 1 a plain call, 2 a
   wallet transaction and 3 a batch, read by the mandate's shape judge for
   the selector, #251); the shape judges `shapes[keccak256(m, selector)]`
-  (`ShapePin`: the judge and its role, one slot);
+  (`ShapePin`: the judge, its role and whether it is paused, one slot);
+  the guardian `guardians[keccak256(m)]` and a venue decoder's pause
+  `venuePaused[keccak256(m, decoder)]` (#251, decision 2);
   the token limits `tokens[keccak256(m, token)]` (`TokenLimit`, three
   slots); the payee lists `payees[keccak256(m, token, payee)]`; the
   registered x402 authorizations and orders `x402[keccak256(m, digest)]`
@@ -302,6 +304,19 @@ canonical encodings only [V source].
   code that does it is `PolicyInstall` (below), which the policy runs by
   DELEGATECALL on its own storage; the errors and the event are the
   policy's, with the same signatures.
+- `setGuardian(id, guardian)`: from the account (the owner's step), names
+  the guardian of the permission's current mandate, or zero for none;
+  reverts `NotInitialized` if the id has no mandate. Emits
+  `GuardianSet(account, id, guardian)`. `guardian(account, id)` reads it.
+- `pause(account, id, module, paused)`: from the mandate's guardian or the
+  account, pauses one module of the mandate, a shape judge (each of its
+  pins) or a venue decoder, or lifts the pause. While paused, validation
+  refuses its calls and the rest of the mandate runs. Reverts
+  `NotTheGuardian` for anyone else, `NotAModule` for an address that is
+  none of the mandate's modules. Emits `ModulePaused(account, id, module,
+  paused)` (#251, decision 2; `test_guardian_*`,
+  `test_order_aPausedVenueIsRefusedUntilThePauseIsLifted`). Both run in
+  `PolicyInstall`, by DELEGATECALL.
 - `onUninstall(bytes32(id) ‖ …)`: sets `validUntil` and `validAfter` to 0,
   moves the epoch on, decrements `usedIds`; reverts `NotInitialized` if
   the id has no mandate. The venue places stay.
@@ -425,11 +440,11 @@ which refuses the operation all the same [I].
   payee list and no x402: the agent picks the receiver and the spender.
   An id's limit is kept as a token's, under a key made of the contract
   and the id (the low 160 bits of a tagged hash; `idAsset`). The
-  contract's runtime size is 17,725 bytes of the 24,576 a
+  contract's runtime size is 18,462 bytes of the 24,576 a
   contract may have, with the calls through a decoder (below) in it, the
   reading of Safe transactions in the `SafeShapes` judge and the install in
   `PolicyInstall` [V `forge build --sizes`, 2026-11-28]: the next change
-  has 6,851 bytes
+  has 6,114 bytes
   ([#224](https://github.com/postcryptum-research/agent-keys/issues/224)).
   An approval is charged like a transfer; what the spender later pulls is
   not seen.
@@ -750,7 +765,7 @@ the period and venues, the id limits, and the rules that tie them
 together. Its code is what `AgentPolicy`'s was, reading the mandate's
 keys through `PolicyRules` and its storage through `PolicyStorage`.
 
-**Who calls it, and when.** `AgentPolicy`, from `onInstall`, by
+**Who calls it, and when.** `AgentPolicy`, from `onInstall`, and from `setGuardian` and `pause` (#251, decision 2), by
 DELEGATECALL: in the execution phase of the owner's operation, not in
 validation, so ERC-7562 does not bind it. The account stays the caller and
 the policy's storage is what it writes. The policy creates it in its

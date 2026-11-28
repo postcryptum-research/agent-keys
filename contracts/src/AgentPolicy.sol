@@ -19,7 +19,7 @@ import {LibERC7579} from "kernel/lib/solady/src/accounts/LibERC7579.sol";
 
 import {SafeNonceAssert} from "./SafeNonceAssert.sol";
 import {IShapeJudge, SHAPE_BATCH, SHAPE_WALLET} from "./judges/IShapeJudge.sol";
-import {Config, Pending, PolicyStorage, TokenLimit, VenuePin} from "./policy/PolicyStorage.sol";
+import {Config, Pending, PolicyStorage, ShapePin, TokenLimit, VenuePin} from "./policy/PolicyStorage.sol";
 import {PolicyInstall} from "./policy/PolicyInstall.sol";
 import {
     AUTHORIZE_OPERATOR,
@@ -286,6 +286,25 @@ contract AgentPolicy is IPolicy {
     /// @param decoder The venue's decoder.
     /// @param order The order, in the decoder's encoding.
     event OrderRegistered(address indexed account, address indexed decoder, bytes order);
+
+    /// @dev The owner named a guardian for the permission's mandate; zero for none.
+    /// @param account The account.
+    /// @param id The permission id.
+    /// @param guardian The guardian.
+    event GuardianSet(address indexed account, bytes32 indexed id, address guardian);
+
+    /// @dev A module of the permission's mandate was paused, or the pause lifted.
+    /// @param account The account.
+    /// @param id The permission id.
+    /// @param module The shape judge or venue decoder.
+    /// @param paused True when paused, false when the pause was lifted.
+    event ModulePaused(address indexed account, bytes32 indexed id, address indexed module, bool paused);
+
+    /// @dev Only the mandate's guardian, or the account itself, pauses or lifts a pause.
+    error NotTheGuardian();
+
+    /// @dev The address is none of the mandate's shape judges or venue decoders.
+    error NotAModule();
 
     /// @dev Emitted when an account installs a mandate under a permission.
     /// @param account The account.
@@ -815,6 +834,39 @@ contract AgentPolicy is IPolicy {
         _refund(m, digest, token, t, p.value);
     }
 
+    /// @notice Names the guardian of the permission's current mandate (#251,
+    /// decision 2), or zero for none: the owner's step, from the account. The
+    /// code is the fixed `PolicyInstall`'s (`setGuardian` there).
+    function setGuardian(bytes32, address) external {
+        _install();
+    }
+
+    /// @notice Pauses one module of an account's mandate, a shape judge or a
+    /// venue decoder, or lifts the pause: the mandate's guardian or the
+    /// account. The code is the fixed `PolicyInstall`'s (`pause` there).
+    function pause(address, bytes32, address, bool) external {
+        _install();
+    }
+
+    /// @dev Runs this call in the fixed `PolicyInstall`, on this policy's
+    /// storage: under DELEGATECALL the caller stays the caller.
+    function _install() internal {
+        (bool ok, bytes memory answer) = INSTALL.delegatecall(msg.data);
+        if (!ok) {
+            assembly ("memory-safe") {
+                revert(add(answer, 0x20), mload(answer))
+            }
+        }
+    }
+
+    /// @notice The guardian of the permission's current mandate; zero for none.
+    /// @param account The account.
+    /// @param id The permission id.
+    /// @return The guardian.
+    function guardian(address account, bytes32 id) external view returns (address) {
+        return _store().guardians[keccak256(abi.encode(PolicyRules.mandate(id, _store().configs[id][account].epoch)))][account];
+    }
+
     /// @notice Executed after validation registered the order: only leaves
     /// a record for wallets. An order's charge is not given back: whether a
     /// venue filled an order cannot be read from the venue for good (CoW's
@@ -856,6 +908,8 @@ contract AgentPolicy is IPolicy {
         if (v.codeHash == bytes32(0) || decoder.codehash != v.codeHash || keccak256(config) != v.configHash) {
             return j;
         }
+        // Paused by the mandate's guardian: refused, the rest of the mandate runs
+        if (_store().venuePaused[keccak256(abi.encode(m, decoder))][msg.sender]) return j;
         // A static call cannot change state; a revert is the decoder's no
         (bool ok, bytes memory answer) =
             decoder.staticcall{gas: JUDGE_GAS}(abi.encodeCall(IVenueDecoder.judge, (msg.sender, config, order)));
@@ -1653,9 +1707,10 @@ contract AgentPolicy is IPolicy {
     /// @return calls The calls inside it.
     function _read(bytes32 m, bytes calldata data) internal view returns (bool ok, IShapeJudge.Inner[] memory calls) {
         bytes4 selector = _selector(data);
-        address judge = _store().shapes[keccak256(abi.encode(m, selector))][msg.sender].judge;
-        if (judge == address(0)) return (false, calls);
-        return IShapeJudge(judge).read(selector, data);
+        ShapePin memory pin = _store().shapes[keccak256(abi.encode(m, selector))][msg.sender];
+        // no judge, or one the mandate's guardian paused: refused
+        if (pin.judge == address(0) || pin.paused) return (false, calls);
+        return IShapeJudge(pin.judge).read(selector, data);
     }
 
     /// @dev `0x00000000` stands for "no calldata": a plain value transfer.

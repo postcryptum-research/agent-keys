@@ -117,12 +117,13 @@ flowchart LR
     PI -. "shapes(), at install" .-> SJ
     AP --- ST[("PolicyStorage<br/>one layout")]
     PI --- ST
+    G["the mandate's guardian<br/>named by the owner"] -->|"pause(account, id, module)"| AP
 ```
 
 | Part | What it is | Called | Changes how |
 |---|---|---|---|
 | `AgentPolicy` | the policy Kernel knows: validation, the ERC-1271 answer, x402 and orders, the ERC-20 and ERC-6909 rules, the native budget, periods, the per-operation sums | by the account | a new policy at a new address, which every owner rotates to; the part kept small and stable for that reason |
-| `PolicyInstall` | the install of a mandate: its five forms, the judges' pins, the allow-list and its kinds, the limits | by `AgentPolicy`, by DELEGATECALL, in the owner's operation | with the policy, which creates it in its constructor |
+| `PolicyInstall` | the install of a mandate: its five forms, the judges' pins, the allow-list and its kinds, the limits; naming a guardian and pausing a module | by `AgentPolicy`, by DELEGATECALL, in the owner's or the guardian's call | with the policy, which creates it in its constructor |
 | `PolicyStorage`, `PolicyRules` | one storage layout, and the keys and rules both of the above apply; libraries, compiled into both | — | with them |
 | shape judges (`IShapeJudge`; `SafeShapes`) | where the calls inside a wallet transaction or a batch lie | by `AgentPolicy`, static call, in validation | a new judge is a new contract; a mandate pins it; the policy does not change |
 | venue decoders (`IVenueDecoder`) | what an order or a call at a venue costs and its digest | by `AgentPolicy`, static call, in validation | the same |
@@ -193,13 +194,42 @@ the policy would refuse: it names each judge as verified in its build, by
 address and code hash, and refuses one it does not know
 ([`MOBILE_OWNER_DESIGN.md`](MOBILE_OWNER_DESIGN.md)).
 
+### Switching a module off
+
+```mermaid
+sequenceDiagram
+    participant O as the owner, through the account
+    participant G as the mandate's guardian
+    participant AP as AgentPolicy
+    participant PI as PolicyInstall
+    O->>AP: setGuardian(id, guardian), in the install's operation or later
+    AP->>PI: DELEGATECALL: the guardian kept for this mandate
+    G->>AP: pause(account, id, module, true)
+    AP->>PI: DELEGATECALL: the guardian or the account only
+    PI->>PI: the module's flag set for this mandate: a shape judge's in each of its pins, a venue decoder's beside its pin
+    Note over AP: validation: a paused module's calls are refused, the rest of the mandate runs
+    G->>AP: pause(account, id, module, false), or the owner through the account
+```
+
+The guardian can stop a module of one mandate of one account, and nothing
+more: it widens nothing, and the owner removes it with `setGuardian(id,
+0)` or a rotation. The flag is in the account's slots, so validation may
+read it (a shape judge's flag shares its pin's slot and costs nothing; a
+venue decoder's costs one slot on venue operations). There is no flag for
+everyone at once: validation may not read one, and so a module is stopped
+for each account that pinned it ([#251](https://github.com/postcryptum-research/agent-keys/issues/251),
+decision 2). A new installation of the id starts with no guardian and
+nothing paused. Two other levers stay: the owner rotates the module out of
+the mandate, and the tools refuse a module their build marks as withdrawn.
+
 ### Storage, and what validation may read
 
 ```mermaid
 flowchart TB
     L["PolicyStorage.Layout at slot 0"] --> C["configs[id][account]"]
     L --> A["allowed[keccak(m, target, selector)][account] = kind"]
-    L --> S["shapes[keccak(m, selector)][account] = judge and role"]
+    L --> S["shapes[keccak(m, selector)][account] = judge, role, paused"]
+    L --> GD["guardians[keccak(m)][account], venuePaused[keccak(m, decoder)][account]"]
     L --> T["tokens, payees, venues, x402 records ... [key][account]"]
     A --> R["slot = keccak(account ‖ keccak(key ‖ place))<br/>the account innermost:<br/>storage ERC-7562 lets validation use"]
 ```
@@ -220,12 +250,12 @@ Measured on the source, against the whole policy before the division [V
 
 | | Before | Now |
 |---|---|---|
-| `AgentPolicy` size | 24,437 bytes | 17,725 (`PolicyInstall` 9,753, `SafeShapes` 3,848) |
+| `AgentPolicy` size | 24,437 bytes | 18,462 (`PolicyInstall` 10,958, `SafeShapes` 3,848) |
 | validation: a plain call | 34,313 gas | 34,324 |
 | a token transfer | 41,946 | 41,957 |
-| a Safe transaction | 42,703 | 49,716 |
-| a Safe `multiSend` of two legs | 60,213 | 79,746 |
-| an install of two entries and a token limit | 178,346 | 187,931 |
+| a Safe transaction | 42,703 | 49,906 |
+| a Safe `multiSend` of two legs | 60,213 | 80,119 |
+| an install of two entries and a token limit | 178,346 | 187,959 |
 
 What moved out of validation costs nothing there; what a judge reads costs
 a slot, a cold call and the copy of the calldata, paid only by the

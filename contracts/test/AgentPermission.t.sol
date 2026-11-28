@@ -1083,6 +1083,65 @@ contract AgentPermissionTest is Test {
         assertEq(_verdictOf(SAFE_ID, _singleCall(address(safe), 0, exec)), 1, "a plain execTransaction alone");
     }
 
+    // --- the guardian's pause (#251, decision 2) ---
+
+    /// The guardian the owner names pauses one module of the mandate: its
+    /// calls are refused in validation and the rest of the mandate runs;
+    /// the account's other mandate, with the same judge, is untouched; the
+    /// guardian, or the owner through the account, lifts the pause.
+    function test_guardian_pausesAModuleAndTheRestRuns() public {
+        Safe safe = _withSafe();
+        _installShaped(safe, _pin(address(shapesJudge)));
+        address keeper = makeAddr("guardian");
+        vm.prank(acct);
+        policy.setGuardian(bytes32(PermissionId.unwrap(SAFE_ID)), keeper);
+        assertEq(policy.guardian(acct, bytes32(PermissionId.unwrap(SAFE_ID))), keeper);
+        bytes memory inc = abi.encodeWithSelector(Counter.increment.selector);
+        bytes memory viaSafe = _agentViaSafe(safe, _safeExec(safe, address(counter), 0, inc, Enum.Operation.Call, 0)).callData;
+        bytes memory plain = _singleCall(address(counter), 0, inc);
+        assertTrue(_verdictOf(SAFE_ID, viaSafe) != 1, "before the pause");
+
+        vm.prank(keeper);
+        policy.pause(acct, bytes32(PermissionId.unwrap(SAFE_ID)), address(shapesJudge), true);
+        assertEq(_verdictOf(SAFE_ID, viaSafe), 1, "the paused judge's calls are refused");
+        assertTrue(_verdictOf(SAFE_ID, plain) != 1, "the rest of the mandate runs");
+        assertTrue(_verdictOf(SHAPED_ID, viaSafe) != 1, "the account's other mandate is untouched");
+
+        // the owner, through the account, lifts it; the guardian pauses again and lifts it
+        vm.prank(acct);
+        policy.pause(acct, bytes32(PermissionId.unwrap(SAFE_ID)), address(shapesJudge), false);
+        assertTrue(_verdictOf(SAFE_ID, viaSafe) != 1, "lifted by the owner");
+        vm.prank(keeper);
+        policy.pause(acct, bytes32(PermissionId.unwrap(SAFE_ID)), address(shapesJudge), true);
+        vm.prank(keeper);
+        policy.pause(acct, bytes32(PermissionId.unwrap(SAFE_ID)), address(shapesJudge), false);
+        assertTrue(_verdictOf(SAFE_ID, viaSafe) != 1, "lifted by the guardian");
+    }
+
+    /// Only the mandate's guardian or the account pauses; the agent cannot
+    /// reach `pause` or `setGuardian` at all; an address that is none of the
+    /// mandate's modules is refused; a guardian is named for an installed
+    /// mandate only.
+    function test_guardian_whoMayPauseAndWhat() public {
+        Safe safe = _withSafe();
+        bytes32 id = bytes32(PermissionId.unwrap(SAFE_ID));
+        vm.prank(acct);
+        policy.setGuardian(id, makeAddr("guardian"));
+        vm.prank(makeAddr("stranger"));
+        vm.expectRevert(AgentPolicy.NotTheGuardian.selector);
+        policy.pause(acct, id, address(shapesJudge), true);
+        vm.prank(acct);
+        vm.expectRevert(AgentPolicy.NotAModule.selector);
+        policy.pause(acct, id, address(counter), true);
+        vm.prank(acct);
+        vm.expectRevert(abi.encodeWithSignature("NotInitialized(address)", acct));
+        policy.setGuardian(bytes32(bytes4(0x6e6f6e65)), makeAddr("guardian"));
+        // the agent: the policy is no target of its, but for its x402 and order entries
+        _expectRefused(_agentOpWith(AGENT, SAFE_ID, address(policy), 0, abi.encodeCall(AgentPolicy.pause, (acct, id, address(shapesJudge), false))));
+        _expectRefused(_agentOpWith(AGENT, SAFE_ID, address(policy), 0, abi.encodeCall(AgentPolicy.setGuardian, (id, address(0)))));
+        assertEq(address(safe).code.length > 0, true);
+    }
+
     /// The judge answers with positions, and the policy slices its own
     /// calldata at them only within it. Positions past the end would make
     /// the slice revert; the policy refuses instead, for a Safe transaction

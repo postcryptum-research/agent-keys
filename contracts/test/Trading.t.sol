@@ -546,6 +546,25 @@ contract TradingTest is AgentPermissionTest {
         _register(o);
     }
 
+    /// The mandate's guardian pauses its venue (#251, decision 2): an order
+    /// at the paused decoder is refused in validation, and goes through once
+    /// the pause is lifted.
+    function test_order_aPausedVenueIsRefusedUntilThePauseIsLifted() public {
+        _with(DAY);
+        CowSwapDecoder.Order memory o = _order(150e6, _soon());
+        address keeper = makeAddr("guardian");
+        vm.prank(acct);
+        policy.setGuardian(TRD, keeper);
+        vm.prank(keeper);
+        policy.pause(acct, TRD, address(decoder), true);
+        _expectRefused(_tradeOp(_today(), address(policy), 0, _registerCall(o)));
+        assertEq(_usdSpent(), 0, "nothing charged");
+        vm.prank(keeper);
+        policy.pause(acct, TRD, address(decoder), false);
+        _register(o);
+        assertEq(_usdSpent(), 150e6, "registered once the pause is lifted");
+    }
+
     /// A decoder's answer is taken only in its exact form.
     function test_order_decoderAnswersAreHeldToTheirForm() public {
         _with(DAY);

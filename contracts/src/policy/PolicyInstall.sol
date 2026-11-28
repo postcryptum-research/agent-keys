@@ -51,6 +51,27 @@ contract PolicyInstall {
     /// @dev The account does not answer `entrypoint()`, so its EntryPoint cannot be kept out.
     error UnknownEntryPoint();
 
+    /// @dev Kernel's: the permission id has no mandate.
+    /// @param smartAccount The account.
+    error NotInitialized(address smartAccount);
+    /// @dev As `AgentPolicy.NotTheGuardian`.
+    error NotTheGuardian();
+    /// @dev As `AgentPolicy.NotAModule`.
+    error NotAModule();
+
+    /// @dev As `AgentPolicy.GuardianSet`.
+    /// @param account The account.
+    /// @param id The permission id.
+    /// @param guardian The guardian.
+    event GuardianSet(address indexed account, bytes32 indexed id, address guardian);
+
+    /// @dev As `AgentPolicy.ModulePaused`.
+    /// @param account The account.
+    /// @param id The permission id.
+    /// @param module The shape judge or venue decoder.
+    /// @param paused True when paused, false when the pause was lifted.
+    event ModulePaused(address indexed account, bytes32 indexed id, address indexed module, bool paused);
+
     /// @dev As `AgentPolicy.AgentPolicySet`: a mandate was installed.
     /// @param account The account.
     /// @param id The permission id, as Kernel passes it.
@@ -371,5 +392,57 @@ contract PolicyInstall {
         (bool ok, bytes memory ret) = account.staticcall(abi.encodeWithSelector(IKernelEntryPoint.entrypoint.selector));
         if (!ok || ret.length < 32) return address(0);
         return abi.decode(ret, (address));
+    }
+
+    /// @notice Names the guardian of the permission's current mandate (#251,
+    /// decision 2). The owner's step: the account calls it, in a root
+    /// operation, usually in the one that installs the mandate. Zero names
+    /// none. The guardian may pause a module of the mandate and lift the
+    /// pause; it cannot widen anything. A new installation of the id starts
+    /// with no guardian and nothing paused.
+    /// @param id The permission id; its mandate must be installed.
+    /// @param guardian The guardian, or zero.
+    function setGuardian(bytes32 id, address guardian) external {
+        Config storage c = PolicyStorage.store().configs[id][msg.sender];
+        if (c.validUntil == 0) revert NotInitialized(msg.sender);
+        PolicyStorage.store().guardians[keccak256(abi.encode(PolicyRules.mandate(id, c.epoch)))][msg.sender] = guardian;
+        emit GuardianSet(msg.sender, id, guardian);
+    }
+
+    /// @notice Pauses one module of an account's mandate, or lifts the pause:
+    /// a shape judge (every selector it reads under the mandate) or a venue
+    /// decoder. While paused, validation refuses its calls and the rest of the
+    /// mandate runs. The mandate's guardian, or the account itself (the
+    /// owner), may do it. Outside validation: it reads the judge's `shapes()`
+    /// and the guardian, which validation never does.
+    /// @param account The account.
+    /// @param id The permission id; its current mandate is the one paused.
+    /// @param module The shape judge or venue decoder.
+    /// @param paused True to pause, false to lift the pause.
+    function pause(address account, bytes32 id, address module, bool paused) external {
+        bytes32 m = PolicyRules.mandate(id, PolicyStorage.store().configs[id][account].epoch);
+        if (msg.sender != account && msg.sender != PolicyStorage.store().guardians[keccak256(abi.encode(m))][account]) {
+            revert NotTheGuardian();
+        }
+        bool found;
+        // a venue decoder of the mandate
+        if (PolicyRules.venue(account, m, module).codeHash != bytes32(0)) {
+            PolicyStorage.store().venuePaused[keccak256(abi.encode(m, module))][account] = paused;
+            found = true;
+        }
+        // a shape judge of the mandate: each selector pinned to it
+        if (module.code.length != 0) {
+            try IShapeJudge(module).shapes() returns (bytes4[] memory selectors, uint8[] memory) {
+                for (uint256 i; i < selectors.length; i++) {
+                    ShapePin storage pin = PolicyStorage.store().shapes[keccak256(abi.encode(m, selectors[i]))][account];
+                    if (pin.judge == module) {
+                        pin.paused = paused;
+                        found = true;
+                    }
+                }
+            } catch {}
+        }
+        if (!found) revert NotAModule();
+        emit ModulePaused(account, id, module, paused);
     }
 }
