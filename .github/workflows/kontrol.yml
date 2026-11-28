@@ -13,9 +13,12 @@ on:
   pull_request:
     paths:
       - contracts/src/AgentPolicy.sol
+      - contracts/src/policy/**
+      - contracts/src/judges/**
       - contracts/src/venues/VenueCalls.sol
       - contracts/test/BudgetProof.t.sol
       - contracts/test/VenueCallProof.t.sol
+      - contracts/test/ShapedMandate.sol
       - scripts/kontrol-break.py
       - contracts/foundry.toml
       - .github/workflows/kontrol.yml
