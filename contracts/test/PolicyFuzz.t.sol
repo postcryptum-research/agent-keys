@@ -5,7 +5,7 @@ import {Test} from "forge-std/Test.sol";
 
 import {AgentPolicy} from "../src/AgentPolicy.sol";
 import {ShapedMandate} from "./ShapedMandate.sol";
-import {TokenLimit} from "../src/policy/PolicyStorage.sol";
+import {Pending, TokenLimit} from "../src/policy/PolicyStorage.sol";
 import {SafeShapes} from "../src/judges/SafeShapes.sol";
 import {SafeNonceAssert} from "../src/SafeNonceAssert.sol";
 
@@ -699,9 +699,14 @@ contract PolicyFuzzDifferential is PolicyFuzzBase {
     function _sameAuthorizations() internal view {
         address a = address(account);
         for (uint256 i; i < digests.length; i++) {
-            assertEq(
-                abi.encode(fresh.x402Pending(a, ID, digests[i])), abi.encode(deployed.x402Pending(a, ID, digests[i])), "x402Pending"
-            );
+            // the deployed instance's record has no venue tag (#251): the three fields both have
+            (bool okFresh, bytes memory f) = address(fresh).staticcall(abi.encodeCall(AgentPolicy.x402Pending, (a, ID, digests[i])));
+            (bool okDeployed, bytes memory d) =
+                address(deployed).staticcall(abi.encodeCall(AgentPolicy.x402Pending, (a, ID, digests[i])));
+            assertTrue(okFresh && okDeployed && f.length == 128 && d.length == 96, "x402Pending answers");
+            Pending memory p = fresh.x402Pending(a, ID, digests[i]);
+            assertEq(abi.encode(p.value, p.validBefore, p.token), d, "x402Pending");
+            assertEq(p.venueTag, 0, "an authorization names no venue");
             assertEq(account.vouches(fresh, ID, digests[i]), account.vouches(deployed, ID, digests[i]), "checkSignaturePolicy");
         }
     }

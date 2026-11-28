@@ -246,7 +246,8 @@ source].
   (`judgeSelectors[keccak256(m, judge)]`); the guardian
   `guardians[keccak256(m)]` and who paused a module
   `modulePaused[keccak256(m, module)]`, read in validation for a venue
-  decoder (#251, decision 2);
+  decoder, and the same per venue tag `venueTagPaused[venueTag(m,
+  decoder)]`, read by `checkSignaturePolicy` for an order (#251, decision 2);
   the token limits `tokens[keccak256(m, token)]` (`TokenLimit`, three
   slots); the payee lists `payees[keccak256(m, token, payee)]`; the
   registered x402 authorizations and orders `x402[keccak256(m, digest)]`
@@ -319,9 +320,11 @@ canonical encodings only [V source].
   guardian's its own only, so the guardian never lifts what the owner
   paused (`test_guardian_neverLiftsTheOwnersPause`). While either bit is
   set, validation refuses the module's calls and the rest of the mandate
-  runs; an order registered at a venue before its pause stays vouched for
-  until it expires (`test_order_aPauseStopsNewOrdersNotRegisteredOnes`),
-  and the owner's revocation ends every vouch. Reverts
+  runs. A venue's pause reaches its orders registered before it: the
+  record of an order (`Pending.venueTag`) names its venue by tag, the pause
+  writes the tag's flags (`venueTagPaused`), and `checkSignaturePolicy`
+  vouches for no order whose venue is paused, until the pause is lifted
+  (`test_order_aPauseReachesTheOrdersRegisteredBeforeIt`). Reverts
   `NotTheGuardian` for anyone else, `NotAModule` for an address that is
   none of the mandate's modules. Emits `ModulePaused(account, id, module,
   paused)` (#251, decision 2; `test_guardian_*`,
@@ -453,11 +456,11 @@ which refuses the operation all the same [I].
   payee list and no x402: the agent picks the receiver and the spender.
   An id's limit is kept as a token's, under a key made of the contract
   and the id (the low 160 bits of a tagged hash; `idAsset`). The
-  contract's runtime size is 18,616 bytes of the 24,576 a
+  contract's runtime size is 18,875 bytes of the 24,576 a
   contract may have, with the calls through a decoder (below) in it, the
   reading of Safe transactions in the `SafeShapes` judge and the install in
   `PolicyInstall` [V `forge build --sizes`, 2026-11-28]: the next change
-  has 5,960 bytes
+  has 5,701 bytes
   ([#224](https://github.com/postcryptum-research/agent-keys/issues/224)).
   An approval is charged like a transfer; what the spender later pulls is
   not seen.
@@ -809,7 +812,7 @@ directly it writes its own storage, which installs no mandate anyone reads
 
 **What it costs** [V `test_measure_installGas`, `forge build --sizes`,
 2026-11-28], against the policy before the division: `AgentPolicy` is
-5,821 bytes smaller (18,616 of 24,437); `PolicyInstall` is 11,693, with its
+5,562 bytes smaller (18,875 of 24,437); `PolicyInstall` is 11,886, with its
 own copy of the shared rules. An install of two entries and a token limit
 costs 9,638 gas more (187,984): one cold DELEGATECALL, the data encoded
 for it, and each entry's kind. What validation costs, by shape, is in the

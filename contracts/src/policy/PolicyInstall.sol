@@ -462,15 +462,18 @@ contract PolicyInstall {
         // selectors recorded at install. The judge itself is not called, so a
         // judge cannot keep itself from being paused
         bytes32 reads = PolicyStorage.store().judgeSelectors[keccak256(abi.encode(m, module))][account];
-        if (reads == 0 && PolicyRules.venue(account, m, module).codeHash == bytes32(0)) revert NotAModule();
+        bool isVenue = PolicyRules.venue(account, m, module).codeHash != bytes32(0);
+        if (reads == 0 && !isVenue) revert NotAModule();
         for (uint256 k; k < 8; k++) {
             bytes4 selector = bytes4(reads << (32 * k));
             if (selector == bytes4(0)) break;
             ShapePin storage pin = PolicyStorage.store().shapes[keccak256(abi.encode(m, selector))][account];
             if (pin.judge == module) pin.paused = _flags(pin.paused, bit, paused);
         }
-        uint8 flags = PolicyStorage.store().modulePaused[keccak256(abi.encode(m, module))][account];
-        PolicyStorage.store().modulePaused[keccak256(abi.encode(m, module))][account] = _flags(flags, bit, paused);
+        uint8 flags = _flags(PolicyStorage.store().modulePaused[keccak256(abi.encode(m, module))][account], bit, paused);
+        PolicyStorage.store().modulePaused[keccak256(abi.encode(m, module))][account] = flags;
+        // a venue's orders registered before the pause: their records name it by tag
+        if (isVenue) PolicyStorage.store().venueTagPaused[PolicyRules.venueTag(m, module)][account] = flags;
         emit ModulePaused(account, id, module, paused);
     }
 
