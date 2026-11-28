@@ -1,0 +1,278 @@
+From b7821b08cbf70895a8f6a499f17edf12d921a207 Mon Sep 17 00:00:00 2001
+From: agent-keys <noreply@agent-keys.invalid>
+Date: Sat, 28 Nov 2026 08:57:14 +0000
+Subject: [PATCH 12/13] fix(operator): the boot check reads every Safe
+ signer-migrate hands over -- the fleet identity Safe too
+
+`jinn signer-migrate` hands over the service Safe and, when it is a different one, the fleet
+identity Safe (the same agent EOA owns both). At boot the daemon checked the service Safe alone:
+a keystore EOA that still owned the fleet identity Safe, or was an enabled module of it, went
+unseen. A point the fixes of findings AK-2026-11-28-02 and -03 (the internal audit of 2026-11-28)
+left open.
+
+- signer/migrate.ts: migrationTargets, the Safes the migration hands over, in its order: the
+  service Safe, then the fleet identity Safe with its own ERC-8004 identity when it is another
+  Safe. The CLI verb builds its targets from it.
+- main.ts: with `config.signer`, assertAgentEoaHasNoAuthority runs for each Safe of that list
+  (the bootstrap result and the fleet state): the EOA as an owner, as an enabled module and as
+  the owner of the agent NFT, as for the service Safe, and each Safe's other modules are named
+  for review. Two parts of the service Safe's checks do not apply: the daemon builds no
+  broadcaster on the fleet identity Safe, so the Kernel-is-owner check of that broadcaster has no
+  counterpart (the CLI verbs that write through the identity Safe make it themselves, in
+  openCliKernelSafeBroadcaster); and no threshold is read at boot for either Safe (the migration
+  requires both to be 1/1).
+- signer/attestation.ts: the check names the Safe it reads (`safeName`: `service Safe` by
+  default, `fleet identity Safe`).
+- tests: unit (migrationTargets: two Safes, one, a Safe without an identity; the refusal names the
+  fleet identity Safe). Each rule was broken once on purpose and a test caught it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ operator/src/cli/commands/signer-migrate.ts | 21 ++++++-------
+ operator/src/main.ts                        | 24 +++++++++++----
+ operator/src/signer/attestation.ts          | 14 +++++----
+ operator/src/signer/migrate.ts              | 33 +++++++++++++++++++++
+ operator/test/signer/attestation.test.ts    | 11 +++++++
+ operator/test/signer/migrate.test.ts        | 29 +++++++++++++++++-
+ 6 files changed, 108 insertions(+), 24 deletions(-)
+
+diff --git a/operator/src/cli/commands/signer-migrate.ts b/operator/src/cli/commands/signer-migrate.ts
+index 0f46e4ebe..c24c29568 100644
+--- a/operator/src/cli/commands/signer-migrate.ts
++++ b/operator/src/cli/commands/signer-migrate.ts
+@@ -19,7 +19,7 @@ import { createCliSignerContext, pickPrimaryMechService } from '../execution-con
+ import { walletPrivateKeyAtIndex } from '../../earning/wallet.js';
+ import { createJinnWalletClient } from '../../earning/viem-clients.js';
+ import { agentSignerConfigOf, createAgentSignerWalletClient } from '../../signer/index.js';
+-import { migrateToKernelOwner, type MigrationStep } from '../../signer/migrate.js';
++import { migrateToKernelOwner, migrationTargets, type MigrationStep } from '../../signer/migrate.js';
+ 
+ const EXAMPLE = 'jinn signer-migrate --dry-run';
+ 
+@@ -90,13 +90,10 @@ async function run(ctx: CommandContext): Promise<void> {
+     ].join(' ');
+ 
+     // The service Safe, then the fleet identity Safe when it is a different one (same agent EOA).
+-    const targets: { label: string; safe: Address; agentId: string | null; registry: string | null }[] = [
+-      { label: 'service', safe: getAddress(service.safe_address), agentId: service.agent_id ?? null, registry: service.identity_registry_address ?? null },
+-    ];
+-    const fleetSafe = fleetState.fleet_safe_address;
+-    if (fleetSafe != null && getAddress(fleetSafe) !== targets[0]!.safe) {
+-      targets.push({ label: 'fleet identity', safe: getAddress(fleetSafe), agentId: fleetState.fleet_agent_id ?? null, registry: fleetState.fleet_identity_registry ?? null });
+-    }
++    const targets = migrationTargets(
++      { safeAddress: service.safe_address, agentId: service.agent_id ?? null, identityRegistry: service.identity_registry_address ?? null },
++      fleetState,
++    );
+ 
+     const results: { label: string; safe: Address; steps: readonly MigrationStep[] }[] = [];
+     for (const target of targets) {
+@@ -106,14 +103,14 @@ async function run(ctx: CommandContext): Promise<void> {
+         kernelWallet,
+         kernel,
+         permissionId: agentConfig.permissionId as Hex,
+-        safeAddress: target.safe,
+-        ...(target.agentId !== null && target.registry !== null
+-          ? { identityRegistry: getAddress(target.registry), agentId: BigInt(target.agentId) }
++        safeAddress: target.safeAddress,
++        ...(target.identityRegistry !== undefined && target.agentId !== undefined
++          ? { identityRegistry: target.identityRegistry, agentId: target.agentId }
+           : {}),
+         dryRun,
+         agentSignerOpSend,
+       });
+-      results.push({ label: target.label, safe: target.safe, steps });
++      results.push({ label: target.label, safe: target.safeAddress, steps });
+     }
+ 
+     const payload = { schemaVersion: 1 as const, dryRun, kernel, agentEoa: agentEoaWallet.account.address, safes: results };
+diff --git a/operator/src/main.ts b/operator/src/main.ts
+index f1226c9ee..6e1ed38f3 100644
+--- a/operator/src/main.ts
++++ b/operator/src/main.ts
+@@ -1455,15 +1455,27 @@ export async function main(): Promise<DaemonStartupInfo | SetupHaltedInfo | void
+     // Kernel publishes which address that is (src/signer/attestation.ts).
+     const { ATTESTATION_KEY_METADATA, assertAgentEoaHasNoAuthority, ensureAttestationKeyBinding } =
+       await import('./signer/attestation.js');
++    const { migrationTargets } = await import('./signer/migrate.js');
+     const identity = agentId && identityRegistryAddress
+       ? { identityRegistry: identityRegistryAddress as `0x${string}`, agentId: BigInt(agentId) }
+       : undefined;
+-    const { otherSafeModules } = await assertAgentEoaHasNoAuthority({
+-      publicClient: agentClients.publicClient, agentEoa: agentEoaAddress, safeAddress: safeAddress as `0x${string}`,
+-      ...(identity ?? {}),
+-    });
+-    for (const module of otherSafeModules) {
+-      console.warn(`[main] signer: the service Safe ${safeAddress} has module ${module} enabled: it runs any call from the Safe without the Kernel and outside its mandate -- review it`);
++    // Every Safe `jinn signer-migrate` hands over: the service Safe, and the fleet identity Safe
++    // when it is a different one.
++    const agentSafes = migrationTargets(
++      { safeAddress, agentId, identityRegistry: identityRegistryAddress },
++      await earningStore.load(NETWORK_CHAIN),
++    );
++    for (const target of agentSafes) {
++      const { otherSafeModules } = await assertAgentEoaHasNoAuthority({
++        publicClient: agentClients.publicClient, agentEoa: agentEoaAddress,
++        safeAddress: target.safeAddress, safeName: `${target.label} Safe`,
++        ...(target.identityRegistry !== undefined && target.agentId !== undefined
++          ? { identityRegistry: target.identityRegistry, agentId: target.agentId }
++          : {}),
++      });
++      for (const module of otherSafeModules) {
++        console.warn(`[main] signer: the ${target.label} Safe ${target.safeAddress} has module ${module} enabled: it runs any call from the Safe without the Kernel and outside its mandate -- review it`);
++      }
+     }
+     if (identity !== undefined) {
+       try {
+diff --git a/operator/src/signer/attestation.ts b/operator/src/signer/attestation.ts
+index d855eb09b..bb8831638 100644
+--- a/operator/src/signer/attestation.ts
++++ b/operator/src/signer/attestation.ts
+@@ -10,9 +10,10 @@
+ // key. Its compromise forges attestations (a reputational risk), never moves funds or rights.
+ //
+ // Two things make that a guarantee rather than an assumption:
+-//   - `assertAgentEoaHasNoAuthority` refuses to boot while the EOA still owns the Safe or the
+-//     agent NFT (an unfinished migration), or is an enabled module of the Safe: a module runs
+-//     any call from the Safe with no owner's signature, and `swapOwner` does not remove it;
++//   - `assertAgentEoaHasNoAuthority` refuses to boot while the EOA still owns a Safe the migration
++//     hands over (the service Safe, and the fleet identity Safe when it is another) or the agent
++//     NFT (an unfinished migration), or is an enabled module of such a Safe: a module runs any
++//     call from the Safe with no owner's signature, and `swapOwner` does not remove it;
+ //   - `ensureAttestationKeyBinding` has the Kernel publish, under the agent's ERC-8004 identity,
+ //     which address signs its documents (`jinn.attestationKey`), so a verifier can bind a
+ //     document signer to the agent on-chain.
+@@ -86,18 +87,21 @@ export async function assertAgentEoaHasNoAuthority(input: {
+   readonly publicClient: Reader;
+   readonly agentEoa: Address;
+   readonly safeAddress: Address;
++  /** What the errors call the Safe: `service Safe` (the default) or `fleet identity Safe`. */
++  readonly safeName?: string;
+   readonly identityRegistry?: Address;
+   readonly agentId?: bigint;
+ }): Promise<{ readonly otherSafeModules: readonly Address[] }> {
++  const safeName = input.safeName ?? 'service Safe';
+   const problems: string[] = [];
+   const safeOwner = await input.publicClient.readContract({
+     address: input.safeAddress, abi: SAFE_ABI, functionName: 'isOwner', args: [input.agentEoa],
+   });
+-  if (safeOwner) problems.push(`it is still an owner of the service Safe ${input.safeAddress} (swapOwner it out)`);
++  if (safeOwner) problems.push(`it is still an owner of the ${safeName} ${input.safeAddress} (swapOwner it out)`);
+   const modules = await readSafeModuleAuthority(input);
+   if (modules.agentEoaIsModule) {
+     problems.push(
+-      `it is still an enabled module of the service Safe ${input.safeAddress}: a module runs any call from the Safe `
++      `it is still an enabled module of the ${safeName} ${input.safeAddress}: a module runs any call from the Safe `
+       + 'without an owner signing (disableModule it, by a transaction of the Safe)',
+     );
+   }
+diff --git a/operator/src/signer/migrate.ts b/operator/src/signer/migrate.ts
+index fe1dc29dc..ccdf50d92 100644
+--- a/operator/src/signer/migrate.ts
++++ b/operator/src/signer/migrate.ts
+@@ -113,6 +113,39 @@ export interface MigrationInput {
+   readonly agentSignerOpSend?: string;
+ }
+ 
++/** A Safe the migration hands over, with the ERC-8004 identity that goes with it. */
++export interface MigrationTarget {
++  readonly label: 'service' | 'fleet identity';
++  readonly safeAddress: Address;
++  readonly identityRegistry?: Address;
++  readonly agentId?: bigint;
++}
++
++/**
++ * The Safes `jinn signer-migrate` hands over, in its order: the service Safe, then the fleet
++ * identity Safe when it is a different one (the same agent EOA owns both). The daemon's boot
++ * check reads the same list, so every Safe the migration hands over is checked at boot.
++ */
++export function migrationTargets(
++  service: { readonly safeAddress: string; readonly agentId: string | null; readonly identityRegistry: string | null },
++  fleet: {
++    readonly fleet_safe_address?: string | null;
++    readonly fleet_agent_id?: string | null;
++    readonly fleet_identity_registry?: string | null;
++  },
++): readonly MigrationTarget[] {
++  const target = (label: MigrationTarget['label'], safe: string, agentId: string | null, registry: string | null): MigrationTarget => ({
++    label,
++    safeAddress: getAddress(safe),
++    ...(agentId !== null && registry !== null ? { identityRegistry: getAddress(registry), agentId: BigInt(agentId) } : {}),
++  });
++  const targets = [target('service', service.safeAddress, service.agentId, service.identityRegistry)];
++  if (fleet.fleet_safe_address != null && getAddress(fleet.fleet_safe_address) !== targets[0]!.safeAddress) {
++    targets.push(target('fleet identity', fleet.fleet_safe_address, fleet.fleet_agent_id ?? null, fleet.fleet_identity_registry ?? null));
++  }
++  return targets;
++}
++
+ async function send(wallet: WalletClient, publicClient: PublicClient, to: Address, data: Hex, logicalTx: string): Promise<Hex> {
+   const account = wallet.account;
+   if (account === undefined) throw new Error(`${logicalTx}: the wallet has no account`);
+diff --git a/operator/test/signer/attestation.test.ts b/operator/test/signer/attestation.test.ts
+index 861ddf9f7..2a492ebd2 100644
+--- a/operator/test/signer/attestation.test.ts
++++ b/operator/test/signer/attestation.test.ts
+@@ -85,6 +85,17 @@ describe('assertAgentEoaHasNoAuthority', () => {
+     })).rejects.toThrow(/still an enabled module of the service Safe/);
+   });
+ 
++  // The boot check reads the fleet identity Safe as well, which the migration also hands over.
++  it('names the Safe it reads: the fleet identity Safe is refused as such', async () => {
++    const read = (state: Parameters<typeof chain>[0]) => assertAgentEoaHasNoAuthority({
++      publicClient: chain(state) as never, agentEoa: EOA, safeAddress: SAFE, safeName: 'fleet identity Safe', ...identity,
++    });
++    await expect(read({ safeOwner: true, nftOwner: KERNEL, metadata: '0x' }))
++      .rejects.toThrow(`still an owner of the fleet identity Safe ${SAFE}`);
++    await expect(read({ safeOwner: false, nftOwner: KERNEL, metadata: '0x', modules: [EOA] }))
++      .rejects.toThrow(`still an enabled module of the fleet identity Safe ${SAFE}`);
++  });
++
+   it('passes with other modules enabled, and names each of them', async () => {
+     await expect(assertAgentEoaHasNoAuthority({
+       publicClient: chain({ safeOwner: false, nftOwner: KERNEL, metadata: '0x', modules: MODULES }) as never,
+diff --git a/operator/test/signer/migrate.test.ts b/operator/test/signer/migrate.test.ts
+index 1b1c91b50..ddf12ab48 100644
+--- a/operator/test/signer/migrate.test.ts
++++ b/operator/test/signer/migrate.test.ts
+@@ -2,7 +2,7 @@
+ import { describe, expect, it, vi } from 'vitest';
+ import { decodeFunctionData, encodeFunctionData, getAddress, parseAbi, type Address, type Hex } from 'viem';
+ 
+-import { migrateToKernelOwner } from '../../src/signer/migrate.js';
++import { migrateToKernelOwner, migrationTargets } from '../../src/signer/migrate.js';
+ import { markUserOperationWallet } from '../../src/tx-retry.js';
+ 
+ const EOA = '0x7471bE25Ec54354c8D70491Ae10bd86705fAD030' as Address;
+@@ -198,3 +198,30 @@ describe('migrateToKernelOwner', () => {
+     expect(cannotSign.state.owners).toEqual([EOA]);
+   });
+ });
++
++// The daemon's boot check reads the list the migration hands over, the fleet identity Safe included.
++describe('migrationTargets', () => {
++  const FLEET_SAFE = getAddress('0x00000000000000000000000000000000000000f1');
++  const service = { safeAddress: SAFE.toLowerCase(), agentId: '7', identityRegistry: REGISTRY };
++
++  it('the service Safe, then the fleet identity Safe with its own identity', () => {
++    expect(migrationTargets(service, {
++      fleet_safe_address: FLEET_SAFE.toLowerCase(), fleet_agent_id: '9', fleet_identity_registry: REGISTRY,
++    })).toEqual([
++      { label: 'service', safeAddress: SAFE, identityRegistry: REGISTRY, agentId: 7n },
++      { label: 'fleet identity', safeAddress: FLEET_SAFE, identityRegistry: REGISTRY, agentId: 9n },
++    ]);
++  });
++
++  it('the service Safe alone when the fleet identity Safe is the same one or is not known', () => {
++    const alone = [{ label: 'service', safeAddress: SAFE, identityRegistry: REGISTRY, agentId: 7n }];
++    expect(migrationTargets(service, { fleet_safe_address: SAFE.toLowerCase(), fleet_agent_id: '7', fleet_identity_registry: REGISTRY }))
++      .toEqual(alone);
++    expect(migrationTargets(service, { fleet_safe_address: null })).toEqual(alone);
++  });
++
++  it('a Safe without an ERC-8004 identity carries none', () => {
++    expect(migrationTargets({ safeAddress: SAFE, agentId: null, identityRegistry: null }, { fleet_safe_address: FLEET_SAFE }))
++      .toEqual([{ label: 'service', safeAddress: SAFE }, { label: 'fleet identity', safeAddress: FLEET_SAFE }]);
++  });
++});
