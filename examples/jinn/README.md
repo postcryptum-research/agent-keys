@@ -73,7 +73,7 @@ refused under both.
 ## Integrating into Jinn: the patch series (first version)
 
 [`patches/`](patches/) is a first version of `ADAPTATION.md` §5 Phase 1, as
-fourteen commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
+twenty commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
 
 | Patch | What |
 |---|---|
@@ -91,6 +91,12 @@ fourteen commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
 | `0012-fix-operator-the-boot-check-reads-every-Safe-signer-…` | the daemon's boot check reads every Safe `jinn signer-migrate` hands over: the fleet identity Safe as well as the service Safe (the EOA as an owner, as a module, as the owner of the agent NFT), from one list that the migration and the boot share (`migrationTargets`) (#250) |
 | `0013-fix-operator-a-Safe-s-guard-and-fallback-handler-are…` | each such Safe's guard and fallback handler are read from Safe 1.3.0's storage slots, at boot and in the migration's first step: a guard that is not also one of the Safe's modules, or a fallback handler other than Safe's `CompatibilityFallbackHandler` 1.3.0, refuses the boot and the handover; stOLAS's guard, a module of the service Safe, is reviewed as one (#250) |
 | `0014-docs-operator-the-skill-page-lists-jinn-signer-migra…` | the operator's skill page, which `yarn skill:generate` makes from the CLI's verbs and `yarn skill:check` holds to them, lists `jinn signer-migrate`: the verb came with patch 0009 and the page did not have it (#250) |
+| `0015-fix-operator-a-Safe-without-an-ERC-8004-identity-is-…` | a Safe without an ERC-8004 identity is handed over only with the operator's proof that the Kernel's agent key signs (`--agent-proof <userOpHash>`, step `agent-proof`): the EntryPoint's `UserOperationEvent` of a successful operation of the Kernel under the agent permission, at most an hour old; without it nothing changes hands (the independent review of 2026-11-28, finding AK-2026-11-28-01) |
+| `0016-fix-operator-signer-migrate-checks-every-Safe-before…` | every Safe the migration hands over is checked (owners, threshold, modules, guard, fallback handler, the owner's grant, the mandate, the agent NFT, the agent proof) before the first changes hands, and again right before its own handover (#250, B1) |
+| `0017-fix-operator-refuse-a-mandate-that-lets-the-agent-wi…` | the migration and the daemon's boot refuse a mandate that lists `(IdentityRegistry, setApprovalForAll)`, in the agent config or installed on the Kernel: with it the agent could withdraw the owner's grant to the Safe alone (#250, B2) |
+| `0018-fix-operator-the-owner-s-command-carries-sponsored-o…` | the owner's printed command carries `--sponsored` only when the paymaster's per-operation cap and the account's remaining budget both cover the operation's maximum cost, sized as agent-signer sizes it; otherwise it says why it was left out (#250, B3) |
+| `0019-fix-operator-signer-migrate-s-JSON-output-is-schemaV…` | the migration's JSON output is `schemaVersion: 2` (the changes from 1 below) (#250, B4) |
+| `0020-fix-operator-half-an-ERC-8004-identity-is-refused-no…` | an agent id without an IdentityRegistry, or the reverse, is refused at boot and in the migration instead of being taken as no identity (#250) |
 
 Apply and enable:
 
@@ -125,12 +131,23 @@ jinn signer-migrate --dry-run --human   # the plan, read from the chain
 jinn signer-migrate --yes               # the handover; safe to re-run
 ```
 
+A Safe without an ERC-8004 identity needs one more thing, the proof that
+the Kernel's agent key signs (below): an operation the mandate allows, sent
+with the agent key, and its userOpHash passed within the hour:
+
+```sh
+agent-signer op send --agent /path/to/agent.json --env-file /path/to/.env \
+  --target <an allowed target> --data <its calldata>
+jinn signer-migrate --yes --agent-proof <its userOpHash>
+```
+
 ```
 Migrated: agent EOA 0x7471bE25Ec54354c8D70491Ae10bd86705fAD030 -> Kernel <Kernel address>
   service Safe <Safe address>
     safe-modules           review         (enabled, each runs any call from the Safe without the Kernel and outside its mandate: <module address>, <module address>, <module address>; <module address> is the Safe's guard as well: it can veto every transaction of the Safe)
     owner-approved-safe    checked        (the owner's root operation gave the Safe its grant)
     mandate-admits-safe    checked        (AgentPolicy admits Safe.execTransaction)
+    agent-proof            not-applicable (the Kernel signs in attestation-key)
     agent-nft              done     <tx>  (ERC-8004 NFT -> Kernel)
     attestation-key        done     <tx>  (jinn.attestationKey = the EOA: the Kernel's agent key signs)
     safe-owner             done     <tx>  (swapOwner: EOA -> Kernel)
@@ -139,8 +156,17 @@ Migrated: agent EOA 0x7471bE25Ec54354c8D70491Ae10bd86705fAD030 -> Kernel <Kernel
 
 (shape of the output; the remarks in brackets below the first step are added
 here. The unit tests assert the steps and their order.) A 1/1 Safe is
-required. A separate fleet identity Safe is migrated in the same run, each
-Safe with its own checks before it changes hands.
+required. A separate fleet identity Safe is migrated in the same run. Every
+Safe is checked before the first one changes hands (patch 0016): its owners
+and threshold, modules, guard and fallback handler, the owner's grant, the
+mandate, the agent NFT where there is an identity and the agent proof where
+there is none. So a refusal on the second Safe comes while both are still
+the EOA's, and it names the Safe ("the fleet identity Safe <address>, read
+before any Safe changes hands: ..."). Each Safe is checked again right
+before its own handover. A Safe whose fleet state has an agent id and no
+IdentityRegistry, or the reverse, is refused, at boot as well, rather than
+taken as a Safe without an identity (patch 0020): run the bootstrap again,
+which records the two together.
 
 **The owner's step** (`owner-approved-safe`). The Safe writes the agent's
 ERC-8004 records only with the Kernel's standing approval, and a grant that
@@ -150,11 +176,40 @@ sends it with the agent's permission. It reads
 `isApprovedForAll(Kernel, Safe)`; when the grant is missing, in a dry run
 too, it changes nothing and prints the command above with the config's
 `agent-signer` arguments, the registry's address and the calldata filled
-in. The mandate needs no `setApprovalForAll` entry and should have none:
-with one, the agent could withdraw the owner's grant by itself [V:
+in. The mandate needs no `setApprovalForAll` entry and must have none: with
+one, the agent could withdraw the owner's grant by itself [V:
 `test_allowances_anOperatorGrantIsWithdrawnInTheSameOperation` in
 `contracts/test/AgentPermission.t.sol`, where the lone grant is refused and
-the lone withdrawal passes].
+the lone withdrawal passes]. The migration (in `mandate-admits-safe`, for a
+Safe with an identity) and the daemon's boot refuse while the agent config's
+`policy.allow` lists `(IdentityRegistry, setApprovalForAll)` or the
+`AgentPolicy` installed for the permission admits it (patch 0017); the owner
+rotates the permission to a mandate without that entry.
+
+With `"sponsored": true` in the `signer` section the printed command
+carries `--sponsored` only when the paymaster would sponsor it (patch
+0018). The paymaster is the agent config's deployments file's
+`whitelistPaymaster`, as agent-signer reads it, and this repository's
+`WhitelistPaymaster` refuses an operation whose maximum cost (`maxCost`, its
+gas limits times its fee cap) is above the account's per-operation cap or
+above what is left of its budget. The migration reads both
+(`sponsorships(account)`) and sizes the operation as agent-signer sizes a
+root operation of one call before it asks a bundler: verification gas
+300,000, or 1,500,000 for the operation that deploys the account; call gas
+from `eth_estimateGas` of the Kernel's `execute` called by the EntryPoint,
+plus 30%, at least 150,000 (before the account has code: the call from the
+account's address plus 40,000, plus 30%, at least 300,000);
+preVerification gas 100,000; the paymaster's verification gas 100,000 and
+no postOp; and the fee cap as alloy estimates it from the node, twice the
+next block's base fee plus the median 20th-percentile priority fee of the
+last ten blocks. When the cost fits both, the command ends in `--sponsored`
+and a line says what was compared; otherwise, or when the paymaster or the
+gas cannot be read, it is printed without `--sponsored` and a line says
+why. A bundler may replace agent-signer's figures, bounded at twice each
+(its fee at twice the node's), so with a bundler the check is of the figure
+that bound starts from: if the bundler sizes the operation above the cap,
+the paymaster refuses it in validation [I: its `SIG_VALIDATION_FAILED`
+fails the operation before it runs]; send it without `--sponsored`.
 
 **Before the Safe changes hands.** The mandate is checked to admit
 `(Safe, execTransaction)`; the agent NFT moves; and the Kernel publishes
@@ -166,9 +221,26 @@ fails the Safe stays with the EOA (the NFT is then the Kernel's already:
 fix the agent key or the mandate and re-run). So the Safe is never handed
 to an address that cannot operate it. The agent mandate must list
 `(Safe, execTransaction)`, the Safe-routed calls the operator makes, and
-`(IdentityRegistry, setMetadata)`. Without an ERC-8004 identity the agent
-has no such call to sign, and the mandate check is all that stands before
-the swap.
+`(IdentityRegistry, setMetadata)`.
+
+**A Safe without an ERC-8004 identity** (`agent-proof`, patch 0015). Such a
+Safe has no attestation key to publish, so the migration sends no operation
+of the Kernel's before the swap. Until patch 0015 the mandate check was all
+that stood before it, and a Safe could go to a Kernel whose agent key or
+backend does not sign (the independent review of 2026-11-28, finding
+AK-2026-11-28-01). Now the operator proves it: `--agent-proof <userOpHash>`
+names an operation the agent's mandate allows, sent with
+`agent-signer op send` (no `--root`). The migration reads the EntryPoint's
+`UserOperationEvent` for it, in the last 3600 blocks, and requires the
+Kernel as its sender, `success`, a nonce whose key names the agent
+permission (Kernel v3.3 puts the mode, the validation type `0x02` and the
+permission id in the nonce key's first six bytes, as agent-signer builds
+it; an owner's operation, on the root path, is key 0 and is refused) and a
+block at most an hour old by its timestamp. An hour leaves time to send the
+operation, read the dry run and run the migration, and not to bring one
+from before a change of the key, the backend or the mandate. Without such a
+proof nothing changes hands, in a dry run too, and the error says how to
+make one. A re-run that finds the Safe handed over needs none.
 
 **The Safe's modules** (`safe-modules`). A module is not an owner:
 `execTransactionFromModule` runs any call or delegatecall from the Safe for
@@ -235,7 +307,29 @@ clears it with a root operation, a transaction of the Safe from the Kernel
 signed with the owner key, since the mandate refuses the Safe's own
 administration. It warns about every other module and says which one is
 the guard. The threshold is the migration's check (a 1/1 Safe) and is not
-read at boot.
+read at boot. It also refuses while the agent's mandate lets the agent
+withdraw the owner's grant to a Safe with an identity (patch 0017), and
+while the fleet state gives a Safe half an identity (patch 0020).
+
+**The migration's JSON output** (`jinn signer-migrate --json`) is
+`{ schemaVersion, dryRun, kernel, agentEoa, safes: [{ label, safe, steps:
+[{ step, status, txHash?, detail?, modules? }] }] }`. Patch 0019 raised
+`schemaVersion` from 1 (patch 0009) to 2. From 1 to 2:
+
+- `safe-modules` is a new first step (patch 0010), with a new status,
+  `review`, and a new field, `modules`, the Safe's enabled modules;
+- `kernel-approves-safe`, the grant the Kernel sent (`done`, `already`,
+  `would`, `not-applicable`), is gone; `owner-approved-safe` takes its place as a read
+  (`checked`, or `not-applicable` without an identity), and a missing grant
+  is a refusal (patch 0011);
+- `safe-owner` comes after `agent-nft` and `attestation-key`, no longer
+  before them (patch 0011);
+- `agent-proof` is a new step after `mandate-admits-safe`: `checked`, or
+  `not-applicable` for a Safe with an identity or one handed over already
+  (patch 0015).
+
+No reader in the monorepo parses this output, so no fixture of version 1 is
+kept: the version is for readers elsewhere.
 
 How `KernelSafeBroadcaster` keeps a Safe transaction from running twice (a
 `v = 1` signature does not commit to the Safe nonce): agent-signer asserts the
@@ -367,6 +461,56 @@ Verified:
   `jinn signer-migrate`, and `yarn skill:check` then passes; `git am` of
   0001 to 0014 onto a fresh `151a464aa` applies cleanly and gives the tree
   that was checked.
+- patches 0015 to 0020 (2026-11-28), on the monorepo with the twenty
+  patches applied (`git am` of 0001 to 0020 onto a fresh `151a464aa`
+  applies cleanly and gives the tree the tests ran on), an `agent-signer`
+  built with software keys (throwaway keys made for the run) and the anvil
+  of the Foundry named above:
+  - **the full loop with the Kernel owner passes**, with these checks on
+    the snapshot's chain: the owner's root grant is refused as an agent
+    proof (its nonce key is the root path's) and the migration's
+    attestation-key operation is taken as one; the migration's sizing of
+    the owner's grant equals the operation agent-signer sent for it (no
+    bundler there): the same verificationGasLimit (1,500,000, the
+    operation that deploys the account), callGasLimit, preVerificationGas
+    and maxFeePerGas; a run over both Safes refuses at the fleet identity
+    Safe, which the mandate does not admit, and the service Safe and its
+    NFT are still the EOA's; the `AgentPolicy` on the chain does not admit
+    `(IdentityRegistry, setApprovalForAll)` for the loop's mandate, and the
+    same agent config with that entry added is refused. Jinn's baseline
+    `full-loop.test.ts` passes after it (34.8 s and 33.7 s);
+  - `test/hermetic/signer-migrate-refusals.test.ts` (7 pass, 1 new), on
+    Safe 1.3.0's own bytecode, with a stand-in at the EntryPoint's address
+    that emits `UserOperationEvent` as it is given: a Safe without an
+    identity is refused without a proof, for an unknown hash, an operation
+    of another sender, a reverted one, one on the root path and one older
+    than an hour (`evm_increaseTime`); a fresh one passes;
+  - the operator's unit tests of `test/signer/` (6 files, 68 pass, 17 of
+    them new); the operator's whole unit suite (`yarn test`: 8384 pass, 33
+    skipped, no failure); `yarn typecheck` and `tsc --noEmit` (no error);
+    Jinn's test typecheck gate (`typecheck:test`: no regression); the three
+    lint scripts of Jinn's CI for the operator; `yarn skill:check` (passes:
+    the verb's help changed, its name and summary did not);
+  - each rule was broken on purpose and a test caught it every time, 21
+    rules in 27 runs: for 0015, no proof accepted, the nonce key (also
+    against the stand-in and against the full loop), the age (also against
+    the stand-in), the sender, `success`, the step skipped; for 0016, no
+    reading of every Safe first (also against the full loop), no check of
+    the NFT's owner; for 0017,
+    the config's entry, the installed mandate's, the step not calling the
+    check, the selector's case; for 0018, the cap, the budget,
+    `--sponsored` printed regardless, the first operation's call floor
+    (also against the full loop), the fee's multiplier (also against the
+    full loop), the paymaster's gas; for 0019, the version; for 0020,
+    `migrationTargets` and the migration.
+
+  Not run: the daemon's boot itself (`main.ts`: the tests call the checks
+  it runs, and the typecheck covers the wiring), the CLI verb as a command
+  (the tests call `migrateTargets`, which it runs), an owner's operation
+  sponsored by a real `WhitelistPaymaster` (the loop has no paymaster: the
+  sponsorship check is tested against a mocked `sponsorships`, and its
+  sizing against agent-signer's own operation), an operation sized by a
+  bundler, and the loop with a hardware key.
 
 **The loop's bytecode fixture.**
 `operator/test/_support/fixtures/tpm-sign-aa-code.json` holds the

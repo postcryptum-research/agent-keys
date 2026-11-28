@@ -1,0 +1,455 @@
+From de3b463a0adbea02a5bfe3f319fffb665229e543 Mon Sep 17 00:00:00 2001
+From: agent-keys <noreply@agent-keys.invalid>
+Date: Sat, 28 Nov 2026 12:00:32 +0000
+Subject: [PATCH 16/20] fix(operator): signer-migrate checks every Safe before
+ the first changes hands
+
+With the fleet identity Safe as well as the service Safe, each Safe was checked just before its
+own handover: a refusal on the second came after the first had been handed over, and the
+operator was left half migrated. A point of #250 in the agent-keys repository (B1).
+
+- signer/migrate.ts: the reads and refusals of one Safe's migration are one function,
+  `preflight`: the Safe's owners and threshold, its modules, guard and fallback handler, the
+  owner's grant, the Kernel's mandate, the agent proof where there is no ERC-8004 identity and
+  the agent NFT's owner where there is one (moved out of the NFT's step). It sends nothing.
+  `migrateTargets` runs it for every target before the first handover, then each Safe's
+  migration, which runs it again right before its own handover. A refusal names the Safe:
+  "the fleet identity Safe <address>, read before any Safe changes hands: ...". It returns the
+  command's output (`MigrationOutput`).
+- cli/commands/signer-migrate.ts: the verb runs migrateTargets over migrationTargets; the help
+  says that both Safes are checked before either changes hands.
+- tests: unit, with a second Safe in the mocked chain: a guard, a fallback handler, the agent
+  EOA as a module, threshold 2 or other owners on the fleet identity Safe are refused while the
+  service Safe is still the EOA's and nothing is sent; so is the fleet identity Safe's missing
+  agent proof when the service Safe has an identity (no NFT moves, the Kernel signs nothing), and
+  an agent NFT that is neither the EOA's nor the Kernel's; with both clear, each is handed over
+  in turn and the output lists both. In the full loop, on the snapshot: a run over both Safes
+  refuses at the fleet identity Safe, which the mandate does not admit, and the service Safe and
+  its NFT are still the EOA's. Each rule was broken once on purpose and a test caught it (no
+  reading of every Safe first, no NFT owner check).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ operator/src/cli/commands/signer-migrate.ts   |  41 +++----
+ operator/src/signer/migrate.ts                | 111 ++++++++++++++++--
+ .../hermetic/full-loop-kernel-owner.test.ts   |  14 ++-
+ operator/test/signer/migrate.test.ts          | 102 +++++++++++++---
+ 4 files changed, 216 insertions(+), 52 deletions(-)
+
+diff --git a/operator/src/cli/commands/signer-migrate.ts b/operator/src/cli/commands/signer-migrate.ts
+index da72d097b..7ec7bd3e4 100644
+--- a/operator/src/cli/commands/signer-migrate.ts
++++ b/operator/src/cli/commands/signer-migrate.ts
+@@ -8,7 +8,7 @@
+  */
+ import { readFileSync } from 'node:fs';
+ import { parseArgs } from 'node:util';
+-import { getAddress, type Address, type Hex } from 'viem';
++import { getAddress, type Hex } from 'viem';
+ import { privateKeyToAccount } from 'viem/accounts';
+ 
+ import { COMMON_FLAGS, type CommandContext, type CommandModule } from '../command.js';
+@@ -19,7 +19,7 @@ import { createCliSignerContext, pickPrimaryMechService } from '../execution-con
+ import { walletPrivateKeyAtIndex } from '../../earning/wallet.js';
+ import { createJinnWalletClient } from '../../earning/viem-clients.js';
+ import { agentSignerConfigOf, createAgentSignerWalletClient } from '../../signer/index.js';
+-import { migrateToKernelOwner, migrationTargets, type MigrationStep } from '../../signer/migrate.js';
++import { migrateTargets, migrationTargets } from '../../signer/migrate.js';
+ 
+ const EXAMPLE = 'jinn signer-migrate --dry-run';
+ 
+@@ -104,31 +104,22 @@ async function run(ctx: CommandContext): Promise<void> {
+       fleetState,
+     );
+ 
+-    const results: { label: string; safe: Address; steps: readonly MigrationStep[] }[] = [];
+-    for (const target of targets) {
+-      const steps = await migrateToKernelOwner({
+-        publicClient: publicClient as never,
+-        agentEoaWallet: agentEoaWallet as never,
+-        kernelWallet,
+-        kernel,
+-        permissionId: agentConfig.permissionId as Hex,
+-        safeAddress: target.safeAddress,
+-        ...(target.identityRegistry !== undefined && target.agentId !== undefined
+-          ? { identityRegistry: target.identityRegistry, agentId: target.agentId }
+-          : {}),
+-        dryRun,
+-        agentSignerOpSend,
+-        ...(agentProof === undefined ? {} : { agentProof: agentProof as Hex }),
+-      });
+-      results.push({ label: target.label, safe: target.safeAddress, steps });
+-    }
+-
+-    const payload = { schemaVersion: 1 as const, dryRun, kernel, agentEoa: agentEoaWallet.account.address, safes: results };
++    // Every Safe is checked before the first changes hands; then each is handed over in turn.
++    const payload = await migrateTargets({
++      publicClient: publicClient as never,
++      agentEoaWallet: agentEoaWallet as never,
++      kernelWallet,
++      kernel,
++      permissionId: agentConfig.permissionId as Hex,
++      dryRun,
++      agentSignerOpSend,
++      ...(agentProof === undefined ? {} : { agentProof: agentProof as Hex }),
++    }, targets);
+     emitResult(
+       payload,
+       () => [
+         `${dryRun ? 'Migration plan' : 'Migrated'}: agent EOA ${payload.agentEoa} -> Kernel ${kernel}`,
+-        ...results.flatMap((r) => [
++        ...payload.safes.flatMap((r) => [
+           `  ${r.label} Safe ${r.safe}`,
+           ...r.steps.map((s) => `    ${s.step.padEnd(22)} ${s.status}${s.txHash ? `  ${s.txHash}` : ''}${s.detail ? `  (${s.detail})` : ''}`),
+         ]),
+@@ -188,6 +179,10 @@ answers: while the Safe has a guard that is not one of its modules, or a
+ fallback handler other than Safe's own CompatibilityFallbackHandler, the
+ command refuses and changes nothing.
+ 
++Every Safe is checked before the first one changes hands: with the fleet
++identity Safe as well, a refusal on either comes while both are still the
++agent EOA's. Each is checked again right before its own handover.
++
+ Idempotent: every step reads the chain first; re-run after an interruption.
+ Run with the daemon stopped. The agent EOA pays the gas of the two handover
+ transactions; the Kernel pays for its own operation.
+diff --git a/operator/src/signer/migrate.ts b/operator/src/signer/migrate.ts
+index a8f862983..f077538da 100644
+--- a/operator/src/signer/migrate.ts
++++ b/operator/src/signer/migrate.ts
+@@ -41,6 +41,11 @@
+ // Steps 0-5 precede the swap on purpose: the Safe is never handed to an address that cannot
+ // operate it. Without an ERC-8004 identity steps 1, 4 and 5 do not apply, and step 3 is the
+ // proof that the Kernel signs.
++//
++// Steps 0-3, with the Safe's owners and threshold and the agent NFT's owner, only read the chain
++// and refuse (`preflight`). With two Safes, `migrateTargets` runs them for both before the first
++// changes hands, so a refusal on the second comes while the first is still the EOA's; each Safe's
++// migration runs them again right before its own handover.
+ import {
+   encodeFunctionData,
+   getAddress,
+@@ -242,7 +247,26 @@ async function send(wallet: WalletClient, publicClient: PublicClient, to: Addres
+   return hash;
+ }
+ 
+-export async function migrateToKernelOwner(input: MigrationInput): Promise<readonly MigrationStep[]> {
++/** What `preflight` read of one Safe, and the steps it checked (0-3). */
++interface Preflight {
++  readonly eoa: Address;
++  readonly kernel: Address;
++  readonly safe: Address;
++  readonly identity: { readonly registry: Address; readonly agentId: bigint } | undefined;
++  readonly owners: readonly Address[];
++  readonly safeHandedOver: boolean;
++  /** The agent NFT's owner, where there is an identity: the EOA or the Kernel. */
++  readonly nftOwner: Address | undefined;
++  readonly steps: readonly MigrationStep[];
++}
++
++/**
++ * Everything the migration of one Safe reads and refuses before it changes anything: the Safe's
++ * owners and threshold, its modules, guard and fallback handler (step 0), the owner's grant (1),
++ * the Kernel's mandate (2), the agent proof where there is no identity (3) and the agent NFT's
++ * owner where there is one. Sends nothing, in a run as in a dry run.
++ */
++async function preflight(input: MigrationInput): Promise<Preflight> {
+   const pc = input.publicClient;
+   const eoa = getAddress(input.agentEoaWallet.account!.address);
+   const kernel = getAddress(input.kernel);
+@@ -348,22 +372,35 @@ export async function migrateToKernelOwner(input: MigrationInput): Promise<reado
+     });
+   }
+ 
++  // The agent NFT goes to the Kernel in step 4: it has to be the EOA's or the Kernel's already.
++  let nftOwner: Address | undefined;
++  if (identity !== undefined) {
++    nftOwner = getAddress(await pc.readContract({ address: identity.registry, abi: REGISTRY_ABI, functionName: 'ownerOf', args: [identity.agentId] }));
++    if (nftOwner !== kernel && nftOwner !== eoa) {
++      throw new Error(`agent NFT ${identity.agentId} belongs to ${nftOwner}, neither the agent EOA nor the Kernel`);
++    }
++  }
++  return { eoa, kernel, safe, identity, owners, safeHandedOver, nftOwner, steps };
++}
++
++export async function migrateToKernelOwner(input: MigrationInput): Promise<readonly MigrationStep[]> {
++  const pc = input.publicClient;
++  // Steps 0-3, read again right before this Safe's handover.
++  const checked = await preflight(input);
++  const { eoa, kernel, safe, identity, owners, safeHandedOver, nftOwner } = checked;
++  const steps: MigrationStep[] = [...checked.steps];
++
+   // 4. Hand the agent NFT over.
+   if (identity === undefined) {
+     steps.push({ step: 'agent-nft', status: 'not-applicable', detail: 'no ERC-8004 identity' });
++  } else if (nftOwner === kernel) {
++    steps.push({ step: 'agent-nft', status: 'already' });
++  } else if (input.dryRun) {
++    steps.push({ step: 'agent-nft', status: 'would' });
+   } else {
+-    const nftOwner = getAddress(await pc.readContract({ address: identity.registry, abi: REGISTRY_ABI, functionName: 'ownerOf', args: [identity.agentId] }));
+-    if (nftOwner === kernel) {
+-      steps.push({ step: 'agent-nft', status: 'already' });
+-    } else if (nftOwner !== eoa) {
+-      throw new Error(`agent NFT ${identity.agentId} belongs to ${nftOwner}, neither the agent EOA nor the Kernel`);
+-    } else if (input.dryRun) {
+-      steps.push({ step: 'agent-nft', status: 'would' });
+-    } else {
+-      const txHash = await send(input.agentEoaWallet, pc, identity.registry,
+-        encodeFunctionData({ abi: REGISTRY_ABI, functionName: 'transferFrom', args: [eoa, kernel, identity.agentId] }), 'signer-migrate.agent-nft');
+-      steps.push({ step: 'agent-nft', status: 'done', txHash });
+-    }
++    const txHash = await send(input.agentEoaWallet, pc, identity.registry,
++      encodeFunctionData({ abi: REGISTRY_ABI, functionName: 'transferFrom', args: [eoa, kernel, identity.agentId] }), 'signer-migrate.agent-nft');
++    steps.push({ step: 'agent-nft', status: 'done', txHash });
+   }
+ 
+   // 5. Publish the EOA as the agent's attestation key. The Kernel's agent key signs here, under
+@@ -412,3 +449,51 @@ export async function migrateToKernelOwner(input: MigrationInput): Promise<reado
+   }
+   return steps;
+ }
++
++/** What `jinn signer-migrate` prints (`--json`): every Safe it handed over, or would, in order. */
++export interface MigrationOutput {
++  readonly schemaVersion: 1;
++  readonly dryRun: boolean;
++  readonly kernel: Address;
++  readonly agentEoa: Address;
++  readonly safes: readonly { readonly label: MigrationTarget['label']; readonly safe: Address; readonly steps: readonly MigrationStep[] }[];
++}
++
++/**
++ * `jinn signer-migrate` over its targets (`migrationTargets`): every Safe's checks first
++ * (`preflight`: owners, threshold, modules, guard, fallback handler, the owner's grant, the
++ * mandate, the agent NFT where there is one and the agent proof where there is none), then each
++ * Safe's migration, which reads them again right before its handover. A refusal on any Safe
++ * comes before the first changes hands.
++ */
++export async function migrateTargets(
++  input: Omit<MigrationInput, 'safeAddress' | 'identityRegistry' | 'agentId'>,
++  targets: readonly MigrationTarget[],
++): Promise<MigrationOutput> {
++  const of = (target: MigrationTarget): MigrationInput => ({
++    ...input,
++    safeAddress: target.safeAddress,
++    ...(target.identityRegistry === undefined || target.agentId === undefined
++      ? {}
++      : { identityRegistry: target.identityRegistry, agentId: target.agentId }),
++  });
++  const named = async <T>(target: MigrationTarget, when: string, run: () => Promise<T>): Promise<T> => {
++    try {
++      return await run();
++    } catch (error) {
++      throw new Error(`the ${target.label} Safe ${target.safeAddress}${when}: ${error instanceof Error ? error.message : String(error)}`);
++    }
++  };
++  for (const target of targets) await named(target, ', read before any Safe changes hands', () => preflight(of(target)));
++  const safes: { label: MigrationTarget['label']; safe: Address; steps: readonly MigrationStep[] }[] = [];
++  for (const target of targets) {
++    safes.push({ label: target.label, safe: target.safeAddress, steps: await named(target, '', () => migrateToKernelOwner(of(target))) });
++  }
++  return {
++    schemaVersion: 1,
++    dryRun: input.dryRun === true,
++    kernel: getAddress(input.kernel),
++    agentEoa: getAddress(input.agentEoaWallet.account!.address),
++    safes,
++  };
++}
+diff --git a/operator/test/hermetic/full-loop-kernel-owner.test.ts b/operator/test/hermetic/full-loop-kernel-owner.test.ts
+index e9e3cb5fb..7c6b86cd6 100644
+--- a/operator/test/hermetic/full-loop-kernel-owner.test.ts
++++ b/operator/test/hermetic/full-loop-kernel-owner.test.ts
+@@ -74,7 +74,7 @@ import {
+ import { AgentSignerError, agentSignerSend, type AgentSignerConfig } from '../../src/signer/agent-signer-cli.js';
+ import { createAgentSignerWalletClient } from '../../src/signer/agent-signer-transport.js';
+ import { assertAgentEoaHasNoAuthority, readAttestationKey, readSafeGuardAndHandler } from '../../src/signer/attestation.js';
+-import { checkAgentProof, migrateToKernelOwner } from '../../src/signer/migrate.js';
++import { checkAgentProof, migrateTargets, migrateToKernelOwner } from '../../src/signer/migrate.js';
+ import { createMetadataPublisherFromViem } from '../../src/solvernets/daemon-init.js';
+ import { PRODUCTION_DEPS } from '../../src/cli/commands/solver-plugins.js';
+ import { buildPluginMetadataKey } from '../../src/erc8004/plugin-registry.js';
+@@ -272,6 +272,18 @@ describeMaybe('hermetic daemon solution loop, Safe owned by a hardware-signed Ke
+           'agent-nft': 'would', 'attestation-key': 'would', 'safe-owner': 'would',
+         });
+         expect(plan[0]).toMatchObject({ step: 'safe-modules', modules: safeModules });
++        // Both Safes are read before either changes hands. The mandate does not admit the fleet
++        // identity Safe, so a run over both refuses there, and the service Safe, first in order,
++        // is still the EOA's, its NFT too.
++        await expect(migrateTargets({
++          publicClient: migration.publicClient, agentEoaWallet: migration.agentEoaWallet, kernelWallet: direct, kernel,
++          permissionId: migration.permissionId,
++        }, [
++          { label: 'service', safeAddress: operator.safeAddress, identityRegistry: IDENTITY_REGISTRY, agentId },
++          { label: 'fleet identity', safeAddress: operator.fleetSafeAddress! },
++        ])).rejects.toThrow(`the fleet identity Safe ${operator.fleetSafeAddress}, read before any Safe changes hands: the Kernel's mandate`);
++        expect(await fixture.publicClient.readContract({ address: IDENTITY_REGISTRY, abi: IDENTITY_ABI, functionName: 'ownerOf', args: [agentId] }))
++          .toBe(getAddress(operator.agentAddress));
+         expect(plan[0]!.detail).toContain(`${serviceGuardAndHandler.guard} is the Safe's guard as well`);
+         expect(await fixture.publicClient.readContract({ address: operator.safeAddress, abi: SAFE_ABI, functionName: 'getOwners' }))
+           .toEqual([getAddress(operator.agentAddress)]);
+diff --git a/operator/test/signer/migrate.test.ts b/operator/test/signer/migrate.test.ts
+index 321491152..bd5f46501 100644
+--- a/operator/test/signer/migrate.test.ts
++++ b/operator/test/signer/migrate.test.ts
+@@ -2,7 +2,7 @@
+ import { describe, expect, it, vi } from 'vitest';
+ import { decodeFunctionData, encodeFunctionData, getAddress, parseAbi, type Address, type Hex } from 'viem';
+ 
+-import { migrateToKernelOwner, migrationTargets } from '../../src/signer/migrate.js';
++import { migrateTargets, migrateToKernelOwner, migrationTargets, type MigrationTarget } from '../../src/signer/migrate.js';
+ import { markUserOperationWallet } from '../../src/tx-retry.js';
+ 
+ const EOA = '0x7471bE25Ec54354c8D70491Ae10bd86705fAD030' as Address;
+@@ -30,6 +30,10 @@ const agentOp = (overrides: Partial<UserOp> = {}): UserOp => ({
+ });
+ const MODULE_A = getAddress('0x00000000000000000000000000000000000000a1');
+ const MODULE_B = getAddress('0x00000000000000000000000000000000000000a2');
++const FLEET_SAFE = getAddress('0x00000000000000000000000000000000000000f1');
++
++/** A Safe of the chain: SAFE's fields come from setup's own, FLEET_SAFE's from `fleet`. */
++interface SafeState { owners?: Address[]; threshold?: bigint; modules?: Address[]; guard?: Address; handler?: Address }
+ 
+ const CALLS = parseAbi([
+   'function setApprovalForAll(address operator, bool approved)',
+@@ -45,19 +49,22 @@ interface Identity { approved: boolean; nftOwner: Address; metadata: Hex }
+ function setup(chain: {
+   kernelCode: Hex; admits: boolean; threshold?: bigint; owners?: Address[]; modules?: Address[];
+   identity?: Identity; kernelCannotSign?: boolean; guard?: Address; handler?: Address;
+-  userOps?: UserOp[];
++  userOps?: UserOp[]; fleet?: SafeState;
+ }) {
+   const state = { owners: chain.owners ?? [EOA], identity: chain.identity };
++  const fleetState = { owners: chain.fleet?.owners ?? [EOA] };
++  const safeOf = (address: Address): SafeState & { owners: Address[] } =>
++    address === FLEET_SAFE ? { ...chain.fleet, owners: fleetState.owners } : { ...chain, owners: state.owners };
+   // What was sent, in order: `<sender>:<function>`.
+   const sent: string[] = [];
+   const publicClient = {
+-    async readContract(args: { functionName: string; args?: readonly unknown[] }) {
++    async readContract(args: { address: Address; functionName: string; args?: readonly unknown[] }) {
+       switch (args.functionName) {
+-        case 'getOwners': return state.owners;
+-        case 'isOwner': return state.owners.includes(args.args![0] as Address);
+-        case 'getThreshold': return chain.threshold ?? 1n;
+-        case 'getModulesPaginated': return [chain.modules ?? [], SENTINEL];
+-        case 'isModuleEnabled': return (chain.modules ?? []).includes(args.args![0] as Address);
++        case 'getOwners': return safeOf(args.address).owners;
++        case 'isOwner': return safeOf(args.address).owners.includes(args.args![0] as Address);
++        case 'getThreshold': return safeOf(args.address).threshold ?? 1n;
++        case 'getModulesPaginated': return [safeOf(args.address).modules ?? [], SENTINEL];
++        case 'isModuleEnabled': return (safeOf(args.address).modules ?? []).includes(args.args![0] as Address);
+         case 'VERSION': return '1.3.0';
+         case 'permissionConfig': return { permissionFlag: '0x0000', signer: KERNEL, policyData: [`0x0000${POLICY.slice(2)}`] };
+         case 'isAllowed': return chain.admits;
+@@ -68,9 +75,10 @@ function setup(chain: {
+       }
+     },
+     // Safe 1.3.0's guard slot and fallback handler slot, in that order of the `if`.
+-    async getStorageAt(args: { slot: Hex }) {
+-      const value = args.slot === '0x4a204f620c8c5ccdca3fd54d003badd85ba500436a431f0cbda4f558c93c34c8' ? chain.guard
+-        : args.slot === '0x6c9a6c4a39284e37ed1cf53d337577d14212a4870fb976a4366c693b939918d5' ? chain.handler
++    async getStorageAt(args: { address: Address; slot: Hex }) {
++      const safe = safeOf(args.address);
++      const value = args.slot === '0x4a204f620c8c5ccdca3fd54d003badd85ba500436a431f0cbda4f558c93c34c8' ? safe.guard
++        : args.slot === '0x6c9a6c4a39284e37ed1cf53d337577d14212a4870fb976a4366c693b939918d5' ? safe.handler
+           : (() => { throw new Error(`unexpected slot ${args.slot}`); })();
+       return `0x${(value ?? '0x').slice(2).toLowerCase().padStart(64, '0')}`;
+     },
+@@ -91,9 +99,10 @@ function setup(chain: {
+   };
+   const eoaSend = vi.fn(async (tx: { to: Address; data: Hex }) => {
+     const call = decodeFunctionData({ abi: CALLS, data: tx.data });
+-    sent.push(`eoa:${call.functionName}`);
++    sent.push(`eoa:${call.functionName}${tx.to === FLEET_SAFE ? '(fleet)' : ''}`);
+     if (call.functionName === 'transferFrom') state.identity!.nftOwner = KERNEL;
+-    if (call.functionName === 'execTransaction') state.owners = [KERNEL];
++    if (call.functionName === 'execTransaction' && tx.to === FLEET_SAFE) fleetState.owners = [KERNEL];
++    else if (call.functionName === 'execTransaction') state.owners = [KERNEL];
+     return TX;
+   });
+   const kernelSend = vi.fn(async (tx: { to: Address; data: Hex }) => {
+@@ -112,7 +121,7 @@ function setup(chain: {
+     safeAddress: SAFE,
+     ...(chain.identity === undefined ? {} : { identityRegistry: REGISTRY, agentId: AGENT_ID }),
+   };
+-  return { input, eoaSend, kernelSend, sent, state };
++  return { input, eoaSend, kernelSend, sent, state, fleetState };
+ }
+ 
+ const statuses = (steps: readonly { step: string; status: string }[]) => steps.map((s) => [s.step, s.status]);
+@@ -320,9 +329,72 @@ describe('migrateToKernelOwner: a Safe without an ERC-8004 identity', () => {
+   });
+ });
+ 
++// #250 B1: each Safe was checked just before its own handover, so a refusal on the second came
++// after the first had changed hands. migrateTargets reads every Safe first.
++describe('migrateTargets: every Safe is checked before the first changes hands', () => {
++  const both: readonly MigrationTarget[] = [{ label: 'service', safeAddress: SAFE }, { label: 'fleet identity', safeAddress: FLEET_SAFE }];
++  const common = (input: ReturnType<typeof setup>['input'], proof: { agentProof?: Hex } = { agentProof: PROOF }) => ({
++    publicClient: input.publicClient, agentEoaWallet: input.agentEoaWallet, kernelWallet: input.kernelWallet,
++    kernel: input.kernel, permissionId: input.permissionId, ...proof,
++  });
++
++  it('a refusal on the second Safe comes while the first is still the EOA\'s', async () => {
++    const cases: [SafeState, string][] = [
++      [{ guard: MODULE_B }, `has guard ${MODULE_B}`],
++      [{ handler: MODULE_B }, `has fallback handler ${MODULE_B}`],
++      [{ modules: [EOA] }, 'is an enabled module of the Safe'],
++      [{ threshold: 2n }, 'has threshold 2'],
++      [{ owners: [POLICY] }, 'is owned by neither'],
++    ];
++    for (const [fleet, refusal] of cases) {
++      const { input, sent, state } = setup({ kernelCode: '0x6001', admits: true, userOps: [agentOp()], fleet });
++      const message = await migrateTargets(common(input), both).then(() => undefined, (e: Error) => e.message);
++      expect(message).toContain(`the fleet identity Safe ${FLEET_SAFE}, read before any Safe changes hands: `);
++      expect(message).toContain(refusal);
++      expect(sent).toEqual([]);
++      expect(state.owners).toEqual([EOA]);
++    }
++  });
++
++  it('the second Safe\'s agent proof and the first Safe\'s identity are read before anything is sent', async () => {
++    // The service Safe has an identity and the owner's grant; the fleet identity Safe has none, and no proof is given.
++    const { input, sent, state } = setup({
++      kernelCode: '0x6001', admits: true, identity: { approved: true, nftOwner: EOA, metadata: '0x' },
++    });
++    await expect(migrateTargets(common(input, {}), [
++      { label: 'service', safeAddress: SAFE, identityRegistry: REGISTRY, agentId: AGENT_ID }, { label: 'fleet identity', safeAddress: FLEET_SAFE },
++    ])).rejects.toThrow(`the fleet identity Safe ${FLEET_SAFE}, read before any Safe changes hands: the Safe has no ERC-8004 identity`);
++    // No NFT moved, the Kernel signed nothing, no Safe changed hands.
++    expect(sent).toEqual([]);
++    expect(state.owners).toEqual([EOA]);
++    expect(state.identity!.nftOwner).toBe(EOA);
++  });
++
++  it('an agent NFT that is neither the EOA\'s nor the Kernel\'s is refused in the reading, before anything is sent', async () => {
++    const { input, sent, state } = setup({
++      kernelCode: '0x6001', admits: true, userOps: [agentOp()], identity: { approved: true, nftOwner: POLICY, metadata: '0x' },
++    });
++    await expect(migrateTargets(common(input), [
++      { label: 'service', safeAddress: SAFE, identityRegistry: REGISTRY, agentId: AGENT_ID }, { label: 'fleet identity', safeAddress: FLEET_SAFE },
++    ])).rejects.toThrow(`the service Safe ${SAFE}, read before any Safe changes hands: agent NFT ${AGENT_ID} belongs to ${POLICY}, neither`);
++    expect(sent).toEqual([]);
++    expect(state.owners).toEqual([EOA]);
++  });
++
++  it('with both Safes clear, each is handed over in turn and the output lists both', async () => {
++    const { input, sent, state, fleetState } = setup({ kernelCode: '0x6001', admits: true, userOps: [agentOp()] });
++    const output = await migrateTargets(common(input), both);
++    expect(output).toMatchObject({ dryRun: false, kernel: KERNEL, agentEoa: EOA });
++    expect(output.safes.map((s) => [s.label, s.safe, s.steps.find((step) => step.step === 'safe-owner')!.status])).toEqual([
++      ['service', SAFE, 'done'], ['fleet identity', FLEET_SAFE, 'done'],
++    ]);
++    expect(sent).toEqual(['eoa:execTransaction', 'eoa:execTransaction(fleet)']);
++    expect([state.owners, fleetState.owners]).toEqual([[KERNEL], [KERNEL]]);
++  });
++});
++
+ // The daemon's boot check reads the list the migration hands over, the fleet identity Safe included.
+ describe('migrationTargets', () => {
+-  const FLEET_SAFE = getAddress('0x00000000000000000000000000000000000000f1');
+   const service = { safeAddress: SAFE.toLowerCase(), agentId: '7', identityRegistry: REGISTRY };
+ 
+   it('the service Safe, then the fleet identity Safe with its own identity', () => {

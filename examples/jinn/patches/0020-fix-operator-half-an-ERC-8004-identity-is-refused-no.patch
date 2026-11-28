@@ -1,0 +1,129 @@
+From 9331fbd893bc09261bd666509ca352a681f86d2e Mon Sep 17 00:00:00 2001
+From: agent-keys <noreply@agent-keys.invalid>
+Date: Sat, 28 Nov 2026 12:08:57 +0000
+Subject: [PATCH 20/20] fix(operator): half an ERC-8004 identity is refused,
+ not taken as none
+
+migrationTargets took a Safe whose fleet state has an agent id and no IdentityRegistry, or the
+reverse, as a Safe without an identity. The migration would then skip the owner's grant, the
+agent NFT and the attestation key, and the boot check would not read the NFT. A point of #250 in
+the agent-keys repository.
+
+- signer/migrate.ts: migrationTargets refuses such a pair for the service Safe and for the fleet
+  identity Safe, naming the Safe and what it has, and says to run the bootstrap again, which
+  records the two together. The boot (main.ts) and `jinn signer-migrate` both build their list
+  with it, so both refuse. The migration of one Safe refuses half an identity as well, before it
+  reads anything else, and migrateTargets passes a target's fields as they are for it to do so.
+- tests: unit: an agent id without a registry and a registry without an agent id, for either
+  Safe, are refused by migrationTargets; given to the migration, directly or through
+  migrateTargets, they are refused and nothing is sent. Each rule was broken once on purpose and
+  a test caught it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ operator/src/signer/migrate.ts       | 36 +++++++++++++++++++++-------
+ operator/test/signer/migrate.test.ts | 22 +++++++++++++++++
+ 2 files changed, 50 insertions(+), 8 deletions(-)
+
+diff --git a/operator/src/signer/migrate.ts b/operator/src/signer/migrate.ts
+index cf43bcb81..f584cf244 100644
+--- a/operator/src/signer/migrate.ts
++++ b/operator/src/signer/migrate.ts
+@@ -442,6 +442,10 @@ export interface MigrationTarget {
+  * The Safes `jinn signer-migrate` hands over, in its order: the service Safe, then the fleet
+  * identity Safe when it is a different one (the same agent EOA owns both). The daemon's boot
+  * check reads the same list, so every Safe the migration hands over is checked at boot.
++ *
++ * A Safe's identity is its agent id and its IdentityRegistry together, or neither: with one of
++ * the two missing it is refused, not taken as a Safe without an identity, which would skip the
++ * owner's grant, the agent NFT and the attestation key.
+  */
+ export function migrationTargets(
+   service: { readonly safeAddress: string; readonly agentId: string | null; readonly identityRegistry: string | null },
+@@ -451,11 +455,21 @@ export function migrationTargets(
+     readonly fleet_identity_registry?: string | null;
+   },
+ ): readonly MigrationTarget[] {
+-  const target = (label: MigrationTarget['label'], safe: string, agentId: string | null, registry: string | null): MigrationTarget => ({
+-    label,
+-    safeAddress: getAddress(safe),
+-    ...(agentId !== null && registry !== null ? { identityRegistry: getAddress(registry), agentId: BigInt(agentId) } : {}),
+-  });
++  const target = (label: MigrationTarget['label'], safe: string, agentId: string | null, registry: string | null): MigrationTarget => {
++    if ((agentId === null) !== (registry === null)) {
++      throw new Error(
++        `the fleet state gives the ${label} Safe ${getAddress(safe)} ${agentId === null
++          ? `an IdentityRegistry (${registry}) and no agent id` : `an agent id (${agentId}) and no IdentityRegistry`}: `
++        + 'an ERC-8004 identity is both or neither, and with one of them the Safe cannot be checked or handed over as either. '
++        + 'Nothing was read or changed. Run the bootstrap again (jinn bootstrap), which records the two together, then re-run',
++      );
++    }
++    return {
++      label,
++      safeAddress: getAddress(safe),
++      ...(agentId !== null && registry !== null ? { identityRegistry: getAddress(registry), agentId: BigInt(agentId) } : {}),
++    };
++  };
+   const targets = [target('service', service.safeAddress, service.agentId, service.identityRegistry)];
+   if (fleet.fleet_safe_address != null && getAddress(fleet.fleet_safe_address) !== targets[0]!.safeAddress) {
+     targets.push(target('fleet identity', fleet.fleet_safe_address, fleet.fleet_agent_id ?? null, fleet.fleet_identity_registry ?? null));
+@@ -501,6 +515,12 @@ async function preflight(input: MigrationInput): Promise<Preflight> {
+   const eoa = getAddress(input.agentEoaWallet.account!.address);
+   const kernel = getAddress(input.kernel);
+   const safe = getAddress(input.safeAddress);
++  if ((input.identityRegistry === undefined) !== (input.agentId === undefined)) {
++    throw new Error(
++      `the Safe ${safe} is given ${input.agentId === undefined ? 'an IdentityRegistry and no agent id' : 'an agent id and no IdentityRegistry'}: `
++      + 'an ERC-8004 identity is both or neither. Nothing was changed',
++    );
++  }
+   const identity = input.identityRegistry !== undefined && input.agentId !== undefined
+     ? { registry: getAddress(input.identityRegistry), agentId: input.agentId }
+     : undefined;
+@@ -713,12 +733,12 @@ export async function migrateTargets(
+   input: Omit<MigrationInput, 'safeAddress' | 'identityRegistry' | 'agentId'>,
+   targets: readonly MigrationTarget[],
+ ): Promise<MigrationOutput> {
++  // A half identity goes through as it is, for preflight to refuse.
+   const of = (target: MigrationTarget): MigrationInput => ({
+     ...input,
+     safeAddress: target.safeAddress,
+-    ...(target.identityRegistry === undefined || target.agentId === undefined
+-      ? {}
+-      : { identityRegistry: target.identityRegistry, agentId: target.agentId }),
++    ...(target.identityRegistry === undefined ? {} : { identityRegistry: target.identityRegistry }),
++    ...(target.agentId === undefined ? {} : { agentId: target.agentId }),
+   });
+   const named = async <T>(target: MigrationTarget, when: string, run: () => Promise<T>): Promise<T> => {
+     try {
+diff --git a/operator/test/signer/migrate.test.ts b/operator/test/signer/migrate.test.ts
+index d6e606376..6e0e0159b 100644
+--- a/operator/test/signer/migrate.test.ts
++++ b/operator/test/signer/migrate.test.ts
+@@ -551,4 +551,26 @@ describe('migrationTargets', () => {
+     expect(migrationTargets({ safeAddress: SAFE, agentId: null, identityRegistry: null }, { fleet_safe_address: FLEET_SAFE }))
+       .toEqual([{ label: 'service', safeAddress: SAFE }, { label: 'fleet identity', safeAddress: FLEET_SAFE }]);
+   });
++
++  // #250: an agent id without a registry, or the reverse, was taken as no identity at all.
++  it('refuses an agent id without an IdentityRegistry, or the reverse, for either Safe', () => {
++    expect(() => migrationTargets({ safeAddress: SAFE, agentId: '7', identityRegistry: null }, {}))
++      .toThrow(`the fleet state gives the service Safe ${SAFE} an agent id (7) and no IdentityRegistry: an ERC-8004 identity is both or neither`);
++    expect(() => migrationTargets({ safeAddress: SAFE, agentId: null, identityRegistry: REGISTRY }, {}))
++      .toThrow(`the fleet state gives the service Safe ${SAFE} an IdentityRegistry (${REGISTRY}) and no agent id`);
++    expect(() => migrationTargets(service, { fleet_safe_address: FLEET_SAFE, fleet_agent_id: '9' }))
++      .toThrow(`the fleet state gives the fleet identity Safe ${FLEET_SAFE} an agent id (9) and no IdentityRegistry`);
++    expect(() => migrationTargets(service, { fleet_safe_address: FLEET_SAFE, fleet_identity_registry: REGISTRY }))
++      .toThrow('Run the bootstrap again (jinn bootstrap), which records the two together');
++  });
++
++  it('and so does the migration given half an identity: nothing is sent', async () => {
++    for (const half of [{ identityRegistry: REGISTRY }, { agentId: AGENT_ID }]) {
++      const { input, sent } = setup({ kernelCode: '0x6001', admits: true, userOps: [agentOp()] });
++      await expect(migrateToKernelOwner({ ...input, ...half, agentProof: PROOF })).rejects.toThrow('an ERC-8004 identity is both or neither');
++      await expect(migrateTargets({ ...input, agentProof: PROOF }, [{ label: 'service', safeAddress: SAFE, ...half }]))
++        .rejects.toThrow(`the service Safe ${SAFE}, read before any Safe changes hands: the Safe ${SAFE} is given an`);
++      expect(sent).toEqual([]);
++    }
++  });
+ });
