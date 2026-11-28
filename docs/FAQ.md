@@ -404,9 +404,9 @@ without stopping every agent:
   one part of that mandate (`permission pause`): the policy refuses the
   agent's calls through it, and the rest of the mandate runs. The guardian
   can lift its own pause and do nothing else: it never lifts the owner's,
-  widens no mandate and moves no funds. An order the agent registered at a
-  venue before the pause stays good until it expires; the owner's
-  revocation of the permission (`permission revoke`) ends every one at once.
+  widens no mandate and moves no funds. A venue's pause reaches the orders
+  the agent registered there before it: the account vouches for none of
+  them while the pause holds, so the venue cannot settle them.
 - **The owner rotates it out.** A new mandate without the part, or with a
   fixed one, replaces the old in one operation (`permission rotate`), which
   keeps the guardian and the pauses of the parts it keeps.

@@ -90,6 +90,10 @@ struct Pending {
     // `checkSignaturePolicy` vouches up to and at this second. 2^48 - 1
     // seconds is about 8.9 million years
     uint48 validBefore;
+    // An order's venue, as `PolicyRules.venueTag` (never 0); 0 for an x402
+    // authorization. A pause of the venue reaches the orders registered
+    // before it (#251). In the first slot, which the signature check reads
+    uint80 venueTag;
     // The token charged: the digest names it only through its domain
     address token;
 }
@@ -179,6 +183,10 @@ library PolicyStorage {
     // install, packed from the high bytes, eight at most, so that `pause`
     // finds its pins without calling the judge. key: `keccak256(mandate, judge)`
     mapping(bytes32 key => mapping(address account => bytes32)) judgeSelectors;
+    // Map of tag => account => who paused the venue the tag names, as
+    // `modulePaused`, for `checkSignaturePolicy`: an order's record names its
+    // venue by tag. tag: `PolicyRules.venueTag(mandate, decoder)`
+    mapping(uint80 tag => mapping(address account => uint8)) venueTagPaused;
     }
 
     /// @dev The layout, at its slot.

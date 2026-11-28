@@ -764,6 +764,8 @@ contract AgentPolicy is IPolicy {
         // The hash must be registered under the current installation
         Pending storage p = _pending(msg.sender, PolicyRules.mandate(id, c.epoch), hash);
         if (p.value == 0) return SIG_VALIDATION_FAILED_UINT;
+        // An order whose venue the owner or the guardian paused (#251)
+        if (p.venueTag != 0 && _store().venueTagPaused[p.venueTag][msg.sender] != 0) return SIG_VALIDATION_FAILED_UINT;
         // Within the mandate's window, and no longer than the registration lives
         uint48 until = p.validBefore < c.validUntil ? p.validBefore : c.validUntil;
         return packValidationData(ValidAfter.wrap(c.validAfter), ValidUntil.wrap(until));
@@ -972,7 +974,7 @@ contract AgentPolicy is IPolicy {
             uint256 spent = _tokenSpent(m, j.token, t) + j.mostSold;
             if (spent > t.budget) return false;
             // An order's digest is recorded for `checkSignaturePolicy`; the same order registers once
-            if (!call && !_recordX402(m, j.digest, j.mostSold, j.validTo, j.token)) return false;
+            if (!call && !_recordOrder(m, j, decoder)) return false;
             // Charge it
             t.spent = uint128(spent);
         }
@@ -1098,7 +1100,7 @@ contract AgentPolicy is IPolicy {
         if (spent > t.budget) return false;
         // Record the digest the token will ask about; the same authorization registers once
         bytes32 digest = _x402Digest(t.domainSeparator, from, to, value, validAfter, validBefore, nonce);
-        if (!_recordX402(m, digest, value, validBefore, token)) return false;
+        if (!_recordX402(m, digest, value, validBefore, token, 0)) return false;
         // Charge it
         t.spent = uint128(spent);
         return true;
@@ -1114,6 +1116,15 @@ contract AgentPolicy is IPolicy {
         return next == 0 || notAfter <= next;
     }
 
+    /// @dev Records a registered order, with its venue's tag.
+    /// @param m The mandate key.
+    /// @param j The decoder's answer.
+    /// @param decoder The venue's decoder.
+    /// @return True if recorded.
+    function _recordOrder(bytes32 m, Judged memory j, address decoder) internal returns (bool) {
+        return _recordX402(m, j.digest, j.mostSold, j.validTo, j.token, PolicyRules.venueTag(m, decoder));
+    }
+
     /// @dev Records a registered authorization; false when its digest is
     /// already there. Orders are recorded here too, their `validTo` as
     /// `validBefore`.
@@ -1123,8 +1134,9 @@ contract AgentPolicy is IPolicy {
     /// @param validBefore The last second it is vouched for; never 0, which
     /// `checkSignaturePolicy` would hand Kernel as "no end".
     /// @param token The token charged.
+    /// @param venueTag An order's venue (`PolicyRules.venueTag`); 0 for an x402 authorization.
     /// @return True if recorded.
-    function _recordX402(bytes32 m, bytes32 digest, uint256 value, uint256 validBefore, address token)
+    function _recordX402(bytes32 m, bytes32 digest, uint256 value, uint256 validBefore, address token, uint80 venueTag)
         internal
         returns (bool)
     {
@@ -1136,7 +1148,7 @@ contract AgentPolicy is IPolicy {
         // An end of 0 would be vouched for without end, past the mandate's own
         if (validBefore == 0) return false;
         // The record, and the period it was charged in (0 without periods)
-        (p.value, p.validBefore, p.token) = (uint128(value), uint48(validBefore), token);
+        (p.value, p.validBefore, p.venueTag, p.token) = (uint128(value), uint48(validBefore), venueTag, token);
         _store().chargedIn[keccak256(abi.encode(m, digest))][msg.sender] = uint48(_perOperation(PERIOD_NOW));
         return true;
     }

@@ -226,10 +226,11 @@ nothing, and the owner removes it with `setGuardian(id, 0)`. A pause holds
 two bits, the owner's and the guardian's, and validation refuses while
 either is set. `pause` finds a judge's pins from the selectors recorded at
 install and does not call the judge, so a judge cannot keep itself from
-being paused. A pause stops the agent's new calls through the module; an
-order registered at a venue before the pause stays vouched for until it
-expires, and the owner's revocation of the permission ends every vouch at
-once. The flag is in the account's slots, so validation may
+being paused. A pause of a venue reaches its orders registered before it,
+too: an order's record names its venue by a tag (80 bits of the venue's
+pause key, in the record's first slot), and the account vouches for no
+order whose venue is paused, so the venue cannot settle it until the pause
+is lifted. The flag is in the account's slots, so validation may
 read it (a shape judge's flag shares its pin's slot and costs nothing; a
 venue decoder's costs one slot on venue operations). There is no flag for
 everyone at once: validation may not read one, and so a module is stopped
@@ -282,7 +283,7 @@ Measured on the source, against the whole policy before the division [V
 
 | | Before | Now |
 |---|---|---|
-| `AgentPolicy` size | 24,437 bytes | 18,616 (`PolicyInstall` 11,693, `SafeShapes` 2,844) |
+| `AgentPolicy` size | 24,437 bytes | 18,875 (`PolicyInstall` 11,886, `SafeShapes` 2,844) |
 | validation: a plain call | 34,313 gas | 34,324 |
 | a token transfer | 41,946 | 41,957 |
 | a Safe transaction | 42,703 | 47,839 |

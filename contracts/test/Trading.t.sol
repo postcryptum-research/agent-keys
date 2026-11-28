@@ -616,18 +616,35 @@ contract TradingTest is AgentPermissionTest {
         assertTrue(policy.paused(acct, TRD, address(d)));
     }
 
-    /// What a pause does not do: an order registered before it stays vouched
-    /// for until it expires, as the venue settles it; the owner's revocation
-    /// ends every vouch at once (`test_order_revokingEndsEveryVouch`).
-    function test_order_aPauseStopsNewOrdersNotRegisteredOnes() public {
+    /// A pause reaches the venue's orders registered before it: the account
+    /// no longer vouches for them, so the venue cannot settle them, until the
+    /// pause is lifted; the guardian's pause does the same, and an x402
+    /// payment of the same mandate is not touched.
+    function test_order_aPauseReachesTheOrdersRegisteredBeforeIt() public {
         _with(DAY);
         CowSwapDecoder.Order memory o = _order(150e6, _soon());
         bytes32 digest = settlement.digestOf(o);
         _register(o);
+        assertTrue(_vouched(digest), "registered");
         vm.prank(acct);
         policy.pause(acct, TRD, address(decoder), true);
-        _expectRefused(_tradeOp(_today(), address(policy), 0, _registerCall(_order(10e6, _soon()))));
-        assertTrue(_vouched(digest), "registered before the pause: still vouched for");
+        assertFalse(_vouched(digest), "the owner's pause: no longer vouched for");
+        bytes memory signature = _orderSignature(digest);
+        vm.expectRevert();
+        settlement.settle(o, acct, signature);
+        vm.prank(acct);
+        policy.pause(acct, TRD, address(decoder), false);
+        assertTrue(_vouched(digest), "lifted: vouched for again, until it expires");
+        address keeper = makeAddr("guardian");
+        vm.prank(acct);
+        policy.setGuardian(TRD, keeper);
+        vm.prank(keeper);
+        policy.pause(acct, TRD, address(decoder), true);
+        assertFalse(_vouched(digest), "the guardian's pause as well");
+        vm.prank(keeper);
+        policy.pause(acct, TRD, address(decoder), false);
+        settlement.settle(o, acct, signature);
+        assertEq(usd.balanceOf(acct), 10_000e6 - 150e6, "settled once lifted");
     }
 
     /// A decoder's answer is taken only in its exact form.

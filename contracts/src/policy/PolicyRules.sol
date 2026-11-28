@@ -89,6 +89,17 @@ library PolicyRules {
         return PolicyStorage.store().tokens[keccak256(abi.encode(m, token_))][account];
     }
 
+    /// @dev A venue decoder of a mandate as an order's record names it: the
+    /// low 80 bits of its pause key, never 0 (#251). Two tags that met would
+    /// make a pause of one venue refuse the other's orders too, never let one
+    /// through.
+    /// @param m The mandate key.
+    /// @param decoder The decoder.
+    /// @return The tag.
+    function venueTag(bytes32 m, address decoder) internal pure returns (uint80) {
+        return uint80(uint256(keccak256(abi.encode(m, decoder)))) | 1;
+    }
+
     /// @dev The account's pin of a venue's decoder under a mandate.
     /// @param account The account.
     /// @param m The mandate key.
