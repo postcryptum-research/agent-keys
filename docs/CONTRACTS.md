@@ -778,13 +778,14 @@ pair; its address is the policy's CREATE address with nonce 1. Called
 directly it writes its own storage, which installs no mandate anyone reads
 (`test_install_theInstallCodeWritesThePolicysStorageOnlyThroughThePolicy`).
 
-**What it costs** [V `test_measure_installGas` and
-`test_measure_validationGas_*`, 2026-11-27]: `AgentPolicy` is 6,139 bytes
-smaller (17,715); `PolicyInstall` is 8,145, with its own copy of the shared
-rules. An install of two entries and a token limit costs 3,688 gas more
-(182,034): one cold DELEGATECALL and the data encoded for it. Validation
-costs 48 to 139 gas less by shape than before the step: the shared rules
-are called directly.
+**What it costs** [V `test_measure_installGas`, `forge build --sizes`,
+2026-11-28], against the policy before the division: `AgentPolicy` is
+5,826 bytes smaller (18,611 of 24,437); `PolicyInstall` is 10,972, with its
+own copy of the shared rules. An install of two entries and a token limit
+costs 9,635 gas more (187,981): one cold DELEGATECALL, the data encoded
+for it, and each entry's kind. What validation costs, by shape, is in the
+section on `SafeShapes` and in
+[`ARCHITECTURE.md`](ARCHITECTURE.md#what-it-costs).
 
 ## SafeNonceAssert
 
