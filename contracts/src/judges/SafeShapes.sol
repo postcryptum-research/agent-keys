@@ -43,29 +43,8 @@ contract SafeShapes is IShapeJudge {
             calls[0] = Inner(to, value, start, end, operation == 1);
             return (true, calls);
         }
-        if (selector == MULTI_SEND) {
-            Leg[] memory legs;
-            (ok, legs) = readMultiSend(data);
-            if (!ok) return (false, calls);
-            calls = new Inner[](legs.length);
-            for (uint256 i; i < legs.length; i++) {
-                calls[i] = Inner(legs[i].to, legs[i].value, legs[i].start, legs[i].end, false);
-            }
-            return (true, calls);
-        }
+        if (selector == MULTI_SEND) return readMultiSend(data);
         return (false, calls);
-    }
-
-    /// One CALL leg of a batch: its target, its value, and where its data lies.
-    struct Leg {
-        // The leg's target
-        address to;
-        // The leg's native value
-        uint256 value;
-        // Where the leg's data starts, in the bytes given
-        uint256 start;
-        // Where it ends, exclusive
-        uint256 end;
     }
 
     /// @notice Reads the parts of a `Safe.execTransaction` call the policy
@@ -89,28 +68,28 @@ contract SafeShapes is IShapeJudge {
         // whole words only. A Safe built with a decoder that masks the word
         // would call the address judged here; one built with a decoder that
         // validates it reverts at execution, with the operation charged
-        if ((uint256(bytes32(d[4:36])) | uint256(bytes32(d[228:260])) | uint256(bytes32(d[260:292]))) >> 160 != 0) {
+        if ((_word(d, 4) | _word(d, 228) | _word(d, 260)) >> 160 != 0) {
             return (false, address(0), 0, 0, 0, 0);
         }
         // Head words 0 to 3: to, value, the data's offset, operation
-        to = address(uint160(uint256(bytes32(d[4:36]))));
-        value = uint256(bytes32(d[36:68]));
-        uint256 dataOffset = uint256(bytes32(d[68:100]));
-        operation = uint256(bytes32(d[100:132]));
+        to = address(uint160(_word(d, 4)));
+        value = _word(d, 36);
+        uint256 dataOffset = _word(d, 68);
+        operation = _word(d, 100);
         // Head words 4 to 6: safeTxGas, baseGas, gasPrice, all 0. With a
         // gasPrice the Safe would pay a refund out of its own funds to a
         // receiver the agent picks. With a safeTxGas (or a gasPrice) the Safe
         // does not revert when its inner call does, and validation would have
         // counted a call that was not made: a withdrawal of an allowance, say.
         // With all three 0 the Safe's transaction fails with its inner call.
-        if ((uint256(bytes32(d[132:164])) | uint256(bytes32(d[164:196])) | uint256(bytes32(d[196:228]))) != 0) {
+        if ((_word(d, 132) | _word(d, 164) | _word(d, 196)) != 0) {
             return (false, address(0), 0, 0, 0, 0);
         }
         // The data: its offset bounded before any sum, then its length and bytes within the calldata
         if (dataOffset > d.length) return (false, address(0), 0, 0, 0, 0);
         uint256 head = 4 + dataOffset;
         if (d.length < head + 32) return (false, address(0), 0, 0, 0, 0);
-        uint256 length = uint256(bytes32(d[head:head + 32]));
+        uint256 length = _word(d, head);
         if (length > d.length || d.length < head + 32 + length) return (false, address(0), 0, 0, 0, 0);
         return (true, to, value, operation, head + 32, head + 32 + length);
     }
@@ -120,8 +99,8 @@ contract SafeShapes is IShapeJudge {
     /// data`, CALL legs only.
     /// @param d The `multiSend` calldata, selector included.
     /// @return ok True if the batch holds at least one leg and every leg is a whole CALL leg.
-    /// @return legs The legs, in order, with where each one's data lies in `d`.
-    function readMultiSend(bytes calldata d) public pure returns (bool ok, Leg[] memory legs) {
+    /// @return legs The legs, in order, with where each one's data lies in `d`; none a DELEGATECALL.
+    function readMultiSend(bytes calldata d) public pure returns (bool ok, Inner[] memory legs) {
         // The packed transactions, at least one byte of them
         (bool found, uint256 first, uint256 last) = _transactions(d);
         if (!found || first == last) return (false, legs);
@@ -135,11 +114,11 @@ contract SafeShapes is IShapeJudge {
             i = dataEnd;
         }
         // Then read them
-        legs = new Leg[](count);
+        legs = new Inner[](count);
         i = first;
         for (uint256 k; k < count; k++) {
             (, address to, uint256 value, uint256 dataEnd) = _leg(d, i, last);
-            legs[k] = Leg(to, value, i + 85, dataEnd);
+            legs[k] = Inner(to, value, i + 85, dataEnd, false);
             i = dataEnd;
         }
         return (true, legs);
@@ -154,12 +133,12 @@ contract SafeShapes is IShapeJudge {
         // selector + offset + length
         if (d.length < 68) return (false, 0, 0);
         // The offset, bounded by the calldata before any sum
-        uint256 offset = uint256(bytes32(d[4:36]));
+        uint256 offset = _word(d, 4);
         if (offset > d.length) return (false, 0, 0);
         // The length word, then the bytes, within the calldata
         uint256 head = 4 + offset;
         if (d.length < head + 32) return (false, 0, 0);
-        uint256 length = uint256(bytes32(d[head:head + 32]));
+        uint256 length = _word(d, head);
         if (length > d.length || d.length < head + 32 + length) return (false, 0, 0);
         return (true, head + 32, head + 32 + length);
     }
@@ -178,13 +157,25 @@ contract SafeShapes is IShapeJudge {
         returns (bool ok, address to, uint256 value, uint256 dataEnd)
     {
         // A whole header, and operation 0 (CALL)
-        if (last < i + 85 || uint8(d[i]) != 0) return (false, address(0), 0, 0);
+        if (last < i + 85 || _word(d, i) >> 248 != 0) return (false, address(0), 0, 0);
         // to (20 bytes), value (32), the data's length (32)
-        to = address(bytes20(d[i + 1:i + 21]));
-        value = uint256(bytes32(d[i + 21:i + 53]));
-        uint256 length = uint256(bytes32(d[i + 53:i + 85]));
+        to = address(uint160(_word(d, i + 1) >> 96));
+        value = _word(d, i + 21);
+        uint256 length = _word(d, i + 53);
         // The data, within the packed bytes
         if (length > last || last < i + 85 + length) return (false, address(0), 0, 0);
         return (true, to, value, i + 85 + length);
+    }
+
+    /// @dev The 32 bytes of `d` at `at`, as a number. Every caller has checked
+    /// that they lie within `d` (`position + 32 <= d.length`): one calldata load in
+    /// place of a slice and its conversion, at about half the gas per word.
+    /// @param d The calldata read.
+    /// @param position Where the word starts in `d`.
+    /// @return w The word.
+    function _word(bytes calldata d, uint256 position) internal pure returns (uint256 w) {
+        assembly ("memory-safe") {
+            w := calldataload(add(d.offset, position))
+        }
     }
 }

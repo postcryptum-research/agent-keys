@@ -774,12 +774,17 @@ DELEGATECALL leg, a cut leg and an empty batch are refused
 
 **What it costs** [V `test_measure_validationGas_*` in
 `contracts/test/AgentPermission.t.sol`, 2026-11-28], against the policy
-before the division: validation of a Safe transaction costs 7,013 gas more
-(49,716), and of a Safe `multiSend` of two legs 19,533 more (79,746): for
+before the division: validation of a Safe transaction costs 5,136 gas more
+(47,839), and of a Safe `multiSend` of two legs 12,895 more (73,108): for
 each judge read, the read of its pin, a cold static call, the copy of the
 calldata into it and the judge's own reading. A plain call and a token
-transfer cost 11 more. A judge that read a wallet transaction and its
-batch in one call would halve the batch's part [I].
+transfer cost 11 more. The judge reads each word
+with one calldata load, which costs about half of reading it through a
+calldata slice: the batch's legs cost about 2,300 gas each to read, from
+4,350 [V `testFuzz_theWordReadsAnswerAsTheSlicesDid` holds the answers to
+the slice reading's, 2026-11-28]. A judge that read a wallet transaction
+and its batch in one call would save about 3,000 more [V, measured by
+reading the batch twice, 2026-11-28]; not done.
 
 ## PolicyInstall
 
