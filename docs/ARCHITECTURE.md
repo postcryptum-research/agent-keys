@@ -261,11 +261,11 @@ Measured on the source, against the whole policy before the division [V
 
 | | Before | Now |
 |---|---|---|
-| `AgentPolicy` size | 24,437 bytes | 18,611 (`PolicyInstall` 10,972, `SafeShapes` 3,848) |
+| `AgentPolicy` size | 24,437 bytes | 18,611 (`PolicyInstall` 10,972, `SafeShapes` 2,844) |
 | validation: a plain call | 34,313 gas | 34,324 |
 | a token transfer | 41,946 | 41,957 |
-| a Safe transaction | 42,703 | 49,906 |
-| a Safe `multiSend` of two legs | 60,213 | 80,119 |
+| a Safe transaction | 42,703 | 47,833 |
+| a Safe `multiSend` of two legs | 60,213 | 73,096 |
 | an install of two entries and a token limit | 178,346 | 187,981 |
 
 What moved out of validation costs nothing there; what a judge reads costs

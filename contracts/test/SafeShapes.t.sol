@@ -3,6 +3,8 @@ pragma solidity ^0.8.38;
 
 import {Test} from "forge-std/Test.sol";
 import {SafeShapes} from "../src/judges/SafeShapes.sol";
+import {SafeShapesSliced} from "./SafeShapesSliced.sol";
+import {IShapeJudge} from "../src/judges/IShapeJudge.sol";
 
 /// The ABI of the two calls the judge reads, for encoding them as a wallet does.
 interface ISafeExec {
@@ -30,9 +32,11 @@ interface IMultiSend {
 /// `false`, never a revert: the policy asks it inside validation.
 contract SafeShapesTest is Test {
     SafeShapes internal shapes;
+    SafeShapesSliced internal sliced;
 
     function setUp() public {
         shapes = new SafeShapes();
+        sliced = new SafeShapesSliced();
     }
 
     /// The slice of `d` between two positions; an external call, so that `d` is calldata.
@@ -123,7 +127,7 @@ contract SafeShapesTest is Test {
             txs = bytes.concat(txs, _leg(0, tos[i], values[i], datas[i]));
         }
         bytes memory d = abi.encodeCall(IMultiSend.multiSend, (txs));
-        (bool ok, SafeShapes.Leg[] memory legs) = shapes.readMultiSend(d);
+        (bool ok, IShapeJudge.Inner[] memory legs) = shapes.readMultiSend(d);
         assertTrue(ok);
         assertEq(legs.length, count);
         for (uint256 i; i < count; i++) {
@@ -151,5 +155,57 @@ contract SafeShapesTest is Test {
     function testFuzz_theJudgeDoesNotRevert(bytes calldata d) public view {
         shapes.readSafeTransaction(d);
         shapes.readMultiSend(d);
+    }
+
+    // --- the word reading against the slice reading it replaced ---
+
+    /// Whatever bytes it is given, the judge answers as the slice reading
+    /// did: both selectors and another, and the Safe transaction's reader.
+    function testFuzz_theWordReadsAnswerAsTheSlicesDid(bytes calldata d) public view {
+        _same(d);
+    }
+
+    /// The same near the forms the judge accepts: a batch of up to four
+    /// legs (the first a DELEGATECALL now and then) and a Safe transaction,
+    /// each whole, with one byte changed, or cut short.
+    function testFuzz_theWordReadsAnswerAsTheSlicesDidNearTheForms(
+        address[4] memory tos,
+        uint256[4] memory values,
+        bytes[4] memory datas,
+        uint8 count,
+        uint8 operation,
+        uint256 where,
+        uint8 what,
+        uint8 how
+    ) public view {
+        count = uint8(bound(count, 1, 4));
+        operation = uint8(bound(operation, 0, 2));
+        bytes memory txs;
+        for (uint256 i; i < count; i++) {
+            txs = bytes.concat(txs, _leg(i == 0 && operation == 1 ? 1 : 0, tos[i], values[i], datas[i]));
+        }
+        bytes[2] memory forms = [abi.encodeCall(IMultiSend.multiSend, (txs)), _exec(tos[0], values[0], datas[0], operation)];
+        for (uint256 k; k < 2; k++) {
+            bytes memory d = forms[k];
+            if (how % 3 == 1) d[where % d.length] = bytes1(what);
+            if (how % 3 == 2) d = this.slice(d, 0, where % (d.length + 1));
+            _same(d);
+        }
+    }
+
+    function _same(bytes memory d) internal view {
+        bytes4[3] memory selectors = [shapes.EXEC_TRANSACTION(), shapes.MULTI_SEND(), bytes4(0xdeadbeef)];
+        for (uint256 s; s < 3; s++) {
+            (bool a, IShapeJudge.Inner[] memory x) = shapes.read(selectors[s], d);
+            (bool b, IShapeJudge.Inner[] memory y) = sliced.read(selectors[s], d);
+            assertEq(abi.encode(a, x), abi.encode(b, y), "read");
+        }
+        assertEq(_safeTransaction(address(shapes), d), _safeTransaction(address(sliced), d), "readSafeTransaction");
+    }
+
+    function _safeTransaction(address judge, bytes memory d) internal view returns (bytes memory) {
+        (bool ok, address to, uint256 value, uint256 operation, uint256 start, uint256 end) =
+            SafeShapes(judge).readSafeTransaction(d);
+        return abi.encode(ok, to, value, operation, start, end);
     }
 }
