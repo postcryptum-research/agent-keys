@@ -73,7 +73,7 @@ refused under both.
 ## Integrating into Jinn: the patch series (first version)
 
 [`patches/`](patches/) is a first version of `ADAPTATION.md` §5 Phase 1, as
-eleven commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
+thirteen commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
 
 | Patch | What |
 |---|---|
@@ -88,6 +88,8 @@ eleven commits on `Jinn-Network/mono` `next` at `151a464aa` (2026-10-21):
 | `0009-feat-operator-jinn-signer-migrate-one-step-handover…` | `jinn signer-migrate`: hands a bootstrapped operator over to the Kernel in one idempotent command; `--dry-run` shows the plan from the chain. Its steps and their order are as patches 0010 and 0011 leave them (below) |
 | `0010-fix-operator-a-Safe-module-is-authority-too…` | a Safe module is authority too: the "no authority" check of patch 0008 and the migration read the Safe's modules. While the agent EOA is an enabled module the daemon refuses to boot and the migration hands nothing over; every other enabled module is listed for the operator's review; + `test/hermetic/signer-migrate-refusals.test.ts` on Safe 1.3.0's own bytecode (the internal audit of 2026-11-28, finding AK-2026-11-28-02, #245) |
 | `0011-fix-operator-the-Safe-s-standing-grant-is-the-owner-…` | the Safe's standing approval on the IdentityRegistry is the owner's root operation: the migration reads it (`owner-approved-safe`) and never sends it with the agent's permission; the Kernel's agent key signs, under its mandate, before the Safe changes hands; the loop's bytecode fixture carries the current contracts (the internal audit of 2026-11-28, finding AK-2026-11-28-03, #246) |
+| `0012-fix-operator-the-boot-check-reads-every-Safe-signer-…` | the daemon's boot check reads every Safe `jinn signer-migrate` hands over: the fleet identity Safe as well as the service Safe (the EOA as an owner, as a module, as the owner of the agent NFT), from one list that the migration and the boot share (`migrationTargets`) (#250) |
+| `0013-fix-operator-a-Safe-s-guard-and-fallback-handler-are…` | each such Safe's guard and fallback handler are read from Safe 1.3.0's storage slots, at boot and in the migration's first step: a guard that is not also one of the Safe's modules, or a fallback handler other than Safe's `CompatibilityFallbackHandler` 1.3.0, refuses the boot and the handover; stOLAS's guard, a module of the service Safe, is reviewed as one (#250) |
 
 Apply and enable:
 
@@ -125,7 +127,7 @@ jinn signer-migrate --yes               # the handover; safe to re-run
 ```
 Migrated: agent EOA 0x7471bE25Ec54354c8D70491Ae10bd86705fAD030 -> Kernel <Kernel address>
   service Safe <Safe address>
-    safe-modules           review         (enabled, each runs any call from the Safe without the Kernel and outside its mandate: <module address>, <module address>, <module address>)
+    safe-modules           review         (enabled, each runs any call from the Safe without the Kernel and outside its mandate: <module address>, <module address>, <module address>; <module address> is the Safe's guard as well: it can veto every transaction of the Safe)
     owner-approved-safe    checked        (the owner's root operation gave the Safe its grant)
     mandate-admits-safe    checked        (AgentPolicy admits Safe.execTransaction)
     agent-nft              done     <tx>  (ERC-8004 NFT -> Kernel)
@@ -190,10 +192,49 @@ monorepo). So on such a Safe the step reports `review`, as the loop on
 Jinn's snapshot shows, and the operator reviews the three; a Safe without
 modules reports `checked`.
 
-The daemon makes the same check at boot (patch 0008's
-`assertAgentEoaHasNoAuthority`): it refuses while the EOA owns the Safe or
-the agent NFT or is an enabled module of the Safe, and warns about every
-other module.
+**The Safe's guard and fallback handler** (read in `safe-modules`, patch
+0013). A guard runs before and after every transaction of the Safe and can
+veto each. The fallback handler answers the calls the Safe does not
+implement, `isValidSignature` among them, so it decides the Safe's ERC-1271
+answers. Safe 1.3.0 has no getter for either and keeps them at fixed
+storage slots, which the migration reads with `eth_getStorageAt`. It
+refuses, in a dry run too, and nothing changes hands:
+
+- while the Safe has a guard that is not also one of its enabled modules;
+- while its fallback handler is neither zero nor Safe's
+  `CompatibilityFallbackHandler` of the Safe's `VERSION()`. For 1.3.0, the
+  version the operator creates, Safe's deployment records
+  (safe-global/safe-deployments) list two deployments of it on Base and
+  Base Sepolia, and both pass:
+  `0xf48f2B2d2a534e402487b3ee7C18c33Aec0Fe5e4` (`canonical`; stOLAS's deploy
+  script gives it to the service Safe) and
+  `0x017062a1dE2FE6b99BE3d9d37841FeD19F573804` (`eip155`; protocol-kit
+  gives it to the fleet identity Safe on Base). A handler of a version with
+  no record is refused.
+
+A guard that is one of the modules passes: a module already runs any call
+from the Safe, `setGuard` included, so it is reviewed as the module it is,
+and the review names it as the guard. That is the service Safe stOLAS
+creates: its `MultisigGuard` is enabled as a module and set as the guard,
+and it keeps itself set (its `checkAfterExecution` reverts when the guard
+slot holds another address; `ADAPTATION.md` §3, M2). Refusing it would
+refuse every staked operator, with no way to clear it. Clear a refused
+guard or handler with a transaction of the Safe by its current owner
+(`setGuard(0x0000000000000000000000000000000000000000)`,
+`setFallbackHandler(<handler>)`) and re-run.
+
+The daemon makes the same checks at boot (patch 0008's
+`assertAgentEoaHasNoAuthority`), for every Safe the migration hands over:
+the service Safe and, when it is another one, the fleet identity Safe
+(patch 0012; one list, `migrationTargets`, serves both). It refuses while
+the EOA owns such a Safe or the agent NFT or is an enabled module of the
+Safe, and while the Safe has a guard or a fallback handler the migration
+refuses (patch 0013); that error names what it found and that the owner
+clears it with a root operation, a transaction of the Safe from the Kernel
+signed with the owner key, since the mandate refuses the Safe's own
+administration. It warns about every other module and says which one is
+the guard. The threshold is the migration's check (a 1/1 Safe) and is not
+read at boot.
 
 How `KernelSafeBroadcaster` keeps a Safe transaction from running twice (a
 `v = 1` signature does not commit to the Safe nonce): agent-signer asserts the
@@ -278,6 +319,49 @@ Verified:
   Not run: the loop with a hardware key, and the CLI verb
   `jinn signer-migrate` as a command (the tests call the migration it
   runs).
+- patches 0012 and 0013 (2026-11-28), on the monorepo with the thirteen
+  patches applied (`git am` of 0001 to 0013 onto a fresh `151a464aa`
+  applies cleanly and gives the tree the tests ran on), an `agent-signer`
+  built with software keys from this branch (throwaway keys made for the
+  run) and the anvil of the Foundry named above:
+  - **the full loop with the Kernel owner passes**, with the checks of both
+    patches on the operator's own Safes. The staked service Safe's guard is
+    stOLAS's `MultisigGuard`, one of its three modules
+    (`0x4D3911420a8E4E7dB8c979f4915dA8983C5e3ba2` on Jinn's snapshot, what
+    the distributor's `guard()` returns there), and its fallback
+    handler is `0xf48f2B2d2a534e402487b3ee7C18c33Aec0Fe5e4`: the migration
+    refuses nothing for them and names the guard in `safe-modules`. The
+    fleet identity Safe, which protocol-kit created, has no guard and the
+    handler `0x017062a1dE2FE6b99BE3d9d37841FeD19F573804`; the loop hands
+    over the service Safe only, and the check refuses the identity Safe by
+    name while the EOA owns it. Jinn's baseline `full-loop.test.ts` passes
+    next to it (34.6 s and 33.3 s). In a first run beside the unit suite
+    the baseline loop timed out waiting for the settlement; alone, both
+    pass;
+  - `test/hermetic/signer-migrate-refusals.test.ts` (6 pass, 2 of them new),
+    on Safe 1.3.0's own bytecode: a guard set with `setGuard` is read from
+    its slot and refused, by the migration in a dry run and in a real run
+    with nothing changed, and by the check after a swap done by hand; as a
+    module as well it passes and is named; Safes set up with either 1.3.0
+    handler pass, one with another handler is refused;
+  - the operator's unit tests of `test/signer/` (6 files, 51 pass, 11 of
+    them new); the operator's whole unit suite (`yarn test`: 8366 pass, 33
+    skipped, and one failure that is not this change's:
+    `test/_support/chain/anvil.test.ts` forks Base over a public RPC and
+    its anvil was not ready within 15 s under the load of the suite; run
+    again alone, it passes); `yarn typecheck` and `tsc --noEmit` over the
+    operator (no error); Jinn's test typecheck gate (`typecheck:test`: no
+    regression); the lint scripts of Jinn's CI for the operator
+    (`lint:no-late-mount`, `lint:no-error-leak`, `lint:no-fixed-test-port`);
+  - each rule was broken once on purpose and a test caught it: the fleet
+    identity Safe left out of the list, the Safe's name ignored, no guard
+    refused, every guard refused (then the full loop refuses the staked
+    Safe's guard as well), any handler accepted, the two slots swapped, no
+    pre-check in the migration, the check ignoring guard and handler.
+
+  Not run: the daemon's boot itself (`main.ts`: the tests call the check it
+  runs on each Safe of the list, and the typecheck covers the wiring), the
+  loop with a hardware key, and the CLI verb as a command.
 
 **The loop's bytecode fixture.**
 `operator/test/_support/fixtures/tpm-sign-aa-code.json` holds the
@@ -368,7 +452,7 @@ hardware cannot produce them, and no verifier calls ERC-1271. So the agent
 EOA keeps signing them, but as a **pure attestation key**: with
 `config.signer` the daemon refuses to boot while that EOA still owns the
 service Safe or the agent NFT, or is an enabled module of that Safe (patch
-0010), and the Kernel publishes
+0010), and the same for the fleet identity Safe (patch 0012), and the Kernel publishes
 `jinn.attestationKey = <EOA>` under the agent's ERC-8004 identity (once;
 `readAttestationKey` reads it back for a verifier). Its compromise forges
 attestations — a reputational risk — but moves no funds and no rights;
