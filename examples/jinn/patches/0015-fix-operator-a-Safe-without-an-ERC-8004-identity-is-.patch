@@ -1,0 +1,775 @@
+From 69e5a7f5ac82db70d326230d1f7eed49ee37516a Mon Sep 17 00:00:00 2001
+From: agent-keys <noreply@agent-keys.invalid>
+Date: Sat, 28 Nov 2026 11:56:44 +0000
+Subject: [PATCH 15/20] fix(operator): a Safe without an ERC-8004 identity is
+ handed over only after the Kernel proves it signs
+
+For a Safe with an identity, `jinn signer-migrate` has the Kernel publish the attestation key
+before the swap: an operation of the agent key under its mandate, and the proof that the Kernel
+can act for the Safe it receives. Without an identity that step does not apply, and only the
+mandate (the Kernel's code and AgentPolicy.isAllowed(Safe, execTransaction)) was checked before
+the old EOA's swapOwner: the Kernel was never asked to sign. If the agent's key or backend could
+not sign, the Safe ended with an owner that cannot act for it. The internal audit of
+2026-11-28, finding AK-2026-11-28-01 (Medium).
+
+- signer/migrate.ts: a new step, `agent-proof`, after `mandate-admits-safe`. For a Safe without
+  an identity that is still to be handed over, the operator passes the userOpHash of an
+  operation of the Kernel signed with the agent permission (`--agent-proof`). checkAgentProof
+  reads the EntryPoint's (v0.7) UserOperationEvent for it, from the last 3600 blocks, and
+  requires: the Kernel as its sender; `success`; a nonce whose key names the agent permission
+  (Kernel v3.3: mode 0, validation type 0x02 and the permission id in the nonce's upper 48 bits,
+  as agent-signer builds it; the owner's root path is key 0 and is refused); and a block at most
+  an hour old by its timestamp (AGENT_PROOF_MAX_AGE_SECONDS). An hour leaves time to send the
+  operation, read the dry run and run the migration, and not to bring one from before a change
+  of the key, the backend or the mandate. Without such a proof the handover is refused, in a dry
+  run too, with nothing changed, and the error says how to make one: an operation the agent's
+  mandate allows, sent with `agent-signer op send` (no --root). A re-run that finds the Safe
+  handed over needs no proof (`not-applicable`); a Safe with an identity keeps its path, where
+  the attestation key is the proof (`not-applicable`, "the Kernel signs in attestation-key").
+- signer/kernel-safe-broadcaster.ts: USER_OPERATION_EVENT is exported for that reading.
+- cli/commands/signer-migrate.ts: `--agent-proof <userOpHash>` (0x and 64 hex digits), passed to
+  every Safe's migration; the help says when it is needed.
+- tests: unit, the regression the review asked for, mirroring the identity path's: no identity
+  and a Kernel that cannot sign means swapOwner is never sent, in a run and in a dry run. A proof
+  is refused when its event is not found or is outside the 3600 blocks, when another account sent
+  it, when it reverted, when its nonce key is the root path's, another permission's or the
+  enable mode's, and when it is 3601 s old; at 3600 s it passes and the Safe changes hands; a
+  re-run needs none. On Safe 1.3.0's own bytecode (test/hermetic/signer-migrate-refusals.test.ts),
+  with a stand-in at the EntryPoint's address that emits the event as given: refused without a
+  proof, for an unknown hash, another sender, a reverted operation, the root path and an
+  operation older than an hour (evm_increaseTime); a fresh one passes. In the full loop
+  (full-loop-kernel-owner.test.ts), on agent-signer's real operations: the owner's root grant is
+  refused as a proof, the agent's attestation-key operation passes. Each rule was broken once on
+  purpose and a test caught it (no proof accepted, the nonce key, the age, the sender, success,
+  the step skipped).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ operator/src/cli/commands/signer-migrate.ts   |  21 ++-
+ .../src/signer/kernel-safe-broadcaster.ts     |   2 +-
+ operator/src/signer/migrate.ts                | 124 ++++++++++++++++--
+ .../hermetic/full-loop-kernel-owner.test.ts   |  31 +++--
+ .../hermetic/signer-migrate-refusals.test.ts  |  74 ++++++++++-
+ operator/test/signer/migrate.test.ts          | 108 +++++++++++++--
+ 6 files changed, 319 insertions(+), 41 deletions(-)
+
+diff --git a/operator/src/cli/commands/signer-migrate.ts b/operator/src/cli/commands/signer-migrate.ts
+index 30ed5fe2c..da72d097b 100644
+--- a/operator/src/cli/commands/signer-migrate.ts
++++ b/operator/src/cli/commands/signer-migrate.ts
+@@ -32,6 +32,7 @@ async function run(ctx: CommandContext): Promise<void> {
+         ...COMMON_FLAGS,
+         'dry-run': { type: 'boolean', default: false },
+         yes: { type: 'boolean', default: false },
++        'agent-proof': { type: 'string' },
+       },
+       allowPositionals: false,
+     });
+@@ -43,6 +44,14 @@ async function run(ctx: CommandContext): Promise<void> {
+     return;
+   }
+   const dryRun = parsed.values['dry-run'] as boolean;
++  const agentProof = parsed.values['agent-proof'] as string | undefined;
++  if (agentProof !== undefined && !/^0x[0-9a-fA-F]{64}$/.test(agentProof)) {
++    emitEnvelope(
++      { code: 'invalid_invocation', message: `--agent-proof takes a userOpHash (0x and 64 hex digits), not ${agentProof}`, exampleCli: EXAMPLE, details: { field: 'agent-proof' } },
++      { writer: ctx.writer, exit: ctx.exit },
++    );
++    return;
++  }
+   if (!dryRun && !ensureConfirmed(ctx, { yes: parsed.values.yes as boolean, dryRun: false })) return;
+ 
+   const built = await createCliSignerContext({ argv: ctx.argv, env: ctx.env });
+@@ -109,6 +118,7 @@ async function run(ctx: CommandContext): Promise<void> {
+           : {}),
+         dryRun,
+         agentSignerOpSend,
++        ...(agentProof === undefined ? {} : { agentProof: agentProof as Hex }),
+       });
+       results.push({ label: target.label, safe: target.safeAddress, steps });
+     }
+@@ -143,7 +153,7 @@ async function run(ctx: CommandContext): Promise<void> {
+ const command: CommandModule = {
+   name: 'signer-migrate',
+   summary: 'Hand the operator over to its hardware-signed Kernel account (config.signer)',
+-  helpText: `Usage: jinn signer-migrate [--dry-run] [--yes] [--json|--human] [--config <path>] [--password-fd <fd>]
++  helpText: `Usage: jinn signer-migrate [--dry-run] [--yes] [--agent-proof <userOpHash>] [--json|--human] [--config <path>] [--password-fd <fd>]
+ 
+ Moves the ERC-8004 agent NFT and the service Safe (and the fleet identity
+ Safe, if separate) from the keystore agent EOA to the Kernel account named in
+@@ -159,6 +169,14 @@ path. The agent's mandate cannot leave such a grant open, so this command
+ only reads it; when it is missing it changes nothing and prints the owner's
+ command (\`agent-signer op send --root ...\`).
+ 
++A Safe without an ERC-8004 identity is handed over only after the Kernel
++has proved that its agent key signs: --agent-proof names the userOpHash of
++an operation the agent's mandate allows, sent with \`agent-signer op send\`
++(no --root) within the hour before. The command reads its UserOperationEvent
++from the EntryPoint (the Kernel's, successful, under the agent permission)
++and refuses without it. With an identity, the attestation key above is the
++Kernel's proof and no --agent-proof is needed.
++
+ The Safe's modules are read first: a module runs any call from the Safe
+ without an owner signing, and the handover does not remove it. While the
+ agent EOA is an enabled module the command refuses; every other enabled
+@@ -177,6 +195,7 @@ transactions; the Kernel pays for its own operation.
+ Examples:
+   jinn signer-migrate --dry-run --human
+   jinn signer-migrate --yes
++  jinn signer-migrate --yes --agent-proof 0x<userOpHash of the agent's operation>
+ `,
+   run,
+ };
+diff --git a/operator/src/signer/kernel-safe-broadcaster.ts b/operator/src/signer/kernel-safe-broadcaster.ts
+index 4aac8521a..e4b7c0c4d 100644
+--- a/operator/src/signer/kernel-safe-broadcaster.ts
++++ b/operator/src/signer/kernel-safe-broadcaster.ts
+@@ -60,7 +60,7 @@ import {
+ } from './agent-signer-cli.js';
+ 
+ export const ENTRY_POINT_V07 = '0x0000000071727De22E5E9d8BAf0edAc6f37da032' as const;
+-const USER_OPERATION_EVENT = parseAbiItem(
++export const USER_OPERATION_EVENT = parseAbiItem(
+   'event UserOperationEvent(bytes32 indexed userOpHash, address indexed sender, address indexed paymaster, uint256 nonce, bool success, uint256 actualGasCost, uint256 actualGasUsed)',
+ );
+ const SAFE_NONCE_ABI = parseAbi(['function nonce() view returns (uint256)']);
+diff --git a/operator/src/signer/migrate.ts b/operator/src/signer/migrate.ts
+index e62204d5a..a8f862983 100644
+--- a/operator/src/signer/migrate.ts
++++ b/operator/src/signer/migrate.ts
+@@ -21,24 +21,31 @@
+ //   2. mandate-admits-safe    the Kernel is deployed and its AgentPolicy admits
+ //                             (Safe, execTransaction): without it the agent could not drive the
+ //                             Safe after the swap;
+-//   3. agent-nft              the agent EOA transfers the ERC-8004 agent NFT to the Kernel;
+-//   4. attestation-key        the Kernel publishes the EOA as jinn.attestationKey through
++//   3. agent-proof            a Safe without an ERC-8004 identity: this migration sends no call
++//                             of the agent's, so the operator proves that the Kernel's agent key
++//                             signs (`--agent-proof <userOpHash>`): the EntryPoint's
++//                             UserOperationEvent of a recent, successful operation of the Kernel
++//                             under the agent permission (`checkAgentProof`). Not on a re-run that
++//                             finds the Safe handed over; with an identity, step 5 is the proof;
++//   4. agent-nft              the agent EOA transfers the ERC-8004 agent NFT to the Kernel;
++//   5. attestation-key        the Kernel publishes the EOA as jinn.attestationKey through
+ //                             agent-signer: a call the mandate lists, and the one that PROVES the
+ //                             hardware key signs for the Kernel under its mandate. It is sent in
+ //                             every run that still has the Safe to hand over, whatever the
+ //                             registry already says;
+-//   5. safe-owner             the agent EOA swaps itself out of the Safe for the Kernel
++//   6. safe-owner             the agent EOA swaps itself out of the Safe for the Kernel
+ //                             (Safe.execTransaction(swapOwner) with a pre-validated signature);
+-//   6. eoa-has-no-authority   final check: the EOA owns neither the Safe nor the NFT and is not
++//   7. eoa-has-no-authority   final check: the EOA owns neither the Safe nor the NFT and is not
+ //                             a module of the Safe, and the Safe's guard and handler still pass.
+ //
+-// Steps 0-4 precede the swap on purpose: the Safe is never handed to an address that cannot
+-// operate it. Without an ERC-8004 identity steps 1, 3 and 4 do not apply, and step 2 is all that
+-// stands before the swap.
++// Steps 0-5 precede the swap on purpose: the Safe is never handed to an address that cannot
++// operate it. Without an ERC-8004 identity steps 1, 4 and 5 do not apply, and step 3 is the
++// proof that the Kernel signs.
+ import {
+   encodeFunctionData,
+   getAddress,
+   parseAbi,
++  toHex,
+   zeroAddress,
+   type Address,
+   type Hex,
+@@ -50,6 +57,7 @@ import { viemSendTransactionWithRetry, type TxRetryWalletClient } from '../tx-re
+ import {
+   assertAgentEoaHasNoAuthority, ensureAttestationKeyBinding, readAttestationKey, readSafeGuardAndHandler, readSafeModuleAuthority,
+ } from './attestation.js';
++import { ENTRY_POINT_V07, USER_OPERATION_EVENT } from './kernel-safe-broadcaster.js';
+ 
+ const SENTINEL_OWNERS = '0x0000000000000000000000000000000000000001' as Address;
+ const EXEC_TRANSACTION_SELECTOR = '0x6a761202' as Hex;
+@@ -77,6 +85,7 @@ export type MigrationStepName =
+   | 'safe-modules'
+   | 'owner-approved-safe'
+   | 'mandate-admits-safe'
++  | 'agent-proof'
+   | 'agent-nft'
+   | 'attestation-key'
+   | 'safe-owner'
+@@ -105,15 +114,85 @@ export interface MigrationInput {
+   /** The agent permission the Kernel's agent key signs under (`permissionId` of its config). */
+   readonly permissionId: Hex;
+   readonly safeAddress: Address;
+-  /** The ERC-8004 identity; without it steps 1, 3 and 4 do not apply. */
++  /** The ERC-8004 identity; without it steps 1, 4 and 5 do not apply, and step 3 does. */
+   readonly identityRegistry?: Address;
+   readonly agentId?: bigint;
+   readonly dryRun?: boolean;
+   /**
+    * How agent-signer is run for this account, up to the call itself (`<bin> op send --agent
+-   * <config> ...`): the start of the command printed for the owner when step 1 finds no grant.
++   * <config> ...`): the start of the command printed for the owner when step 1 finds no grant,
++   * and of the agent's operation step 3 asks for.
+    */
+   readonly agentSignerOpSend?: string;
++  /**
++   * The userOpHash of a recent, successful operation of the Kernel signed with the agent
++   * permission (`--agent-proof`): step 3's proof, for a Safe without an ERC-8004 identity.
++   */
++  readonly agentProof?: Hex;
++}
++
++/** How old step 3's proof may be, in seconds of chain time. */
++export const AGENT_PROOF_MAX_AGE_SECONDS = 3600n;
++// Where the proof's event is looked for: the last 3600 blocks, two hours of Base's two-second
++// blocks (the operator's chains) and an hour even at one-second blocks. The age itself is read
++// from the block's timestamp.
++const AGENT_PROOF_LOOKBACK_BLOCKS = 3600n;
++// Kernel v3.3 nonce key (the nonce's upper 192 bits): mode(1) | validation type(1) | id(20) |
++// key(2). The agent's operations use mode 0 (default) and type 0x02 (permission), with the
++// permission id in the id's first four bytes: the nonce's upper 48 bits are 0x0002 ‖ permission id
++// (agent-signer `permission_nonce_key`). The owner's root path is key 0.
++const VALIDATION_TYPE_PERMISSION = 0x02n;
++
++/**
++ * Step 3's proof that the Kernel's agent key signs: `userOpHash` names a UserOperation that the
++ * EntryPoint (v0.7) included with `success`, whose sender is the Kernel, whose nonce key names
++ * the agent permission `permissionId`, and whose block is at most an hour old
++ * (`AGENT_PROOF_MAX_AGE_SECONDS`). An hour leaves time to send it, read the dry run and run the
++ * migration, and not to bring an operation from before a change of the key, the backend or the
++ * mandate. Refuses, with how to make one, otherwise.
++ */
++export async function checkAgentProof(input: {
++  readonly publicClient: Pick<PublicClient, 'getBlock' | 'getLogs'>;
++  readonly kernel: Address;
++  readonly permissionId: Hex;
++  readonly userOpHash: Hex | undefined;
++  readonly agentSignerOpSend?: string;
++}): Promise<{ readonly userOpHash: Hex; readonly blockNumber: bigint; readonly ageSeconds: bigint }> {
++  const kernel = getAddress(input.kernel);
++  const refuse = (why: string) => new Error(
++    `the Safe has no ERC-8004 identity, so this migration sends no operation of the agent's before the handover, and the `
++    + `Kernel ${kernel} has to have proved that its agent key signs under permission ${input.permissionId}: ${why}. `
++    + 'Nothing was changed. Make the proof with an operation the agent\'s mandate allows, signed by the agent key (no --root):\n'
++    + `  ${input.agentSignerOpSend ?? 'agent-signer op send --agent <agent config>'} --target <an allowed target> --data <its calldata>\n`
++    + `then pass its userOpHash within ${AGENT_PROOF_MAX_AGE_SECONDS} s: jinn signer-migrate --agent-proof <userOpHash>`,
++  );
++  const hash = input.userOpHash;
++  if (hash === undefined) throw refuse('no proof was given (--agent-proof)');
++  const latest = await input.publicClient.getBlock();
++  const logs = await input.publicClient.getLogs({
++    address: ENTRY_POINT_V07, event: USER_OPERATION_EVENT, args: { userOpHash: hash },
++    fromBlock: latest.number > AGENT_PROOF_LOOKBACK_BLOCKS ? latest.number - AGENT_PROOF_LOOKBACK_BLOCKS : 0n,
++    toBlock: latest.number,
++  });
++  const log = logs.at(-1);
++  if (log === undefined || log.blockNumber === null) {
++    throw refuse(`the EntryPoint ${ENTRY_POINT_V07} has no UserOperationEvent ${hash} in the last ${AGENT_PROOF_LOOKBACK_BLOCKS} blocks`);
++  }
++  const { sender, nonce, success } = log.args;
++  if (sender === undefined || getAddress(sender) !== kernel) throw refuse(`operation ${hash} was sent by ${sender}, not by the Kernel`);
++  if (success !== true) throw refuse(`operation ${hash} was included and reverted`);
++  if (nonce === undefined || nonce >> 208n !== ((VALIDATION_TYPE_PERMISSION << 32n) | BigInt(input.permissionId))) {
++    throw refuse(
++      `operation ${hash} was not signed with the agent permission: its nonce key is ${toHex((nonce ?? 0n) >> 64n, { size: 24 })}, `
++      + `and the agent's starts 0x0002${input.permissionId.slice(2)}. The owner's operations (key 0, the root path) prove nothing of the agent key`,
++    );
++  }
++  const block = await input.publicClient.getBlock({ blockNumber: log.blockNumber });
++  const ageSeconds = latest.timestamp - block.timestamp;
++  if (ageSeconds > AGENT_PROOF_MAX_AGE_SECONDS) {
++    throw refuse(`operation ${hash} is ${ageSeconds} s old, more than ${AGENT_PROOF_MAX_AGE_SECONDS} s`);
++  }
++  return { userOpHash: hash, blockNumber: log.blockNumber, ageSeconds };
+ }
+ 
+ /** A Safe the migration hands over, with the ERC-8004 identity that goes with it. */
+@@ -230,7 +309,7 @@ export async function migrateToKernelOwner(input: MigrationInput): Promise<reado
+   const code = await pc.getCode({ address: kernel });
+   if (code === undefined || code === '0x') {
+     if (!input.dryRun) {
+-      throw new Error(`the Kernel ${kernel} is not deployed: its first operation deploys it (the owner's grant of step 1 is one; without an ERC-8004 identity, send any operation of the account first)`);
++      throw new Error(`the Kernel ${kernel} is not deployed: its first operation deploys it (the owner's grant of step 1 is one; without an ERC-8004 identity, the agent's operation that step 3 asks for can be)`);
+     }
+     steps.push({ step: 'mandate-admits-safe', status: 'would', detail: 'the Kernel is not deployed yet' });
+   } else {
+@@ -252,7 +331,24 @@ export async function migrateToKernelOwner(input: MigrationInput): Promise<reado
+ 
+   const safeHandedOver = owners.includes(kernel) && !owners.includes(eoa);
+ 
+-  // 3. Hand the agent NFT over.
++  // 3. Without an identity the Kernel signs nothing in this migration: the operator proves that
++  // its agent key signs before the Safe changes hands. In a dry run too, as every refusal.
++  if (identity !== undefined) {
++    steps.push({ step: 'agent-proof', status: 'not-applicable', detail: 'the Kernel signs in attestation-key' });
++  } else if (safeHandedOver) {
++    steps.push({ step: 'agent-proof', status: 'not-applicable', detail: 'the Safe is the Kernel\'s already' });
++  } else {
++    const proof = await checkAgentProof({
++      publicClient: pc, kernel, permissionId: input.permissionId, userOpHash: input.agentProof,
++      ...(input.agentSignerOpSend === undefined ? {} : { agentSignerOpSend: input.agentSignerOpSend }),
++    });
++    steps.push({
++      step: 'agent-proof', status: 'checked',
++      detail: `operation ${proof.userOpHash} of the Kernel under the agent permission, block ${proof.blockNumber}, ${proof.ageSeconds} s old`,
++    });
++  }
++
++  // 4. Hand the agent NFT over.
+   if (identity === undefined) {
+     steps.push({ step: 'agent-nft', status: 'not-applicable', detail: 'no ERC-8004 identity' });
+   } else {
+@@ -270,7 +366,7 @@ export async function migrateToKernelOwner(input: MigrationInput): Promise<reado
+     }
+   }
+ 
+-  // 4. Publish the EOA as the agent's attestation key. The Kernel's agent key signs here, under
++  // 5. Publish the EOA as the agent's attestation key. The Kernel's agent key signs here, under
+   // its mandate: while the Safe is still to be handed over this is sent whatever the registry
+   // says, so that the swap below never follows a run in which the Kernel did not sign.
+   if (identity === undefined) {
+@@ -288,7 +384,7 @@ export async function migrateToKernelOwner(input: MigrationInput): Promise<reado
+       : { step: 'attestation-key', status: 'already' });
+   }
+ 
+-  // 5. Hand the Safe over.
++  // 6. Hand the Safe over.
+   if (safeHandedOver) {
+     steps.push({ step: 'safe-owner', status: 'already' });
+   } else if (input.dryRun) {
+@@ -306,7 +402,7 @@ export async function migrateToKernelOwner(input: MigrationInput): Promise<reado
+     steps.push({ step: 'safe-owner', status: 'done', txHash });
+   }
+ 
+-  // 6. Nothing left with the EOA but document signing.
++  // 7. Nothing left with the EOA but document signing.
+   if (!input.dryRun) {
+     await assertAgentEoaHasNoAuthority({
+       publicClient: pc, agentEoa: eoa, safeAddress: safe,
+diff --git a/operator/test/hermetic/full-loop-kernel-owner.test.ts b/operator/test/hermetic/full-loop-kernel-owner.test.ts
+index ec49d7ee9..e9e3cb5fb 100644
+--- a/operator/test/hermetic/full-loop-kernel-owner.test.ts
++++ b/operator/test/hermetic/full-loop-kernel-owner.test.ts
+@@ -40,6 +40,7 @@ import {
+   http,
+   parseAbi,
+   parseAbiItem,
++  parseEventLogs,
+   zeroAddress,
+   type Address,
+   type Hex,
+@@ -73,7 +74,7 @@ import {
+ import { AgentSignerError, agentSignerSend, type AgentSignerConfig } from '../../src/signer/agent-signer-cli.js';
+ import { createAgentSignerWalletClient } from '../../src/signer/agent-signer-transport.js';
+ import { assertAgentEoaHasNoAuthority, readAttestationKey, readSafeGuardAndHandler } from '../../src/signer/attestation.js';
+-import { migrateToKernelOwner } from '../../src/signer/migrate.js';
++import { checkAgentProof, migrateToKernelOwner } from '../../src/signer/migrate.js';
+ import { createMetadataPublisherFromViem } from '../../src/solvernets/daemon-init.js';
+ import { PRODUCTION_DEPS } from '../../src/cli/commands/solver-plugins.js';
+ import { buildPluginMetadataKey } from '../../src/erc8004/plugin-registry.js';
+@@ -258,11 +259,16 @@ describeMaybe('hermetic daemon solution loop, Safe owned by a hardware-signed Ke
+         expect(await fixture.publicClient.readContract({ address: operator.safeAddress, abi: SAFE_ABI, functionName: 'getOwners' }))
+           .toEqual([getAddress(operator.agentAddress)]);
+         // The owner's step, on the root path: the account's first operation, which deploys it.
+-        await agentSignerSend(signer, { to: IDENTITY_REGISTRY, value: 0n, data: grant, root: true });
++        const granted = await agentSignerSend(signer, { to: IDENTITY_REGISTRY, value: 0n, data: grant, root: true });
++        // An operation of the owner's is no proof that the agent key signs (the proof a Safe
++        // without an ERC-8004 identity is handed over on): its nonce key is the root path's.
++        await expect(checkAgentProof({
++          publicClient: fixture.publicClient, kernel, permissionId: migration.permissionId, userOpHash: granted.userOpHash,
++        })).rejects.toThrow('was not signed with the agent permission: its nonce key is 0x000000000000000000000000000000000000000000000000');
+         // --dry-run: a plan from the chain, nothing sent.
+         const plan = await migrateToKernelOwner({ ...migration, dryRun: true });
+         expect(statusOf(plan)).toEqual({
+-          'safe-modules': 'review', 'owner-approved-safe': 'checked', 'mandate-admits-safe': 'checked',
++          'safe-modules': 'review', 'owner-approved-safe': 'checked', 'mandate-admits-safe': 'checked', 'agent-proof': 'not-applicable',
+           'agent-nft': 'would', 'attestation-key': 'would', 'safe-owner': 'would',
+         });
+         expect(plan[0]).toMatchObject({ step: 'safe-modules', modules: safeModules });
+@@ -271,18 +277,27 @@ describeMaybe('hermetic daemon solution loop, Safe owned by a hardware-signed Ke
+           .toEqual([getAddress(operator.agentAddress)]);
+         // The migration: the Kernel receives the NFT and signs (the attestation key, under its
+         // mandate) before it receives the Safe.
+-        expect(statusOf(await migrateToKernelOwner(migration))).toEqual({
+-          'safe-modules': 'review', 'owner-approved-safe': 'checked', 'mandate-admits-safe': 'checked', 'agent-nft': 'done',
+-          'attestation-key': 'done', 'safe-owner': 'done', 'eoa-has-no-authority': 'checked',
++        const migrated = await migrateToKernelOwner(migration);
++        expect(statusOf(migrated)).toEqual({
++          'safe-modules': 'review', 'owner-approved-safe': 'checked', 'mandate-admits-safe': 'checked', 'agent-proof': 'not-applicable',
++          'agent-nft': 'done', 'attestation-key': 'done', 'safe-owner': 'done', 'eoa-has-no-authority': 'checked',
+         });
++        // The attestation key's operation is the agent key signing under its permission, and the
++        // proof's reading takes it as such: the EntryPoint's event, the Kernel's, successful, under
++        // the agent permission's nonce key, and fresh.
++        const attested = await fixture.publicClient.getTransactionReceipt({ hash: migrated.find((s) => s.step === 'attestation-key')!.txHash! });
++        const [agentOperation] = parseEventLogs({ abi: [USER_OPERATION_EVENT], logs: attested.logs });
++        await expect(checkAgentProof({
++          publicClient: fixture.publicClient, kernel, permissionId: migration.permissionId, userOpHash: agentOperation!.args.userOpHash,
++        })).resolves.toMatchObject({ userOpHash: agentOperation!.args.userOpHash, blockNumber: attested.blockNumber });
+         expect(await fixture.publicClient.readContract({ address: operator.safeAddress, abi: SAFE_ABI, functionName: 'getOwners' }))
+           .toEqual([kernel]);
+         expect(await fixture.publicClient.readContract({ address: IDENTITY_REGISTRY, abi: IDENTITY_ABI, functionName: 'ownerOf', args: [agentId] }))
+           .toBe(kernel);
+         // Idempotent: a re-run changes nothing.
+         expect(statusOf(await migrateToKernelOwner(migration))).toEqual({
+-          'safe-modules': 'review', 'owner-approved-safe': 'checked', 'mandate-admits-safe': 'checked', 'agent-nft': 'already',
+-          'attestation-key': 'already', 'safe-owner': 'already', 'eoa-has-no-authority': 'checked',
++          'safe-modules': 'review', 'owner-approved-safe': 'checked', 'mandate-admits-safe': 'checked', 'agent-proof': 'not-applicable',
++          'agent-nft': 'already', 'attestation-key': 'already', 'safe-owner': 'already', 'eoa-has-no-authority': 'checked',
+         });
+ 
+         running = await startDaemon(fixture, operator, HARNESS, mockIpfs.baseUrl, v3Env, mockIpfs.baseUrl, {
+diff --git a/operator/test/hermetic/signer-migrate-refusals.test.ts b/operator/test/hermetic/signer-migrate-refusals.test.ts
+index 50a0d8df4..9c698d186 100644
+--- a/operator/test/hermetic/signer-migrate-refusals.test.ts
++++ b/operator/test/hermetic/signer-migrate-refusals.test.ts
+@@ -23,6 +23,13 @@
+  * left open), so the migration only reads it. Missing, it changes nothing, sends nothing from the
+  * Kernel and prints the owner's command.
+  *
++ * And a Safe without an ERC-8004 identity: the migration sends no operation of the Kernel's
++ * before the swap, so it asks for the operator's proof that the agent key signs, read from the
++ * EntryPoint's UserOperationEvent. Here the EntryPoint's address holds a stand-in that emits that
++ * event as it is given, so the proof's reading runs on real logs and blocks: refused without a
++ * proof, for an operation of another sender, a reverted one, one on the owner's root path, and one
++ * older than an hour.
++ *
+  * Every case stops before the Kernel is asked for anything, so there is no Kernel here and no
+  * agent-signer: the complete handover is `full-loop-kernel-owner.test.ts`.
+  *
+@@ -38,11 +45,13 @@ import {
+   createPublicClient,
+   createWalletClient,
+   decodeEventLog,
++  encodeAbiParameters,
+   encodeFunctionData,
+   http,
+   parseAbi,
+   parseEventLogs,
+   parseEther,
++  toEventSelector,
+   zeroAddress,
+   type Address,
+   type Hex,
+@@ -55,6 +64,7 @@ import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
+ import { jsonRpc, spawnAnvilFromState, type AnvilHarness } from '../_support/chain/anvil.js';
+ import { assertAgentEoaHasNoAuthority, readSafeGuardAndHandler, readSafeModuleAuthority } from '../../src/signer/attestation.js';
+ import { migrateToKernelOwner } from '../../src/signer/migrate.js';
++import { ENTRY_POINT_V07, USER_OPERATION_EVENT } from '../../src/signer/kernel-safe-broadcaster.js';
+ 
+ const TEST_DIR = dirname(fileURLToPath(import.meta.url));
+ const SNAPSHOT_STATE = resolve(TEST_DIR, '..', '_support', 'fixtures', 'anvil-base-v3-state', 'state.json');
+@@ -92,6 +102,15 @@ const REGISTRY_ABI = parseAbi([
+ 
+ const fresh = (): Address => privateKeyToAccount(generatePrivateKey()).address;
+ 
++// The EntryPoint's address holds this: it emits UserOperationEvent(userOpHash, sender, paymaster,
++// nonce, success, actualGasCost, actualGasUsed) from the seven words it is called with (the three
++// indexed ones as topics, the other four as data).
++const USER_OP_EVENT_EMITTER = `0x608060606000376040356020356000357f${toEventSelector(USER_OPERATION_EVENT).slice(2)}60806000a400` as Hex;
++const PERMISSION = '0x6a696e6e' as Hex;
++// Kernel v3.3 nonce keys: the agent permission's (mode 0, type 0x02, the permission id), the root path's (0).
++const AGENT_NONCE = BigInt(`0x0002${PERMISSION.slice(2)}`) << 208n;
++const ROOT_NONCE = 0n;
++
+ describeMaybe('signer-migrate on a real Safe: what it refuses before anything changes hands', () => {
+   let anvil: AnvilHarness;
+   let publicClient: PublicClient;
+@@ -107,6 +126,7 @@ describeMaybe('signer-migrate on a real Safe: what it refuses before anything ch
+     publicClient = createPublicClient({ chain: base, transport: http(anvil.rpcUrl) }) as unknown as PublicClient;
+     eoaWallet = createWalletClient({ account: eoaAccount, chain: base, transport: http(anvil.rpcUrl) });
+     await anvil.setBalance(eoa, parseEther('10'));
++    await jsonRpc(anvil.rpcUrl, 'anvil_setCode', [ENTRY_POINT_V07, USER_OP_EVENT_EMITTER]);
+   });
+   afterAll(async () => { await anvil?.teardown(); });
+ 
+@@ -145,9 +165,22 @@ describeMaybe('signer-migrate on a real Safe: what it refuses before anything ch
+     agentEoaWallet: eoaWallet as never,
+     kernelWallet: { account: { address: kernel, type: 'json-rpc' }, sendTransaction: kernelSend } as never,
+     kernel,
+-    permissionId: '0x6a696e6e' as Hex,
++    permissionId: PERMISSION,
+     safeAddress: safe,
+   });
++
++  /** A UserOperationEvent from the EntryPoint's address, as an included operation leaves it; its userOpHash. */
++  async function userOperation(op: { sender?: Address; nonce?: bigint; success?: boolean } = {}): Promise<Hex> {
++    const userOpHash = generatePrivateKey();
++    await mined(await eoaWallet.sendTransaction({
++      account: eoaAccount, chain: base, to: ENTRY_POINT_V07,
++      data: encodeAbiParameters(
++        [{ type: 'bytes32' }, { type: 'address' }, { type: 'address' }, { type: 'uint256' }, { type: 'bool' }, { type: 'uint256' }, { type: 'uint256' }],
++        [userOpHash, op.sender ?? kernel, zeroAddress, op.nonce ?? AGENT_NONCE, op.success ?? true, 1n, 1n],
++      ),
++    }));
++    return userOpHash;
++  }
+   const ownersOf = (safe: Address) => publicClient.readContract({ address: safe, abi: SAFE_ABI, functionName: 'getOwners' });
+ 
+   // The internal audit of 2026-11-28, finding AK-2026-11-28-02.
+@@ -195,7 +228,7 @@ describeMaybe('signer-migrate on a real Safe: what it refuses before anything ch
+     await expect(readSafeModuleAuthority({ publicClient, safeAddress: safe, agentEoa: eoa, pageSize: 2n }))
+       .resolves.toEqual({ agentEoaIsModule: false, others: listed });
+ 
+-    const steps = await migrateToKernelOwner({ ...migration(safe), dryRun: true });
++    const steps = await migrateToKernelOwner({ ...migration(safe), dryRun: true, agentProof: await userOperation() });
+     expect(steps[0]).toMatchObject({ step: 'safe-modules', status: 'review', modules: listed });
+     for (const module of enabled) expect(steps[0]!.detail).toContain(module);
+     expect(await ownersOf(safe)).toEqual([eoa]);
+@@ -227,7 +260,7 @@ describeMaybe('signer-migrate on a real Safe: what it refuses before anything ch
+     const guarded = await newSafe();
+     await enableModule(guarded, guard);
+     await safeAdmin(guarded, setGuard);
+-    const steps = await migrateToKernelOwner({ ...migration(guarded), dryRun: true });
++    const steps = await migrateToKernelOwner({ ...migration(guarded), dryRun: true, agentProof: await userOperation() });
+     expect(steps[0]).toMatchObject({ step: 'safe-modules', status: 'review', modules: [guard] });
+     expect(steps[0]!.detail).toContain(`${guard} is the Safe's guard as well`);
+   });
+@@ -238,7 +271,8 @@ describeMaybe('signer-migrate on a real Safe: what it refuses before anything ch
+       const safe = await newSafe(handler);
+       await expect(readSafeGuardAndHandler({ publicClient, safeAddress: safe }))
+         .resolves.toEqual({ guard: zeroAddress, fallbackHandler: handler, problems: [] });
+-      expect((await migrateToKernelOwner({ ...migration(safe), dryRun: true }))[0]).toMatchObject({ step: 'safe-modules', status: 'checked' });
++      expect((await migrateToKernelOwner({ ...migration(safe), dryRun: true, agentProof: await userOperation() }))[0])
++        .toMatchObject({ step: 'safe-modules', status: 'checked' });
+     }
+     const other = fresh();
+     const safe = await newSafe(other);
+@@ -250,6 +284,36 @@ describeMaybe('signer-migrate on a real Safe: what it refuses before anything ch
+     expect(kernelSend).not.toHaveBeenCalled();
+   });
+ 
++  // The agent-keys internal audit of 2026-11-28, finding AK-2026-11-28-01. The Kernel has no code here,
++  // so a run stops at its mandate; the dry run reads the proof as the run does, before the swap.
++  it('a Safe without an identity: refused without a proof that the agent key signs for the Kernel, fresh and successful', async () => {
++    const safe = await newSafe();
++    const plan = (agentProof?: Hex) => migrateToKernelOwner({ ...migration(safe), dryRun: true, ...(agentProof === undefined ? {} : { agentProof }) });
++    const sentBefore = await publicClient.getTransactionCount({ address: eoa });
++    await expect(plan()).rejects.toThrow('no proof was given (--agent-proof)');
++    await expect(plan(generatePrivateKey())).rejects.toThrow(`the EntryPoint ${ENTRY_POINT_V07} has no UserOperationEvent`);
++    const other = fresh();
++    await expect(plan(await userOperation({ sender: other }))).rejects.toThrow(`was sent by ${other}, not by the Kernel`);
++    await expect(plan(await userOperation({ success: false }))).rejects.toThrow('was included and reverted');
++    await expect(plan(await userOperation({ nonce: ROOT_NONCE }))).rejects.toThrow('was not signed with the agent permission');
++    const stale = await userOperation();
++    await jsonRpc(anvil.rpcUrl, 'evm_increaseTime', [3601]);
++    await jsonRpc(anvil.rpcUrl, 'evm_mine', []);
++    await expect(plan(stale)).rejects.toThrow(/is 360\d s old, more than 3600 s/);
++    expect(await ownersOf(safe)).toEqual([eoa]);
++    // The stand-in's calls are the EOA's own; the migration sent none.
++    expect(await publicClient.getTransactionCount({ address: eoa })).toBe(sentBefore + 4);
++    expect(kernelSend).not.toHaveBeenCalled();
++
++    const proof = await userOperation();
++    const steps = await plan(proof);
++    expect(steps.map((s) => [s.step, s.status])).toEqual([
++      ['safe-modules', 'checked'], ['owner-approved-safe', 'not-applicable'], ['mandate-admits-safe', 'would'], ['agent-proof', 'checked'],
++      ['agent-nft', 'not-applicable'], ['attestation-key', 'not-applicable'], ['safe-owner', 'would'],
++    ]);
++    expect(steps[3]!.detail).toContain(`operation ${proof} of the Kernel under the agent permission`);
++  });
++
+   // The internal audit of 2026-11-28, finding AK-2026-11-28-03.
+   it('without the owner\'s grant to the Safe it changes nothing, sends no grant and prints the owner\'s command', async () => {
+     const safe = await newSafe();
+@@ -287,7 +351,7 @@ describeMaybe('signer-migrate on a real Safe: what it refuses before anything ch
+     expect(await approved()).toBe(true);
+     const steps = await migrateToKernelOwner({ ...withIdentity, dryRun: true });
+     expect(steps.map((s) => [s.step, s.status])).toEqual([
+-      ['safe-modules', 'checked'], ['owner-approved-safe', 'checked'], ['mandate-admits-safe', 'would'],
++      ['safe-modules', 'checked'], ['owner-approved-safe', 'checked'], ['mandate-admits-safe', 'would'], ['agent-proof', 'not-applicable'],
+       ['agent-nft', 'would'], ['attestation-key', 'would'], ['safe-owner', 'would'],
+     ]);
+     expect(kernelSend).not.toHaveBeenCalled();
+diff --git a/operator/test/signer/migrate.test.ts b/operator/test/signer/migrate.test.ts
+index c44e133e9..321491152 100644
+--- a/operator/test/signer/migrate.test.ts
++++ b/operator/test/signer/migrate.test.ts
+@@ -14,6 +14,20 @@ const AGENT_ID = 7n;
+ const TX = `0x${'c3'.repeat(32)}` as Hex;
+ 
+ const SENTINEL = '0x0000000000000000000000000000000000000001' as Address;
++const PERMISSION = '0x6a696e6e' as Hex;
++// EntryPoint nonces of the Kernel (key ‖ sequence): the agent permission's key is
++// mode 0 ‖ type 0x02 ‖ permission id ‖ zeros; the owner's root path is key 0.
++const AGENT_NONCE = (BigInt(`0x0002${PERMISSION.slice(2)}`) << 208n) | 5n;
++const ROOT_NONCE = 3n;
++const PROOF = `0x${'a7'.repeat(32)}` as Hex;
++const NOW = 1_800_000_000n;
++const LATEST_BLOCK = 50_000n;
++
++/** A UserOperationEvent of the EntryPoint, as the chain holds it. */
++interface UserOp { hash: Hex; sender: Address; nonce: bigint; success: boolean; block: bigint; timestamp: bigint }
++const agentOp = (overrides: Partial<UserOp> = {}): UserOp => ({
++  hash: PROOF, sender: KERNEL, nonce: AGENT_NONCE, success: true, block: LATEST_BLOCK - 10n, timestamp: NOW - 20n, ...overrides,
++});
+ const MODULE_A = getAddress('0x00000000000000000000000000000000000000a1');
+ const MODULE_B = getAddress('0x00000000000000000000000000000000000000a2');
+ 
+@@ -31,6 +45,7 @@ interface Identity { approved: boolean; nftOwner: Address; metadata: Hex }
+ function setup(chain: {
+   kernelCode: Hex; admits: boolean; threshold?: bigint; owners?: Address[]; modules?: Address[];
+   identity?: Identity; kernelCannotSign?: boolean; guard?: Address; handler?: Address;
++  userOps?: UserOp[];
+ }) {
+   const state = { owners: chain.owners ?? [EOA], identity: chain.identity };
+   // What was sent, in order: `<sender>:<function>`.
+@@ -60,6 +75,18 @@ function setup(chain: {
+       return `0x${(value ?? '0x').slice(2).toLowerCase().padStart(64, '0')}`;
+     },
+     async getCode() { return chain.kernelCode; },
++    async getBlock(args?: { blockNumber?: bigint }) {
++      if (args?.blockNumber === undefined) return { number: LATEST_BLOCK, timestamp: NOW };
++      const op = (chain.userOps ?? []).find((o) => o.block === args.blockNumber);
++      return { number: args.blockNumber, timestamp: op?.timestamp ?? 0n };
++    },
++    // The EntryPoint's UserOperationEvent by userOpHash, within the blocks asked for.
++    async getLogs(args: { address: Address; args: { userOpHash: Hex }; fromBlock: bigint; toBlock: bigint }) {
++      expect(args.address).toBe('0x0000000071727De22E5E9d8BAf0edAc6f37da032');
++      return (chain.userOps ?? [])
++        .filter((o) => o.hash === args.args.userOpHash && o.block >= args.fromBlock && o.block <= args.toBlock)
++        .map((o) => ({ blockNumber: o.block, args: { userOpHash: o.hash, sender: o.sender, nonce: o.nonce, success: o.success } }));
++    },
+     async waitForTransactionReceipt() { return { status: 'success' }; },
+   };
+   const eoaSend = vi.fn(async (tx: { to: Address; data: Hex }) => {
+@@ -81,7 +108,7 @@ function setup(chain: {
+     agentEoaWallet: { account: { address: EOA }, chain: undefined, sendTransaction: eoaSend } as never,
+     kernelWallet: markUserOperationWallet({ account: { address: KERNEL, type: 'json-rpc' }, sendTransaction: kernelSend }) as never,
+     kernel: KERNEL,
+-    permissionId: '0x6a696e6e' as Hex,
++    permissionId: PERMISSION,
+     safeAddress: SAFE,
+     ...(chain.identity === undefined ? {} : { identityRegistry: REGISTRY, agentId: AGENT_ID }),
+   };
+@@ -120,8 +147,8 @@ describe('migrateToKernelOwner', () => {
+   });
+ 
+   it('lists every other module of the Safe for review', async () => {
+-    const { input } = setup({ kernelCode: '0x6001', admits: true, modules: [MODULE_A, MODULE_B] });
+-    const steps = await migrateToKernelOwner({ ...input, dryRun: true });
++    const { input } = setup({ kernelCode: '0x6001', admits: true, modules: [MODULE_A, MODULE_B], userOps: [agentOp()] });
++    const steps = await migrateToKernelOwner({ ...input, dryRun: true, agentProof: PROOF });
+     expect(steps[0]).toMatchObject({ step: 'safe-modules', status: 'review', modules: [MODULE_A, MODULE_B] });
+     expect(steps[0]!.detail).toContain(MODULE_A);
+     expect(steps[0]!.detail).toContain(MODULE_B);
+@@ -148,20 +175,20 @@ describe('migrateToKernelOwner', () => {
+ 
+   it('a guard that is one of the Safe\'s modules is named as the guard in the review; Safe\'s own handler passes', async () => {
+     const { input } = setup({
+-      kernelCode: '0x6001', admits: true, modules: [MODULE_A, MODULE_B], guard: MODULE_B,
++      kernelCode: '0x6001', admits: true, modules: [MODULE_A, MODULE_B], guard: MODULE_B, userOps: [agentOp()],
+       handler: '0xf48f2B2d2a534e402487b3ee7C18c33Aec0Fe5e4',
+     });
+-    const steps = await migrateToKernelOwner({ ...input, dryRun: true });
++    const steps = await migrateToKernelOwner({ ...input, dryRun: true, agentProof: PROOF });
+     expect(steps[0]).toMatchObject({ step: 'safe-modules', status: 'review', modules: [MODULE_A, MODULE_B] });
+     expect(steps[0]!.detail).toContain(`; ${MODULE_B} is the Safe's guard as well: it can veto every transaction of the Safe`);
+   });
+ 
+   it('a dry run sends nothing', async () => {
+-    const { input, eoaSend, kernelSend } = setup({ kernelCode: '0x6001', admits: true });
+-    const steps = await migrateToKernelOwner({ ...input, dryRun: true });
++    const { input, eoaSend, kernelSend } = setup({ kernelCode: '0x6001', admits: true, userOps: [agentOp()] });
++    const steps = await migrateToKernelOwner({ ...input, dryRun: true, agentProof: PROOF });
+     expect(statuses(steps)).toEqual([
+       ['safe-modules', 'checked'],
+-      ['owner-approved-safe', 'not-applicable'], ['mandate-admits-safe', 'checked'],
++      ['owner-approved-safe', 'not-applicable'], ['mandate-admits-safe', 'checked'], ['agent-proof', 'checked'],
+       ['agent-nft', 'not-applicable'], ['attestation-key', 'not-applicable'], ['safe-owner', 'would'],
+     ]);
+     expect(eoaSend).not.toHaveBeenCalled();
+@@ -190,13 +217,13 @@ describe('migrateToKernelOwner', () => {
+       kernelCode: '0x6001', admits: true, identity: { approved: true, nftOwner: EOA, metadata: '0x' },
+     });
+     expect(statuses(await migrateToKernelOwner({ ...input, dryRun: true }))).toEqual([
+-      ['safe-modules', 'checked'], ['owner-approved-safe', 'checked'], ['mandate-admits-safe', 'checked'],
++      ['safe-modules', 'checked'], ['owner-approved-safe', 'checked'], ['mandate-admits-safe', 'checked'], ['agent-proof', 'not-applicable'],
+       ['agent-nft', 'would'], ['attestation-key', 'would'], ['safe-owner', 'would'],
+     ]);
+     expect(sent).toEqual([]);
+ 
+     expect(statuses(await migrateToKernelOwner(input))).toEqual([
+-      ['safe-modules', 'checked'], ['owner-approved-safe', 'checked'], ['mandate-admits-safe', 'checked'],
++      ['safe-modules', 'checked'], ['owner-approved-safe', 'checked'], ['mandate-admits-safe', 'checked'], ['agent-proof', 'not-applicable'],
+       ['agent-nft', 'done'], ['attestation-key', 'done'], ['safe-owner', 'done'], ['eoa-has-no-authority', 'checked'],
+     ]);
+     // The Kernel's one operation is a call its mandate lists; it never sends an approval.
+@@ -205,7 +232,7 @@ describe('migrateToKernelOwner', () => {
+ 
+     // A re-run of a finished handover changes nothing.
+     expect(statuses(await migrateToKernelOwner(input))).toEqual([
+-      ['safe-modules', 'checked'], ['owner-approved-safe', 'checked'], ['mandate-admits-safe', 'checked'],
++      ['safe-modules', 'checked'], ['owner-approved-safe', 'checked'], ['mandate-admits-safe', 'checked'], ['agent-proof', 'not-applicable'],
+       ['agent-nft', 'already'], ['attestation-key', 'already'], ['safe-owner', 'already'], ['eoa-has-no-authority', 'checked'],
+     ]);
+     expect(sent).toHaveLength(3);
+@@ -223,7 +250,7 @@ describe('migrateToKernelOwner', () => {
+   it('has the Kernel sign in the run that hands the Safe over, though the attestation key is already published', async () => {
+     const published = { approved: true, nftOwner: KERNEL, metadata: EOA.toLowerCase() as Hex };
+     const { input, sent } = setup({ kernelCode: '0x6001', admits: true, identity: { ...published } });
+-    expect(statuses(await migrateToKernelOwner({ ...input, dryRun: true })).slice(3)).toEqual([
++    expect(statuses(await migrateToKernelOwner({ ...input, dryRun: true })).slice(4)).toEqual([
+       ['agent-nft', 'already'], ['attestation-key', 'would'], ['safe-owner', 'would'],
+     ]);
+     await migrateToKernelOwner(input);
+@@ -236,6 +263,63 @@ describe('migrateToKernelOwner', () => {
+   });
+ });
+ 
++// The agent-keys internal audit of 2026-11-28, finding AK-2026-11-28-01: without an ERC-8004 identity
++// the migration sent no operation of the Kernel's before the swap, so a Safe could go to a Kernel
++// whose agent key does not sign. The operator's proof is now checked on chain before the swap.
++describe('migrateToKernelOwner: a Safe without an ERC-8004 identity', () => {
++  it('does not hand the Safe over when the Kernel\'s key does not sign: without a proof, swapOwner is never sent', async () => {
++    for (const dryRun of [false, true]) {
++      const { input, sent, state, eoaSend, kernelSend } = setup({ kernelCode: '0x6001', admits: true, kernelCannotSign: true });
++      const refusal = await migrateToKernelOwner({ ...input, dryRun, agentSignerOpSend: '/opt/agent-signer op send --agent /etc/agent.json' })
++        .then(() => undefined, (e: Error) => e.message);
++      expect(refusal).toContain('no proof was given (--agent-proof)');
++      expect(refusal).toContain('Nothing was changed');
++      expect(refusal).toContain('\n  /opt/agent-signer op send --agent /etc/agent.json --target <an allowed target> --data <its calldata>\n');
++      expect(refusal).toContain('jinn signer-migrate --agent-proof <userOpHash>');
++      expect(sent).toEqual([]);
++      expect(eoaSend).not.toHaveBeenCalled();
++      expect(kernelSend).not.toHaveBeenCalled();
++      expect(state.owners).toEqual([EOA]);
++    }
++  });
++
++  it('refuses a proof that does not show the agent key signing for this Kernel, now', async () => {
++    const cases: [UserOp[], RegExp][] = [
++      [[], /has no UserOperationEvent 0xa7a7.* in the last 3600 blocks/],
++      [[agentOp({ block: LATEST_BLOCK - 3601n })], /has no UserOperationEvent .* in the last 3600 blocks/],
++      [[agentOp({ sender: POLICY })], new RegExp(`was sent by ${POLICY}, not by the Kernel`)],
++      [[agentOp({ success: false })], /was included and reverted/],
++      [[agentOp({ nonce: ROOT_NONCE })], /was not signed with the agent permission: its nonce key is 0x0{48}, and the agent's starts 0x00026a696e6e/],
++      [[agentOp({ nonce: (BigInt('0x000212345678') << 208n) | 1n })], /was not signed with the agent permission/],
++      // the same permission in enable mode (0x01) is not the agent's plain path
++      [[agentOp({ nonce: (BigInt(`0x0102${PERMISSION.slice(2)}`) << 208n) | 1n })], /was not signed with the agent permission/],
++      [[agentOp({ timestamp: NOW - 3601n })], /is 3601 s old, more than 3600 s/],
++    ];
++    for (const [userOps, refusal] of cases) {
++      const { input, sent, state } = setup({ kernelCode: '0x6001', admits: true, userOps });
++      await expect(migrateToKernelOwner({ ...input, agentProof: PROOF })).rejects.toThrow(refusal);
++      expect(sent).toEqual([]);
++      expect(state.owners).toEqual([EOA]);
++    }
++  });
++
++  it('with a fresh proof of the agent permission the Safe changes hands; a re-run needs none', async () => {
++    const { input, sent, state } = setup({ kernelCode: '0x6001', admits: true, userOps: [agentOp({ timestamp: NOW - 3600n })] });
++    const steps = await migrateToKernelOwner({ ...input, agentProof: PROOF });
++    expect(statuses(steps)).toEqual([
++      ['safe-modules', 'checked'], ['owner-approved-safe', 'not-applicable'], ['mandate-admits-safe', 'checked'], ['agent-proof', 'checked'],
++      ['agent-nft', 'not-applicable'], ['attestation-key', 'not-applicable'], ['safe-owner', 'done'], ['eoa-has-no-authority', 'checked'],
++    ]);
++    expect(steps[3]!.detail).toContain(`operation ${PROOF} of the Kernel under the agent permission, block ${LATEST_BLOCK - 10n}, 3600 s old`);
++    expect(sent).toEqual(['eoa:execTransaction']);
++    expect(state.owners).toEqual([KERNEL]);
++
++    // Handed over already: nothing is swapped, so nothing has to be proved.
++    expect(statuses(await migrateToKernelOwner(input))).toContainEqual(['agent-proof', 'not-applicable']);
++    expect(sent).toHaveLength(1);
++  });
++});
++
+ // The daemon's boot check reads the list the migration hands over, the fleet identity Safe included.
+ describe('migrationTargets', () => {
+   const FLEET_SAFE = getAddress('0x00000000000000000000000000000000000000f1');

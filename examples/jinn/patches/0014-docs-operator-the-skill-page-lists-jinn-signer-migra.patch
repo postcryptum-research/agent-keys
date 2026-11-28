@@ -1,0 +1,27 @@
+From 0d2518e21b6b7e3b7cfb86ec2ce23716c8116954 Mon Sep 17 00:00:00 2001
+From: agent-keys <noreply@agent-keys.invalid>
+Date: Sat, 28 Nov 2026 10:05:00 +0000
+Subject: [PATCH] docs(operator): the skill page lists `jinn signer-migrate`
+
+The page is generated from the CLI's verbs (yarn skill:generate) and
+held to them by yarn skill:check; the verb came with the signer
+migration, and the page did not list it, so the check failed.
+---
+ operator/skills/jinn-operator/SKILL.md | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/operator/skills/jinn-operator/SKILL.md b/operator/skills/jinn-operator/SKILL.md
+index cde263960..653538cd2 100644
+--- a/operator/skills/jinn-operator/SKILL.md
++++ b/operator/skills/jinn-operator/SKILL.md
+@@ -83,6 +83,7 @@ The package still ships this CLI. The commands that start the daemon (`jinn run`
+ | `jinn update` | Update the client package, run local Task-native preflight, and refresh integrations |
+ | `jinn mcp` | Run the operator MCP server over stdio |
+ | `jinn migrate-agent-id` | Backfill ERC-8004 agent_id on legacy complete services (jinn-mono-jgp) |
++| `jinn signer-migrate` | Hand the operator over to its hardware-signed Kernel account (config.signer) |
+ | `jinn conformance` | Run the envelope + trajectory conformance suite against a signed envelope CID |
+ | `jinn evidence` | Read delivered evidence — resolve a task id to an envelope, and an envelope to its result |
+ | `jinn create` | Scaffold a new Jinn external harness or SolverPlugin package |
+-- 
+2.53.0
+

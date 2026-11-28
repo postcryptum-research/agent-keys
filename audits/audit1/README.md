@@ -27,7 +27,7 @@ cargo): no transaction was sent to a network.
 ## Verdict
 
 **No Critical. 1 High, 1 Medium, 5 Low, 8 notes. All resolved**; the audit
-of 2026-11-28 read the fixes at
+of 2026-11-27 read the fixes at
 `4295e00bcf7ef19a2cde92b191d6ad40604a543b` and confirmed them
 ([`audit2`](../audit2/README.md#the-findings-of-audit-1-read-again)).
 
@@ -126,7 +126,7 @@ the paymaster are read from the trace.
 | The mode of a file holding a secret was not checked | an auth file readable by group or others is refused (#158) |
 | Enrollment records were written with the default mode | written for the owner only, also over an existing file (#158) |
 | A malformed trace ended the checker with an uncaught error | refused with a reason (#156) |
-| No recorded trace with a factory or a paymaster, or of the rule-breaking test policy's fifth mode | traces with a factory and with a paymaster are recorded and checked (#156); the audit of 2026-11-28 found them, with those of transient storage and of the rule-breaking policy, in the checked set |
+| No recorded trace with a factory or a paymaster, or of the rule-breaking test policy's fifth mode | traces with a factory and with a paymaster are recorded and checked (#156); the audit of 2026-11-27 found them, with those of transient storage and of the rule-breaking policy, in the checked set |
 
 ## What was looked at and found sound
 

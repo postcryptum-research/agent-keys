@@ -1,0 +1,497 @@
+From 6b3ac5c4d87e2a26b55a088f65aaffa363df3e41 Mon Sep 17 00:00:00 2001
+From: agent-keys <noreply@agent-keys.invalid>
+Date: Sat, 28 Nov 2026 12:06:54 +0000
+Subject: [PATCH 18/20] fix(operator): the owner's command carries --sponsored
+ only where the paymaster sponsors it
+
+When the Safe lacks the owner's grant, `jinn signer-migrate` prints the owner's root command.
+With `signer.sponsored` in the config it added --sponsored without checking that the paymaster
+would sponsor that operation. A point of #250 in the agent-keys repository (B3).
+
+- signer/migrate.ts: rootOperationGas sizes the sponsored root operation of one call as
+  agent-signer sizes it before a bundler is asked (agent-keys signer/crates/agent-signer/src/
+  chain.rs, `send_raw_at` and `estimate_call_gas`): verificationGasLimit 300000, or 1500000 for
+  the operation that deploys the account; callGasLimit from eth_estimateGas of the Kernel's
+  `execute` called by the EntryPoint, plus 30%, at least 150000, or, before the account has
+  code, of the call from the account's address plus 40000, plus 30%, at least 300000;
+  preVerificationGas 100000; the paymaster's verification gas 100000 and no postOp;
+  maxFeePerGas as alloy estimates it from the node (twice the next block's base fee plus the
+  median of the last 10 blocks' 20th-percentile priority fees above zero, at least 1 wei). Its
+  maxCost is what the EntryPoint passes the paymaster. rootOperationSponsorship reads the
+  WhitelistPaymaster's sponsorships(account) and says the operation is sponsored only when
+  maxCost fits both the per-operation cap and the budget left, which the paymaster checks at
+  validation; a paymaster that does not answer, or a gas estimate that fails, is a reason not to.
+  Step 1 prints the command with --sponsored and why when it is sponsored, and otherwise without
+  it and the reason. whitelistPaymasterOf takes the paymaster from the agent config's
+  deployments file (`whitelistPaymaster`, the file resolved from the config's directory, as
+  agent-signer reads it), or says why none is known; readAgentConfig reads `deployments`.
+  A bundler's estimate can replace agent-signer's figures, bounded at twice each (its fee at
+  twice the node's): with a bundler this is the figure that bound starts from, not a ceiling.
+- cli/commands/signer-migrate.ts: the start of the printed command no longer carries
+  --sponsored; with `signer.sponsored` the migration is given the paymaster; the help says so.
+- tests: unit: within the cap and the budget left the command carries --sponsored and the cost
+  (for an account with code and one without); above the cap, above the budget left, a paymaster
+  that does not answer and a deployments file without a paymaster each print it without
+  --sponsored, with the reason; without signer.sponsored nothing is added; the paymaster is read
+  from the deployments file relative to the agent config. In the full loop, the migration's
+  sizing of the owner's grant is compared with the operation agent-signer sends (no bundler
+  there): verificationGasLimit, callGasLimit, preVerificationGas and maxFeePerGas are the same.
+  Each rule was broken once on purpose and a test caught it (the cap, the budget, --sponsored
+  printed regardless, the first operation's call floor, the fee's multiplier, the paymaster's
+  gas).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ operator/src/cli/commands/signer-migrate.ts   |  13 +-
+ operator/src/signer/migrate.ts                | 160 +++++++++++++++++-
+ .../hermetic/full-loop-kernel-owner.test.ts   |  22 ++-
+ operator/test/signer/migrate.test.ts          |  80 ++++++++-
+ 4 files changed, 264 insertions(+), 11 deletions(-)
+
+diff --git a/operator/src/cli/commands/signer-migrate.ts b/operator/src/cli/commands/signer-migrate.ts
+index 6f4643644..eee4a7afc 100644
+--- a/operator/src/cli/commands/signer-migrate.ts
++++ b/operator/src/cli/commands/signer-migrate.ts
+@@ -18,7 +18,7 @@ import { createCliSignerContext, pickPrimaryMechService } from '../execution-con
+ import { walletPrivateKeyAtIndex } from '../../earning/wallet.js';
+ import { createJinnWalletClient } from '../../earning/viem-clients.js';
+ import { agentSignerConfigOf, createAgentSignerWalletClient } from '../../signer/index.js';
+-import { migrateTargets, migrationTargets, readAgentConfig } from '../../signer/migrate.js';
++import { migrateTargets, migrationTargets, readAgentConfig, whitelistPaymasterOf } from '../../signer/migrate.js';
+ 
+ const EXAMPLE = 'jinn signer-migrate --dry-run';
+ 
+@@ -89,11 +89,11 @@ async function run(ctx: CommandContext): Promise<void> {
+       rpcUrl: config.rpcUrl, chain: publicClient.chain!, signer: agentSignerConfigOf(config.signer),
+     });
+     const kernel = getAddress(config.signer.account);
+-    // The start of the command the owner is given when the Safe lacks the owner's grant.
++    // The start of the command the owner is given when the Safe lacks the owner's grant; the
++    // migration adds --sponsored only where the paymaster is shown to sponsor it.
+     const agentSignerOpSend = [
+       config.signer.bin, 'op', 'send', '--agent', config.signer.config,
+       ...(config.signer.envFile !== undefined ? ['--env-file', config.signer.envFile] : []),
+-      ...(config.signer.sponsored ? ['--sponsored'] : []),
+     ].join(' ');
+ 
+     // The service Safe, then the fleet identity Safe when it is a different one (same agent EOA).
+@@ -110,6 +110,7 @@ async function run(ctx: CommandContext): Promise<void> {
+       kernel,
+       permissionId: agentConfig.permissionId,
+       agentConfig,
++      ...(config.signer.sponsored ? { paymaster: whitelistPaymasterOf(agentConfig) } : {}),
+       dryRun,
+       agentSignerOpSend,
+       ...(agentProof === undefined ? {} : { agentProof: agentProof as Hex }),
+@@ -157,7 +158,11 @@ standing approval of the Safe on the IdentityRegistry
+ (\`setApprovalForAll(Safe, true)\`) is signed with the owner key on the root
+ path. The agent's mandate cannot leave such a grant open, so this command
+ only reads it; when it is missing it changes nothing and prints the owner's
+-command (\`agent-signer op send --root ...\`).
++command (\`agent-signer op send --root ...\`). With \`signer.sponsored\` the
++command carries --sponsored only when the paymaster of the agent config's
++deployments would sponsor it: the operation's maximum cost, sized as
++agent-signer sizes it, within both the account's per-operation cap and what
++is left of its budget. Otherwise it says why --sponsored was left out.
+ 
+ A Safe without an ERC-8004 identity is handed over only after the Kernel
+ has proved that its agent key signs: --agent-proof names the userOpHash of
+diff --git a/operator/src/signer/migrate.ts b/operator/src/signer/migrate.ts
+index 945d3d133..359733f93 100644
+--- a/operator/src/signer/migrate.ts
++++ b/operator/src/signer/migrate.ts
+@@ -17,7 +17,9 @@
+ //                             on the root path. The agent's mandate cannot leave an operator
+ //                             grant open (AgentPolicy refuses an operation that does), so a lone
+ //                             `setApprovalForAll(Safe, true)` by the agent never lands. Missing:
+-//                             the command stops here and prints the owner's command;
++//                             the command stops here and prints the owner's command, with
++//                             `--sponsored` only where the paymaster is shown to sponsor it
++//                             (`rootOperationSponsorship`);
+ //   2. mandate-admits-safe    the Kernel is deployed and its AgentPolicy admits
+ //                             (Safe, execTransaction): without it the agent could not drive the
+ //                             Safe after the swap. With an identity, neither the agent config nor
+@@ -50,14 +52,17 @@
+ // changes hands, so a refusal on the second comes while the first is still the EOA's; each Safe's
+ // migration runs them again right before its own handover.
+ import { readFileSync } from 'node:fs';
++import { dirname, resolve } from 'node:path';
+ 
+ import {
+   encodeFunctionData,
++  encodePacked,
+   getAddress,
+   isAddress,
+   parseAbi,
+   toHex,
+   zeroAddress,
++  zeroHash,
+   type Address,
+   type Hex,
+   type PublicClient,
+@@ -92,6 +97,10 @@ const KERNEL_ABI = parseAbi([
+ const POLICY_ABI = parseAbi([
+   'function isAllowed(address account, bytes32 id, address target, bytes4 selector) view returns (bool)',
+ ]);
++const KERNEL_EXECUTE_ABI = parseAbi(['function execute(bytes32 execMode, bytes executionCalldata) payable']);
++// This repository's WhitelistPaymaster (agent-keys contracts/src/WhitelistPaymaster.sol): per account,
++// what is left of its budget and the most one operation may cost, both charged at maxCost.
++const PAYMASTER_ABI = parseAbi(['function sponsorships(address account) view returns (uint128 remaining, uint128 maxPerOp)']);
+ 
+ export type MigrationStepName =
+   | 'safe-modules'
+@@ -143,8 +152,17 @@ export interface MigrationInput {
+   readonly agentProof?: Hex;
+   /** The agent config (`readAgentConfig`): step 2 reads its mandate's allow-list. */
+   readonly agentConfig: AgentConfigMandate;
++  /**
++   * With the config's `signer.sponsored`: the paymaster agent-signer's `--sponsored` names
++   * (`whitelistPaymasterOf`), or why none is known. Step 1 prints the owner's command with
++   * `--sponsored` only when that paymaster is shown to sponsor it.
++   */
++  readonly paymaster?: Paymaster;
+ }
+ 
++/** The paymaster `--sponsored` would name, or why it is not known. */
++export type Paymaster = { readonly address: Address } | { readonly unknown: string };
++
+ /** An entry of the agent config's `policy.allow`: a call the mandate admits. */
+ export interface MandateEntry {
+   readonly target: string;
+@@ -157,18 +175,143 @@ export interface AgentConfigMandate {
+   readonly permissionId: Hex;
+   /** `policy.allow`: what the owner's next rotation installs, and what the mandate holds once installed. */
+   readonly allow: readonly MandateEntry[];
++  /** Its `deployments` file, resolved from the config's directory as agent-signer does. */
++  readonly deployments?: string;
+ }
+ 
+-/** The agent config at `path`: its permission and its mandate's allow-list. */
++/** The agent config at `path`: its permission, its mandate's allow-list and its deployments file. */
+ export function readAgentConfig(path: string): AgentConfigMandate {
+-  const raw = JSON.parse(readFileSync(path, 'utf8')) as { permissionId?: unknown; policy?: { allow?: unknown } };
++  const raw = JSON.parse(readFileSync(path, 'utf8')) as { permissionId?: unknown; policy?: { allow?: unknown }; deployments?: unknown };
+   if (typeof raw.permissionId !== 'string') throw new Error(`${path} has no permissionId`);
+   const allow = raw.policy?.allow;
+   if (!Array.isArray(allow) || !allow.every((e: { target?: unknown; selector?: unknown } | null) =>
+     typeof e?.target === 'string' && typeof e.selector === 'string')) {
+     throw new Error(`${path} has no policy.allow list of { target, selector }`);
+   }
+-  return { path, permissionId: raw.permissionId as Hex, allow: allow as MandateEntry[] };
++  return {
++    path, permissionId: raw.permissionId as Hex, allow: allow as MandateEntry[],
++    ...(typeof raw.deployments === 'string' ? { deployments: resolve(dirname(path), raw.deployments) } : {}),
++  };
++}
++
++const firstLine = (error: unknown): string => (error instanceof Error ? error.message : String(error)).split('\n')[0]!;
++
++/** The paymaster `agent-signer --sponsored` names: `whitelistPaymaster` in the agent config's deployments file. */
++export function whitelistPaymasterOf(agentConfig: AgentConfigMandate): Paymaster {
++  if (agentConfig.deployments === undefined) return { unknown: `the agent config ${agentConfig.path} names no deployments file` };
++  try {
++    const { whitelistPaymaster } = JSON.parse(readFileSync(agentConfig.deployments, 'utf8')) as { whitelistPaymaster?: unknown };
++    return typeof whitelistPaymaster === 'string' && isAddress(whitelistPaymaster)
++      ? { address: getAddress(whitelistPaymaster) }
++      : { unknown: `the deployments file ${agentConfig.deployments} names no whitelistPaymaster` };
++  } catch (error) {
++    return { unknown: `the deployments file ${agentConfig.deployments} cannot be read (${firstLine(error)})` };
++  }
++}
++
++/** The gas fields of an operation (EntryPoint v0.7), and the most the EntryPoint charges for it. */
++export interface OperationGas {
++  readonly verificationGasLimit: bigint;
++  readonly callGasLimit: bigint;
++  readonly preVerificationGas: bigint;
++  readonly paymasterVerificationGasLimit: bigint;
++  readonly paymasterPostOpGasLimit: bigint;
++  readonly maxFeePerGas: bigint;
++  /** The five limits' sum times maxFeePerGas: what the EntryPoint passes the paymaster as `maxCost`. */
++  readonly maxCost: bigint;
++}
++
++/**
++ * A sponsored root operation of one call from the Kernel (`op send --root --sponsored --target
++ * --data`), sized as agent-signer sizes it before a bundler is asked (agent-keys
++ * signer/crates/agent-signer/src/chain.rs, `send_raw_at` and `estimate_call_gas`):
++ *   - verificationGasLimit 300000, or 1500000 for the operation that deploys the account;
++ *   - callGasLimit: eth_estimateGas of the Kernel's `execute(0, target ‖ 0 ‖ data)` called by the
++ *     EntryPoint, plus 30%, at least 150000; before the account has code, eth_estimateGas of the
++ *     call from the account's address plus 40000 for Kernel's dispatch, plus 30%, at least 300000;
++ *   - preVerificationGas 100000; the paymaster's verification gas 100000 and no postOp;
++ *   - maxFeePerGas as alloy estimates it from the node (`estimate_eip1559_fees`): twice the next
++ *     block's base fee plus the median of the last 10 blocks' 20th-percentile priority fees that
++ *     are above zero, at least 1 wei.
++ * Without a bundler these are the operation's fields. A bundler's estimate replaces them, bounded
++ * by agent-signer at twice each (its fee at twice the node's), so with one this is the figure the
++ * bound starts from, not a ceiling.
++ */
++export async function rootOperationGas(input: {
++  readonly publicClient: Pick<PublicClient, 'getCode' | 'estimateGas' | 'getFeeHistory' | 'getBlock'>;
++  readonly kernel: Address;
++  readonly target: Address;
++  readonly data: Hex;
++}): Promise<OperationGas> {
++  const pc = input.publicClient;
++  const code = await pc.getCode({ address: input.kernel });
++  const deployed = code !== undefined && code !== '0x';
++  const withMargin = (gas: bigint, floor: bigint) => ((gas * 13n) / 10n > floor ? (gas * 13n) / 10n : floor);
++  const callGasLimit = deployed
++    ? withMargin(await pc.estimateGas({
++        account: ENTRY_POINT_V07, to: input.kernel,
++        data: encodeFunctionData({
++          abi: KERNEL_EXECUTE_ABI, functionName: 'execute',
++          args: [zeroHash, encodePacked(['address', 'uint256', 'bytes'], [input.target, 0n, input.data])],
++        }),
++      }), 150_000n)
++    : withMargin(await pc.estimateGas({ account: input.kernel, to: input.target, data: input.data }) + 40_000n, 300_000n);
++  const history = await pc.getFeeHistory({ blockCount: 10, blockTag: 'latest', rewardPercentiles: [20] });
++  const nextBaseFee = history.baseFeePerGas.at(-1) ?? 0n;
++  const baseFee = nextBaseFee !== 0n ? nextBaseFee : (await pc.getBlock()).baseFeePerGas ?? 0n;
++  const rewards = (history.reward ?? []).map((r) => r[0] ?? 0n).filter((r) => r > 0n).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
++  const n = rewards.length;
++  const median = n === 0 ? 1n : n % 2 === 0 ? (rewards[n / 2 - 1]! + rewards[n / 2]!) / 2n : rewards[(n - 1) / 2]!;
++  const gas = {
++    verificationGasLimit: deployed ? 300_000n : 1_500_000n,
++    callGasLimit,
++    preVerificationGas: 100_000n,
++    paymasterVerificationGasLimit: 100_000n,
++    paymasterPostOpGasLimit: 0n,
++    maxFeePerGas: 2n * baseFee + (median > 1n ? median : 1n),
++  };
++  const total = gas.verificationGasLimit + gas.callGasLimit + gas.preVerificationGas + gas.paymasterVerificationGasLimit + gas.paymasterPostOpGasLimit;
++  return { ...gas, maxCost: total * gas.maxFeePerGas };
++}
++
++export type Sponsorship = { readonly sponsored: true; readonly detail: string } | { readonly sponsored: false; readonly reason: string };
++
++/**
++ * Whether `paymaster`, a WhitelistPaymaster, would sponsor the Kernel's root operation that sends
++ * `data` to `target`: its maximum cost (`rootOperationGas`) must fit both the account's
++ * per-operation cap and what is left of its budget (`sponsorships(account)`), which the paymaster
++ * checks against `maxCost` at validation. Anything that cannot be read is a reason not to say so.
++ */
++export async function rootOperationSponsorship(input: {
++  readonly publicClient: Pick<PublicClient, 'readContract' | 'getCode' | 'estimateGas' | 'getFeeHistory' | 'getBlock'>;
++  readonly paymaster: Address;
++  readonly kernel: Address;
++  readonly target: Address;
++  readonly data: Hex;
++}): Promise<Sponsorship> {
++  let remaining: bigint;
++  let maxPerOp: bigint;
++  try {
++    [remaining, maxPerOp] = await input.publicClient.readContract({
++      address: input.paymaster, abi: PAYMASTER_ABI, functionName: 'sponsorships', args: [input.kernel],
++    });
++  } catch (error) {
++    return { sponsored: false, reason: `the paymaster ${input.paymaster} does not answer sponsorships(${input.kernel}), so whether it sponsors the account is not known (${firstLine(error)})` };
++  }
++  let gas: OperationGas;
++  try {
++    gas = await rootOperationGas(input);
++  } catch (error) {
++    return { sponsored: false, reason: `the operation's gas could not be estimated (${firstLine(error)})` };
++  }
++  const cost = `its maximum cost, ${gas.maxCost} wei as agent-signer sizes it (${gas.maxCost / gas.maxFeePerGas} gas at ${gas.maxFeePerGas} wei)`;
++  if (gas.maxCost > maxPerOp) {
++    return { sponsored: false, reason: `the paymaster ${input.paymaster} would refuse it: ${cost}, is above the account's per-operation cap of ${maxPerOp} wei` };
++  }
++  if (gas.maxCost > remaining) {
++    return { sponsored: false, reason: `the paymaster ${input.paymaster} would refuse it: ${cost}, is above the ${remaining} wei left of the account's budget` };
++  }
++  return { sponsored: true, detail: `the paymaster ${input.paymaster} sponsors it: ${cost}, is within the per-operation cap of ${maxPerOp} wei and the ${remaining} wei left of the account's budget` };
+ }
+ 
+ /** The AgentPolicy of `permissionId` on the Kernel, or undefined when the Kernel has no code or no such permission. */
+@@ -407,12 +550,19 @@ async function preflight(input: MigrationInput): Promise<Preflight> {
+     steps.push({ step: 'owner-approved-safe', status: 'checked' });
+   } else {
+     const grant = encodeFunctionData({ abi: REGISTRY_ABI, functionName: 'setApprovalForAll', args: [safe, true] });
++    // --sponsored only where the paymaster is shown to sponsor this very operation.
++    const sponsorship: Sponsorship | undefined = input.paymaster === undefined ? undefined
++      : 'unknown' in input.paymaster ? { sponsored: false, reason: input.paymaster.unknown }
++        : await rootOperationSponsorship({ publicClient: pc, paymaster: input.paymaster.address, kernel, target: identity.registry, data: grant });
+     throw new Error(
+       `the Kernel ${kernel} has not approved the Safe ${safe} for its ERC-8004 records (IdentityRegistry ${identity.registry}: `
+       + 'isApprovedForAll is false). That grant stands, so it is the owner\'s to give and this command never sends it: '
+       + 'the agent\'s mandate cannot leave an operator grant open. Nothing was changed. Have the owner sign it on the root '
+       + 'path (setApprovalForAll(Safe, true)), then re-run:\n'
+-      + `  ${input.agentSignerOpSend ?? 'agent-signer op send --agent <agent config>'} --root --target ${identity.registry} --data ${grant}`,
++      + `  ${input.agentSignerOpSend ?? 'agent-signer op send --agent <agent config>'} --root --target ${identity.registry} --data ${grant}`
++      + (sponsorship === undefined ? ''
++        : sponsorship.sponsored ? ` --sponsored\n(--sponsored: ${sponsorship.detail})`
++          : `\n(without --sponsored, which the config asks for: ${sponsorship.reason})`),
+     );
+   }
+ 
+diff --git a/operator/test/hermetic/full-loop-kernel-owner.test.ts b/operator/test/hermetic/full-loop-kernel-owner.test.ts
+index 4ba1289eb..9840145de 100644
+--- a/operator/test/hermetic/full-loop-kernel-owner.test.ts
++++ b/operator/test/hermetic/full-loop-kernel-owner.test.ts
+@@ -75,7 +75,7 @@ import { AgentSignerError, agentSignerSend, type AgentSignerConfig } from '../..
+ import { createAgentSignerWalletClient } from '../../src/signer/agent-signer-transport.js';
+ import { assertAgentEoaHasNoAuthority, readAttestationKey, readSafeGuardAndHandler } from '../../src/signer/attestation.js';
+ import {
+-  assertMandateKeepsOwnersGrant, checkAgentProof, migrateTargets, migrateToKernelOwner, readAgentConfig,
++  assertMandateKeepsOwnersGrant, checkAgentProof, migrateTargets, migrateToKernelOwner, readAgentConfig, rootOperationGas,
+ } from '../../src/signer/migrate.js';
+ import { createMetadataPublisherFromViem } from '../../src/solvernets/daemon-init.js';
+ import { PRODUCTION_DEPS } from '../../src/cli/commands/solver-plugins.js';
+@@ -109,6 +109,9 @@ const USER_OPERATION_EVENT = parseAbiItem(
+   'event UserOperationEvent(bytes32 indexed userOpHash, address indexed sender, address indexed paymaster, uint256 nonce, bool success, uint256 actualGasCost, uint256 actualGasUsed)',
+ );
+ const SENTINEL_OWNERS = '0x0000000000000000000000000000000000000001' as Address;
++const HANDLE_OPS_ABI = parseAbi([
++  'function handleOps((address sender, uint256 nonce, bytes initCode, bytes callData, bytes32 accountGasLimits, uint256 preVerificationGas, bytes32 gasFees, bytes paymasterAndData, bytes signature)[] ops, address beneficiary)',
++]);
+ // Safe's CompatibilityFallbackHandler 1.3.0 on Base (safe-deployments: canonical, eip155).
+ const CANONICAL_HANDLER_1_3_0 = '0xf48f2B2d2a534e402487b3ee7C18c33Aec0Fe5e4' as Address;
+ const EIP155_HANDLER_1_3_0 = '0x017062a1dE2FE6b99BE3d9d37841FeD19F573804' as Address;
+@@ -262,7 +265,24 @@ describeMaybe('hermetic daemon solution loop, Safe owned by a hardware-signed Ke
+         expect(await fixture.publicClient.readContract({ address: operator.safeAddress, abi: SAFE_ABI, functionName: 'getOwners' }))
+           .toEqual([getAddress(operator.agentAddress)]);
+         // The owner's step, on the root path: the account's first operation, which deploys it.
++        // The migration sizes that operation as agent-signer does, to check a paymaster's
++        // sponsorship before it prints --sponsored: agent-signer here sends it with no bundler, so
++        // its gas fields are its own figures, and they are the same.
++        const sized = await rootOperationGas({ publicClient: fixture.publicClient, kernel, target: IDENTITY_REGISTRY, data: grant });
+         const granted = await agentSignerSend(signer, { to: IDENTITY_REGISTRY, value: 0n, data: grant, root: true });
++        const [grantOps] = decodeFunctionData({
++          abi: HANDLE_OPS_ABI, data: (await fixture.publicClient.getTransaction({ hash: granted.txHash })).input,
++        }).args;
++        const grantOp = grantOps.find((op) => getAddress(op.sender) === getAddress(kernel))!;
++        const low128 = (word: Hex) => BigInt(word) & ((1n << 128n) - 1n);
++        expect({
++          verificationGasLimit: BigInt(grantOp.accountGasLimits) >> 128n, callGasLimit: low128(grantOp.accountGasLimits),
++          preVerificationGas: grantOp.preVerificationGas, maxFeePerGas: low128(grantOp.gasFees),
++        }).toEqual({
++          verificationGasLimit: sized.verificationGasLimit, callGasLimit: sized.callGasLimit,
++          preVerificationGas: sized.preVerificationGas, maxFeePerGas: sized.maxFeePerGas,
++        });
++        expect(sized.verificationGasLimit).toBe(1_500_000n); // the operation that deploys the account
+         // An operation of the owner's is no proof that the agent key signs (the proof a Safe
+         // without an ERC-8004 identity is handed over on): its nonce key is the root path's.
+         await expect(checkAgentProof({
+diff --git a/operator/test/signer/migrate.test.ts b/operator/test/signer/migrate.test.ts
+index 0a18784ed..5679a4d7c 100644
+--- a/operator/test/signer/migrate.test.ts
++++ b/operator/test/signer/migrate.test.ts
+@@ -1,9 +1,13 @@
+ // The migration's safety order: the Safe is never handed to a Kernel that cannot operate it.
++import { mkdtempSync, writeFileSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
+ import { describe, expect, it, vi } from 'vitest';
+ import { decodeFunctionData, encodeFunctionData, getAddress, parseAbi, type Address, type Hex } from 'viem';
+ 
+ import {
+-  assertMandateKeepsOwnersGrant, migrateTargets, migrateToKernelOwner, migrationTargets, type MandateEntry, type MigrationTarget,
++  assertMandateKeepsOwnersGrant, migrateTargets, migrateToKernelOwner, migrationTargets, readAgentConfig, whitelistPaymasterOf,
++  type MandateEntry, type MigrationTarget,
+ } from '../../src/signer/migrate.js';
+ import { markUserOperationWallet } from '../../src/tx-retry.js';
+ 
+@@ -54,6 +58,8 @@ function setup(chain: {
+   userOps?: UserOp[]; fleet?: SafeState;
+   /** The agent config's policy.allow; `grantEntryInstalled`: the installed mandate admits (REGISTRY, setApprovalForAll). */
+   allow?: MandateEntry[]; grantEntryInstalled?: boolean;
++  /** The WhitelistPaymaster's sponsorships(Kernel): [remaining, maxPerOp]; absent: the call reverts. */
++  sponsorship?: [bigint, bigint];
+ }) {
+   const state = { owners: chain.owners ?? [EOA], identity: chain.identity };
+   const fleetState = { owners: chain.fleet?.owners ?? [EOA] };
+@@ -79,6 +85,9 @@ function setup(chain: {
+         case 'isApprovedForAll': return state.identity!.approved && args.args![0] === KERNEL && args.args![1] === SAFE;
+         case 'ownerOf': return state.identity!.nftOwner;
+         case 'getMetadata': return state.identity!.metadata;
++        case 'sponsorships':
++          if (chain.sponsorship === undefined) throw new Error('execution reverted\nmore detail');
++          return chain.sponsorship;
+         default: throw new Error(`unexpected ${args.functionName}`);
+       }
+     },
+@@ -91,6 +100,12 @@ function setup(chain: {
+       return `0x${(value ?? '0x').slice(2).toLowerCase().padStart(64, '0')}`;
+     },
+     async getCode() { return chain.kernelCode; },
++    // The gas agent-signer's sizing reads: one eth_estimateGas, and the node's fee history.
++    async estimateGas() { return 50_000n; },
++    async getFeeHistory(args: { blockCount: number; rewardPercentiles: number[] }) {
++      expect(args).toMatchObject({ blockCount: 10, rewardPercentiles: [20] });
++      return { baseFeePerGas: [900n, 1_000n], reward: [[3n], [5n], [0n], [7n]] };
++    },
+     async getBlock(args?: { blockNumber?: bigint }) {
+       if (args?.blockNumber === undefined) return { number: LATEST_BLOCK, timestamp: NOW };
+       const op = (chain.userOps ?? []).find((o) => o.block === args.blockNumber);
+@@ -449,6 +464,69 @@ describe('the mandate cannot withdraw the owner\'s grant', () => {
+   });
+ });
+ 
++// #250 B3: with `signer.sponsored` the owner's printed command carried --sponsored unchecked.
++describe('the owner\'s command: --sponsored only where the paymaster sponsors it', () => {
++  const PAYMASTER = getAddress('0x00000000000000000000000000000000000000b1');
++  // Sized as agent-signer sizes it: verification 300000 (1500000 before the account has code);
++  // call 50000 × 1.3 under its floor of 150000 (300000 before the account has code, of 90000 × 1.3);
++  // preVerification 100000; paymaster 100000. maxFeePerGas: 2 × 1000 + the median of 3, 5, 7.
++  const DEPLOYED_COST = (300_000n + 150_000n + 100_000n + 100_000n) * 2_005n;
++  const FIRST_COST = (1_500_000n + 300_000n + 100_000n + 100_000n) * 2_005n;
++  const refusal = async (chain: { kernelCode: Hex; sponsorship?: [bigint, bigint] }, paymaster?: { address: Address } | { unknown: string }) => {
++    const { input, sent } = setup({ ...chain, admits: true, identity: { approved: false, nftOwner: EOA, metadata: '0x' } });
++    const message = await migrateToKernelOwner({
++      ...input, agentSignerOpSend: '/opt/agent-signer op send --agent /etc/agent.json', ...(paymaster === undefined ? {} : { paymaster }),
++    }).then(() => undefined, (e: Error) => e.message);
++    expect(sent).toEqual([]);
++    return message!;
++  };
++  const command = `\n  /opt/agent-signer op send --agent /etc/agent.json --root --target ${REGISTRY} --data ${GRANT}`;
++
++  it('within the per-operation cap and the budget left, the command carries --sponsored and says why', async () => {
++    for (const [kernelCode, cost] of [['0x6001', DEPLOYED_COST], ['0x', FIRST_COST]] as const) {
++      const message = await refusal({ kernelCode, sponsorship: [cost, cost] }, { address: PAYMASTER });
++      expect(message).toContain(`${command} --sponsored\n(--sponsored: the paymaster ${PAYMASTER} sponsors it: its maximum cost, ${cost} wei`);
++      expect(message).toContain(`within the per-operation cap of ${cost} wei and the ${cost} wei left of the account's budget`);
++    }
++  });
++
++  it('above the cap or the budget left, or where the paymaster cannot be read, it is printed without --sponsored, with the reason', async () => {
++    const cases: [{ kernelCode: Hex; sponsorship?: [bigint, bigint] }, { address: Address } | { unknown: string }, string][] = [
++      [{ kernelCode: '0x6001', sponsorship: [DEPLOYED_COST, DEPLOYED_COST - 1n] }, { address: PAYMASTER },
++        `is above the account's per-operation cap of ${DEPLOYED_COST - 1n} wei`],
++      [{ kernelCode: '0x', sponsorship: [FIRST_COST - 1n, FIRST_COST] }, { address: PAYMASTER },
++        `is above the ${FIRST_COST - 1n} wei left of the account's budget`],
++      [{ kernelCode: '0x6001' }, { address: PAYMASTER },
++        `the paymaster ${PAYMASTER} does not answer sponsorships(${KERNEL}), so whether it sponsors the account is not known (execution reverted)`],
++      [{ kernelCode: '0x6001', sponsorship: [DEPLOYED_COST, DEPLOYED_COST] }, { unknown: 'the deployments file /etc/d.json names no whitelistPaymaster' },
++        'the deployments file /etc/d.json names no whitelistPaymaster'],
++    ];
++    for (const [chain, paymaster, reason] of cases) {
++      const message = await refusal(chain, paymaster);
++      expect(message).toContain(`${command}\n(without --sponsored, which the config asks for: `);
++      expect(message).toContain(reason);
++      expect(message).not.toContain('--sponsored\n');
++    }
++  });
++
++  it('without signer.sponsored the command is printed as it is', async () => {
++    const message = await refusal({ kernelCode: '0x6001', sponsorship: [DEPLOYED_COST, DEPLOYED_COST] });
++    expect(message.endsWith(command)).toBe(true);
++  });
++
++  it('the paymaster is the agent config\'s deployments\' whitelistPaymaster, the file resolved from the config\'s directory', () => {
++    const dir = mkdtempSync(join(tmpdir(), 'signer-migrate-'));
++    writeFileSync(join(dir, 'deployments.json'), JSON.stringify({ whitelistPaymaster: PAYMASTER.toLowerCase() }));
++    writeFileSync(join(dir, 'agent.json'), JSON.stringify({ permissionId: PERMISSION, deployments: 'deployments.json', policy: { allow: [] } }));
++    const config = readAgentConfig(join(dir, 'agent.json'));
++    expect(config).toEqual({ path: join(dir, 'agent.json'), permissionId: PERMISSION, allow: [], deployments: join(dir, 'deployments.json') });
++    expect(whitelistPaymasterOf(config)).toEqual({ address: PAYMASTER });
++    writeFileSync(join(dir, 'deployments.json'), JSON.stringify({ entryPoint: PAYMASTER }));
++    expect(whitelistPaymasterOf(config)).toEqual({ unknown: `the deployments file ${join(dir, 'deployments.json')} names no whitelistPaymaster` });
++    expect(whitelistPaymasterOf({ ...config, deployments: join(dir, 'missing.json') })).toMatchObject({ unknown: expect.stringContaining('cannot be read') });
++  });
++});
++
+ // The daemon's boot check reads the list the migration hands over, the fleet identity Safe included.
+ describe('migrationTargets', () => {
+   const service = { safeAddress: SAFE.toLowerCase(), agentId: '7', identityRegistry: REGISTRY };
